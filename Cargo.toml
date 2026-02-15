@@ -1,0 +1,19 @@
+[package]
+name = "rustic-quant"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9"
+rand_distr = "0.5"
+statrs = "0.18"
+nalgebra = "0.33"
+rayon = "1.10"
+
+[dev-dependencies]
+approx = "0.5"
+criterion = "0.5"
+
+[[bench]]
+name = "pricing"
+harness = false
