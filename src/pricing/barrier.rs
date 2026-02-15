@@ -2,7 +2,6 @@ use crate::core::types::OptionType;
 use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
-use crate::pricing::european::black_scholes_price;
 
 pub use crate::core::types::{BarrierDirection, BarrierStyle};
 
@@ -28,13 +27,12 @@ fn vanilla_payoff(option_type: OptionType, s_t: f64, k: f64) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rr_out_price(
+fn bs_price_with_dividend(
     option_type: OptionType,
-    direction: BarrierDirection,
     s: f64,
     k: f64,
-    h: f64,
     r: f64,
+    q: f64,
     sigma: f64,
     t: f64,
 ) -> f64 {
@@ -42,63 +40,109 @@ fn rr_out_price(
         return vanilla_payoff(option_type, s, k);
     }
 
+    let st = sigma * t.sqrt();
+    let d1 = ((s / k).ln() + (r - q + 0.5 * sigma * sigma) * t) / st;
+    let d2 = d1 - st;
+    let df_r = (-r * t).exp();
+    let df_q = (-q * t).exp();
+
+    match option_type {
+        OptionType::Call => s * df_q * normal_cdf(d1) - k * df_r * normal_cdf(d2),
+        OptionType::Put => k * df_r * normal_cdf(-d2) - s * df_q * normal_cdf(-d1),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn barrier_price_closed_form_with_carry_and_rebate(
+    option_type: OptionType,
+    style: BarrierStyle,
+    direction: BarrierDirection,
+    s: f64,
+    k: f64,
+    h: f64,
+    r: f64,
+    q: f64,
+    sigma: f64,
+    t: f64,
+    rebate: f64,
+) -> f64 {
+    let vanilla = bs_price_with_dividend(option_type, s, k, r, q, sigma, t);
+
+    if breached_at_start(s, h, direction) {
+        return match style {
+            BarrierStyle::Out => rebate,
+            BarrierStyle::In => vanilla,
+        };
+    }
+
+    if t <= 0.0 || sigma <= 0.0 {
+        return match style {
+            BarrierStyle::Out => vanilla,
+            BarrierStyle::In => 0.0,
+        };
+    }
+
     let eta = match direction {
         BarrierDirection::Down => 1.0,
         BarrierDirection::Up => -1.0,
     };
     let phi = option_type.sign();
+    let b = r - q;
 
     let st = sigma * t.sqrt();
-    let mu = (r - 0.5 * sigma * sigma) / (sigma * sigma);
-    let df = (-r * t).exp();
+    let mu = (b - 0.5 * sigma * sigma) / (sigma * sigma);
+    let lambda = (mu * mu + 2.0 * r / (sigma * sigma)).sqrt();
+    let df_r = (-r * t).exp();
+    let df_q = (-q * t).exp();
 
     let x1 = (s / k).ln() / st + (1.0 + mu) * st;
     let x2 = (s / h).ln() / st + (1.0 + mu) * st;
     let y1 = ((h * h) / (s * k)).ln() / st + (1.0 + mu) * st;
     let y2 = (h / s).ln() / st + (1.0 + mu) * st;
+    let z = (h / s).ln() / st + lambda * st;
 
     let hs_mu = (h / s).powf(2.0 * mu);
     let hs_mu1 = (h / s).powf(2.0 * (mu + 1.0));
+    let hs_mu_lambda_plus = (h / s).powf(mu + lambda);
+    let hs_mu_lambda_minus = (h / s).powf(mu - lambda);
 
-    let a = phi * s * normal_cdf(phi * x1) - phi * k * df * normal_cdf(phi * (x1 - st));
-    let b = phi * s * normal_cdf(phi * x2) - phi * k * df * normal_cdf(phi * (x2 - st));
-    let c = phi * s * hs_mu1 * normal_cdf(eta * y1)
-        - phi * k * df * hs_mu * normal_cdf(eta * (y1 - st));
-    let d = phi * s * hs_mu1 * normal_cdf(eta * y2)
-        - phi * k * df * hs_mu * normal_cdf(eta * (y2 - st));
+    let a = phi * s * df_q * normal_cdf(phi * x1) - phi * k * df_r * normal_cdf(phi * (x1 - st));
+    let b_term =
+        phi * s * df_q * normal_cdf(phi * x2) - phi * k * df_r * normal_cdf(phi * (x2 - st));
+    let c = phi * s * df_q * hs_mu1 * normal_cdf(eta * y1)
+        - phi * k * df_r * hs_mu * normal_cdf(eta * (y1 - st));
+    let d = phi * s * df_q * hs_mu1 * normal_cdf(eta * y2)
+        - phi * k * df_r * hs_mu * normal_cdf(eta * (y2 - st));
+    let e = rebate * df_r * (normal_cdf(eta * (x2 - st)) - hs_mu * normal_cdf(eta * (y2 - st)));
+    let f = rebate
+        * (hs_mu_lambda_plus * normal_cdf(eta * z)
+            + hs_mu_lambda_minus * normal_cdf(eta * (z - 2.0 * lambda * st)));
 
-    let out = match (direction, option_type) {
-        (BarrierDirection::Down, OptionType::Call) => {
-            if k >= h {
-                a - c
-            } else {
-                b - d
-            }
+    let k_ge_h = k >= h;
+    let value = match (style, direction, option_type, k_ge_h) {
+        (BarrierStyle::Out, BarrierDirection::Down, OptionType::Call, true) => a - c + f,
+        (BarrierStyle::Out, BarrierDirection::Down, OptionType::Call, false) => b_term - d + f,
+        (BarrierStyle::Out, BarrierDirection::Up, OptionType::Call, true) => f,
+        (BarrierStyle::Out, BarrierDirection::Up, OptionType::Call, false) => {
+            a - b_term + c - d + f
         }
-        (BarrierDirection::Down, OptionType::Put) => {
-            if k >= h {
-                a - b + c - d
-            } else {
-                0.0
-            }
+        (BarrierStyle::Out, BarrierDirection::Down, OptionType::Put, true) => {
+            a - b_term + c - d + f
         }
-        (BarrierDirection::Up, OptionType::Call) => {
-            if k >= h {
-                0.0
-            } else {
-                a - b + c - d
-            }
-        }
-        (BarrierDirection::Up, OptionType::Put) => {
-            if k >= h {
-                b - d
-            } else {
-                a - c
-            }
-        }
+        (BarrierStyle::Out, BarrierDirection::Down, OptionType::Put, false) => f,
+        (BarrierStyle::Out, BarrierDirection::Up, OptionType::Put, true) => b_term - d + f,
+        (BarrierStyle::Out, BarrierDirection::Up, OptionType::Put, false) => a - c + f,
+        (BarrierStyle::In, BarrierDirection::Down, OptionType::Call, true) => c + e,
+        (BarrierStyle::In, BarrierDirection::Down, OptionType::Call, false) => a - b_term + d + e,
+        (BarrierStyle::In, BarrierDirection::Up, OptionType::Call, true) => a + e,
+        (BarrierStyle::In, BarrierDirection::Up, OptionType::Call, false) => b_term - c + d + e,
+        (BarrierStyle::In, BarrierDirection::Down, OptionType::Put, true) => b_term - c + d + e,
+        (BarrierStyle::In, BarrierDirection::Down, OptionType::Put, false) => a + e,
+        (BarrierStyle::In, BarrierDirection::Up, OptionType::Put, true) => a - b_term + d + e,
+        (BarrierStyle::In, BarrierDirection::Up, OptionType::Put, false) => c + e,
     };
 
-    out.max(0.0)
+    value.max(0.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -113,21 +157,19 @@ pub fn barrier_price_closed_form(
     sigma: f64,
     t: f64,
 ) -> f64 {
-    let vanilla = black_scholes_price(option_type, s0, k, r, sigma, t);
-
-    if breached_at_start(s0, barrier, direction) {
-        return match style {
-            BarrierStyle::Out => 0.0,
-            BarrierStyle::In => vanilla,
-        };
-    }
-
-    let out = rr_out_price(option_type, direction, s0, k, barrier, r, sigma, t);
-
-    match style {
-        BarrierStyle::Out => out,
-        BarrierStyle::In => (vanilla - out).max(0.0),
-    }
+    barrier_price_closed_form_with_carry_and_rebate(
+        option_type,
+        style,
+        direction,
+        s0,
+        k,
+        barrier,
+        r,
+        0.0,
+        sigma,
+        t,
+        0.0,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -209,7 +251,7 @@ mod tests {
             sigma,
             t,
         );
-        let vanilla = black_scholes_price(OptionType::Call, s0, k, r, sigma, t);
+        let vanilla = bs_price_with_dividend(OptionType::Call, s0, k, r, 0.0, sigma, t);
         assert_relative_eq!(out + inn, vanilla, epsilon = 1e-8);
     }
 
@@ -244,7 +286,7 @@ mod tests {
             sigma,
             t,
         );
-        let vanilla = black_scholes_price(OptionType::Put, s0, k, r, sigma, t);
+        let vanilla = bs_price_with_dividend(OptionType::Put, s0, k, r, 0.0, sigma, t);
         assert_relative_eq!(out + inn, vanilla, epsilon = 1e-8);
     }
 
@@ -286,7 +328,7 @@ mod tests {
             10,
         );
 
-        let vanilla = black_scholes_price(OptionType::Call, s0, k, r, sigma, t);
+        let vanilla = bs_price_with_dividend(OptionType::Call, s0, k, r, 0.0, sigma, t);
         assert!((out + inn - vanilla).abs() <= 2.5 * (e_out + e_in));
     }
 }

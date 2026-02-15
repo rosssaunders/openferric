@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::core::{Averaging, PricingEngine, PricingError, PricingResult, StrikeType};
 use crate::instruments::asian::AsianOption;
 use crate::market::Market;
-use crate::pricing::asian::geometric_asian_fixed_closed_form;
+use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
 
 /// Analytic engine for geometric-average fixed-strike Asian options.
 #[derive(Debug, Clone, Default)]
@@ -43,13 +43,14 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
             ));
         }
 
-        let price = geometric_asian_fixed_closed_form(
+        let price = geometric_asian_discrete_fixed_closed_form(
             instrument.option_type,
             market.spot,
             instrument.strike,
             market.rate,
+            market.dividend_yield,
             vol,
-            instrument.expiry,
+            &instrument.asian.observation_times,
         );
 
         let mut diagnostics = HashMap::new();

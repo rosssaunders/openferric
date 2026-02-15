@@ -30,6 +30,13 @@ fn asian_payoff(option_type: OptionType, strike: AsianStrike, avg: f64, s_t: f64
     }
 }
 
+fn vanilla_payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
+    match option_type {
+        OptionType::Call => (spot - strike).max(0.0),
+        OptionType::Put => (strike - spot).max(0.0),
+    }
+}
+
 pub fn geometric_asian_fixed_closed_form(
     option_type: OptionType,
     s0: f64,
@@ -55,6 +62,57 @@ pub fn geometric_asian_fixed_closed_form(
 
     let eg = (m + 0.5 * v).exp();
     let df = (-r * t).exp();
+
+    match option_type {
+        OptionType::Call => df * (eg * normal_cdf(d1) - k * normal_cdf(d2)),
+        OptionType::Put => df * (k * normal_cdf(-d2) - eg * normal_cdf(-d1)),
+    }
+}
+
+pub fn geometric_asian_discrete_fixed_closed_form(
+    option_type: OptionType,
+    s0: f64,
+    k: f64,
+    r: f64,
+    q: f64,
+    sigma: f64,
+    observation_times: &[f64],
+) -> f64 {
+    if observation_times.is_empty() {
+        return vanilla_payoff(option_type, s0, k);
+    }
+
+    let maturity = observation_times
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(0.0);
+    if maturity <= 0.0 || sigma <= 0.0 {
+        return (-r * maturity).exp() * vanilla_payoff(option_type, s0, k);
+    }
+
+    let n = observation_times.len() as f64;
+    let mean_t = observation_times.iter().sum::<f64>() / n;
+
+    let mut cov_sum = 0.0;
+    for &ti in observation_times {
+        for &tj in observation_times {
+            cov_sum += ti.min(tj);
+        }
+    }
+    let var = sigma * sigma * cov_sum / (n * n);
+    let m = s0.ln() + (r - q - 0.5 * sigma * sigma) * mean_t;
+    let df = (-r * maturity).exp();
+
+    if var <= 0.0 {
+        let g = m.exp();
+        return df * vanilla_payoff(option_type, g, k);
+    }
+
+    let sqrt_v = var.sqrt();
+    let d1 = (m - k.ln() + var) / sqrt_v;
+    let d2 = d1 - sqrt_v;
+    let eg = (m + 0.5 * var).exp();
 
     match option_type {
         OptionType::Call => df * (eg * normal_cdf(d1) - k * normal_cdf(d2)),

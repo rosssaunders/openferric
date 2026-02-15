@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::barrier::BarrierOption;
 use crate::market::Market;
-use crate::pricing::barrier::barrier_price_closed_form;
+use crate::pricing::barrier::barrier_price_closed_form_with_carry_and_rebate;
 
 /// Reiner-Rubinstein style analytic engine for barrier options.
 #[derive(Debug, Clone, Default)]
@@ -24,12 +24,6 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         instrument.validate()?;
 
-        if instrument.barrier.rebate.abs() > 0.0 {
-            return Err(PricingError::InvalidInput(
-                "BarrierAnalyticEngine currently supports rebate = 0 only".to_string(),
-            ));
-        }
-
         let vol = market.vol_for(instrument.strike, instrument.expiry);
         if vol <= 0.0 {
             return Err(PricingError::InvalidInput(
@@ -37,7 +31,7 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
             ));
         }
 
-        let price = barrier_price_closed_form(
+        let price = barrier_price_closed_form_with_carry_and_rebate(
             instrument.option_type,
             instrument.barrier.style,
             instrument.barrier.direction,
@@ -45,8 +39,10 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
             instrument.strike,
             instrument.barrier.level,
             market.rate,
+            market.dividend_yield,
             vol,
             instrument.expiry,
+            instrument.barrier.rebate,
         );
 
         let mut diagnostics = HashMap::new();
