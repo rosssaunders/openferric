@@ -9,6 +9,7 @@ rand_distr = "0.5"
 statrs = "0.18"
 nalgebra = "0.33"
 rayon = "1.10"
+num-complex = "0.4"
 
 [dev-dependencies]
 approx = "0.5"
