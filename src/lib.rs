@@ -6,6 +6,7 @@ pub mod instruments;
 pub mod market;
 pub mod math;
 pub mod models;
+pub mod python;
 pub mod vol;
 
 // Legacy modules kept for compatibility with existing consumers.
