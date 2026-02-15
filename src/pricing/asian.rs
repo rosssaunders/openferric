@@ -1,7 +1,7 @@
+use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
 use crate::pricing::OptionType;
-use crate::math::normal_cdf;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AsianStrike {
@@ -62,6 +62,7 @@ pub fn geometric_asian_fixed_closed_form(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn arithmetic_asian_price_mc(
     option_type: OptionType,
     strike: AsianStrike,
@@ -93,6 +94,7 @@ pub fn arithmetic_asian_price_mc(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn geometric_asian_price_mc(
     option_type: OptionType,
     strike: AsianStrike,

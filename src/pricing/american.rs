@@ -45,6 +45,7 @@ pub fn crr_binomial_american(
     values[0]
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn longstaff_schwartz_american_put(
     s0: f64,
     k: f64,
@@ -74,10 +75,7 @@ pub fn longstaff_schwartz_american_put(
         }
     }
 
-    let mut values: Vec<f64> = sim_paths
-        .iter()
-        .map(|p| (k - p[steps]).max(0.0))
-        .collect();
+    let mut values: Vec<f64> = sim_paths.iter().map(|p| (k - p[steps]).max(0.0)).collect();
 
     for ti in (1..steps).rev() {
         for v in &mut values {
@@ -126,8 +124,7 @@ pub fn longstaff_schwartz_american_put(
         }
     }
 
-    let continuation_to_t0 = values.iter().map(|v| v * disc).sum::<f64>() / paths as f64;
-    continuation_to_t0
+    values.iter().map(|v| v * disc).sum::<f64>() / paths as f64
 }
 
 #[cfg(test)]

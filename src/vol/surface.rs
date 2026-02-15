@@ -11,7 +11,10 @@ pub struct SviParams {
 
 impl SviParams {
     pub fn total_variance(&self, k: f64) -> f64 {
-        self.a + self.b * (self.rho * (k - self.m) + ((k - self.m).powi(2) + self.sigma * self.sigma).sqrt())
+        self.a
+            + self.b
+                * (self.rho * (k - self.m)
+                    + ((k - self.m).powi(2) + self.sigma * self.sigma).sqrt())
     }
 
     pub fn dw_dk(&self, k: f64) -> f64 {
@@ -82,35 +85,40 @@ pub fn calibrate_svi(
             p_plus.a += eps;
             let mut p_minus = p;
             p_minus.a -= eps;
-            g[0] = (svi_objective(project(p_plus), points) - svi_objective(project(p_minus), points))
+            g[0] = (svi_objective(project(p_plus), points)
+                - svi_objective(project(p_minus), points))
                 / (2.0 * eps);
 
             p_plus = p;
             p_plus.b += eps;
             p_minus = p;
             p_minus.b -= eps;
-            g[1] = (svi_objective(project(p_plus), points) - svi_objective(project(p_minus), points))
+            g[1] = (svi_objective(project(p_plus), points)
+                - svi_objective(project(p_minus), points))
                 / (2.0 * eps);
 
             p_plus = p;
             p_plus.rho += eps;
             p_minus = p;
             p_minus.rho -= eps;
-            g[2] = (svi_objective(project(p_plus), points) - svi_objective(project(p_minus), points))
+            g[2] = (svi_objective(project(p_plus), points)
+                - svi_objective(project(p_minus), points))
                 / (2.0 * eps);
 
             p_plus = p;
             p_plus.m += eps;
             p_minus = p;
             p_minus.m -= eps;
-            g[3] = (svi_objective(project(p_plus), points) - svi_objective(project(p_minus), points))
+            g[3] = (svi_objective(project(p_plus), points)
+                - svi_objective(project(p_minus), points))
                 / (2.0 * eps);
 
             p_plus = p;
             p_plus.sigma += eps;
             p_minus = p;
             p_minus.sigma -= eps;
-            g[4] = (svi_objective(project(p_plus), points) - svi_objective(project(p_minus), points))
+            g[4] = (svi_objective(project(p_plus), points)
+                - svi_objective(project(p_minus), points))
                 / (2.0 * eps);
 
             let grad_norm = (g.iter().map(|v| v * v).sum::<f64>()).sqrt();
@@ -247,7 +255,11 @@ impl VolSurface {
         let t = expiry.clamp(self.expiries[0], self.expiries[self.expiries.len() - 1]);
         let k = (strike / self.forward).ln();
 
-        let ws: Vec<f64> = self.slices.iter().map(|p| p.total_variance(k).max(1e-10)).collect();
+        let ws: Vec<f64> = self
+            .slices
+            .iter()
+            .map(|p| p.total_variance(k).max(1e-10))
+            .collect();
 
         if let Ok(spline) = CubicSpline::new(self.expiries.clone(), ws.clone()) {
             spline.interpolate(t).max(1e-10)

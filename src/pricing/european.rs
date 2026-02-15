@@ -17,7 +17,14 @@ fn d1_d2(s: f64, k: f64, r: f64, sigma: f64, t: f64) -> (f64, f64) {
     (d1, d2)
 }
 
-pub fn black_scholes_price(option_type: OptionType, s: f64, k: f64, r: f64, sigma: f64, t: f64) -> f64 {
+pub fn black_scholes_price(
+    option_type: OptionType,
+    s: f64,
+    k: f64,
+    r: f64,
+    sigma: f64,
+    t: f64,
+) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return match option_type {
             OptionType::Call => (s - k).max(0.0),

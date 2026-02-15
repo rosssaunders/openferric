@@ -20,6 +20,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn bump_and_reprice<P: GenericPricer>(
     pricer: &P,
     s: f64,
@@ -38,9 +39,17 @@ pub fn bump_and_reprice<P: GenericPricer>(
     let v_up = pricer.price(s, k, r, sigma + bump_sigma, t);
     let t_up = pricer.price(s, k, r, sigma, (t + bump_t).max(1e-8));
 
-    (base, s_up, r_up, v_up, t_up, pricer.price(s - bump_s, k, r, sigma, t))
+    (
+        base,
+        s_up,
+        r_up,
+        v_up,
+        t_up,
+        pricer.price(s - bump_s, k, r, sigma, t),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn finite_difference_greeks<P: GenericPricer>(
     pricer: &P,
     s: f64,

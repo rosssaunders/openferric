@@ -184,6 +184,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openferric"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "rand 0.9.2",
+ "rand_distr 0.5.1",
+ "rayon",
+ "statrs",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -325,18 +337,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "rustic-quant"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "rand 0.9.2",
- "rand_distr 0.5.1",
- "rayon",
- "statrs",
 ]
 
 [[package]]

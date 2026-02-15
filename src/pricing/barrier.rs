@@ -1,20 +1,10 @@
+use crate::core::types::OptionType;
+use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
-use crate::pricing::OptionType;
 use crate::pricing::european::black_scholes_price;
-use crate::math::normal_cdf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BarrierDirection {
-    Up,
-    Down,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BarrierStyle {
-    In,
-    Out,
-}
+pub use crate::core::types::{BarrierDirection, BarrierStyle};
 
 fn breached_at_start(s0: f64, barrier: f64, direction: BarrierDirection) -> bool {
     match direction {
@@ -37,7 +27,17 @@ fn vanilla_payoff(option_type: OptionType, s_t: f64, k: f64) -> f64 {
     }
 }
 
-fn rr_out_price(option_type: OptionType, direction: BarrierDirection, s: f64, k: f64, h: f64, r: f64, sigma: f64, t: f64) -> f64 {
+#[allow(clippy::too_many_arguments)]
+fn rr_out_price(
+    option_type: OptionType,
+    direction: BarrierDirection,
+    s: f64,
+    k: f64,
+    h: f64,
+    r: f64,
+    sigma: f64,
+    t: f64,
+) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return vanilla_payoff(option_type, s, k);
     }
@@ -62,27 +62,46 @@ fn rr_out_price(option_type: OptionType, direction: BarrierDirection, s: f64, k:
 
     let a = phi * s * normal_cdf(phi * x1) - phi * k * df * normal_cdf(phi * (x1 - st));
     let b = phi * s * normal_cdf(phi * x2) - phi * k * df * normal_cdf(phi * (x2 - st));
-    let c = phi * s * hs_mu1 * normal_cdf(eta * y1) - phi * k * df * hs_mu * normal_cdf(eta * (y1 - st));
-    let d = phi * s * hs_mu1 * normal_cdf(eta * y2) - phi * k * df * hs_mu * normal_cdf(eta * (y2 - st));
+    let c = phi * s * hs_mu1 * normal_cdf(eta * y1)
+        - phi * k * df * hs_mu * normal_cdf(eta * (y1 - st));
+    let d = phi * s * hs_mu1 * normal_cdf(eta * y2)
+        - phi * k * df * hs_mu * normal_cdf(eta * (y2 - st));
 
     let out = match (direction, option_type) {
         (BarrierDirection::Down, OptionType::Call) => {
-            if k >= h { a - c } else { b - d }
+            if k >= h {
+                a - c
+            } else {
+                b - d
+            }
         }
         (BarrierDirection::Down, OptionType::Put) => {
-            if k >= h { a - b + c - d } else { 0.0 }
+            if k >= h {
+                a - b + c - d
+            } else {
+                0.0
+            }
         }
         (BarrierDirection::Up, OptionType::Call) => {
-            if k >= h { 0.0 } else { a - b + c - d }
+            if k >= h {
+                0.0
+            } else {
+                a - b + c - d
+            }
         }
         (BarrierDirection::Up, OptionType::Put) => {
-            if k >= h { b - d } else { a - c }
+            if k >= h {
+                b - d
+            } else {
+                a - c
+            }
         }
     };
 
     out.max(0.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn barrier_price_closed_form(
     option_type: OptionType,
     style: BarrierStyle,
@@ -111,6 +130,7 @@ pub fn barrier_price_closed_form(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn barrier_price_mc(
     option_type: OptionType,
     style: BarrierStyle,

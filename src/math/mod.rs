@@ -92,7 +92,8 @@ impl CubicSpline {
             let sig = (x[i] - x[i - 1]) / (x[i + 1] - x[i - 1]);
             let p = sig * y2[i - 1] + 2.0;
             y2[i] = (sig - 1.0) / p;
-            let ddydx = (y[i + 1] - y[i]) / (x[i + 1] - x[i]) - (y[i] - y[i - 1]) / (x[i] - x[i - 1]);
+            let ddydx =
+                (y[i + 1] - y[i]) / (x[i + 1] - x[i]) - (y[i] - y[i - 1]) / (x[i] - x[i - 1]);
             u[i] = (6.0 * ddydx / (x[i + 1] - x[i - 1]) - sig * u[i - 1]) / p;
         }
 

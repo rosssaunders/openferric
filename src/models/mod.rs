@@ -50,10 +50,9 @@ impl Heston {
         let zv = z1;
         let zs = self.rho * z1 + (1.0 - self.rho * self.rho).sqrt() * z2;
 
-        let v_next = (v
-            + self.kappa * (self.theta - v_pos) * dt
-            + self.xi * v_pos.sqrt() * sqrt_dt * zv)
-            .max(0.0);
+        let v_next =
+            (v + self.kappa * (self.theta - v_pos) * dt + self.xi * v_pos.sqrt() * sqrt_dt * zv)
+                .max(0.0);
 
         let s_next = s * ((self.mu - 0.5 * v_pos) * dt + v_pos.sqrt() * sqrt_dt * zs).exp();
 

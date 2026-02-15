@@ -11,6 +11,7 @@ fn intrinsic(option_type: OptionType, s: f64, k: f64) -> f64 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn longstaff_schwartz_bermudan(
     option_type: OptionType,
     s0: f64,
@@ -50,7 +51,10 @@ pub fn longstaff_schwartz_bermudan(
         }
     }
 
-    let mut values: Vec<f64> = paths.iter().map(|p| intrinsic(option_type, p[steps], k)).collect();
+    let mut values: Vec<f64> = paths
+        .iter()
+        .map(|p| intrinsic(option_type, p[steps], k))
+        .collect();
 
     for ti in (1..steps).rev() {
         for v in &mut values {

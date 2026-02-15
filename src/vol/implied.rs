@@ -30,6 +30,7 @@ pub fn lets_be_rational_initial_guess(
     scaled.clamp(1e-4, 5.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn implied_vol_newton(
     option_type: OptionType,
     s: f64,

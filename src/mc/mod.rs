@@ -5,6 +5,8 @@ use rand_distr::{Distribution, StandardNormal};
 use rayon::prelude::*;
 use std::sync::Arc;
 
+pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
+
 pub trait PathGenerator: Send + Sync {
     fn steps(&self) -> usize;
     fn generate_from_normals(&self, normals_1: &[f64], normals_2: &[f64]) -> Vec<f64>;
@@ -76,7 +78,7 @@ impl PathGenerator for HestonPathGenerator {
 #[derive(Clone)]
 pub struct ControlVariate {
     pub expected: f64,
-    pub evaluator: Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>,
+    pub evaluator: PathEvaluator,
 }
 
 #[derive(Clone)]
@@ -258,7 +260,11 @@ mod tests {
         let engine = MonteCarloEngine::new(60_000, 42).with_antithetic(true);
 
         let discount = (-r * t).exp();
-        let (price, stderr) = engine.run(&generator, |path| (path[path.len() - 1] - k).max(0.0), discount);
+        let (price, stderr) = engine.run(
+            &generator,
+            |path| (path[path.len() - 1] - k).max(0.0),
+            discount,
+        );
 
         let bs = black_scholes_price(OptionType::Call, s0, k, r, sigma, t);
         assert!((price - bs).abs() <= 2.0 * stderr + 2e-2);
@@ -283,7 +289,11 @@ mod tests {
         let bs = black_scholes_price(OptionType::Call, s0, k, r, sigma, t);
 
         let base = MonteCarloEngine::new(20_000, 123).with_antithetic(false);
-        let (p0, _e0) = base.run(&generator, |path| (path[path.len() - 1] - k).max(0.0), discount);
+        let (p0, _e0) = base.run(
+            &generator,
+            |path| (path[path.len() - 1] - k).max(0.0),
+            discount,
+        );
 
         let cv = ControlVariate {
             expected: s0 * (r * t).exp(),
@@ -292,7 +302,11 @@ mod tests {
         let with_cv = MonteCarloEngine::new(20_000, 123)
             .with_antithetic(false)
             .with_control_variate(cv);
-        let (p1, _e1) = with_cv.run(&generator, |path| (path[path.len() - 1] - k).max(0.0), discount);
+        let (p1, _e1) = with_cv.run(
+            &generator,
+            |path| (path[path.len() - 1] - k).max(0.0),
+            discount,
+        );
 
         assert!((p1 - bs).abs() <= (p0 - bs).abs() + 0.15);
     }
