@@ -825,6 +825,7 @@
           camera: { eye: { x: 1.65, y: 1.25, z: 0.8 } },
         },
         showlegend: false,
+        transition: { duration: 150, easing: 'cubic-in-out' },
       }, { responsive: true, displayModeBar: false });
 
       document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
@@ -926,6 +927,7 @@
         xaxis: { title: 'ln(K/F)', ...axisStyle },
         yaxis: { title: 'IV (%)', ...axisStyle },
         legend: { orientation: 'h', y: 1.02, x: 0.01, font: { size: 9 } },
+        transition: { duration: 120, easing: 'linear' },
       }, { responsive: true, displayModeBar: false });
     }
 
@@ -1095,6 +1097,7 @@
         yaxis2: { title: 'RR/BF', ...axisStyle, overlaying: 'y', side: 'right' },
         legend: { orientation: 'h', y: 1.05, x: 0.01, font: { size: 9 } },
         showlegend: true,
+        transition: { duration: 120, easing: 'linear' },
       }, { responsive: true, displayModeBar: false });
     }
 
