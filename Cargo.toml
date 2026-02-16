@@ -62,3 +62,14 @@ harness = false
 [[bench]]
 name = "fft_bench"
 harness = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
