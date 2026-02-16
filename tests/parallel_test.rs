@@ -1,5 +1,4 @@
 use openferric::math::fast_norm::{beasley_springer_moro_inv_cdf, fast_norm_cdf};
-use statrs::distribution::{ContinuousCDF, Normal};
 
 #[cfg(feature = "parallel")]
 use openferric::engines::monte_carlo::{
@@ -11,23 +10,35 @@ use openferric::instruments::VanillaOption;
 #[cfg(feature = "parallel")]
 use openferric::{core::OptionType, market::Market};
 
+/// NIST reference values for the standard normal CDF.
+const CDF_REFERENCE: &[(f64, f64)] = &[
+    (-3.0, 0.0013498980316300946),
+    (-2.0, 0.02275013194817921),
+    (-1.0, 0.15865525393145702),
+    (-0.5, 0.30853753872598690),
+    (0.0, 0.5),
+    (0.5, 0.69146246127401310),
+    (1.0, 0.84134474606854298),
+    (2.0, 0.97724986805182079),
+    (3.0, 0.99865010196837),
+];
+
 #[test]
-fn fast_norm_cdf_matches_statrs_within_one_e_minus_seven() {
-    let normal = Normal::new(0.0, 1.0).unwrap();
-    for i in -800..=800 {
-        let x = i as f64 / 100.0;
-        let err = (fast_norm_cdf(x) - normal.cdf(x)).abs();
-        assert!(err <= 1.0e-7, "x={x} err={err}");
+fn fast_norm_cdf_matches_nist_within_one_e_minus_seven() {
+    for &(x, expected) in CDF_REFERENCE {
+        let err = (fast_norm_cdf(x) - expected).abs();
+        assert!(err <= 1.0e-7, "x={x} expected={expected} got={} err={err}", fast_norm_cdf(x));
     }
 }
 
 #[test]
-fn bsm_inverse_matches_statrs_within_one_e_minus_six() {
-    let normal = Normal::new(0.0, 1.0).unwrap();
+fn bsm_inverse_round_trips_cdf_within_one_e_minus_six() {
     for i in 1..=999 {
         let p = i as f64 / 1000.0;
-        let err = (beasley_springer_moro_inv_cdf(p) - normal.inverse_cdf(p)).abs();
-        assert!(err <= 1.0e-6, "p={p} err={err}");
+        let x = beasley_springer_moro_inv_cdf(p);
+        let p_back = fast_norm_cdf(x);
+        let err = (p_back - p).abs();
+        assert!(err <= 1.0e-6, "p={p} x={x} p_back={p_back} err={err}");
     }
 }
 

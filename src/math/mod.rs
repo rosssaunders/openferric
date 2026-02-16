@@ -1,6 +1,7 @@
 use std::f64::consts::PI;
 
 pub mod fast_norm;
+pub mod gamma;
 
 pub use fast_norm::{
     beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,

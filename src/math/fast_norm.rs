@@ -104,25 +104,67 @@ pub fn fast_norm_inv_cdf(p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use statrs::distribution::{ContinuousCDF, Normal};
+
+    // Reference values from NIST / Abramowitz & Stegun Table 26.1
+    const CDF_REFERENCE: &[(f64, f64)] = &[
+        (-8.0, 6.22096057427178e-16),
+        (-5.0, 2.8665157187919391e-7),
+        (-4.0, 3.1671241833119979e-5),
+        (-3.0, 0.0013498980316300946),
+        (-2.0, 0.02275013194817921),
+        (-1.0, 0.15865525393145702),
+        (-0.5, 0.30853753872598690),
+        (0.0, 0.5),
+        (0.5, 0.69146246127401310),
+        (1.0, 0.84134474606854298),
+        (2.0, 0.97724986805182079),
+        (3.0, 0.99865010196837),
+        (4.0, 0.99996832875816688),
+        (5.0, 0.99999971334842808),
+        (8.0, 1.0 - 6.22096057427178e-16),
+    ];
 
     #[test]
-    fn fast_cdf_tracks_statrs() {
-        let normal = Normal::new(0.0, 1.0).unwrap();
-        for i in -80..=80 {
-            let x = i as f64 / 10.0;
-            let err = (hart_norm_cdf(x) - normal.cdf(x)).abs();
-            assert!(err < 1.0e-7, "x={x} err={err}");
+    fn fast_cdf_matches_reference_table() {
+        for &(x, expected) in CDF_REFERENCE {
+            let got = hart_norm_cdf(x);
+            let err = (got - expected).abs();
+            assert!(err < 1.0e-7, "x={x} expected={expected} got={got} err={err}");
         }
     }
 
     #[test]
-    fn bsm_inverse_tracks_statrs() {
-        let normal = Normal::new(0.0, 1.0).unwrap();
+    fn cdf_symmetry() {
+        for i in 0..=80 {
+            let x = i as f64 / 10.0;
+            let sum = hart_norm_cdf(x) + hart_norm_cdf(-x);
+            assert!((sum - 1.0).abs() < 1e-12, "x={x} sum={sum}");
+        }
+    }
+
+    #[test]
+    fn inv_cdf_round_trips_cdf() {
         for i in 1..=999 {
             let p = i as f64 / 1000.0;
-            let err = (beasley_springer_moro_inv_cdf(p) - normal.inverse_cdf(p)).abs();
-            assert!(err < 1.0e-6, "p={p} err={err}");
+            let x = beasley_springer_moro_inv_cdf(p);
+            let p_back = hart_norm_cdf(x);
+            assert!(
+                (p_back - p).abs() < 2e-7,
+                "p={p} x={x} p_back={p_back} err={}",
+                (p_back - p).abs()
+            );
         }
+    }
+
+    #[test]
+    fn inv_cdf_known_values() {
+        // Phi^{-1}(0.5) = 0
+        assert!(beasley_springer_moro_inv_cdf(0.5).abs() < 1e-10);
+        // Phi^{-1}(0.841344746...) ≈ 1.0
+        let x = beasley_springer_moro_inv_cdf(0.8413447460685430);
+        assert!((x - 1.0).abs() < 1e-6, "got {x}");
+        // Phi^{-1}(0.977249868...) ≈ 2.0
+        let x = beasley_springer_moro_inv_cdf(0.9772498680518208);
+        assert!((x - 2.0).abs() < 1e-6, "got {x}");
     }
 }

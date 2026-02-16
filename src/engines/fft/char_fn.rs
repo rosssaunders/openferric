@@ -1,5 +1,6 @@
 use num_complex::Complex;
-use statrs::function::gamma::gamma;
+
+use crate::math::gamma::gamma;
 
 /// Characteristic function interface for log-spot models.
 pub trait CharacteristicFunction {
