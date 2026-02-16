@@ -10,6 +10,8 @@ pub mod models;
 #[cfg(feature = "python")]
 pub mod python;
 pub mod rates;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod risk;
 pub mod vol;
 

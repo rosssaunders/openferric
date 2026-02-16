@@ -1,0 +1,1295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BTC Options Vol Terminal</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #070a0f;
+      --panel: #11161f;
+      --border: #263241;
+      --fg: #d8e0ea;
+      --muted: #8ea1b8;
+      --accent: #2fb2ff;
+      --accent2: #19d8a8;
+      --danger: #ff7a7a;
+      --warn: #ffb347;
+      --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      --sans: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      color: var(--fg);
+      font-family: var(--sans);
+      background:
+        radial-gradient(1000px 700px at 12% -20%, #15314f 0%, rgba(21,49,79,0) 60%),
+        radial-gradient(900px 650px at 100% 0%, #0f2d25 0%, rgba(15,45,37,0) 58%),
+        linear-gradient(180deg, #06080c 0%, #070a0f 100%);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ---- Header ---- */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(17,22,31,0.85);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .header-spot {
+      font-family: var(--mono);
+      font-size: 16px;
+      color: var(--accent2);
+      min-width: 110px;
+    }
+    .sparkline-wrap {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .sparkline-wrap svg { display: block; }
+    .status-pill {
+      margin-left: auto;
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .status-pill.connected { color: var(--accent2); border-color: var(--accent2); }
+    .status-pill.connecting { color: var(--warn); border-color: var(--warn); }
+    .status-pill.disconnected { color: var(--danger); border-color: var(--danger); }
+
+    /* ---- Grid ---- */
+    .grid {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      padding: 6px;
+      height: calc(100vh - 44px);
+    }
+    .panel {
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+      flex-shrink: 0;
+    }
+    .panel-title {
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .chart-area {
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ---- Toolbar ---- */
+    .toolbar {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    select, .tab-btn {
+      background: #0d141d;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-family: var(--mono);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+
+    /* ---- Metrics table ---- */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 3px 8px;
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+    .metrics-grid .k { color: var(--muted); }
+    .metrics-grid .v { text-align: right; font-family: var(--mono); }
+    .tbl-wrap {
+      flex: 1;
+      overflow: auto;
+      min-height: 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    th, td {
+      padding: 2px 0;
+      border-bottom: 1px solid rgba(142,161,184,0.12);
+      text-align: right;
+      font-family: var(--mono);
+    }
+    th:first-child, td:first-child {
+      text-align: left;
+      font-family: var(--sans);
+      color: var(--muted);
+    }
+    th { color: var(--muted); font-weight: 500; }
+
+    @media (max-width: 1060px) {
+      .grid {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+        height: auto;
+      }
+      .chart-area { min-height: 260px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- ===== Header ===== -->
+  <div class="header">
+    <div class="header-title">BTC Options Vol Terminal</div>
+    <div class="header-spot" id="hdr-spot">--</div>
+    <div class="sparkline-wrap">
+      spot
+      <svg id="spark-spot" width="80" height="22" viewBox="0 0 80 22"></svg>
+    </div>
+    <div class="sparkline-wrap">
+      ATM vol
+      <svg id="spark-vol" width="80" height="22" viewBox="0 0 80 22"></svg>
+    </div>
+    <div class="status-pill connecting" id="status-pill">connecting...</div>
+  </div>
+
+  <!-- ===== 8-Panel Grid ===== -->
+  <div class="grid">
+    <!-- Row 1, Col 1: 3D Surface -->
+    <div class="panel" style="grid-row: 1;">
+      <div class="panel-head">
+        <div class="panel-title">3D Vol Surface (SVI fit + market)</div>
+        <div class="toolbar">
+          <span id="calib-time" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></span>
+        </div>
+      </div>
+      <div class="chart-area" id="chart-surface"></div>
+    </div>
+
+    <!-- Row 1, Col 2: Vol Change Heatmap -->
+    <div class="panel" style="grid-row: 1;">
+      <div class="panel-head">
+        <div class="panel-title">IV Change Heatmap</div>
+      </div>
+      <div class="chart-area" id="chart-volchange"></div>
+    </div>
+
+    <!-- Row 2, Col 1: Smile Slice -->
+    <div class="panel" style="grid-row: 2;">
+      <div class="panel-head">
+        <div class="panel-title">Smile Slice</div>
+        <div class="toolbar">
+          <label for="expiry-select">expiry</label>
+          <select id="expiry-select"></select>
+        </div>
+      </div>
+      <div class="chart-area" id="chart-smile"></div>
+    </div>
+
+    <!-- Row 2, Col 2: Greeks Heatmap -->
+    <div class="panel" style="grid-row: 2;">
+      <div class="panel-head">
+        <div class="panel-title">Greeks Heatmap</div>
+        <div class="toolbar" id="greeks-tabs">
+          <button class="tab-btn active" data-greek="delta">Delta</button>
+          <button class="tab-btn" data-greek="gamma">Gamma</button>
+          <button class="tab-btn" data-greek="vega">Vega</button>
+          <button class="tab-btn" data-greek="theta">Theta</button>
+        </div>
+      </div>
+      <div class="chart-area" id="chart-greeks"></div>
+    </div>
+
+    <!-- Row 3, Col 1: Term Structure -->
+    <div class="panel" style="grid-row: 3;">
+      <div class="panel-head">
+        <div class="panel-title">Term Structure (ATM + RR25 + BF25)</div>
+      </div>
+      <div class="chart-area" id="chart-term"></div>
+    </div>
+
+    <!-- Row 3, Col 2: Metrics & Skew Table + Surface Diff note -->
+    <div class="panel" style="grid-row: 3;">
+      <div class="panel-head">
+        <div class="panel-title">Metrics &amp; Skew</div>
+      </div>
+      <div class="metrics-grid">
+        <div class="k">spot</div><div class="v" id="m-spot">--</div>
+        <div class="k">options</div><div class="v" id="m-options">--</div>
+        <div class="k">expiries</div><div class="v" id="m-expiries">--</div>
+        <div class="k">ticks/sec</div><div class="v" id="m-tps">--</div>
+        <div class="k">calib (us)</div><div class="v" id="m-calib">--</div>
+        <div class="k">realized vol</div><div class="v" id="m-rvol">--</div>
+      </div>
+      <div class="tbl-wrap">
+        <table id="skew-table">
+          <thead>
+            <tr><th>expiry</th><th>ATM</th><th>RMSE</th><th>skew</th><th>kurt</th><th>RR25</th><th>BF25</th><th>n</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // =====================================================================
+    //  WASM loader
+    // =====================================================================
+    let wasmReady = false;
+    let wasm = null;
+    async function loadWasm() {
+      try {
+        const mod = await import('./pkg/openferric.js');
+        await mod.default();
+        wasm = mod;
+        wasmReady = true;
+        console.log('[wasm] loaded');
+      } catch (e) {
+        console.warn('[wasm] load failed, running JS-only fallback:', e.message);
+      }
+    }
+    loadWasm();
+
+    // =====================================================================
+    //  Plotly common layout helpers
+    // =====================================================================
+    const darkLayout = {
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { color: '#d8e0ea', family: 'IBM Plex Sans, sans-serif', size: 10 },
+    };
+    const axisStyle = { gridcolor: '#1e2d3d', zerolinecolor: '#1e2d3d', color: '#8ea1b8' };
+    const pFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
+    const pFmt1 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
+
+    // =====================================================================
+    //  Deribit protocol helpers
+    // =====================================================================
+    const MONTHS = { JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12 };
+
+    function parseDeribitExpiry(code) {
+      if (code.length !== 7) return null;
+      const day = parseInt(code.slice(0, 2), 10);
+      const mon = MONTHS[code.slice(2, 5)];
+      const yr = 2000 + parseInt(code.slice(5, 7), 10);
+      if (!mon || isNaN(day) || isNaN(yr)) return null;
+      return new Date(Date.UTC(yr, mon - 1, day, 8, 0, 0));
+    }
+
+    function parseInstrumentName(name) {
+      const p = name.split('-');
+      if (p.length !== 4) return null;
+      const expDate = parseDeribitExpiry(p[1]);
+      if (!expDate) return null;
+      const strike = parseFloat(p[2]);
+      if (isNaN(strike)) return null;
+      const isCall = p[3] === 'C';
+      if (p[3] !== 'C' && p[3] !== 'P') return null;
+      return { expiry: p[1], expiryDate: expDate, strike, isCall };
+    }
+
+    function normalizeIv(raw) {
+      if (!isFinite(raw) || raw <= 0) return NaN;
+      return raw > 3.0 ? raw / 100.0 : raw;
+    }
+
+    // =====================================================================
+    //  Market State
+    // =====================================================================
+    const chain = new Map(); // instrument_name -> quote object
+    let spotPrice = 0;
+    let dirty = false;
+    let tickCount = 0;
+    let tickWindowStart = performance.now();
+    let ticksPerSec = 0;
+
+    // Previous IV snapshot for vol-change heatmap
+    let prevIvMap = new Map(); // "expiry|strike" -> iv
+
+    // Session baseline for surface diff
+    let baselineSurface = null;
+
+    // Circular buffers for sparklines
+    const SPARK_LEN = 100;
+    const spotHistory = [];
+    const atmVolHistory = [];
+
+    // Spot log returns for realized vol
+    const spotLogReturns = [];
+
+    function noteQuote(name, q) {
+      chain.set(name, q);
+      dirty = true;
+      tickCount++;
+    }
+
+    function refreshTps() {
+      const elapsed = (performance.now() - tickWindowStart) / 1000;
+      if (elapsed >= 1.0) {
+        ticksPerSec = tickCount / elapsed;
+        tickCount = 0;
+        tickWindowStart = performance.now();
+      }
+    }
+
+    // =====================================================================
+    //  SVI (JS fallback when WASM unavailable)
+    // =====================================================================
+    function sviTotalVariance(p, k) {
+      const x = k - p.m;
+      return p.a + p.b * (p.rho * x + Math.sqrt(x * x + p.sigma * p.sigma));
+    }
+
+    function sviDwDk(p, k) {
+      const x = k - p.m;
+      return p.b * (p.rho + x / Math.sqrt(x * x + p.sigma * p.sigma));
+    }
+
+    function sviIvPct(p, k, t) {
+      if (!p || !isFinite(t) || t <= 0) return NaN;
+      const w = sviTotalVariance(p, k);
+      return Math.sqrt(Math.max(w, 1e-12) / t) * 100;
+    }
+
+    // =====================================================================
+    //  Calibration (per-expiry)
+    // =====================================================================
+    let calibrationScheduled = false;
+    let lastCalibTime = 0;
+    let calibTimeUs = 0;
+    let calibratedSlices = []; // sorted by T
+    let activeExpiry = '';
+    let activeGreek = 'delta';
+
+    function scheduleCalibration() {
+      if (calibrationScheduled) return;
+      calibrationScheduled = true;
+      setTimeout(runCalibration, 200);
+    }
+
+    function runCalibration() {
+      calibrationScheduled = false;
+      if (!dirty) return;
+      dirty = false;
+
+      const now = Date.now();
+      const nowSec = now / 1000;
+      const t0 = performance.now();
+
+      // Group by expiry code
+      const grouped = new Map();
+      for (const [, q] of chain) {
+        if (q.mark_iv <= 0 || q.strike <= 0) continue;
+        const key = q.expiryCode;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(q);
+      }
+
+      const slices = [];
+      for (const [expiryCode, quotes] of grouped) {
+        if (quotes.length < 5) continue;
+
+        const expiryDate = parseDeribitExpiry(expiryCode);
+        if (!expiryDate) continue;
+        const T = (expiryDate.getTime() / 1000 - nowSec) / (365.25 * 24 * 3600);
+        if (T <= 0) continue;
+
+        const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
+        if (!isFinite(forward) || forward <= 0) continue;
+
+        // Build (k, w) pairs
+        const points = [];
+        const qByK = [];
+        for (const q of quotes) {
+          const k = Math.log(q.strike / forward);
+          const w = q.mark_iv * q.mark_iv * T;
+          points.push(k, w);
+          qByK.push({ k, q });
+        }
+
+        // ATM vol (closest to k=0)
+        let atmVol = 0;
+        let minAbsK = Infinity;
+        for (const { k, q } of qByK) {
+          if (Math.abs(k) < minAbsK) {
+            minAbsK = Math.abs(k);
+            atmVol = q.mark_iv;
+          }
+        }
+
+        const atmW = Math.max(atmVol * atmVol * T, 1e-6);
+        const initA = atmW * 0.4;
+        const initB = atmW * 0.8;
+        const initRho = -0.2;
+        const initM = 0.0;
+        const initSigma = 0.25;
+
+        let params;
+        if (wasmReady) {
+          const flat = new Float64Array(points);
+          const wp = wasm.calibrate_svi_wasm(flat, initA, initB, initRho, initM, initSigma, 600, 0.01);
+          params = { a: wp.a, b: wp.b, rho: wp.rho, m: wp.m, sigma: wp.sigma };
+        } else {
+          params = calibrateSviFallback(points, initA, initB, initRho, initM, initSigma, 600, 0.01);
+        }
+
+        // Compute RMSE and slice points
+        let errSq = 0;
+        const slicePoints = [];
+        for (const { k, q } of qByK) {
+          const fittedIv = Math.sqrt(Math.max(sviTotalVariance(params, k), 1e-12) / T);
+          const err = (fittedIv - q.mark_iv) * 100;
+          errSq += err * err;
+          slicePoints.push({
+            strike: q.strike,
+            market_iv: q.mark_iv * 100,
+            fitted_iv: fittedIv * 100,
+            bid_iv: (q.bid_iv || 0) * 100,
+            ask_iv: (q.ask_iv || 0) * 100,
+          });
+        }
+        slicePoints.sort((a, b) => a.strike - b.strike);
+        const rmse = Math.sqrt(errSq / qByK.length);
+
+        // Skew / kurtosis proxy
+        const skew = sviDwDk(params, 0);
+        const eps = 0.001;
+        const dw1 = sviDwDk(params, eps);
+        const dw0 = sviDwDk(params, -eps);
+        const kurtProxy = (dw1 - dw0) / (2 * eps);
+
+        slices.push({
+          expiryCode,
+          expiryLabel: expiryCode,
+          T,
+          params,
+          rmse,
+          n: qByK.length,
+          atmVol: atmVol * 100,
+          points: slicePoints,
+          forward,
+          skew,
+          kurtProxy,
+        });
+      }
+
+      slices.sort((a, b) => a.T - b.T);
+      calibratedSlices = slices;
+
+      calibTimeUs = Math.round((performance.now() - t0) * 1000);
+
+      // Save previous IVs for heatmap diff
+      const newIvMap = new Map();
+      for (const sl of slices) {
+        for (const pt of sl.points) {
+          newIvMap.set(sl.expiryCode + '|' + pt.strike, pt.market_iv);
+        }
+      }
+
+      // If first calibration, set baseline
+      if (!baselineSurface) {
+        baselineSurface = slices.map(s => ({
+          expiryCode: s.expiryCode,
+          T: s.T,
+          params: { ...s.params },
+        }));
+      }
+
+      // Update sparklines
+      if (spotPrice > 0) {
+        if (spotHistory.length > 0) {
+          const prevSpot = spotHistory[spotHistory.length - 1];
+          if (prevSpot > 0) {
+            spotLogReturns.push(Math.log(spotPrice / prevSpot));
+            if (spotLogReturns.length > 500) spotLogReturns.shift();
+          }
+        }
+        spotHistory.push(spotPrice);
+        if (spotHistory.length > SPARK_LEN) spotHistory.shift();
+      }
+      const globalAtm = slices.length > 0 ? slices[0].atmVol : NaN;
+      if (isFinite(globalAtm)) {
+        atmVolHistory.push(globalAtm);
+        if (atmVolHistory.length > SPARK_LEN) atmVolHistory.shift();
+      }
+
+      prevIvMap = newIvMap;
+
+      // Render everything
+      requestAnimationFrame(() => {
+        renderAll();
+      });
+    }
+
+    // JS fallback calibration (simple gradient descent — same multi-start as Rust)
+    function calibrateSviFallback(flatPoints, initA, initB, initRho, initM, initSigma, maxIter, lr) {
+      const n = flatPoints.length / 2;
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        pts.push([flatPoints[i*2], flatPoints[i*2+1]]);
+      }
+
+      function project(p) {
+        return {
+          a: Math.max(p.a, 1e-8),
+          b: Math.max(p.b, 1e-8),
+          rho: Math.max(-0.999, Math.min(0.999, p.rho)),
+          m: p.m,
+          sigma: Math.max(p.sigma, 1e-6),
+        };
+      }
+
+      function obj(p) {
+        let s = 0;
+        for (const [k, w] of pts) {
+          const err = sviTotalVariance(p, k) - w;
+          s += err * err;
+        }
+        return s;
+      }
+
+      const init = project({ a: initA, b: initB, rho: initRho, m: initM, sigma: initSigma });
+      const starts = [
+        init,
+        project({ a: initA*0.7, b: initB*1.2, rho: initRho*0.5, m: initM-0.1, sigma: initSigma*0.8 }),
+        project({ a: initA*1.3, b: initB*0.8, rho: Math.max(-0.9,Math.min(0.9,initRho+0.2)), m: initM+0.1, sigma: initSigma*1.2 }),
+      ];
+
+      let best = init;
+      let bestObj = obj(best);
+      const eps = 1e-5;
+      const fields = ['a','b','rho','m','sigma'];
+
+      for (const start of starts) {
+        let p = project(start);
+        let pObj = obj(p);
+        let curLr = Math.max(lr, 1e-6);
+
+        for (let iter = 0; iter < maxIter; iter++) {
+          const g = [];
+          for (const f of fields) {
+            const pp = { ...p }; pp[f] += eps;
+            const pm = { ...p }; pm[f] -= eps;
+            g.push((obj(project(pp)) - obj(project(pm))) / (2 * eps));
+          }
+
+          const gNorm = Math.sqrt(g.reduce((s, v) => s + v*v, 0));
+          if (gNorm < 1e-12) break;
+
+          let improved = false;
+          let trialLr = curLr;
+          for (let j = 0; j < 12; j++) {
+            const cand = project({
+              a: p.a - trialLr * g[0],
+              b: p.b - trialLr * g[1],
+              rho: p.rho - trialLr * g[2],
+              m: p.m - trialLr * g[3],
+              sigma: p.sigma - trialLr * g[4],
+            });
+            const candObj = obj(cand);
+            if (candObj < pObj) {
+              p = cand;
+              pObj = candObj;
+              curLr = trialLr * 1.1;
+              improved = true;
+              break;
+            }
+            trialLr *= 0.5;
+          }
+          if (!improved) {
+            curLr *= 0.5;
+            if (curLr < 1e-10) break;
+          }
+        }
+
+        if (pObj < bestObj) {
+          best = p;
+          bestObj = pObj;
+        }
+      }
+      return best;
+    }
+
+    // =====================================================================
+    //  25-delta strike finder (Newton's method)
+    // =====================================================================
+    function find25DeltaStrikes(params, T, forward, spot) {
+      // Find strikes where |BSM delta| = 0.25
+      // For calls: delta = N(d1) = 0.25 => d1 = norminv(0.25) ~ -0.6745
+      // For puts: delta = N(d1) - 1 = -0.25 => d1 = norminv(0.75) ~ 0.6745
+      // d1 = (-k + 0.5*sigma^2*T) / (sigma*sqrt(T))  where sigma = IV(k)
+      if (T <= 0 || forward <= 0) return { call25: NaN, put25: NaN };
+
+      const sqrtT = Math.sqrt(T);
+      // Target d1 for 25-delta call and put
+      const d1Call = -0.6745;
+      const d1Put = 0.6745;
+
+      function solveK(targetD1) {
+        let k = 0; // start ATM
+        for (let i = 0; i < 20; i++) {
+          const ivPct = sviIvPct(params, k, T);
+          if (!isFinite(ivPct) || ivPct <= 0) return NaN;
+          const sigma = ivPct / 100;
+          const d1 = (-k + 0.5 * sigma * sigma * T) / (sigma * sqrtT);
+          const err = d1 - targetD1;
+          // Finite difference for derivative
+          const dk = 0.001;
+          const ivPctP = sviIvPct(params, k + dk, T);
+          if (!isFinite(ivPctP) || ivPctP <= 0) return NaN;
+          const sigmaP = ivPctP / 100;
+          const d1p = (-(k + dk) + 0.5 * sigmaP * sigmaP * T) / (sigmaP * sqrtT);
+          const deriv = (d1p - d1) / dk;
+          if (Math.abs(deriv) < 1e-12) break;
+          k -= err / deriv;
+          if (Math.abs(err) < 1e-6) break;
+        }
+        return k;
+      }
+
+      const kCall = solveK(d1Call);
+      const kPut = solveK(d1Put);
+
+      return {
+        call25K: kCall,
+        put25K: kPut,
+        call25Iv: sviIvPct(params, kCall, T),
+        put25Iv: sviIvPct(params, kPut, T),
+      };
+    }
+
+    // =====================================================================
+    //  Sparkline SVG renderer
+    // =====================================================================
+    function renderSparkline(svgEl, data, color) {
+      if (data.length < 2) { svgEl.innerHTML = ''; return; }
+      const w = 80, h = 22, pad = 2;
+      let min = Infinity, max = -Infinity;
+      for (const v of data) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      if (max - min < 1e-10) { max = min + 1; }
+      const pts = data.map((v, i) => {
+        const x = pad + (i / (data.length - 1)) * (w - 2 * pad);
+        const y = h - pad - ((v - min) / (max - min)) * (h - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      svgEl.innerHTML = `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round"/>`;
+    }
+
+    // =====================================================================
+    //  Realized Vol
+    // =====================================================================
+    function computeRealizedVol() {
+      if (spotLogReturns.length < 2) return NaN;
+      const n = spotLogReturns.length;
+      const mean = spotLogReturns.reduce((s, v) => s + v, 0) / n;
+      const variance = spotLogReturns.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1);
+      // Annualize: assume each observation is ~200ms apart (calibration interval)
+      // ~5 per second, ~432000 per day, ~365.25 days
+      const obsPerYear = 5 * 86400 * 365.25;
+      return Math.sqrt(variance * obsPerYear) * 100;
+    }
+
+    // =====================================================================
+    //  Renderers
+    // =====================================================================
+
+    function renderAll() {
+      refreshTps();
+      renderHeader();
+      renderSurface();
+      renderVolChange();
+      renderSmile();
+      renderGreeks();
+      renderTerm();
+      renderMetrics();
+    }
+
+    function renderHeader() {
+      document.getElementById('hdr-spot').textContent = spotPrice > 0 ? '$' + pFmt.format(spotPrice) : '--';
+      renderSparkline(document.getElementById('spark-spot'), spotHistory, '#2fb2ff');
+      renderSparkline(document.getElementById('spark-vol'), atmVolHistory, '#19d8a8');
+    }
+
+    // --- 3D Surface ---
+    function renderSurface() {
+      const div = document.getElementById('chart-surface');
+      if (calibratedSlices.length === 0) return;
+
+      const marketX = [], marketY = [], marketZ = [];
+      for (const sl of calibratedSlices) {
+        for (const pt of sl.points) {
+          if (pt.strike <= 0 || sl.forward <= 0) continue;
+          marketX.push(Math.log(pt.strike / sl.forward));
+          marketY.push(sl.T);
+          marketZ.push(pt.market_iv);
+        }
+      }
+
+      let kMin = -0.45, kMax = 0.45;
+      if (marketX.length > 0) {
+        kMin = Math.min(...marketX);
+        kMax = Math.max(...marketX);
+        if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
+      }
+
+      const gridN = 40;
+      const kGrid = [];
+      for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
+      const tGrid = calibratedSlices.map(s => s.T);
+      const zGrid = calibratedSlices.map(s => kGrid.map(k => sviIvPct(s.params, k, s.T)));
+
+      const traces = [
+        {
+          type: 'surface', name: 'SVI fit', x: kGrid, y: tGrid, z: zGrid,
+          opacity: 0.82, showscale: false,
+          colorscale: [[0,'#144f83'],[0.5,'#1e8ac8'],[1,'#39dba7']],
+        },
+        {
+          type: 'scatter3d', mode: 'markers', name: 'Market',
+          x: marketX, y: marketY, z: marketZ,
+          marker: { size: 2.2, color: '#d8e0ea', opacity: 0.85 },
+        },
+      ];
+
+      // Surface diff from baseline
+      if (baselineSurface && baselineSurface.length > 0) {
+        const diffZ = calibratedSlices.map((sl, idx) => {
+          const base = baselineSurface.find(b => b.expiryCode === sl.expiryCode);
+          if (!base) return kGrid.map(() => 0);
+          return kGrid.map(k => sviIvPct(sl.params, k, sl.T) - sviIvPct(base.params, k, base.T));
+        });
+        traces.push({
+          type: 'surface', name: 'Session diff', x: kGrid, y: tGrid, z: diffZ,
+          opacity: 0.45, showscale: false,
+          colorscale: [[0,'#ff4444'],[0.5,'#333333'],[1,'#44ff44']],
+        });
+      }
+
+      Plotly.react(div, traces, {
+        ...darkLayout,
+        margin: { l: 0, r: 0, b: 0, t: 0 },
+        scene: {
+          xaxis: { title: 'ln(K/F)', ...axisStyle },
+          yaxis: { title: 'T (yr)', ...axisStyle },
+          zaxis: { title: 'IV (%)', ...axisStyle },
+          camera: { eye: { x: 1.65, y: 1.25, z: 0.8 } },
+        },
+        showlegend: false,
+      }, { responsive: true, displayModeBar: false });
+
+      document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
+    }
+
+    // --- Vol Change Heatmap ---
+    function renderVolChange() {
+      const div = document.getElementById('chart-volchange');
+      if (calibratedSlices.length === 0) return;
+
+      const expLabels = [];
+      const strikeSet = new Set();
+      for (const sl of calibratedSlices) {
+        expLabels.push(sl.expiryLabel);
+        for (const pt of sl.points) strikeSet.add(pt.strike);
+      }
+      const strikes = [...strikeSet].sort((a, b) => a - b);
+      // Subsample if too many strikes
+      const maxStrikes = 30;
+      const step = strikes.length > maxStrikes ? Math.ceil(strikes.length / maxStrikes) : 1;
+      const sampledStrikes = strikes.filter((_, i) => i % step === 0);
+
+      const z = [];
+      for (const sl of calibratedSlices) {
+        const row = [];
+        const ptMap = new Map();
+        for (const pt of sl.points) ptMap.set(pt.strike, pt.market_iv);
+        for (const strike of sampledStrikes) {
+          const curIv = ptMap.get(strike);
+          const prevIv = prevIvMap.get(sl.expiryCode + '|' + strike);
+          if (curIv !== undefined && prevIv !== undefined) {
+            row.push(curIv - prevIv);
+          } else {
+            row.push(0);
+          }
+        }
+        z.push(row);
+      }
+
+      Plotly.react(div, [{
+        type: 'heatmap', x: sampledStrikes.map(s => pFmt.format(s)),
+        y: expLabels, z, colorscale: [[0,'#2255bb'],[0.5,'#1a1a2e'],[1,'#bb2222']],
+        showscale: true, colorbar: { title: 'IV chg', titleside: 'right', thickness: 10, len: 0.6 },
+        zmin: -2, zmax: 2,
+      }], {
+        ...darkLayout,
+        margin: { l: 60, r: 50, b: 40, t: 6 },
+        xaxis: { title: 'Strike', ...axisStyle, tickangle: -45 },
+        yaxis: { title: '', ...axisStyle },
+      }, { responsive: true, displayModeBar: false });
+    }
+
+    // --- Smile Slice ---
+    function renderSmile() {
+      const div = document.getElementById('chart-smile');
+      ensureExpirySelection();
+      if (!activeExpiry || calibratedSlices.length === 0) return;
+
+      const slice = calibratedSlices.find(s => s.expiryCode === activeExpiry);
+      if (!slice) return;
+
+      const pts = slice.points;
+      const x = pts.map(p => Math.log(p.strike / slice.forward));
+      const marketIv = pts.map(p => p.market_iv);
+      const fittedIv = pts.map(p => p.fitted_iv);
+      const bidIv = pts.map(p => p.bid_iv);
+      const askIv = pts.map(p => p.ask_iv);
+
+      const traces = [];
+
+      // Bid-ask ribbon (only if we have valid bid/ask)
+      const hasBidAsk = bidIv.some(v => v > 0) && askIv.some(v => v > 0);
+      if (hasBidAsk) {
+        traces.push({
+          type: 'scatter', mode: 'lines', name: 'bid IV', x, y: bidIv,
+          line: { color: 'rgba(47,178,255,0.3)', width: 0 },
+          showlegend: false,
+        });
+        traces.push({
+          type: 'scatter', mode: 'lines', name: 'ask IV', x, y: askIv,
+          line: { color: 'rgba(47,178,255,0.3)', width: 0 },
+          fill: 'tonexty', fillcolor: 'rgba(47,178,255,0.12)',
+          showlegend: false,
+        });
+      }
+
+      traces.push({
+        type: 'scatter', mode: 'markers', name: 'market', x, y: marketIv,
+        marker: { color: '#d8e0ea', size: 4.5 },
+      });
+      traces.push({
+        type: 'scatter', mode: 'lines', name: 'fitted', x, y: fittedIv,
+        line: { color: '#19d8a8', width: 2 },
+      });
+
+      Plotly.react(div, traces, {
+        ...darkLayout,
+        margin: { l: 40, r: 8, b: 30, t: 6 },
+        xaxis: { title: 'ln(K/F)', ...axisStyle },
+        yaxis: { title: 'IV (%)', ...axisStyle },
+        legend: { orientation: 'h', y: 1.02, x: 0.01, font: { size: 9 } },
+      }, { responsive: true, displayModeBar: false });
+    }
+
+    function ensureExpirySelection() {
+      const sel = document.getElementById('expiry-select');
+      const expiries = calibratedSlices.map(s => s.expiryCode);
+      const prev = activeExpiry;
+      sel.innerHTML = '';
+      for (const e of expiries) {
+        const opt = document.createElement('option');
+        opt.value = e; opt.textContent = e;
+        sel.appendChild(opt);
+      }
+      if (expiries.length === 0) { activeExpiry = ''; return; }
+      activeExpiry = (prev && expiries.includes(prev)) ? prev : expiries[0];
+      sel.value = activeExpiry;
+    }
+
+    document.getElementById('expiry-select').addEventListener('change', (e) => {
+      activeExpiry = e.target.value;
+      renderSmile();
+    });
+
+    // --- Greeks Heatmap ---
+    function renderGreeks() {
+      const div = document.getElementById('chart-greeks');
+      if (calibratedSlices.length === 0 || spotPrice <= 0) return;
+
+      // Pick a subset of strikes and expiries
+      const expLabels = calibratedSlices.map(s => s.expiryLabel);
+      const allStrikes = new Set();
+      for (const sl of calibratedSlices) {
+        for (const pt of sl.points) allStrikes.add(pt.strike);
+      }
+      const strikes = [...allStrikes].sort((a, b) => a - b);
+      const maxS = 20;
+      const step = strikes.length > maxS ? Math.ceil(strikes.length / maxS) : 1;
+      const sampledStrikes = strikes.filter((_, i) => i % step === 0);
+
+      const greekIdx = { delta: 0, gamma: 1, vega: 2, theta: 3 }[activeGreek] ?? 0;
+
+      const z = [];
+      for (const sl of calibratedSlices) {
+        const row = [];
+        for (const strike of sampledStrikes) {
+          const iv = sviIvPct(sl.params, Math.log(strike / sl.forward), sl.T);
+          if (!isFinite(iv) || iv <= 0 || sl.T <= 0) { row.push(0); continue; }
+
+          if (wasmReady) {
+            const greeks = wasm.bsm_greeks_wasm(spotPrice, strike, 0.05, 0.0, iv / 100, sl.T, true);
+            row.push(greeks[greekIdx]);
+          } else {
+            // Simple BSM delta fallback
+            const sigma = iv / 100;
+            const sqrtT = Math.sqrt(sl.T);
+            const d1 = (Math.log(spotPrice / strike) + (0.05 + 0.5*sigma*sigma)*sl.T) / (sigma*sqrtT);
+            const nd1 = 0.5 * (1 + erf(d1 / Math.sqrt(2)));
+            const npdf = Math.exp(-d1*d1/2) / Math.sqrt(2*Math.PI);
+            if (activeGreek === 'delta') row.push(nd1);
+            else if (activeGreek === 'gamma') row.push(npdf / (spotPrice * sigma * sqrtT));
+            else if (activeGreek === 'vega') row.push(spotPrice * npdf * sqrtT);
+            else row.push(-spotPrice * npdf * sigma / (2*sqrtT));
+          }
+        }
+        z.push(row);
+      }
+
+      const colorscales = {
+        delta: [[0,'#0d2847'],[0.5,'#1a3a5c'],[1,'#2fb2ff']],
+        gamma: [[0,'#0d2820'],[0.5,'#1a5c3a'],[1,'#19d8a8']],
+        vega:  [[0,'#28200d'],[0.5,'#5c4a1a'],[1,'#ffb347']],
+        theta: [[0,'#280d0d'],[0.5,'#5c1a1a'],[1,'#ff7a7a']],
+      };
+
+      Plotly.react(div, [{
+        type: 'heatmap',
+        x: sampledStrikes.map(s => pFmt.format(s)),
+        y: expLabels, z,
+        colorscale: colorscales[activeGreek] || colorscales.delta,
+        showscale: true,
+        colorbar: { title: activeGreek, titleside: 'right', thickness: 10, len: 0.6 },
+      }], {
+        ...darkLayout,
+        margin: { l: 60, r: 50, b: 40, t: 6 },
+        xaxis: { title: 'Strike', ...axisStyle, tickangle: -45 },
+        yaxis: { title: '', ...axisStyle },
+      }, { responsive: true, displayModeBar: false });
+    }
+
+    // erf approximation for JS fallback
+    function erf(x) {
+      const a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429;
+      const p=0.3275911;
+      const sign = x < 0 ? -1 : 1;
+      x = Math.abs(x);
+      const t = 1.0 / (1.0 + p * x);
+      const y = 1.0 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+      return sign * y;
+    }
+
+    // Greeks tab switching
+    document.getElementById('greeks-tabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+      document.querySelectorAll('#greeks-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeGreek = btn.dataset.greek;
+      renderGreeks();
+    });
+
+    // --- Term Structure ---
+    function renderTerm() {
+      const div = document.getElementById('chart-term');
+      if (calibratedSlices.length === 0) return;
+
+      const expLabels = calibratedSlices.map(s => s.expiryLabel);
+      const atmVols = calibratedSlices.map(s => s.atmVol);
+
+      const traces = [{
+        type: 'scatter', mode: 'lines+markers', name: 'ATM IV',
+        x: expLabels, y: atmVols,
+        line: { color: '#2fb2ff', width: 2 },
+        marker: { color: '#2fb2ff', size: 5 },
+      }];
+
+      // 25-delta RR and BF
+      const rr25 = [], bf25 = [];
+      for (const sl of calibratedSlices) {
+        const d = find25DeltaStrikes(sl.params, sl.T, sl.forward, spotPrice);
+        if (isFinite(d.call25Iv) && isFinite(d.put25Iv)) {
+          rr25.push(d.call25Iv - d.put25Iv);
+          bf25.push(0.5 * (d.call25Iv + d.put25Iv) - sviIvPct(sl.params, 0, sl.T));
+        } else {
+          rr25.push(NaN);
+          bf25.push(NaN);
+        }
+      }
+
+      traces.push({
+        type: 'scatter', mode: 'lines+markers', name: 'RR25',
+        x: expLabels, y: rr25, yaxis: 'y2',
+        line: { color: '#ff7a7a', width: 1.5, dash: 'dot' },
+        marker: { size: 4 },
+      });
+      traces.push({
+        type: 'scatter', mode: 'lines+markers', name: 'BF25',
+        x: expLabels, y: bf25, yaxis: 'y2',
+        line: { color: '#ffb347', width: 1.5, dash: 'dot' },
+        marker: { size: 4 },
+      });
+
+      // Realized vol horizontal line
+      const rvol = computeRealizedVol();
+      if (isFinite(rvol) && rvol > 0) {
+        traces.push({
+          type: 'scatter', mode: 'lines', name: 'Realized',
+          x: [expLabels[0], expLabels[expLabels.length - 1]], y: [rvol, rvol],
+          line: { color: '#888', width: 1, dash: 'dash' },
+        });
+      }
+
+      Plotly.react(div, traces, {
+        ...darkLayout,
+        margin: { l: 40, r: 50, b: 30, t: 6 },
+        xaxis: { title: '', ...axisStyle },
+        yaxis: { title: 'ATM IV (%)', ...axisStyle },
+        yaxis2: { title: 'RR/BF', ...axisStyle, overlaying: 'y', side: 'right' },
+        legend: { orientation: 'h', y: 1.05, x: 0.01, font: { size: 9 } },
+        showlegend: true,
+      }, { responsive: true, displayModeBar: false });
+    }
+
+    // --- Metrics & Skew Table ---
+    function renderMetrics() {
+      document.getElementById('m-spot').textContent = spotPrice > 0 ? pFmt.format(spotPrice) : '--';
+      document.getElementById('m-options').textContent = chain.size || '--';
+      document.getElementById('m-expiries').textContent = calibratedSlices.length || '--';
+      document.getElementById('m-tps').textContent = ticksPerSec > 0 ? pFmt1.format(ticksPerSec) : '--';
+      document.getElementById('m-calib').textContent = calibTimeUs > 0 ? calibTimeUs.toString() : '--';
+
+      const rvol = computeRealizedVol();
+      document.getElementById('m-rvol').textContent = isFinite(rvol) ? pFmt1.format(rvol) + '%' : '--';
+
+      const tbody = document.querySelector('#skew-table tbody');
+      tbody.innerHTML = '';
+      for (const sl of calibratedSlices) {
+        const d = find25DeltaStrikes(sl.params, sl.T, sl.forward, spotPrice);
+        const rr25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (d.call25Iv - d.put25Iv) : NaN;
+        const bf25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (0.5*(d.call25Iv+d.put25Iv) - sviIvPct(sl.params, 0, sl.T)) : NaN;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${sl.expiryLabel}</td>`
+          + `<td>${pFmt1.format(sl.atmVol)}</td>`
+          + `<td>${pFmt.format(sl.rmse)}</td>`
+          + `<td>${sl.skew.toFixed(4)}</td>`
+          + `<td>${sl.kurtProxy.toFixed(4)}</td>`
+          + `<td>${isFinite(rr25) ? pFmt1.format(rr25) : '-'}</td>`
+          + `<td>${isFinite(bf25) ? pFmt1.format(bf25) : '-'}</td>`
+          + `<td>${sl.n}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // =====================================================================
+    //  Deribit Connection (REST seed + WebSocket stream)
+    // =====================================================================
+    const DERIBIT_REST = 'https://www.deribit.com/api/v2/public';
+    const DERIBIT_WS = 'wss://www.deribit.com/ws/api/v2';
+
+    const statusPill = document.getElementById('status-pill');
+    function setStatus(state, text) {
+      statusPill.className = 'status-pill ' + state;
+      statusPill.textContent = text;
+    }
+
+    async function seedFromRest() {
+      try {
+        setStatus('connecting', 'seeding...');
+
+        const [bookResp, indexResp] = await Promise.all([
+          fetch(`${DERIBIT_REST}/get_book_summary_by_currency?currency=BTC&kind=option`),
+          fetch(`${DERIBIT_REST}/get_index_price?index_name=btc_usd`),
+        ]);
+
+        const bookData = await bookResp.json();
+        const indexData = await indexResp.json();
+
+        if (indexData.result && indexData.result.index_price) {
+          spotPrice = indexData.result.index_price;
+        }
+
+        const entries = bookData.result || [];
+        let count = 0;
+        for (const entry of entries) {
+          const name = entry.instrument_name;
+          if (!name) continue;
+          const parsed = parseInstrumentName(name);
+          if (!parsed) continue;
+
+          const markIv = normalizeIv(entry.mark_iv || entry.iv || 0);
+          if (isNaN(markIv) || markIv <= 0) continue;
+
+          const underlying = (entry.underlying_price || entry.index_price || spotPrice);
+          noteQuote(name, {
+            strike: parsed.strike,
+            expiryCode: parsed.expiry,
+            expiryDate: parsed.expiryDate,
+            isCall: parsed.isCall,
+            mark_price: Math.max(entry.mark_price || 0, 0),
+            mark_iv: markIv,
+            underlying_price: underlying > 0 ? underlying : spotPrice,
+            bid_iv: normalizeIv(entry.bid_iv || 0) || 0,
+            ask_iv: normalizeIv(entry.ask_iv || 0) || 0,
+            open_interest: Math.max(entry.open_interest || 0, 0),
+          });
+          count++;
+        }
+        console.log(`[rest] seeded ${count} options, spot=${spotPrice}`);
+        scheduleCalibration();
+      } catch (e) {
+        console.error('[rest] seed failed:', e);
+      }
+    }
+
+    function connectWs() {
+      setStatus('connecting', 'connecting...');
+      const ws = new WebSocket(DERIBIT_WS);
+
+      ws.onopen = () => {
+        setStatus('connected', 'live');
+        ws.send(JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'public/subscribe',
+          params: { channels: ['markprice.options.btc_usd'] },
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (!msg.params || !msg.params.data) return;
+          const channel = msg.params.channel;
+          if (channel !== 'markprice.options.btc_usd') return;
+
+          const data = msg.params.data;
+          const nodes = Array.isArray(data) ? data : [data];
+
+          // Collect nested quote nodes
+          const quoteNodes = [];
+          function collect(val) {
+            if (Array.isArray(val)) { val.forEach(collect); return; }
+            if (val && typeof val === 'object') {
+              if (val.instrument_name) { quoteNodes.push(val); return; }
+              for (const v of Object.values(val)) {
+                if (typeof v === 'object') collect(v);
+              }
+            }
+          }
+          collect(nodes);
+
+          let anyUpdate = false;
+          for (const node of quoteNodes) {
+            const name = node.instrument_name || node.instrument;
+            if (!name) continue;
+            const parsed = parseInstrumentName(name);
+            if (!parsed) continue;
+
+            const markIv = normalizeIv(node.mark_iv || node.iv || 0);
+            const underlying = node.underlying_price || node.index_price;
+            if (underlying && underlying > 0) spotPrice = underlying;
+
+            const existing = chain.get(name);
+            if (markIv > 0 || existing) {
+              const q = existing || {
+                strike: parsed.strike,
+                expiryCode: parsed.expiry,
+                expiryDate: parsed.expiryDate,
+                isCall: parsed.isCall,
+                mark_price: 0,
+                mark_iv: 0,
+                underlying_price: spotPrice,
+                bid_iv: 0,
+                ask_iv: 0,
+                open_interest: 0,
+              };
+              if (markIv > 0) q.mark_iv = markIv;
+              if (node.mark_price !== undefined) q.mark_price = Math.max(node.mark_price, 0);
+              if (underlying > 0) q.underlying_price = underlying;
+              const bidIv = normalizeIv(node.bid_iv || 0);
+              if (bidIv > 0) q.bid_iv = bidIv;
+              const askIv = normalizeIv(node.ask_iv || 0);
+              if (askIv > 0) q.ask_iv = askIv;
+              if (node.open_interest !== undefined) q.open_interest = Math.max(node.open_interest, 0);
+
+              chain.set(name, q);
+              dirty = true;
+              tickCount++;
+              anyUpdate = true;
+            }
+          }
+
+          if (anyUpdate) scheduleCalibration();
+        } catch (e) {
+          // ignore parse errors
+        }
+      };
+
+      ws.onerror = () => {
+        setStatus('disconnected', 'ws error');
+      };
+
+      ws.onclose = () => {
+        setStatus('disconnected', 'reconnecting...');
+        setTimeout(connectWs, 2000);
+      };
+    }
+
+    // =====================================================================
+    //  Bootstrap
+    // =====================================================================
+    (async () => {
+      await seedFromRest();
+      connectWs();
+    })();
+  </script>
+</body>
+</html>
