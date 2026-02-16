@@ -1,4 +1,3 @@
-
 use crate::core::{Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::black76::FuturesOption;
 use crate::market::Market;
@@ -165,9 +164,7 @@ impl PricingEngine<FuturesOption> for Black76Engine {
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("d1", d1);
         diagnostics.insert("d2", d2);
-        diagnostics.insert("discount_factor",
-            (-instrument.r * instrument.t).exp(),
-        );
+        diagnostics.insert("discount_factor", (-instrument.r * instrument.t).exp());
 
         Ok(PricingResult {
             price,

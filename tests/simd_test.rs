@@ -147,11 +147,7 @@ mod simd_tests {
     #[inline]
     fn ordered_bits(x: f64) -> i64 {
         let bits = x.to_bits() as i64;
-        if bits < 0 {
-            i64::MIN - bits
-        } else {
-            bits
-        }
+        if bits < 0 { i64::MIN - bits } else { bits }
     }
 
     #[cfg(feature = "simd")]
@@ -253,6 +249,54 @@ mod simd_tests {
                 "x={x} simd={y} expected={expected} ulp_diff={}",
                 ulp_diff(*y, expected)
             );
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod neon_tests {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    use openferric::core::OptionType;
+    use openferric::engines::analytic::bs_price_batch;
+    use openferric::pricing::european::black_scholes_price;
+
+    #[test]
+    fn neon_bs_price_matches_scalar_within_1e6() {
+        let mut rng = StdRng::seed_from_u64(2026);
+        let n = 128usize;
+        let mut spots = Vec::with_capacity(n);
+        let mut strikes = Vec::with_capacity(n);
+
+        let r = 0.03;
+        let q = 0.01;
+        let vol = 0.2;
+        let t = 1.4;
+
+        for _ in 0..n {
+            spots.push(50.0 + 150.0 * rng.random::<f64>());
+            strikes.push(40.0 + 160.0 * rng.random::<f64>());
+        }
+
+        for &is_call in &[true, false] {
+            let batch = bs_price_batch(&spots, &strikes, r, q, vol, t, is_call);
+            for i in 0..n {
+                let adjusted_spot = spots[i] * (-q * t).exp();
+                let option_type = if is_call {
+                    OptionType::Call
+                } else {
+                    OptionType::Put
+                };
+                let scalar = black_scholes_price(option_type, adjusted_spot, strikes[i], r, vol, t);
+                assert!(
+                    (batch[i] - scalar).abs() <= 1e-6,
+                    "idx {i}: neon={} scalar={} diff={}",
+                    batch[i],
+                    scalar,
+                    (batch[i] - scalar).abs()
+                );
+            }
         }
     }
 }

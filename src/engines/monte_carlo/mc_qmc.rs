@@ -2,7 +2,7 @@ use crate::core::{ExerciseStyle, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 use crate::math::fast_rng::uniform_open01;
-use crate::math::{normal_inv_cdf, SobolSequence};
+use crate::math::{SobolSequence, normal_inv_cdf};
 
 #[inline]
 fn payoff(option_type: crate::core::OptionType, spot: f64, strike: f64) -> f64 {
@@ -116,9 +116,9 @@ pub fn mc_european_qmc_with_seed(
 mod tests {
     use super::*;
     use crate::core::{OptionType, PricingEngine};
-    use crate::pricing::european::black_scholes_price;
     use crate::engines::monte_carlo::MonteCarloPricingEngine;
     use crate::instruments::VanillaOption;
+    use crate::pricing::european::black_scholes_price;
 
     fn setup_case() -> (VanillaOption, Market) {
         let option = VanillaOption::european_call(100.0, 1.0);

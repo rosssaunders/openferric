@@ -1,4 +1,3 @@
-
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::barrier::BarrierOption;
 use crate::market::Market;

@@ -1,13 +1,17 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use num_complex::Complex;
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::HestonEngine;
 use openferric::engines::fft::{
-    BlackScholesCharFn, CarrMadanParams, carr_madan_fft, carr_madan_fft_strikes, heston_price_fft,
+    BlackScholesCharFn, CarrMadanParams, carr_madan_fft, carr_madan_fft_complex,
+    carr_madan_fft_strikes, heston_price_fft,
 };
 use openferric::instruments::VanillaOption;
 use openferric::market::Market;
 use openferric::pricing::OptionType;
 use openferric::pricing::european::black_scholes_price;
+use realfft::RealFftPlanner;
+use rustfft::FftPlanner;
 use std::hint::black_box;
 
 fn log_spaced_strikes(min_k: f64, max_k: f64, n: usize) -> Vec<f64> {
@@ -127,7 +131,7 @@ fn bench_carr_madan_scaling(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("carr_madan_scaling");
 
-    for n in [1024_usize, 4096, 8192] {
+    for n in [1024_usize, 4096, 8192, 16384] {
         let params = CarrMadanParams {
             n,
             eta: 0.25,
@@ -146,10 +150,83 @@ fn bench_carr_madan_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_carr_madan_4096_complex_vs_dispatch(c: &mut Criterion) {
+    let spot = 100.0;
+    let rate = 0.02;
+    let maturity = 1.0;
+    let vol = 0.20;
+    let params = CarrMadanParams {
+        n: 4096,
+        eta: 0.25,
+        alpha: 1.5,
+    };
+    let cf = BlackScholesCharFn::new(spot, rate, 0.0, vol, maturity);
+
+    let mut group = c.benchmark_group("carr_madan_4096_complex_vs_dispatch");
+    group.bench_function("complex_only", |b| {
+        b.iter(|| {
+            let out = carr_madan_fft_complex(black_box(&cf), rate, maturity, spot, params)
+                .expect("fft slice");
+            black_box(out[params.n / 2].1)
+        })
+    });
+    group.bench_function("dispatch_auto", |b| {
+        b.iter(|| {
+            let out =
+                carr_madan_fft(black_box(&cf), rate, maturity, spot, params).expect("fft slice");
+            black_box(out[params.n / 2].1)
+        })
+    });
+    group.finish();
+}
+
+fn bench_fft_4096_rustfft_vs_realfft(c: &mut Criterion) {
+    let n = 4096_usize;
+    let real_input: Vec<f64> = (0..n)
+        .map(|i| (0.03 * i as f64).sin() + 0.5 * (0.07 * i as f64).cos())
+        .collect();
+
+    let mut rust_planner = FftPlanner::<f64>::new();
+    let rust_forward = rust_planner.plan_fft_forward(n);
+    let rust_scratch_len = rust_forward.get_inplace_scratch_len();
+    let mut rust_scratch = vec![Complex::new(0.0, 0.0); rust_scratch_len];
+
+    let mut real_planner = RealFftPlanner::<f64>::new();
+    let real_forward = real_planner.plan_fft_forward(n);
+    let real_scratch_len = real_forward.get_scratch_len();
+    let mut real_scratch = vec![Complex::new(0.0, 0.0); real_scratch_len];
+    let mut real_output = real_forward.make_output_vec();
+
+    let mut group = c.benchmark_group("fft_4096_rustfft_vs_realfft");
+    group.bench_function("rustfft_complex", |b| {
+        b.iter(|| {
+            let mut input: Vec<Complex<f64>> = real_input
+                .iter()
+                .copied()
+                .map(|x| Complex::new(x, 0.0))
+                .collect();
+            rust_forward.process_with_scratch(&mut input, &mut rust_scratch);
+            black_box(input[n / 2].re)
+        })
+    });
+    group.bench_function("realfft_r2c", |b| {
+        b.iter(|| {
+            let mut input = real_input.clone();
+            real_forward
+                .process_with_scratch(&mut input, &mut real_output, &mut real_scratch)
+                .expect("real FFT process");
+            black_box(real_output[n / 4].re)
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     fft_benches,
     bench_heston_gauss_laguerre_vs_fft,
     bench_bs_fft_vs_analytic,
-    bench_carr_madan_scaling
+    bench_carr_madan_scaling,
+    bench_carr_madan_4096_complex_vs_dispatch,
+    bench_fft_4096_rustfft_vs_realfft
 );
 criterion_main!(fft_benches);

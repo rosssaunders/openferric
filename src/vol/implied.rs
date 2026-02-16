@@ -2,9 +2,9 @@ use crate::math::normal_pdf;
 use crate::pricing::OptionType;
 use crate::pricing::european::black_scholes_price;
 use crate::vol::jaeckel::implied_vol_jaeckel;
-use std::f64::consts::PI;
 #[cfg(test)]
 use rand::RngExt;
+use std::f64::consts::PI;
 
 pub fn lets_be_rational_initial_guess(
     option_type: OptionType,

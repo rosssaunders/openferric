@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingError};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
-use crate::math::fast_rng::{resolve_stream_seed, sample_standard_normal, FastRng, FastRngKind};
+use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 
 /// Monte Carlo Greeks engine for European vanilla options under GBM.
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-use crate::math::fast_rng::{resolve_stream_seed, sample_standard_normal, FastRng, FastRngKind};
+use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::models::{Gbm, Heston};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -233,8 +233,8 @@ impl MonteCarloEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pricing::european::black_scholes_price;
     use crate::pricing::OptionType;
+    use crate::pricing::european::black_scholes_price;
 
     #[test]
     fn gbm_path_generator_returns_expected_length() {

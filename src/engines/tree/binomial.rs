@@ -1,4 +1,3 @@
-
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;

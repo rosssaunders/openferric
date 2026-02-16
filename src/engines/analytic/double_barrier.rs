@@ -213,9 +213,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
 
             let mut diagnostics = crate::core::Diagnostics::new();
             diagnostics.insert("series_terms", self.series_terms as f64);
-            diagnostics.insert("inside_barriers",
-                if inside { 1.0 } else { 0.0 },
-            );
+            diagnostics.insert("inside_barriers", if inside { 1.0 } else { 0.0 });
             diagnostics.insert("double_knockout_base", 0.0);
             diagnostics.insert("survival_digital", 0.0);
 
@@ -295,9 +293,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("series_terms", self.series_terms as f64);
         diagnostics.insert("vol", vol);
-        diagnostics.insert("inside_barriers",
-            if inside { 1.0 } else { 0.0 },
-        );
+        diagnostics.insert("inside_barriers", if inside { 1.0 } else { 0.0 });
         diagnostics.insert("double_knockout_base", double_knockout_base);
         diagnostics.insert("survival_digital", survival_digital);
 

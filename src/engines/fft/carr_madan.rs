@@ -3,15 +3,18 @@ use std::f64::consts::PI;
 use num_complex::Complex;
 
 use super::char_fn::{CharacteristicFunction, HestonCharFn};
-use super::fft_core::fft_forward as fft_forward_inplace;
+use super::fft_core::{fft_forward as fft_forward_inplace, fft_forward_real};
 use super::frft::carr_madan_price_at_strikes;
 
 /// Default Carr-Madan grid size.
 pub const DEFAULT_FFT_N: usize = 4096;
+/// Optional high-resolution Carr-Madan grid size.
+pub const HIGH_RES_FFT_N: usize = 16384;
 /// Default Carr-Madan dampening parameter.
 pub const DEFAULT_ALPHA: f64 = 1.5;
 /// Default Carr-Madan frequency spacing.
 pub const DEFAULT_ETA: f64 = 0.25;
+const REAL_FFT_EPS: f64 = 1e-14;
 
 /// Carr-Madan FFT configuration.
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +38,15 @@ impl Default for CarrMadanParams {
 }
 
 impl CarrMadanParams {
+    /// Higher-resolution preset for surface generation.
+    pub fn high_resolution() -> Self {
+        Self {
+            n: HIGH_RES_FFT_N,
+            eta: DEFAULT_ETA,
+            alpha: DEFAULT_ALPHA,
+        }
+    }
+
     fn validate(self) -> Result<(), String> {
         if self.n < 2 || !self.n.is_power_of_two() {
             return Err("carr-madan requires n to be a power of two >= 2".to_string());
@@ -146,15 +158,33 @@ fn build_fft_input<C: CharacteristicFunction>(
     out
 }
 
-/// Carr-Madan FFT pricing over a full strike slice in `O(N log N)`.
-///
-/// Returns `(strike, call_price)` pairs.
-pub fn carr_madan_fft<C: CharacteristicFunction>(
+#[inline]
+fn can_use_real_fft(input: &[Complex<f64>]) -> bool {
+    input
+        .iter()
+        .all(|z| z.im.abs() <= REAL_FFT_EPS * (1.0 + z.re.abs()))
+}
+
+#[inline]
+fn transform_fft_input(mut input: Vec<Complex<f64>>, allow_real_fft: bool) -> Vec<Complex<f64>> {
+    if allow_real_fft && can_use_real_fft(&input) {
+        let real_input: Vec<f64> = input.iter().map(|z| z.re).collect();
+        if let Ok(real_spectrum) = fft_forward_real(&real_input) {
+            return real_spectrum;
+        }
+    }
+
+    fft_forward_inplace(&mut input);
+    input
+}
+
+fn carr_madan_fft_impl<C: CharacteristicFunction>(
     cf: &C,
     rate: f64,
     maturity: f64,
     spot: f64,
     params: CarrMadanParams,
+    allow_real_fft: bool,
 ) -> Result<Vec<(f64, f64)>, String> {
     params.validate()?;
     if !spot.is_finite() || spot <= 0.0 {
@@ -168,11 +198,11 @@ pub fn carr_madan_fft<C: CharacteristicFunction>(
     let b = 0.5 * params.n as f64 * lambda;
     let k0 = spot.ln() - b;
 
-    let mut fft_input = build_fft_input(cf, rate, maturity, params, k0);
-    fft_forward_inplace(&mut fft_input);
+    let fft_input = build_fft_input(cf, rate, maturity, params, k0);
+    let transformed = transform_fft_input(fft_input, allow_real_fft);
 
     let mut out = Vec::with_capacity(params.n);
-    for (m, z) in fft_input.into_iter().enumerate() {
+    for (m, z) in transformed.into_iter().enumerate() {
         let k = k0 + m as f64 * lambda;
         let strike = k.exp();
         let call = ((-params.alpha * k).exp() * z.re / PI).max(0.0);
@@ -180,6 +210,30 @@ pub fn carr_madan_fft<C: CharacteristicFunction>(
     }
 
     Ok(out)
+}
+
+/// Carr-Madan FFT pricing over a full strike slice in `O(N log N)`.
+///
+/// Returns `(strike, call_price)` pairs.
+pub fn carr_madan_fft<C: CharacteristicFunction>(
+    cf: &C,
+    rate: f64,
+    maturity: f64,
+    spot: f64,
+    params: CarrMadanParams,
+) -> Result<Vec<(f64, f64)>, String> {
+    carr_madan_fft_impl(cf, rate, maturity, spot, params, true)
+}
+
+/// Carr-Madan FFT pricing using complex FFT only (benchmark/reference path).
+pub fn carr_madan_fft_complex<C: CharacteristicFunction>(
+    cf: &C,
+    rate: f64,
+    maturity: f64,
+    spot: f64,
+    params: CarrMadanParams,
+) -> Result<Vec<(f64, f64)>, String> {
+    carr_madan_fft_impl(cf, rate, maturity, spot, params, false)
 }
 
 /// Interpolates call prices from a sorted strike slice.

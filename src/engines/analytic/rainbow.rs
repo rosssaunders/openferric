@@ -1,4 +1,3 @@
-
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::rainbow::{
     BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption,
@@ -203,7 +202,8 @@ impl PricingEngine<BestOfTwoCallOption> for RainbowAnalyticEngine {
         let price = best_of_two_call_price(instrument)?;
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("effective_vol",
+        diagnostics.insert(
+            "effective_vol",
             effective_volatility(instrument.vol1, instrument.vol2, instrument.rho)?,
         );
 
@@ -225,7 +225,8 @@ impl PricingEngine<WorstOfTwoCallOption> for RainbowAnalyticEngine {
         let price = worst_of_two_call_price(instrument)?;
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("effective_vol",
+        diagnostics.insert(
+            "effective_vol",
             effective_volatility(instrument.vol1, instrument.vol2, instrument.rho)?,
         );
 

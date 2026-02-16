@@ -1,4 +1,3 @@
-
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
@@ -68,6 +67,19 @@ pub fn bs_price(
             OptionType::Call => (spot * df_q - strike * df_r).max(0.0),
             OptionType::Put => (strike * df_r - spot * df_q).max(0.0),
         };
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if super::bs_inline::has_fma_bs_kernel() {
+        return super::bs_inline::bs_price_asm(
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            matches!(option_type, OptionType::Call),
+        );
     }
 
     let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);

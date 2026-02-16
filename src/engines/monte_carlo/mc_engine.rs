@@ -6,7 +6,8 @@ use crate::core::{
 };
 use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::Market;
-use crate::math::fast_rng::FastRngKind;
+use crate::math::arena::PricingArena;
+use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
@@ -102,6 +103,107 @@ fn average_for_observations(
                 / observation_times.len() as f64;
             mean_log.exp()
         }
+    }
+}
+
+const ARENA_MC_SEED: u64 = 42;
+
+/// Sequential European vanilla Monte Carlo pricer reusing a pre-allocated arena.
+pub fn mc_european_with_arena(
+    instrument: &VanillaOption,
+    market: &Market,
+    n_paths: usize,
+    n_steps: usize,
+    arena: &mut PricingArena,
+) -> PricingResult {
+    if n_paths == 0 || n_steps == 0 {
+        return PricingResult {
+            price: f64::NAN,
+            stderr: None,
+            greeks: None,
+            diagnostics: crate::core::Diagnostics::new(),
+        };
+    }
+
+    if instrument.validate().is_err() || !matches!(instrument.exercise, ExerciseStyle::European) {
+        return PricingResult {
+            price: f64::NAN,
+            stderr: None,
+            greeks: None,
+            diagnostics: crate::core::Diagnostics::new(),
+        };
+    }
+
+    if instrument.expiry <= 0.0 {
+        return PricingResult {
+            price: vanilla_payoff(instrument.option_type, market.spot, instrument.strike),
+            stderr: Some(0.0),
+            greeks: None,
+            diagnostics: crate::core::Diagnostics::new(),
+        };
+    }
+
+    let vol = market.vol_for(instrument.strike, instrument.expiry);
+    if vol <= 0.0 || !vol.is_finite() {
+        return PricingResult {
+            price: f64::NAN,
+            stderr: None,
+            greeks: None,
+            diagnostics: crate::core::Diagnostics::new(),
+        };
+    }
+
+    let dt = instrument.expiry / n_steps as f64;
+    let sqrt_dt = dt.sqrt();
+    let mu = market.rate - market.dividend_yield;
+    let discount = (-market.rate * instrument.expiry).exp();
+
+    let _ = arena.path_slice(n_steps + 1);
+    let _ = arena.payoff_slice(n_paths);
+
+    let path_buffer = &mut arena.path_buffer;
+    let payoff_buffer = &mut arena.payoff_buffer;
+
+    for (i, payoff_slot) in payoff_buffer.iter_mut().enumerate().take(n_paths) {
+        let mut rng = FastRng::from_seed(
+            FastRngKind::Xoshiro256PlusPlus,
+            resolve_stream_seed(ARENA_MC_SEED, i, true),
+        );
+
+        let path = &mut path_buffer[..(n_steps + 1)];
+        let mut s = market.spot;
+        path[0] = s;
+
+        for j in 0..n_steps {
+            let z = sample_standard_normal(&mut rng);
+            let _ = sample_standard_normal(&mut rng);
+            s += mu * s * dt + vol * s * sqrt_dt * z;
+            s = s.max(1.0e-12);
+            path[j + 1] = s;
+        }
+
+        *payoff_slot = vanilla_payoff(instrument.option_type, path[n_steps], instrument.strike);
+    }
+
+    let n = n_paths as f64;
+    let payoffs = &payoff_buffer[..n_paths];
+    let mean = payoffs.iter().sum::<f64>() / n;
+    let variance = if n_paths > 1 {
+        payoffs.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0)
+    } else {
+        0.0
+    };
+
+    let mut diagnostics = crate::core::Diagnostics::new();
+    diagnostics.insert("num_paths", n_paths as f64);
+    diagnostics.insert("num_steps", n_steps as f64);
+    diagnostics.insert("vol", vol);
+
+    PricingResult {
+        price: discount * mean,
+        stderr: Some(discount * (variance / n).sqrt()),
+        greeks: None,
+        diagnostics,
     }
 }
 
@@ -589,6 +691,7 @@ mod tests {
     use super::*;
     use crate::core::{AsianSpec, PricingEngine};
     use crate::instruments::{AsianOption, VanillaOption};
+    use crate::math::arena::PricingArena;
 
     #[test]
     fn mc_european_call_matches_black_scholes_within_one_percent() {
@@ -749,5 +852,57 @@ mod tests {
 
         assert_eq!(first.price, second.price);
         assert_eq!(first.stderr, second.stderr);
+    }
+
+    #[test]
+    fn mc_european_with_arena_matches_non_arena_engine() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        let option = VanillaOption::european_call(100.0, 1.0);
+        let n_paths = 8_000;
+        let n_steps = 64;
+
+        let baseline = MonteCarloPricingEngine::new(n_paths, n_steps, ARENA_MC_SEED)
+            .price(&option, &market)
+            .expect("baseline MC succeeds");
+
+        let mut arena = PricingArena::with_capacity(n_paths, n_steps);
+        let arena_result = mc_european_with_arena(&option, &market, n_paths, n_steps, &mut arena);
+
+        assert!((arena_result.price - baseline.price).abs() <= 1e-12);
+        assert!(
+            (arena_result.stderr.unwrap_or(0.0) - baseline.stderr.unwrap_or(0.0)).abs() <= 1e-12
+        );
+    }
+
+    #[test]
+    fn mc_european_with_arena_is_reusable_across_calls() {
+        let market = Market::builder()
+            .spot(95.0)
+            .rate(0.02)
+            .dividend_yield(0.01)
+            .flat_vol(0.3)
+            .build()
+            .expect("valid market");
+        let option = VanillaOption::european_put(100.0, 1.5);
+        let mut arena = PricingArena::with_capacity(128, 16);
+
+        let first = mc_european_with_arena(&option, &market, 4_000, 32, &mut arena);
+        let second = mc_european_with_arena(&option, &market, 4_000, 96, &mut arena);
+        let grown_len = arena.path_buffer.len();
+        let third = mc_european_with_arena(&option, &market, 4_000, 32, &mut arena);
+
+        assert!(first.price.is_finite());
+        assert!(second.price.is_finite());
+        assert!(third.price.is_finite());
+        assert!(grown_len >= 97);
+        assert_eq!(arena.path_buffer.len(), grown_len);
+        assert_eq!(first.price, third.price);
+        assert_eq!(first.stderr, third.stderr);
     }
 }

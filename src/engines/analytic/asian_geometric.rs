@@ -1,4 +1,3 @@
-
 use crate::core::{Averaging, PricingEngine, PricingError, PricingResult, StrikeType};
 use crate::instruments::asian::AsianOption;
 use crate::market::Market;
@@ -54,7 +53,8 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("vol", vol);
-        diagnostics.insert("observation_count",
+        diagnostics.insert(
+            "observation_count",
             instrument.asian.observation_times.len() as f64,
         );
 

@@ -1,4 +1,3 @@
-
 use crate::core::{Greeks, PricingEngine, PricingError, PricingResult};
 use crate::instruments::convertible::ConvertibleBond;
 use crate::market::Market;

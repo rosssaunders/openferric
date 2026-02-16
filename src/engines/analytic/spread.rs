@@ -1,4 +1,3 @@
-
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;
@@ -43,9 +42,7 @@ impl PricingEngine<SpreadOption> for SpreadAnalyticEngine {
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("effective_vol",
-            instrument.effective_volatility()?,
-        );
+        diagnostics.insert("effective_vol", instrument.effective_volatility()?);
 
         Ok(PricingResult {
             price,

@@ -1,7 +1,7 @@
 //! SIMD-friendly Monte Carlo routines using structure-of-arrays (SoA) path layout.
 
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]

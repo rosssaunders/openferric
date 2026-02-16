@@ -1,4 +1,3 @@
-
 use crate::core::{Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::fx::FxOption;
 use crate::market::Market;

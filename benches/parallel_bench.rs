@@ -1,10 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use openferric::core::OptionType;
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::black_scholes::black_scholes_price;
 use openferric::engines::monte_carlo::{
-    mc_european_parallel, mc_european_qmc_with_seed, mc_european_sequential,
-    mc_greeks_grid_parallel, mc_greeks_grid_sequential, MonteCarloPricingEngine,
+    MonteCarloPricingEngine, mc_european_parallel, mc_european_qmc_with_seed,
+    mc_european_sequential, mc_greeks_grid_parallel, mc_greeks_grid_sequential,
 };
 use openferric::instruments::VanillaOption;
 use openferric::market::Market;

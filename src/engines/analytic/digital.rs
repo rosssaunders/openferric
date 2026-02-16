@@ -1,4 +1,3 @@
-
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::digital::{AssetOrNothingOption, CashOrNothingOption, GapOption};
 use crate::market::Market;

@@ -1,4 +1,3 @@
-
 use rand::Rng;
 use rayon::prelude::*;
 
@@ -152,9 +151,7 @@ pub fn mc_european_parallel(
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert("num_paths", n_paths as f64);
     diagnostics.insert("num_steps", n_steps as f64);
-    diagnostics.insert("num_threads",
-        rayon::current_num_threads() as f64,
-    );
+    diagnostics.insert("num_threads", rayon::current_num_threads() as f64);
     diagnostics.insert("vol", vol);
 
     PricingResult {

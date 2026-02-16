@@ -1,8 +1,9 @@
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::HestonEngine;
 use openferric::engines::fft::{
-    BlackScholesCharFn, CarrMadanParams, HestonCharFn, carr_madan_fft, carr_madan_fft_greeks,
-    carr_madan_fft_strikes, carr_madan_price_at_strikes, interpolate_strike_prices,
+    BlackScholesCharFn, CarrMadanParams, HestonCharFn, carr_madan_fft, carr_madan_fft_complex,
+    carr_madan_fft_greeks, carr_madan_fft_strikes, carr_madan_price_at_strikes,
+    interpolate_strike_prices,
 };
 use openferric::instruments::VanillaOption;
 use openferric::market::Market;
@@ -199,5 +200,31 @@ fn fft_strike_helper_matches_exact_strike_api_for_bs() {
 
     for ((_, p1), (_, p2)) in via_interp.iter().zip(via_exact.iter()) {
         assert!((p1 - p2).abs() < 1e-2);
+    }
+}
+
+#[test]
+fn carr_madan_dispatch_matches_complex_fft_within_1e10() {
+    let spot = 100.0;
+    let rate = 0.03;
+    let maturity = 1.0;
+    let vol = 0.2;
+    let params = CarrMadanParams {
+        n: 4096,
+        eta: 0.25,
+        alpha: 1.5,
+    };
+    let cf = BlackScholesCharFn::new(spot, rate, 0.0, vol, maturity);
+
+    let dispatch = carr_madan_fft(&cf, rate, maturity, spot, params).expect("dispatch prices");
+    let complex_only =
+        carr_madan_fft_complex(&cf, rate, maturity, spot, params).expect("complex prices");
+
+    for ((k1, p1), (k2, p2)) in dispatch.iter().zip(complex_only.iter()) {
+        assert!((k1 - k2).abs() < 1e-12);
+        assert!(
+            (p1 - p2).abs() < 1e-10,
+            "dispatch/complex mismatch k={k1} dispatch={p1} complex={p2}"
+        );
     }
 }

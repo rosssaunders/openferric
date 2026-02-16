@@ -1,4 +1,3 @@
-
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::exotic::{
     ChooserOption, CompoundOption, ExoticOption, LookbackFixedOption, LookbackFloatingOption,

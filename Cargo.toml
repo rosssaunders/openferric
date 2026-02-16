@@ -30,6 +30,8 @@ rand_distr = "0.6"
 nalgebra = "0.34"
 rayon = { version = "1.11", optional = true }
 num-complex = "0.4"
+rustfft = "6"
+realfft = "3"
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 reqwest = { version = "0.13", features = ["json", "query"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"], optional = true }

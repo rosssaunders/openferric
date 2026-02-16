@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;
-use crate::math::fast_rng::{resolve_stream_seed, sample_standard_normal, FastRng, FastRngKind};
+use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 
 /// Monte Carlo spread-option engine under correlated GBM.
 #[derive(Debug, Clone)]

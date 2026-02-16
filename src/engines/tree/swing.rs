@@ -1,4 +1,3 @@
-
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::swing::SwingOption;
 use crate::market::Market;
@@ -189,9 +188,7 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("num_steps", self.steps as f64);
         diagnostics.insert("vol", vol);
-        diagnostics.insert("exercise_dates",
-            instrument.exercise_dates.len() as f64,
-        );
+        diagnostics.insert("exercise_dates", instrument.exercise_dates.len() as f64);
         diagnostics.insert("min_exercises", instrument.min_exercises as f64);
         diagnostics.insert("max_exercises", instrument.max_exercises as f64);
 
