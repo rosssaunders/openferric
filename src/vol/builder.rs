@@ -1,6 +1,6 @@
 use crate::math::CubicSpline;
 use crate::pricing::OptionType;
-use crate::vol::implied::implied_vol_newton;
+use crate::vol::implied::implied_vol;
 use crate::vol::local_vol::{DupireLocalVol, ImpliedVolSurface as LocalVolSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -196,7 +196,7 @@ impl VolSurfaceBuilder {
             let mut vols = Vec::with_capacity(bucket.len());
 
             for quote in bucket {
-                let iv = implied_vol_newton(
+                let iv = implied_vol(
                     quote.option_type,
                     self.spot,
                     quote.strike,

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
@@ -164,7 +163,7 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 price: intrinsic(instrument.option_type, market.spot, instrument.strike),
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -287,11 +286,11 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             (1.0 - w) * values[i] + w * values[i + 1]
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_time_steps".to_string(), n_t as f64);
-        diagnostics.insert("num_space_steps".to_string(), n_s as f64);
-        diagnostics.insert("s_max".to_string(), s_max);
-        diagnostics.insert("vol".to_string(), vol);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_time_steps", n_t as f64);
+        diagnostics.insert("num_space_steps", n_s as f64);
+        diagnostics.insert("s_max", s_max);
+        diagnostics.insert("vol", vol);
 
         Ok(PricingResult {
             price,

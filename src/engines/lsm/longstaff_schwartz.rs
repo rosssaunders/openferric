@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use nalgebra::{DMatrix, DVector};
 use rand::SeedableRng;
@@ -83,7 +82,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 price: intrinsic(instrument.option_type, market.spot, instrument.strike),
                 stderr: Some(0.0),
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -186,10 +185,10 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         let discounted: Vec<f64> = values.into_iter().map(|v| v * disc).collect();
         let (price, stderr) = mean_and_stderr(&discounted);
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_paths".to_string(), self.num_paths as f64);
-        diagnostics.insert("num_steps".to_string(), self.num_steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_paths", self.num_paths as f64);
+        diagnostics.insert("num_steps", self.num_steps as f64);
+        diagnostics.insert("vol", vol);
 
         Ok(PricingResult {
             price,
@@ -266,10 +265,10 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
 
         let (price, stderr) = mean_and_stderr(&pv);
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_paths".to_string(), self.num_paths as f64);
-        diagnostics.insert("num_steps".to_string(), self.num_steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_paths", self.num_paths as f64);
+        diagnostics.insert("num_steps", self.num_steps as f64);
+        diagnostics.insert("vol", vol);
 
         Ok(PricingResult {
             price,

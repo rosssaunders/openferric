@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::{
@@ -7,6 +6,7 @@ use crate::core::{
 };
 use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::Market;
+use crate::math::fast_rng::FastRngKind;
 use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
@@ -253,6 +253,10 @@ pub struct MonteCarloPricingEngine {
     pub num_steps: usize,
     /// RNG seed.
     pub seed: u64,
+    /// Pseudo-random number generator backend.
+    pub rng_kind: FastRngKind,
+    /// Reproducible stream splitting mode.
+    pub reproducible: bool,
     /// Variance reduction configuration.
     pub variance_reduction: VarianceReduction,
 }
@@ -264,6 +268,8 @@ impl MonteCarloPricingEngine {
             num_paths,
             num_steps,
             seed,
+            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            reproducible: true,
             variance_reduction: VarianceReduction::None,
         }
     }
@@ -271,6 +277,35 @@ impl MonteCarloPricingEngine {
     /// Sets the variance reduction scheme.
     pub fn with_variance_reduction(mut self, variance_reduction: VarianceReduction) -> Self {
         self.variance_reduction = variance_reduction;
+        self
+    }
+
+    /// Chooses RNG backend for path simulation.
+    pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
+        self.rng_kind = rng_kind;
+        if matches!(rng_kind, FastRngKind::ThreadRng) {
+            self.reproducible = false;
+        }
+        self
+    }
+
+    /// Uses a reproducible seed.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.reproducible = true;
+        self
+    }
+
+    /// Uses non-reproducible stream seeds.
+    pub fn with_randomized_streams(mut self) -> Self {
+        self.reproducible = false;
+        self
+    }
+
+    /// Uses thread-local RNG (non-reproducible).
+    pub fn with_thread_rng(mut self) -> Self {
+        self.rng_kind = FastRngKind::ThreadRng;
+        self.reproducible = false;
         self
     }
 }
@@ -284,6 +319,10 @@ pub struct ArithmeticAsianMC {
     pub steps: usize,
     /// RNG seed.
     pub seed: u64,
+    /// Pseudo-random number generator backend.
+    pub rng_kind: FastRngKind,
+    /// Reproducible stream splitting mode.
+    pub reproducible: bool,
     /// Enables geometric-Asian control variate.
     pub control_variate: bool,
 }
@@ -295,6 +334,8 @@ impl ArithmeticAsianMC {
             paths,
             steps,
             seed,
+            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            reproducible: true,
             control_variate: true,
         }
     }
@@ -302,6 +343,35 @@ impl ArithmeticAsianMC {
     /// Enables/disables control variate.
     pub fn with_control_variate(mut self, control_variate: bool) -> Self {
         self.control_variate = control_variate;
+        self
+    }
+
+    /// Chooses RNG backend for path simulation.
+    pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
+        self.rng_kind = rng_kind;
+        if matches!(rng_kind, FastRngKind::ThreadRng) {
+            self.reproducible = false;
+        }
+        self
+    }
+
+    /// Uses a reproducible seed.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.reproducible = true;
+        self
+    }
+
+    /// Uses non-reproducible stream seeds.
+    pub fn with_randomized_streams(mut self) -> Self {
+        self.reproducible = false;
+        self
+    }
+
+    /// Uses thread-local RNG (non-reproducible).
+    pub fn with_thread_rng(mut self) -> Self {
+        self.rng_kind = FastRngKind::ThreadRng;
+        self.reproducible = false;
         self
     }
 }
@@ -353,7 +423,12 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
             steps: self.steps,
         };
 
-        let mut engine = MonteCarloEngine::new(self.paths, self.seed).with_antithetic(true);
+        let mut engine = MonteCarloEngine::new(self.paths, self.seed)
+            .with_rng_kind(self.rng_kind)
+            .with_antithetic(true);
+        if !self.reproducible {
+            engine = engine.with_randomized_streams();
+        }
         if self.control_variate {
             let expected_discounted = geometric_asian_discrete_fixed_closed_form(
                 instrument.option_type,
@@ -400,14 +475,10 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
             discount,
         );
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_paths".to_string(), self.paths as f64);
-        diagnostics.insert("num_steps".to_string(), self.steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert(
-            "control_variate".to_string(),
-            if self.control_variate { 1.0 } else { 0.0 },
-        );
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_paths", self.paths as f64);
+        diagnostics.insert("num_steps", self.steps as f64);
+        diagnostics.insert("vol", vol);
 
         Ok(PricingResult {
             price,
@@ -449,7 +520,7 @@ where
                 price: payoff,
                 stderr: Some(0.0),
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -471,7 +542,11 @@ where
             steps: self.num_steps,
         };
 
-        let base = MonteCarloEngine::new(self.num_paths, self.seed);
+        let mut base =
+            MonteCarloEngine::new(self.num_paths, self.seed).with_rng_kind(self.rng_kind);
+        if !self.reproducible {
+            base = base.with_randomized_streams();
+        }
         let base = match &self.variance_reduction {
             VarianceReduction::Antithetic => base.with_antithetic(true),
             _ => base.with_antithetic(false),
@@ -495,18 +570,10 @@ where
             discount_factor,
         );
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_paths".to_string(), self.num_paths as f64);
-        diagnostics.insert("num_steps".to_string(), self.num_steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert(
-            "variance_reduction".to_string(),
-            match self.variance_reduction {
-                VarianceReduction::None => 0.0,
-                VarianceReduction::Antithetic => 1.0,
-                VarianceReduction::ControlVariate => 2.0,
-            },
-        );
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_paths", self.num_paths as f64);
+        diagnostics.insert("num_steps", self.num_steps as f64);
+        diagnostics.insert("vol", vol);
 
         Ok(PricingResult {
             price,
@@ -658,5 +725,29 @@ mod tests {
             expected,
             rel_err
         );
+    }
+
+    #[test]
+    fn mc_seeded_xoshiro_is_reproducible() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        let option = VanillaOption::european_call(100.0, 1.0);
+
+        let first = MonteCarloPricingEngine::new(20_000, 64, 123)
+            .with_rng_kind(FastRngKind::Xoshiro256PlusPlus)
+            .price(&option, &market)
+            .expect("first run succeeds");
+        let second = MonteCarloPricingEngine::new(20_000, 64, 123)
+            .with_rng_kind(FastRngKind::Xoshiro256PlusPlus)
+            .price(&option, &market)
+            .expect("second run succeeds");
+
+        assert_eq!(first.price, second.price);
+        assert_eq!(first.stderr, second.stderr);
     }
 }

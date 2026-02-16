@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
@@ -57,7 +56,7 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
                 price: intrinsic(instrument.option_type, market.spot, instrument.strike),
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -151,14 +150,14 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
             values = next_values;
         }
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_steps".to_string(), self.steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("u".to_string(), u);
-        diagnostics.insert("d".to_string(), d);
-        diagnostics.insert("pu".to_string(), pu);
-        diagnostics.insert("pm".to_string(), pm);
-        diagnostics.insert("pd".to_string(), pd);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_steps", self.steps as f64);
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("u", u);
+        diagnostics.insert("d", d);
+        diagnostics.insert("pu", pu);
+        diagnostics.insert("pm", pm);
+        diagnostics.insert("pd", pd);
 
         Ok(PricingResult {
             price: values[0],

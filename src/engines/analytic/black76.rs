@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::black76::FuturesOption;
@@ -138,7 +137,7 @@ impl PricingEngine<FuturesOption> for Black76Engine {
                     theta: 0.0,
                     rho: 0.0,
                 }),
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -158,16 +157,15 @@ impl PricingEngine<FuturesOption> for Black76Engine {
                     theta: 0.0,
                     rho: 0.0,
                 }),
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
         let (price, greeks, d1, d2) = black76_price_greeks(instrument);
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("d1".to_string(), d1);
-        diagnostics.insert("d2".to_string(), d2);
-        diagnostics.insert(
-            "discount_factor".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("d1", d1);
+        diagnostics.insert("d2", d2);
+        diagnostics.insert("discount_factor",
             (-instrument.r * instrument.t).exp(),
         );
 

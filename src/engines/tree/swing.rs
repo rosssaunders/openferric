@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::swing::SwingOption;
@@ -187,15 +186,14 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
             next = current;
         }
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_steps".to_string(), self.steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert(
-            "exercise_dates".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_steps", self.steps as f64);
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("exercise_dates",
             instrument.exercise_dates.len() as f64,
         );
-        diagnostics.insert("min_exercises".to_string(), instrument.min_exercises as f64);
-        diagnostics.insert("max_exercises".to_string(), instrument.max_exercises as f64);
+        diagnostics.insert("min_exercises", instrument.min_exercises as f64);
+        diagnostics.insert("max_exercises", instrument.max_exercises as f64);
 
         let price = next[rights][0];
         if !price.is_finite() {

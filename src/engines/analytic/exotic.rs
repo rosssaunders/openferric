@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::exotic::{
@@ -27,7 +26,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         instrument.validate()?;
 
-        let mut diagnostics = HashMap::new();
+        let mut diagnostics = crate::core::Diagnostics::new();
 
         let price = match instrument {
             ExoticOption::LookbackFloating(spec) => {
@@ -37,7 +36,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
                         "market volatility must be > 0".to_string(),
                     ));
                 }
-                diagnostics.insert("vol".to_string(), vol);
+                diagnostics.insert("vol", vol);
                 floating_lookback_price(spec, market, vol)
             }
             ExoticOption::LookbackFixed(spec) => {
@@ -47,7 +46,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
                         "market volatility must be > 0".to_string(),
                     ));
                 }
-                diagnostics.insert("vol".to_string(), vol);
+                diagnostics.insert("vol", vol);
                 fixed_lookback_price(spec, market, vol)
             }
             ExoticOption::Chooser(spec) => {
@@ -57,7 +56,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
                         "market volatility must be > 0".to_string(),
                     ));
                 }
-                diagnostics.insert("vol".to_string(), vol);
+                diagnostics.insert("vol", vol);
                 chooser_price(spec, market, vol)
             }
             ExoticOption::Quanto(spec) => {
@@ -67,7 +66,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
                         "market volatility must be > 0".to_string(),
                     ));
                 }
-                diagnostics.insert("vol".to_string(), vol);
+                diagnostics.insert("vol", vol);
                 quanto_price(spec, market, vol)
             }
             ExoticOption::Compound(spec) => {
@@ -78,7 +77,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
                         "market volatility must be > 0".to_string(),
                     ));
                 }
-                diagnostics.insert("vol".to_string(), vol);
+                diagnostics.insert("vol", vol);
                 compound_price(spec, market, vol)?
             }
         };

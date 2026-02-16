@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::barrier::BarrierOption;
@@ -45,9 +44,9 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
             instrument.barrier.rebate,
         );
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("barrier_level".to_string(), instrument.barrier.level);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("barrier_level", instrument.barrier.level);
 
         Ok(PricingResult {
             price,

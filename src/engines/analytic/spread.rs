@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
@@ -43,9 +42,8 @@ impl PricingEngine<SpreadOption> for SpreadAnalyticEngine {
             SpreadAnalyticMethod::Kirk => kirk_spread_price(instrument)?,
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert(
-            "effective_vol".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("effective_vol",
             instrument.effective_volatility()?,
         );
 

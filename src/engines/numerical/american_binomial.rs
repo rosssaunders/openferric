@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
@@ -56,7 +55,7 @@ impl PricingEngine<VanillaOption> for AmericanBinomialEngine {
                 price: intrinsic(instrument.option_type, market.spot, instrument.strike),
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -94,9 +93,9 @@ impl PricingEngine<VanillaOption> for AmericanBinomialEngine {
             }
         }
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_steps".to_string(), self.steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_steps", self.steps as f64);
+        diagnostics.insert("vol", vol);
 
         Ok(PricingResult {
             price: values[0],

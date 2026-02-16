@@ -1,5 +1,4 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::HestonEngine;
 use openferric::engines::fft::{
@@ -9,6 +8,7 @@ use openferric::instruments::VanillaOption;
 use openferric::market::Market;
 use openferric::pricing::OptionType;
 use openferric::pricing::european::black_scholes_price;
+use std::hint::black_box;
 
 fn log_spaced_strikes(min_k: f64, max_k: f64, n: usize) -> Vec<f64> {
     if n == 1 {

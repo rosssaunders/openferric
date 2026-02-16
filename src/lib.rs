@@ -10,10 +10,10 @@ pub mod models;
 #[cfg(feature = "python")]
 pub mod python;
 pub mod rates;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 pub mod risk;
 pub mod vol;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 // Legacy modules kept for compatibility with existing consumers.
 pub mod greeks;

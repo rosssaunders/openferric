@@ -1,22 +1,10 @@
-use rand::{Rng, RngExt, SeedableRng};
-use rand::rngs::StdRng;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingError};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
-use crate::math::normal_inv_cdf;
-
-#[inline]
-fn uniform_open01(u: f64) -> f64 {
-    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
-}
-
-#[inline]
-fn sample_standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
-    normal_inv_cdf(uniform_open01(rng.random::<f64>()))
-}
+use crate::math::fast_rng::{resolve_stream_seed, sample_standard_normal, FastRng, FastRngKind};
 
 /// Monte Carlo Greeks engine for European vanilla options under GBM.
 #[derive(Debug, Clone)]
@@ -29,6 +17,10 @@ pub struct MonteCarloGreeksEngine {
     pub antithetic: bool,
     /// Relative bump for tangent-style pathwise gamma central differencing.
     pub spot_bump_rel: f64,
+    /// Pseudo-random number generator backend.
+    pub rng_kind: FastRngKind,
+    /// Reproducible stream splitting mode.
+    pub reproducible: bool,
 }
 
 impl MonteCarloGreeksEngine {
@@ -39,6 +31,8 @@ impl MonteCarloGreeksEngine {
             seed,
             antithetic: true,
             spot_bump_rel: 1.0e-2,
+            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            reproducible: true,
         }
     }
 
@@ -51,6 +45,35 @@ impl MonteCarloGreeksEngine {
     /// Sets the relative bump used in pathwise gamma estimation.
     pub fn with_spot_bump_rel(mut self, spot_bump_rel: f64) -> Self {
         self.spot_bump_rel = spot_bump_rel.max(1.0e-6);
+        self
+    }
+
+    /// Chooses RNG backend for path simulation.
+    pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
+        self.rng_kind = rng_kind;
+        if matches!(rng_kind, FastRngKind::ThreadRng) {
+            self.reproducible = false;
+        }
+        self
+    }
+
+    /// Uses a reproducible seed.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.reproducible = true;
+        self
+    }
+
+    /// Uses non-reproducible stream seeds.
+    pub fn with_randomized_streams(mut self) -> Self {
+        self.reproducible = false;
+        self
+    }
+
+    /// Uses thread-local RNG (non-reproducible).
+    pub fn with_thread_rng(mut self) -> Self {
+        self.rng_kind = FastRngKind::ThreadRng;
+        self.reproducible = false;
         self
     }
 
@@ -150,9 +173,13 @@ impl MonteCarloGreeksEngine {
         } else {
             self.num_paths
         };
+        let rng_kind = self.rng_kind;
+        let reproducible = self.reproducible;
+        let base_seed = self.seed;
 
         let simulate_sample = |i: usize| {
-            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
+            let seed = resolve_stream_seed(base_seed, i, reproducible);
+            let mut rng = FastRng::from_seed(rng_kind, seed);
             let z = sample_standard_normal(&mut rng);
             let base = single_path_contribution(
                 instrument.option_type,

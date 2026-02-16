@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{Greeks, PricingEngine, PricingError, PricingResult};
 use crate::instruments::convertible::ConvertibleBond;
@@ -82,12 +81,12 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
                 instrument.put_price,
                 instrument.call_price,
             );
-            let mut diagnostics = HashMap::new();
-            diagnostics.insert("npv".to_string(), price);
-            diagnostics.insert("conversion_value".to_string(), conversion_value);
-            diagnostics.insert("delta".to_string(), 0.0);
-            diagnostics.insert("num_steps".to_string(), self.steps as f64);
-            diagnostics.insert("credit_spread".to_string(), self.credit_spread);
+            let mut diagnostics = crate::core::Diagnostics::new();
+            diagnostics.insert("npv", price);
+            diagnostics.insert("conversion_value", conversion_value);
+            diagnostics.insert("delta", 0.0);
+            diagnostics.insert("num_steps", self.steps as f64);
+            diagnostics.insert("credit_spread", self.credit_spread);
 
             return Ok(PricingResult {
                 price,
@@ -171,13 +170,13 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
             0.0
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("npv".to_string(), values[0]);
-        diagnostics.insert("conversion_value".to_string(), conversion_value);
-        diagnostics.insert("delta".to_string(), delta);
-        diagnostics.insert("num_steps".to_string(), self.steps as f64);
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("credit_spread".to_string(), self.credit_spread);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("npv", values[0]);
+        diagnostics.insert("conversion_value", conversion_value);
+        diagnostics.insert("delta", delta);
+        diagnostics.insert("num_steps", self.steps as f64);
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("credit_spread", self.credit_spread);
 
         Ok(PricingResult {
             price: values[0],

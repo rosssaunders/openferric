@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod implied;
+pub mod jaeckel;
 pub mod local_vol;
 pub mod mixture;
 pub mod sabr;

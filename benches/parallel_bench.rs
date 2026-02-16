@@ -1,12 +1,17 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use openferric::core::OptionType;
+use openferric::core::PricingEngine;
+use openferric::engines::analytic::black_scholes::black_scholes_price;
 use openferric::engines::monte_carlo::{
-    mc_european_parallel, mc_european_sequential, mc_greeks_grid_parallel,
-    mc_greeks_grid_sequential,
+    mc_european_parallel, mc_european_qmc_with_seed, mc_european_sequential,
+    mc_greeks_grid_parallel, mc_greeks_grid_sequential, MonteCarloPricingEngine,
 };
 use openferric::instruments::VanillaOption;
 use openferric::market::Market;
 use openferric::math::fast_norm::fast_norm_cdf;
+use openferric::math::fast_rng::{FastRngKind, Pcg64Rng, Xoshiro256Rng};
+use rand::rngs::StdRng;
+use rand::{Rng, RngExt, SeedableRng};
 use rayon::ThreadPoolBuilder;
 use statrs::distribution::{ContinuousCDF, Normal};
 
@@ -121,10 +126,119 @@ fn bench_fast_norm_cdf(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_rng_generation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rng_generation_1m_f64");
+    let n = 1_000_000;
+
+    group.bench_function("chacha_std_rng", |b| {
+        b.iter(|| {
+            let mut rng = StdRng::seed_from_u64(42);
+            let sum = (0..n).map(|_| rng.random::<f64>()).sum::<f64>();
+            black_box(sum)
+        })
+    });
+
+    group.bench_function("xoshiro256plusplus", |b| {
+        b.iter(|| {
+            let mut rng = Xoshiro256Rng::seed_from_u64(42);
+            let sum = (0..n).map(|_| rng.next_f64()).sum::<f64>();
+            black_box(sum)
+        })
+    });
+
+    group.bench_function("pcg64", |b| {
+        b.iter(|| {
+            let mut rng = Pcg64Rng::seed_from_u64(42);
+            let sum = (0..n).map(|_| rng.next_f64()).sum::<f64>();
+            black_box(sum)
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_mc_european_rng_backends(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let mut group = c.benchmark_group("mc_european_50k_rng_backend");
+    group.sample_size(10);
+
+    let xoshiro = MonteCarloPricingEngine::new(50_000, 252, 42)
+        .with_rng_kind(FastRngKind::Xoshiro256PlusPlus);
+    let chacha = MonteCarloPricingEngine::new(50_000, 252, 42).with_rng_kind(FastRngKind::StdRng);
+
+    group.bench_function("xoshiro256plusplus", |b| {
+        b.iter(|| {
+            let px = xoshiro
+                .price(black_box(&option), black_box(&market))
+                .expect("pricing should succeed")
+                .price;
+            black_box(px)
+        })
+    });
+
+    group.bench_function("chacha_std_rng", |b| {
+        b.iter(|| {
+            let px = chacha
+                .price(black_box(&option), black_box(&market))
+                .expect("pricing should succeed")
+                .price;
+            black_box(px)
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_qmc_vs_mc_convergence(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
+    let mut group = c.benchmark_group("qmc_vs_mc_convergence");
+    group.sample_size(10);
+
+    for paths in [10_000_usize, 50_000, 100_000] {
+        let engine = MonteCarloPricingEngine::new(paths, 1, 42);
+
+        group.bench_with_input(BenchmarkId::new("mc_abs_error", paths), &paths, |b, _| {
+            b.iter(|| {
+                let price = engine
+                    .price(black_box(&option), black_box(&market))
+                    .expect("pricing should succeed")
+                    .price;
+                black_box((price - bs).abs())
+            })
+        });
+
+        group.bench_with_input(
+            BenchmarkId::new("qmc_abs_error", paths),
+            &paths,
+            |b, &paths| {
+                b.iter(|| {
+                    let price = mc_european_qmc_with_seed(
+                        black_box(&option),
+                        black_box(&market),
+                        paths,
+                        1,
+                        42,
+                    )
+                    .price;
+                    black_box((price - bs).abs())
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     parallel_benches,
     bench_mc_european_parallel,
     bench_greeks_grid,
-    bench_fast_norm_cdf
+    bench_fast_norm_cdf,
+    bench_rng_generation,
+    bench_mc_european_rng_backends,
+    bench_qmc_vs_mc_convergence
 );
 criterion_main!(parallel_benches);

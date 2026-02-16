@@ -1,11 +1,17 @@
 use std::f64::consts::PI;
 
 pub mod fast_norm;
+pub mod fast_rng;
 pub mod gamma;
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+pub mod simd_math;
+pub mod sobol;
 
 pub use fast_norm::{
     beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,
 };
+pub use fast_rng::{FastRng, FastRngKind};
+pub use sobol::SobolSequence;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MathError {

@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::variance_swap::{VarianceOptionQuote, VarianceSwap, VolatilitySwap};
@@ -200,9 +199,9 @@ impl PricingEngine<VarianceSwap> for VarianceSwapEngine {
         let fair_volatility = fair_variance.sqrt();
         let price = variance_swap_mtm(instrument, fair_variance, market.rate)?;
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("fair_variance".to_string(), fair_variance);
-        diagnostics.insert("fair_volatility".to_string(), fair_volatility);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("fair_variance", fair_variance);
+        diagnostics.insert("fair_volatility", fair_volatility);
 
         Ok(PricingResult {
             price,
@@ -232,10 +231,10 @@ impl PricingEngine<VolatilitySwap> for VarianceSwapEngine {
             fair_volatility_strike_from_variance(fair_variance, instrument.var_of_var)?;
         let price = volatility_swap_mtm(instrument, fair_variance, fair_volatility, market.rate)?;
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("fair_variance".to_string(), fair_variance);
-        diagnostics.insert("fair_volatility".to_string(), fair_volatility);
-        diagnostics.insert("var_of_var".to_string(), instrument.var_of_var);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("fair_variance", fair_variance);
+        diagnostics.insert("fair_volatility", fair_volatility);
+        diagnostics.insert("var_of_var", instrument.var_of_var);
 
         Ok(PricingResult {
             price,

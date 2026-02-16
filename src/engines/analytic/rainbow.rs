@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::rainbow::{
@@ -203,9 +202,8 @@ impl PricingEngine<BestOfTwoCallOption> for RainbowAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         let price = best_of_two_call_price(instrument)?;
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert(
-            "effective_vol".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("effective_vol",
             effective_volatility(instrument.vol1, instrument.vol2, instrument.rho)?,
         );
 
@@ -226,9 +224,8 @@ impl PricingEngine<WorstOfTwoCallOption> for RainbowAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         let price = worst_of_two_call_price(instrument)?;
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert(
-            "effective_vol".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("effective_vol",
             effective_volatility(instrument.vol1, instrument.vol2, instrument.rho)?,
         );
 
@@ -249,8 +246,8 @@ impl PricingEngine<TwoAssetCorrelationOption> for RainbowAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         let price = two_asset_correlation_price(instrument)?;
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("rho".to_string(), instrument.rho);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("rho", instrument.rho);
 
         Ok(PricingResult {
             price,

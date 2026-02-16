@@ -1,22 +1,10 @@
-use crate::math::normal_inv_cdf;
+use crate::math::fast_rng::{resolve_stream_seed, sample_standard_normal, FastRng, FastRngKind};
 use crate::models::{Gbm, Heston};
-use rand::rngs::StdRng;
-use rand::{Rng, RngExt, SeedableRng};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::sync::Arc;
 
 pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
-
-#[inline]
-fn uniform_open01(u: f64) -> f64 {
-    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
-}
-
-#[inline]
-fn sample_standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
-    normal_inv_cdf(uniform_open01(rng.random::<f64>()))
-}
 
 pub trait PathGenerator: Send + Sync {
     fn steps(&self) -> usize;
@@ -98,6 +86,8 @@ pub struct MonteCarloEngine {
     pub antithetic: bool,
     pub control_variate: Option<ControlVariate>,
     pub seed: u64,
+    pub rng_kind: FastRngKind,
+    pub reproducible: bool,
 }
 
 impl MonteCarloEngine {
@@ -107,6 +97,8 @@ impl MonteCarloEngine {
             antithetic: false,
             control_variate: None,
             seed,
+            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            reproducible: true,
         }
     }
 
@@ -117,6 +109,31 @@ impl MonteCarloEngine {
 
     pub fn with_control_variate(mut self, control_variate: ControlVariate) -> Self {
         self.control_variate = Some(control_variate);
+        self
+    }
+
+    pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
+        self.rng_kind = rng_kind;
+        if matches!(rng_kind, FastRngKind::ThreadRng) {
+            self.reproducible = false;
+        }
+        self
+    }
+
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.reproducible = true;
+        self
+    }
+
+    pub fn with_randomized_streams(mut self) -> Self {
+        self.reproducible = false;
+        self
+    }
+
+    pub fn with_thread_rng(mut self) -> Self {
+        self.rng_kind = FastRngKind::ThreadRng;
+        self.reproducible = false;
         self
     }
 
@@ -135,9 +152,13 @@ impl MonteCarloEngine {
 
         let steps = generator.steps();
         let control = self.control_variate.clone();
+        let rng_kind = self.rng_kind;
+        let reproducible = self.reproducible;
+        let base_seed = self.seed;
 
         let simulate_sample = |i: usize| {
-            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
+            let seed = resolve_stream_seed(base_seed, i, reproducible);
+            let mut rng = FastRng::from_seed(rng_kind, seed);
             let mut z1 = vec![0.0_f64; steps];
             let mut z2 = vec![0.0_f64; steps];
 
@@ -212,8 +233,8 @@ impl MonteCarloEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pricing::OptionType;
     use crate::pricing::european::black_scholes_price;
+    use crate::pricing::OptionType;
 
     #[test]
     fn gbm_path_generator_returns_expected_length() {

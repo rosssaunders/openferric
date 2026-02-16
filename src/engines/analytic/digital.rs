@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::digital::{AssetOrNothingOption, CashOrNothingOption, GapOption};
@@ -74,7 +73,7 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
                 ),
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -100,9 +99,9 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
             OptionType::Put => instrument.cash * df_r * normal_cdf(-d2),
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("d2".to_string(), d2);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("d2", d2);
 
         Ok(PricingResult {
             price,
@@ -130,7 +129,7 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
                 ),
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -156,9 +155,9 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
             OptionType::Put => market.spot * df_q * normal_cdf(-d1),
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("d1".to_string(), d1);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("d1", d1);
 
         Ok(PricingResult {
             price,
@@ -187,7 +186,7 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
                 ),
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -220,10 +219,10 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
             }
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("d1".to_string(), d1);
-        diagnostics.insert("d2".to_string(), d2);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("d1", d1);
+        diagnostics.insert("d2", d2);
 
         Ok(PricingResult {
             price,

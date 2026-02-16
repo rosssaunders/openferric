@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::fx::FxOption;
@@ -128,17 +127,17 @@ impl PricingEngine<FxOption> for GarmanKohlhagenEngine {
                     theta: 0.0,
                     rho: 0.0,
                 }),
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
         let (price, fx_greeks, d1, d2) = garman_kohlhagen_price_greeks(instrument);
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("d1".to_string(), d1);
-        diagnostics.insert("d2".to_string(), d2);
-        diagnostics.insert("rho_domestic".to_string(), fx_greeks.rho_domestic);
-        diagnostics.insert("rho_foreign".to_string(), fx_greeks.rho_foreign);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("d1", d1);
+        diagnostics.insert("d2", d2);
+        diagnostics.insert("rho_domestic", fx_greeks.rho_domestic);
+        diagnostics.insert("rho_foreign", fx_greeks.rho_foreign);
 
         Ok(PricingResult {
             price,

@@ -18,7 +18,7 @@ use crate::pricing::american::crr_binomial_american;
 use crate::pricing::barrier::barrier_price_closed_form_with_carry_and_rebate;
 use crate::pricing::european::black_scholes_price;
 use crate::rates::YieldCurve;
-use crate::vol::implied::implied_vol_newton;
+use crate::vol::implied::implied_vol;
 use crate::vol::sabr::SabrParams;
 
 fn parse_option_type(value: &str) -> Option<OptionType> {
@@ -446,7 +446,7 @@ pub fn py_implied_vol(
         return f64::NAN;
     };
 
-    implied_vol_newton(
+    implied_vol(
         option_type,
         spot,
         strike,

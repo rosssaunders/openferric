@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
@@ -169,7 +168,7 @@ impl PricingEngine<VanillaOption> for HestonEngine {
                 price: intrinsic,
                 stderr: None,
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -195,8 +194,8 @@ impl PricingEngine<VanillaOption> for HestonEngine {
             ));
         }
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("integral".to_string(), integral);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("integral", integral);
 
         Ok(PricingResult {
             price,

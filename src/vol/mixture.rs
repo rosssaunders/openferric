@@ -270,7 +270,7 @@ pub fn calibrate_lognormal_mixture(
         .unwrap_or(0);
 
     let atm_price = market_prices[atm_idx];
-    let atm_guess = crate::vol::implied::implied_vol_newton(
+    let atm_guess = crate::vol::implied::implied_vol(
         option_type,
         spot,
         strikes[atm_idx],

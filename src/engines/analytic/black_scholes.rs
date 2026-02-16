@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
@@ -249,7 +248,7 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
                     theta: 0.0,
                     rho: 0.0,
                 }),
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -263,10 +262,10 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             instrument.expiry,
         );
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("d1".to_string(), d1);
-        diagnostics.insert("d2".to_string(), d2);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("d1", d1);
+        diagnostics.insert("d2", d2);
 
         Ok(PricingResult {
             price,

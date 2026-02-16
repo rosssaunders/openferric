@@ -129,7 +129,10 @@ mod tests {
         for &(x, expected) in CDF_REFERENCE {
             let got = hart_norm_cdf(x);
             let err = (got - expected).abs();
-            assert!(err < 1.0e-7, "x={x} expected={expected} got={got} err={err}");
+            assert!(
+                err < 1.0e-7,
+                "x={x} expected={expected} got={got} err={err}"
+            );
         }
     }
 

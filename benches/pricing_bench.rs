@@ -1,11 +1,11 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine, HestonEngine};
 use openferric::engines::monte_carlo::MonteCarloPricingEngine;
 use openferric::engines::numerical::AmericanBinomialEngine;
 use openferric::instruments::{BarrierOption, VanillaOption};
 use openferric::market::Market;
+use std::hint::black_box;
 
 // Performance goals (guideline, measured on target hardware):
 // - Black-Scholes European call: < 100 ns

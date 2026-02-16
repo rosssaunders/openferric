@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use rand::Rng;
 use rayon::prelude::*;
@@ -86,7 +85,7 @@ pub fn mc_european_parallel(
             price: f64::NAN,
             stderr: None,
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
 
@@ -95,7 +94,7 @@ pub fn mc_european_parallel(
             price: f64::NAN,
             stderr: None,
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
 
@@ -104,7 +103,7 @@ pub fn mc_european_parallel(
             price: payoff(instrument.option_type, market.spot, instrument.strike),
             stderr: Some(0.0),
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
 
@@ -114,7 +113,7 @@ pub fn mc_european_parallel(
             price: f64::NAN,
             stderr: None,
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
 
@@ -150,14 +149,13 @@ pub fn mc_european_parallel(
         0.0
     };
 
-    let mut diagnostics = HashMap::new();
-    diagnostics.insert("num_paths".to_string(), n_paths as f64);
-    diagnostics.insert("num_steps".to_string(), n_steps as f64);
-    diagnostics.insert(
-        "num_threads".to_string(),
+    let mut diagnostics = crate::core::Diagnostics::new();
+    diagnostics.insert("num_paths", n_paths as f64);
+    diagnostics.insert("num_steps", n_steps as f64);
+    diagnostics.insert("num_threads",
         rayon::current_num_threads() as f64,
     );
-    diagnostics.insert("vol".to_string(), vol);
+    diagnostics.insert("vol", vol);
 
     PricingResult {
         price: discount * mean,
@@ -179,7 +177,7 @@ pub fn mc_european_sequential(
             price: f64::NAN,
             stderr: None,
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
     if instrument.expiry <= 0.0 {
@@ -187,7 +185,7 @@ pub fn mc_european_sequential(
             price: payoff(instrument.option_type, market.spot, instrument.strike),
             stderr: Some(0.0),
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
     if !matches!(instrument.exercise, ExerciseStyle::European) {
@@ -195,7 +193,7 @@ pub fn mc_european_sequential(
             price: f64::NAN,
             stderr: None,
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
 
@@ -205,7 +203,7 @@ pub fn mc_european_sequential(
             price: f64::NAN,
             stderr: None,
             greeks: None,
-            diagnostics: HashMap::new(),
+            diagnostics: crate::core::Diagnostics::new(),
         };
     }
     let dt = instrument.expiry / n_steps as f64;
@@ -230,10 +228,10 @@ pub fn mc_european_sequential(
         0.0
     };
 
-    let mut diagnostics = HashMap::new();
-    diagnostics.insert("num_paths".to_string(), n_paths as f64);
-    diagnostics.insert("num_steps".to_string(), n_steps as f64);
-    diagnostics.insert("vol".to_string(), vol);
+    let mut diagnostics = crate::core::Diagnostics::new();
+    diagnostics.insert("num_paths", n_paths as f64);
+    diagnostics.insert("num_steps", n_steps as f64);
+    diagnostics.insert("vol", vol);
 
     PricingResult {
         price: discount * mean,

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{Averaging, PricingEngine, PricingError, PricingResult, StrikeType};
 use crate::instruments::asian::AsianOption;
@@ -53,10 +52,9 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
             &instrument.asian.observation_times,
         );
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert(
-            "observation_count".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("observation_count",
             instrument.asian.observation_times.len() as f64,
         );
 

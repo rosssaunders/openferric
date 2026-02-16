@@ -27,7 +27,11 @@ const CDF_REFERENCE: &[(f64, f64)] = &[
 fn fast_norm_cdf_matches_nist_within_one_e_minus_seven() {
     for &(x, expected) in CDF_REFERENCE {
         let err = (fast_norm_cdf(x) - expected).abs();
-        assert!(err <= 1.0e-7, "x={x} expected={expected} got={} err={err}", fast_norm_cdf(x));
+        assert!(
+            err <= 1.0e-7,
+            "x={x} expected={expected} got={} err={err}",
+            fast_norm_cdf(x)
+        );
     }
 }
 

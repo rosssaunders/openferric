@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::power::PowerOption;
@@ -130,10 +129,10 @@ impl PricingEngine<PowerOption> for PowerOptionEngine {
                 * instrument.expiry)
                 .exp();
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert("vol_adj".to_string(), instrument.alpha * vol);
-        diagnostics.insert("pv_forward".to_string(), pv_forward);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("vol_adj", instrument.alpha * vol);
+        diagnostics.insert("pv_forward", pv_forward);
 
         Ok(PricingResult {
             price,

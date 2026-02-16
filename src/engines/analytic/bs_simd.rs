@@ -16,7 +16,11 @@ pub fn normal_cdf_approx(x: f64) -> f64 {
     let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
     let pdf = INV_SQRT_2PI * (-0.5 * z * z).exp();
     let approx = 1.0 - pdf * poly;
-    if x < 0.0 { 1.0 - approx } else { approx }
+    if x < 0.0 {
+        1.0 - approx
+    } else {
+        approx
+    }
 }
 
 /// Batch normal CDF approximation with runtime SIMD dispatch and scalar fallback.
@@ -199,120 +203,11 @@ fn bs_greeks_scalar(
 mod avx2_impl {
     use std::arch::x86_64::*;
 
+    use crate::math::simd_math::{
+        ln_f64x4, load_f64x4, norm_cdf_f64x4, norm_pdf_f64x4, splat_f64x4, store_f64x4,
+    };
+
     use super::{bs_greeks_scalar, bs_price_scalar};
-
-    #[inline]
-    #[target_feature(enable = "avx2,fma")]
-    unsafe fn exp256_pd(x: __m256d) -> __m256d {
-        let max_x = _mm256_set1_pd(709.782_712_893_384);
-        let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
-        let x = _mm256_max_pd(min_x, _mm256_min_pd(x, max_x));
-
-        let log2e = _mm256_set1_pd(std::f64::consts::LOG2_E);
-        let ln2 = _mm256_set1_pd(std::f64::consts::LN_2);
-        let half = _mm256_set1_pd(0.5);
-
-        let n = _mm256_floor_pd(_mm256_fmadd_pd(x, log2e, half));
-        let r = _mm256_fnmadd_pd(n, ln2, x);
-
-        let c11 = _mm256_set1_pd(1.0 / 39_916_800.0);
-        let c10 = _mm256_set1_pd(1.0 / 3_628_800.0);
-        let c9 = _mm256_set1_pd(1.0 / 362_880.0);
-        let c8 = _mm256_set1_pd(1.0 / 40_320.0);
-        let c7 = _mm256_set1_pd(1.0 / 5_040.0);
-        let c6 = _mm256_set1_pd(1.0 / 720.0);
-        let c5 = _mm256_set1_pd(1.0 / 120.0);
-        let c4 = _mm256_set1_pd(1.0 / 24.0);
-        let c3 = _mm256_set1_pd(1.0 / 6.0);
-        let c2 = _mm256_set1_pd(0.5);
-        let c1 = _mm256_set1_pd(1.0);
-        let c0 = _mm256_set1_pd(1.0);
-
-        let mut poly = c11;
-        poly = _mm256_fmadd_pd(poly, r, c10);
-        poly = _mm256_fmadd_pd(poly, r, c9);
-        poly = _mm256_fmadd_pd(poly, r, c8);
-        poly = _mm256_fmadd_pd(poly, r, c7);
-        poly = _mm256_fmadd_pd(poly, r, c6);
-        poly = _mm256_fmadd_pd(poly, r, c5);
-        poly = _mm256_fmadd_pd(poly, r, c4);
-        poly = _mm256_fmadd_pd(poly, r, c3);
-        poly = _mm256_fmadd_pd(poly, r, c2);
-        poly = _mm256_fmadd_pd(poly, r, c1);
-        poly = _mm256_fmadd_pd(poly, r, c0);
-
-        let n_i32 = _mm256_cvtpd_epi32(n);
-        let n_i64 = _mm256_cvtepi32_epi64(n_i32);
-        let exp_bits = _mm256_slli_epi64(_mm256_add_epi64(n_i64, _mm256_set1_epi64x(1023)), 52);
-        let two_pow_n = _mm256_castsi256_pd(exp_bits);
-
-        _mm256_mul_pd(poly, two_pow_n)
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2,fma")]
-    unsafe fn ln256_pd_scalar(v: __m256d) -> __m256d {
-        let mut lanes = [0.0_f64; 4];
-        // SAFETY: `lanes` has room for 4 f64 values.
-        unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), v) };
-        for lane in &mut lanes {
-            *lane = lane.ln();
-        }
-        // SAFETY: `lanes` contains 4 f64 values.
-        unsafe { _mm256_loadu_pd(lanes.as_ptr()) }
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2,fma")]
-    unsafe fn normal_pdf_pd(x: __m256d) -> __m256d {
-        let inv_sqrt_2pi = _mm256_set1_pd(0.398_942_280_401_432_7);
-        let half = _mm256_set1_pd(-0.5);
-        let x2 = _mm256_mul_pd(x, x);
-        let exponent = _mm256_mul_pd(half, x2);
-        _mm256_mul_pd(inv_sqrt_2pi, unsafe { exp256_pd(exponent) })
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2,fma")]
-    unsafe fn normal_cdf_pd(x: __m256d) -> __m256d {
-        let one = _mm256_set1_pd(1.0);
-        let zero = _mm256_setzero_pd();
-        let sign_mask = _mm256_set1_pd(-0.0);
-        let z = _mm256_andnot_pd(sign_mask, x);
-
-        let t = _mm256_div_pd(one, _mm256_fmadd_pd(_mm256_set1_pd(0.231_641_9), z, one));
-        let a1 = _mm256_set1_pd(0.319_381_530);
-        let a2 = _mm256_set1_pd(-0.356_563_782);
-        let a3 = _mm256_set1_pd(1.781_477_937);
-        let a4 = _mm256_set1_pd(-1.821_255_978);
-        let a5 = _mm256_set1_pd(1.330_274_429);
-
-        let mut poly = a5;
-        poly = _mm256_fmadd_pd(poly, t, a4);
-        poly = _mm256_fmadd_pd(poly, t, a3);
-        poly = _mm256_fmadd_pd(poly, t, a2);
-        poly = _mm256_fmadd_pd(poly, t, a1);
-        poly = _mm256_mul_pd(poly, t);
-
-        let approx = _mm256_fnmadd_pd(unsafe { normal_pdf_pd(z) }, poly, one);
-        let reflected = _mm256_sub_pd(one, approx);
-        let neg_mask = _mm256_cmp_pd(x, zero, _CMP_LT_OQ);
-        _mm256_blendv_pd(approx, reflected, neg_mask)
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2,fma")]
-    unsafe fn load4(values: &[f64], i: usize) -> __m256d {
-        // SAFETY: caller guarantees there are at least 4 values starting at `i`.
-        unsafe { _mm256_loadu_pd(values.as_ptr().add(i)) }
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2,fma")]
-    unsafe fn store4(values: &mut [f64], i: usize, v: __m256d) {
-        // SAFETY: caller guarantees there are at least 4 values starting at `i`.
-        unsafe { _mm256_storeu_pd(values.as_mut_ptr().add(i), v) };
-    }
 
     #[target_feature(enable = "avx2,fma")]
     pub(super) unsafe fn normal_cdf_batch_avx2(xs: &[f64], out: &mut [f64]) {
@@ -320,11 +215,11 @@ mod avx2_impl {
         let mut i = 0usize;
         while i + 4 <= n {
             // SAFETY: bounds are checked in loop condition.
-            let x = unsafe { load4(xs, i) };
+            let x = unsafe { load_f64x4(xs, i) };
             // SAFETY: target feature is enabled by this function attribute.
-            let y = unsafe { normal_cdf_pd(x) };
+            let y = unsafe { norm_cdf_f64x4(x) };
             // SAFETY: bounds are checked in loop condition.
-            unsafe { store4(out, i, y) };
+            unsafe { store_f64x4(out, i, y) };
             i += 4;
         }
         while i < n {
@@ -359,27 +254,27 @@ mod avx2_impl {
         let df_r = (-r * t).exp();
         let df_q = (-q * t).exp();
 
-        let drift_v = _mm256_set1_pd(drift);
-        let inv_sig_sqrt_t_v = _mm256_set1_pd(inv_sig_sqrt_t);
-        let sig_sqrt_t_v = _mm256_set1_pd(sig_sqrt_t);
-        let df_r_v = _mm256_set1_pd(df_r);
-        let df_q_v = _mm256_set1_pd(df_q);
+        let drift_v = unsafe { splat_f64x4(drift) };
+        let inv_sig_sqrt_t_v = unsafe { splat_f64x4(inv_sig_sqrt_t) };
+        let sig_sqrt_t_v = unsafe { splat_f64x4(sig_sqrt_t) };
+        let df_r_v = unsafe { splat_f64x4(df_r) };
+        let df_q_v = unsafe { splat_f64x4(df_q) };
         let zero = _mm256_setzero_pd();
 
         let n = spots.len();
         let mut i = 0usize;
         while i + 4 <= n {
             // SAFETY: bounds are checked in loop condition.
-            let s = unsafe { load4(spots, i) };
+            let s = unsafe { load_f64x4(spots, i) };
             // SAFETY: bounds are checked in loop condition.
-            let k = unsafe { load4(strikes, i) };
-            let ln_sk = unsafe { ln256_pd_scalar(_mm256_div_pd(s, k)) };
+            let k = unsafe { load_f64x4(strikes, i) };
+            let ln_sk = unsafe { ln_f64x4(_mm256_div_pd(s, k)) };
 
             let d1 = _mm256_mul_pd(_mm256_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm256_sub_pd(d1, sig_sqrt_t_v);
 
-            let nd1 = unsafe { normal_cdf_pd(d1) };
-            let nd2 = unsafe { normal_cdf_pd(d2) };
+            let nd1 = unsafe { norm_cdf_f64x4(d1) };
+            let nd2 = unsafe { norm_cdf_f64x4(d2) };
 
             let call = _mm256_sub_pd(
                 _mm256_mul_pd(_mm256_mul_pd(s, df_q_v), nd1),
@@ -388,15 +283,15 @@ mod avx2_impl {
 
             let put = _mm256_sub_pd(
                 _mm256_mul_pd(_mm256_mul_pd(k, df_r_v), unsafe {
-                    normal_cdf_pd(_mm256_sub_pd(zero, d2))
+                    norm_cdf_f64x4(_mm256_sub_pd(zero, d2))
                 }),
                 _mm256_mul_pd(_mm256_mul_pd(s, df_q_v), unsafe {
-                    normal_cdf_pd(_mm256_sub_pd(zero, d1))
+                    norm_cdf_f64x4(_mm256_sub_pd(zero, d1))
                 }),
             );
 
             // SAFETY: bounds are checked in loop condition.
-            unsafe { store4(out, i, if is_call { call } else { put }) };
+            unsafe { store_f64x4(out, i, if is_call { call } else { put }) };
             i += 4;
         }
 
@@ -440,36 +335,36 @@ mod avx2_impl {
         let df_q = (-q * t).exp();
         let denom_gamma = vol * sqrt_t;
 
-        let drift_v = _mm256_set1_pd(drift);
-        let inv_sig_sqrt_t_v = _mm256_set1_pd(inv_sig_sqrt_t);
-        let sig_sqrt_t_v = _mm256_set1_pd(sig_sqrt_t);
-        let df_r_v = _mm256_set1_pd(df_r);
-        let df_q_v = _mm256_set1_pd(df_q);
-        let sqrt_t_v = _mm256_set1_pd(sqrt_t);
-        let vol_v = _mm256_set1_pd(vol);
-        let q_v = _mm256_set1_pd(q);
-        let r_v = _mm256_set1_pd(r);
-        let one = _mm256_set1_pd(1.0);
+        let drift_v = unsafe { splat_f64x4(drift) };
+        let inv_sig_sqrt_t_v = unsafe { splat_f64x4(inv_sig_sqrt_t) };
+        let sig_sqrt_t_v = unsafe { splat_f64x4(sig_sqrt_t) };
+        let df_r_v = unsafe { splat_f64x4(df_r) };
+        let df_q_v = unsafe { splat_f64x4(df_q) };
+        let sqrt_t_v = unsafe { splat_f64x4(sqrt_t) };
+        let vol_v = unsafe { splat_f64x4(vol) };
+        let q_v = unsafe { splat_f64x4(q) };
+        let r_v = unsafe { splat_f64x4(r) };
+        let one = unsafe { splat_f64x4(1.0) };
         let zero = _mm256_setzero_pd();
-        let denom_gamma_v = _mm256_set1_pd(denom_gamma);
+        let denom_gamma_v = unsafe { splat_f64x4(denom_gamma) };
 
         let n = spots.len();
         let mut i = 0usize;
         while i + 4 <= n {
             // SAFETY: bounds are checked in loop condition.
-            let s = unsafe { load4(spots, i) };
+            let s = unsafe { load_f64x4(spots, i) };
             // SAFETY: bounds are checked in loop condition.
-            let k = unsafe { load4(strikes, i) };
-            let ln_sk = unsafe { ln256_pd_scalar(_mm256_div_pd(s, k)) };
+            let k = unsafe { load_f64x4(strikes, i) };
+            let ln_sk = unsafe { ln_f64x4(_mm256_div_pd(s, k)) };
 
             let d1 = _mm256_mul_pd(_mm256_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm256_sub_pd(d1, sig_sqrt_t_v);
 
-            let nd1 = unsafe { normal_cdf_pd(d1) };
-            let nd2 = unsafe { normal_cdf_pd(d2) };
-            let nmd1 = unsafe { normal_cdf_pd(_mm256_sub_pd(zero, d1)) };
-            let nmd2 = unsafe { normal_cdf_pd(_mm256_sub_pd(zero, d2)) };
-            let pdf_d1 = unsafe { normal_pdf_pd(d1) };
+            let nd1 = unsafe { norm_cdf_f64x4(d1) };
+            let nd2 = unsafe { norm_cdf_f64x4(d2) };
+            let nmd1 = unsafe { norm_cdf_f64x4(_mm256_sub_pd(zero, d1)) };
+            let nmd2 = unsafe { norm_cdf_f64x4(_mm256_sub_pd(zero, d2)) };
+            let pdf_d1 = unsafe { norm_pdf_f64x4(d1) };
 
             let delta_call = _mm256_mul_pd(df_q_v, nd1);
             let delta_put = _mm256_mul_pd(df_q_v, _mm256_sub_pd(nd1, one));
@@ -486,7 +381,7 @@ mod avx2_impl {
                 _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(s, df_q_v), pdf_d1), vol_v);
             let theta_common = _mm256_div_pd(
                 _mm256_sub_pd(zero, theta_common),
-                _mm256_mul_pd(_mm256_set1_pd(2.0), sqrt_t_v),
+                _mm256_mul_pd(unsafe { splat_f64x4(2.0) }, sqrt_t_v),
             );
 
             let theta_call = _mm256_sub_pd(
@@ -508,10 +403,10 @@ mod avx2_impl {
 
             // SAFETY: bounds are checked in loop condition.
             unsafe {
-                store4(delta, i, delta_v);
-                store4(gamma, i, gamma_v);
-                store4(vega, i, vega_v);
-                store4(theta, i, theta_v);
+                store_f64x4(delta, i, delta_v);
+                store_f64x4(gamma, i, gamma_v);
+                store_f64x4(vega, i, vega_v);
+                store_f64x4(theta, i, theta_v);
             }
 
             i += 4;

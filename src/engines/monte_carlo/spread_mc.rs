@@ -1,24 +1,10 @@
-use std::collections::HashMap;
-
-use rand::{Rng, RngExt, SeedableRng};
-use rand::rngs::StdRng;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;
-use crate::math::normal_inv_cdf;
-
-#[inline]
-fn uniform_open01(u: f64) -> f64 {
-    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
-}
-
-#[inline]
-fn sample_standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
-    normal_inv_cdf(uniform_open01(rng.random::<f64>()))
-}
+use crate::math::fast_rng::{resolve_stream_seed, sample_standard_normal, FastRng, FastRngKind};
 
 /// Monte Carlo spread-option engine under correlated GBM.
 #[derive(Debug, Clone)]
@@ -29,6 +15,10 @@ pub struct SpreadMonteCarloEngine {
     pub seed: u64,
     /// Enables antithetic variates.
     pub antithetic: bool,
+    /// Pseudo-random number generator backend.
+    pub rng_kind: FastRngKind,
+    /// Reproducible stream splitting mode.
+    pub reproducible: bool,
 }
 
 impl SpreadMonteCarloEngine {
@@ -38,12 +28,43 @@ impl SpreadMonteCarloEngine {
             num_paths,
             seed,
             antithetic: true,
+            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            reproducible: true,
         }
     }
 
     /// Enables/disables antithetic variates.
     pub fn with_antithetic(mut self, antithetic: bool) -> Self {
         self.antithetic = antithetic;
+        self
+    }
+
+    /// Chooses RNG backend for path simulation.
+    pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
+        self.rng_kind = rng_kind;
+        if matches!(rng_kind, FastRngKind::ThreadRng) {
+            self.reproducible = false;
+        }
+        self
+    }
+
+    /// Uses a reproducible seed.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.reproducible = true;
+        self
+    }
+
+    /// Uses non-reproducible stream seeds.
+    pub fn with_randomized_streams(mut self) -> Self {
+        self.reproducible = false;
+        self
+    }
+
+    /// Uses thread-local RNG (non-reproducible).
+    pub fn with_thread_rng(mut self) -> Self {
+        self.rng_kind = FastRngKind::ThreadRng;
+        self.reproducible = false;
         self
     }
 }
@@ -66,7 +87,7 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
                 price: (instrument.s1 - instrument.s2 - instrument.k).max(0.0),
                 stderr: Some(0.0),
                 greeks: None,
-                diagnostics: HashMap::new(),
+                diagnostics: crate::core::Diagnostics::new(),
             });
         }
 
@@ -85,9 +106,13 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
         } else {
             self.num_paths
         };
+        let rng_kind = self.rng_kind;
+        let reproducible = self.reproducible;
+        let base_seed = self.seed;
 
         let simulate_sample = |i: usize| {
-            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
+            let seed = resolve_stream_seed(base_seed, i, reproducible);
+            let mut rng = FastRng::from_seed(rng_kind, seed);
             let z1 = sample_standard_normal(&mut rng);
             let z2 = sample_standard_normal(&mut rng);
 
@@ -121,13 +146,9 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
             0.0
         };
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("num_paths".to_string(), self.num_paths as f64);
-        diagnostics.insert(
-            "antithetic".to_string(),
-            if self.antithetic { 1.0 } else { 0.0 },
-        );
-        diagnostics.insert("rho".to_string(), instrument.rho);
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("num_paths", self.num_paths as f64);
+        diagnostics.insert("rho", instrument.rho);
 
         Ok(PricingResult {
             price: discount * mean,

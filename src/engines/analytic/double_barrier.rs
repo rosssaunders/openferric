@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
@@ -212,14 +211,13 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
                 }
             };
 
-            let mut diagnostics = HashMap::new();
-            diagnostics.insert("series_terms".to_string(), self.series_terms as f64);
-            diagnostics.insert(
-                "inside_barriers".to_string(),
+            let mut diagnostics = crate::core::Diagnostics::new();
+            diagnostics.insert("series_terms", self.series_terms as f64);
+            diagnostics.insert("inside_barriers",
                 if inside { 1.0 } else { 0.0 },
             );
-            diagnostics.insert("double_knockout_base".to_string(), 0.0);
-            diagnostics.insert("survival_digital".to_string(), 0.0);
+            diagnostics.insert("double_knockout_base", 0.0);
+            diagnostics.insert("survival_digital", 0.0);
 
             return Ok(PricingResult {
                 price,
@@ -294,15 +292,14 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
         }
         .max(0.0);
 
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("series_terms".to_string(), self.series_terms as f64);
-        diagnostics.insert("vol".to_string(), vol);
-        diagnostics.insert(
-            "inside_barriers".to_string(),
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert("series_terms", self.series_terms as f64);
+        diagnostics.insert("vol", vol);
+        diagnostics.insert("inside_barriers",
             if inside { 1.0 } else { 0.0 },
         );
-        diagnostics.insert("double_knockout_base".to_string(), double_knockout_base);
-        diagnostics.insert("survival_digital".to_string(), survival_digital);
+        diagnostics.insert("double_knockout_base", double_knockout_base);
+        diagnostics.insert("survival_digital", survival_digital);
 
         Ok(PricingResult {
             price,

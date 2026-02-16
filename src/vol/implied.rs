@@ -1,7 +1,10 @@
 use crate::math::normal_pdf;
 use crate::pricing::OptionType;
 use crate::pricing::european::black_scholes_price;
+use crate::vol::jaeckel::implied_vol_jaeckel;
 use std::f64::consts::PI;
+#[cfg(test)]
+use rand::RngExt;
 
 pub fn lets_be_rational_initial_guess(
     option_type: OptionType,
@@ -31,6 +34,70 @@ pub fn lets_be_rational_initial_guess(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn implied_vol(
+    option_type: OptionType,
+    s: f64,
+    k: f64,
+    r: f64,
+    t: f64,
+    market_price: f64,
+    tol: f64,
+    max_iter: usize,
+) -> Result<f64, String> {
+    if !s.is_finite()
+        || !k.is_finite()
+        || !r.is_finite()
+        || !t.is_finite()
+        || !market_price.is_finite()
+    {
+        return Err("inputs must be finite".to_string());
+    }
+    if s <= 0.0 || k <= 0.0 {
+        return Err("s and k must be > 0".to_string());
+    }
+    if t <= 0.0 {
+        return Err("t must be > 0".to_string());
+    }
+    if market_price < 0.0 {
+        return Err("market_price must be >= 0".to_string());
+    }
+
+    let df = (-r * t).exp();
+    let intrinsic = match option_type {
+        OptionType::Call => (s - k * df).max(0.0),
+        OptionType::Put => (k * df - s).max(0.0),
+    };
+    let upper = match option_type {
+        OptionType::Call => s,
+        OptionType::Put => k * df,
+    };
+    let price_tol = 32.0 * f64::EPSILON * (1.0 + upper.abs());
+    if market_price < intrinsic - price_tol || market_price > upper + price_tol {
+        return Err(format!(
+            "market_price out of no-arbitrage bounds: price={market_price}, intrinsic={intrinsic}, upper={upper}"
+        ));
+    }
+    if market_price <= intrinsic + price_tol {
+        return Ok(0.0);
+    }
+
+    let growth = (r * t).exp();
+    if growth.is_finite() {
+        let forward = s * growth;
+        let undiscounted_price = market_price * growth;
+        let is_call = matches!(option_type, OptionType::Call);
+        if let Ok(iv) = implied_vol_jaeckel(undiscounted_price, forward, k, t, is_call)
+            && iv.is_finite()
+            && iv >= 0.0
+        {
+            return Ok(iv);
+        }
+    }
+
+    implied_vol_newton(option_type, s, k, r, t, market_price, tol, max_iter)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn implied_vol_newton(
     option_type: OptionType,
     s: f64,
@@ -44,8 +111,11 @@ pub fn implied_vol_newton(
     if t <= 0.0 {
         return Err("t must be > 0".to_string());
     }
-    if market_price <= 0.0 {
-        return Err("market_price must be > 0".to_string());
+    if market_price < 0.0 {
+        return Err("market_price must be >= 0".to_string());
+    }
+    if market_price == 0.0 {
+        return Ok(0.0);
     }
 
     let mut sigma = lets_be_rational_initial_guess(option_type, s, k, r, t, market_price);
@@ -95,6 +165,8 @@ pub fn implied_vol_newton(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use rand::{Rng, SeedableRng};
+    use std::time::Instant;
 
     #[test]
     fn implied_vol_recovers_true_sigma_call() {
@@ -145,5 +217,141 @@ mod tests {
         let repriced = black_scholes_price(option_type, s, k, r, iv, t);
 
         assert_relative_eq!(repriced, market_price, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn jaeckel_main_path_round_trip_to_machine_precision() {
+        let cases = [
+            (OptionType::Call, 100.0, 80.0, 0.03, 0.2, 0.5),
+            (OptionType::Call, 100.0, 100.0, 0.01, 0.3, 1.0),
+            (OptionType::Call, 100.0, 120.0, 0.02, 0.25, 2.0),
+            (OptionType::Put, 100.0, 80.0, 0.03, 0.2, 0.5),
+            (OptionType::Put, 100.0, 100.0, 0.01, 0.3, 1.0),
+            (OptionType::Put, 100.0, 120.0, 0.02, 0.25, 2.0),
+        ];
+
+        for (option_type, s, k, r, sigma, t) in cases {
+            let price = black_scholes_price(option_type, s, k, r, sigma, t);
+            let iv = implied_vol(option_type, s, k, r, t, price, 1e-14, 32).unwrap();
+            let repriced = black_scholes_price(option_type, s, k, r, iv, t);
+            let err = (repriced - price).abs();
+            assert!(
+                err <= 1e-12 * price.max(1.0),
+                "option={option_type:?} s={s} k={k} r={r} t={t} sigma={sigma} iv={iv} err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn jaeckel_matches_newton_for_normal_cases() {
+        let strikes = [85.0, 95.0, 100.0, 105.0, 115.0];
+        let expiries = [0.25, 1.0, 3.0];
+        let sigmas = [0.1, 0.2, 0.4];
+
+        for &option_type in &[OptionType::Call, OptionType::Put] {
+            for &k in &strikes {
+                for &t in &expiries {
+                    for &sigma in &sigmas {
+                        let s = 100.0;
+                        let r = 0.015;
+                        let price = black_scholes_price(option_type, s, k, r, sigma, t);
+                        let iv_j = implied_vol(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
+                        let iv_n =
+                            implied_vol_newton(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
+                        assert!(
+                            (iv_j - iv_n).abs() < 1e-10,
+                            "option={option_type:?} k={k} t={t} sigma={sigma} iv_j={iv_j} iv_n={iv_n}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jaeckel_handles_extreme_moneyness_ratios() {
+        let s = 100.0;
+        let r = 0.0;
+        let t = 30.0;
+        let sigma = 0.8;
+
+        let extreme_ratios = [0.01, 100.0];
+        for &ratio in &extreme_ratios {
+            let k = s * ratio;
+            for &option_type in &[OptionType::Call, OptionType::Put] {
+                let price = black_scholes_price(option_type, s, k, r, sigma, t);
+                let iv = implied_vol(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
+                assert!(
+                    (iv - sigma).abs() < 1e-8,
+                    "ratio={ratio} option={option_type:?} iv={iv} sigma={sigma}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jaeckel_handles_short_and_long_expiry() {
+        let s = 100.0;
+        let k = 100.0;
+        let r = 0.01;
+        let sigma = 0.25;
+        for &t in &[0.001, 30.0] {
+            let price = black_scholes_price(OptionType::Call, s, k, r, sigma, t);
+            let iv = implied_vol(OptionType::Call, s, k, r, t, price, 1e-12, 64).unwrap();
+            assert!((iv - sigma).abs() < 1e-10, "t={t} iv={iv} sigma={sigma}");
+        }
+    }
+
+    #[test]
+    fn jaeckel_handles_near_zero_vol() {
+        let s = 100.0;
+        let k = 100.0;
+        let r = 0.0;
+        let t = 1.0;
+        let sigma = 0.001;
+        let price = black_scholes_price(OptionType::Call, s, k, r, sigma, t);
+        let iv = implied_vol(OptionType::Call, s, k, r, t, price, 1e-14, 64).unwrap();
+        assert!((iv - sigma).abs() < 1e-9, "iv={iv} sigma={sigma}");
+    }
+
+    #[test]
+    #[ignore = "performance benchmark; run with --ignored"]
+    fn benchmark_jaeckel_vs_newton_for_10k_random_options() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let mut inputs = Vec::with_capacity(10_000);
+        for _ in 0..10_000 {
+            let s = 100.0;
+            let k = s * rng.random_range(0.5..1.5);
+            let r = rng.random_range(-0.01..0.05);
+            let t = rng.random_range(0.05..5.0);
+            let sigma = rng.random_range(0.05..1.2);
+            let option_type = if rng.random_bool(0.5) {
+                OptionType::Call
+            } else {
+                OptionType::Put
+            };
+            let price = black_scholes_price(option_type, s, k, r, sigma, t);
+            inputs.push((option_type, s, k, r, t, price));
+        }
+
+        let start_j = Instant::now();
+        let mut sum_j = 0.0;
+        for &(option_type, s, k, r, t, price) in &inputs {
+            sum_j += implied_vol(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
+        }
+        let dur_j = start_j.elapsed();
+
+        let start_n = Instant::now();
+        let mut sum_n = 0.0;
+        for &(option_type, s, k, r, t, price) in &inputs {
+            sum_n += implied_vol_newton(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
+        }
+        let dur_n = start_n.elapsed();
+
+        assert!(sum_j.is_finite() && sum_n.is_finite());
+        assert!(
+            dur_j < dur_n,
+            "expected jaeckel path to be faster: jaeckel={dur_j:?}, newton={dur_n:?}"
+        );
     }
 }
