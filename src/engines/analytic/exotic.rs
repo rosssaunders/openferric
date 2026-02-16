@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::exotic::{
-    ChooserOption, CompoundOption, ExoticOption, LookbackFloatingOption, QuantoOption,
+    ChooserOption, CompoundOption, ExoticOption, LookbackFixedOption, LookbackFloatingOption,
+    QuantoOption,
 };
 use crate::market::Market;
 use crate::math::{gauss_legendre_integrate, normal_cdf, normal_pdf};
@@ -38,6 +39,16 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
                 }
                 diagnostics.insert("vol".to_string(), vol);
                 floating_lookback_price(spec, market, vol)
+            }
+            ExoticOption::LookbackFixed(spec) => {
+                let vol = market.vol_for(spec.strike, spec.expiry.max(1.0e-12));
+                if vol <= 0.0 {
+                    return Err(PricingError::InvalidInput(
+                        "market volatility must be > 0".to_string(),
+                    ));
+                }
+                diagnostics.insert("vol".to_string(), vol);
+                fixed_lookback_price(spec, market, vol)
             }
             ExoticOption::Chooser(spec) => {
                 let vol = market.vol_for(spec.strike, spec.expiry.max(1.0e-12));
@@ -178,16 +189,14 @@ fn floating_lookback_call_formula(
     let a1 = ((spot / s_min).ln() + (carry + 0.5 * vol * vol) * expiry) / (vol * sqrt_t);
     let a2 = a1 - vol * sqrt_t;
     let a3 = a1 - 2.0 * carry * sqrt_t / vol;
-    let y = (2.0 * carry / (vol * vol)) * (spot / s_min).ln();
+    let y = (-2.0 * carry / (vol * vol)) * (spot / s_min).ln();
 
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
     let phi = (vol * vol) / (2.0 * carry);
 
-    spot * df_q * normal_cdf(a1)
-        - spot * df_q * phi * normal_cdf(-a1)
-        - s_min * df_r * normal_cdf(a2)
-        + s_min * df_r * y.exp() * normal_cdf(-a3)
+    spot * df_q * normal_cdf(a1) - s_min * df_r * normal_cdf(a2)
+        + spot * df_r * phi * (y.exp() * normal_cdf(-a3) - (carry * expiry).exp() * normal_cdf(-a1))
 }
 
 fn floating_lookback_put_formula(
@@ -212,15 +221,157 @@ fn floating_lookback_put_formula(
     let b1 = ((spot / s_max).ln() + (carry + 0.5 * vol * vol) * expiry) / (vol * sqrt_t);
     let b2 = b1 - vol * sqrt_t;
     let b3 = b1 - 2.0 * carry * sqrt_t / vol;
-    let y = (2.0 * carry / (vol * vol)) * (spot / s_max).ln();
+    let y = (-2.0 * carry / (vol * vol)) * (spot / s_max).ln();
 
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
     let phi = (vol * vol) / (2.0 * carry);
 
     s_max * df_r * normal_cdf(-b2) - spot * df_q * normal_cdf(-b1)
-        + spot * df_q * phi * normal_cdf(b1)
-        - s_max * df_r * y.exp() * normal_cdf(b3)
+        + spot * df_r * phi * (-(y.exp() * normal_cdf(b3)) + (carry * expiry).exp() * normal_cdf(b1))
+}
+
+fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -> f64 {
+    if spec.expiry <= 0.0 {
+        return match spec.option_type {
+            OptionType::Call => {
+                let s_max = spec.observed_extreme.unwrap_or(market.spot).max(market.spot);
+                (s_max - spec.strike).max(0.0)
+            }
+            OptionType::Put => {
+                let s_min = spec.observed_extreme.unwrap_or(market.spot).min(market.spot);
+                (spec.strike - s_min).max(0.0)
+            }
+        };
+    }
+
+    let carry = market.rate - market.dividend_yield;
+    match spec.option_type {
+        OptionType::Call => {
+            let s_max = spec.observed_extreme.unwrap_or(market.spot).max(market.spot);
+            fixed_lookback_call_formula(
+                market.spot,
+                spec.strike,
+                s_max,
+                market.rate,
+                market.dividend_yield,
+                carry,
+                vol,
+                spec.expiry,
+            )
+        }
+        OptionType::Put => {
+            let s_min = spec.observed_extreme.unwrap_or(market.spot).min(market.spot);
+            fixed_lookback_put_formula(
+                market.spot,
+                spec.strike,
+                s_min,
+                market.rate,
+                market.dividend_yield,
+                carry,
+                vol,
+                spec.expiry,
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fixed_lookback_call_formula(
+    spot: f64,
+    strike: f64,
+    s_max: f64,
+    rate: f64,
+    dividend_yield: f64,
+    carry: f64,
+    vol: f64,
+    expiry: f64,
+) -> f64 {
+    if carry.abs() < 1.0e-8 {
+        let eps = 1.0e-5;
+        let q_hi = rate - eps;
+        let q_lo = rate + eps;
+        let hi = fixed_lookback_call_formula(
+            spot, strike, s_max, rate, q_hi, eps, vol, expiry,
+        );
+        let lo = fixed_lookback_call_formula(
+            spot, strike, s_max, rate, q_lo, -eps, vol, expiry,
+        );
+        return 0.5 * (hi + lo);
+    }
+
+    let sqrt_t = expiry.sqrt();
+    let sig_sqrt_t = vol * sqrt_t;
+    let df_q = (-dividend_yield * expiry).exp();
+    let df_r = (-rate * expiry).exp();
+    let correction_scale = spot * df_r * (vol * vol / (2.0 * carry));
+    let carry_term = (carry * expiry).exp();
+    let shift = 2.0 * carry * sqrt_t / vol;
+
+    if strike > s_max {
+        let d1 = ((spot / strike).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let d2 = d1 - sig_sqrt_t;
+        let d3 = d1 - shift;
+        let power = (spot / strike).powf(-2.0 * carry / (vol * vol));
+
+        spot * df_q * normal_cdf(d1) - strike * df_r * normal_cdf(d2)
+            + correction_scale * (-power * normal_cdf(d3) + carry_term * normal_cdf(d1))
+    } else {
+        let e1 = ((spot / s_max).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let e2 = e1 - sig_sqrt_t;
+        let e3 = e1 - shift;
+        let power = (spot / s_max).powf(-2.0 * carry / (vol * vol));
+
+        df_r * (s_max - strike) + spot * df_q * normal_cdf(e1) - s_max * df_r * normal_cdf(e2)
+            + correction_scale * (-power * normal_cdf(e3) + carry_term * normal_cdf(e1))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fixed_lookback_put_formula(
+    spot: f64,
+    strike: f64,
+    s_min: f64,
+    rate: f64,
+    dividend_yield: f64,
+    carry: f64,
+    vol: f64,
+    expiry: f64,
+) -> f64 {
+    if carry.abs() < 1.0e-8 {
+        let eps = 1.0e-5;
+        let q_hi = rate - eps;
+        let q_lo = rate + eps;
+        let hi = fixed_lookback_put_formula(spot, strike, s_min, rate, q_hi, eps, vol, expiry);
+        let lo = fixed_lookback_put_formula(spot, strike, s_min, rate, q_lo, -eps, vol, expiry);
+        return 0.5 * (hi + lo);
+    }
+
+    let sqrt_t = expiry.sqrt();
+    let sig_sqrt_t = vol * sqrt_t;
+    let df_q = (-dividend_yield * expiry).exp();
+    let df_r = (-rate * expiry).exp();
+    let correction_scale = spot * df_r * (vol * vol / (2.0 * carry));
+    let carry_term = (carry * expiry).exp();
+    let shift = 2.0 * carry * sqrt_t / vol;
+
+    if strike < s_min {
+        let d1 = ((spot / strike).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let d2 = d1 - sig_sqrt_t;
+        let d3 = -d1 + shift;
+        let power = (spot / strike).powf(-2.0 * carry / (vol * vol));
+
+        strike * df_r * normal_cdf(-d2) - spot * df_q * normal_cdf(-d1)
+            + correction_scale * (power * normal_cdf(d3) - carry_term * normal_cdf(-d1))
+    } else {
+        let f1 = ((spot / s_min).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let f2 = f1 - sig_sqrt_t;
+        let f3 = -f1 + shift;
+        let power = (spot / s_min).powf(-2.0 * carry / (vol * vol));
+
+        df_r * (strike - s_min) - spot * df_q * normal_cdf(-f1) + s_min * df_r * normal_cdf(-f2)
+            + correction_scale * (power * normal_cdf(f3) - carry_term * normal_cdf(-f1))
+    }
 }
 
 fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
@@ -346,6 +497,8 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+    use crate::mc::{GbmPathGenerator, MonteCarloEngine};
+    use crate::models::Gbm;
 
     #[test]
     fn lookback_call_matches_haug_reference_value() {
@@ -368,7 +521,94 @@ mod tests {
         let engine = ExoticAnalyticEngine::new();
         let price = engine.price(&option, &market).unwrap().price;
 
-        assert_relative_eq!(price, 25.862_607_39, epsilon = 3e-6);
+        assert_relative_eq!(price, 25.353_355_27, epsilon = 2e-5);
+    }
+
+    #[test]
+    fn fixed_lookback_call_matches_haug_reference_values() {
+        // Source: Haug (1998), pp. 63-64.
+        let references = [
+            (95.0, 0.10, 13.2687),
+            (95.0, 0.20, 18.9263),
+            (95.0, 0.30, 24.9857),
+            (100.0, 0.10, 8.5126),
+            (100.0, 0.20, 14.1702),
+            (100.0, 0.30, 20.2296),
+        ];
+
+        let engine = ExoticAnalyticEngine::new();
+        for (strike, vol, expected) in references {
+            let market = Market::builder()
+                .spot(100.0)
+                .rate(0.10)
+                .dividend_yield(0.00)
+                .flat_vol(vol)
+                .build()
+                .expect("valid market");
+
+            let option = ExoticOption::LookbackFixed(LookbackFixedOption {
+                option_type: OptionType::Call,
+                strike,
+                expiry: 0.50,
+                observed_extreme: Some(100.0),
+            });
+
+            let price = engine.price(&option, &market).expect("pricing succeeds").price;
+            assert_relative_eq!(price, expected, epsilon = 1e-4);
+        }
+    }
+
+    #[test]
+    fn mc_floating_lookback_converges_to_analytic_within_two_percent() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.20)
+            .build()
+            .expect("valid market");
+
+        let option = LookbackFloatingOption {
+            option_type: OptionType::Call,
+            expiry: 0.50,
+            observed_extreme: Some(90.0),
+        };
+
+        let analytic = ExoticAnalyticEngine::new()
+            .price(&ExoticOption::LookbackFloating(option.clone()), &market)
+            .expect("analytic pricing succeeds")
+            .price;
+
+        let vol = market.vol_for(market.spot, option.expiry);
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: market.rate - market.dividend_yield,
+                sigma: vol,
+            },
+            s0: market.spot,
+            maturity: option.expiry,
+            steps: 756,
+        };
+        let discount_factor = (-market.rate * option.expiry).exp();
+        let observed_min = option.observed_extreme.unwrap_or(market.spot);
+
+        let (mc, _stderr) = MonteCarloEngine::new(50_000, 42).with_antithetic(true).run(
+            &generator,
+            |path| {
+                let path_min = path.iter().fold(observed_min, |acc, &s| acc.min(s));
+                (path[path.len() - 1] - path_min).max(0.0)
+            },
+            discount_factor,
+        );
+
+        let rel_err = ((mc - analytic) / analytic).abs();
+        assert!(
+            rel_err <= 0.02,
+            "MC floating-lookback mismatch: mc={} analytic={} rel_err={}",
+            mc,
+            analytic,
+            rel_err
+        );
     }
 
     #[test]

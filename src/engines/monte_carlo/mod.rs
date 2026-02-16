@@ -2,6 +2,4 @@
 
 pub mod mc_engine;
 
-pub use mc_engine::{
-    ControlVariateConfig, MonteCarloInstrument, MonteCarloPricingEngine, VarianceReduction,
-};
+pub use mc_engine::{MonteCarloInstrument, MonteCarloPricingEngine, VarianceReduction};

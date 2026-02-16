@@ -125,7 +125,7 @@ impl MonteCarloEngine {
         let steps = generator.steps();
         let control = self.control_variate.clone();
 
-        let mut values = (0..samples)
+        let values = (0..samples)
             .into_par_iter()
             .map(|i| {
                 let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
@@ -147,17 +147,12 @@ impl MonteCarloEngine {
                     let path_a = generator.generate_from_normals(&z1a, &z2a);
                     let xa = payoff(&path_a);
                     let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path_a));
-                    vec![(x, y), (xa, ya)]
+                    (0.5 * (x + xa), 0.5 * (y + ya))
                 } else {
-                    vec![(x, y)]
+                    (x, y)
                 }
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .flatten()
             .collect::<Vec<_>>();
-
-        values.truncate(self.num_paths);
         let n = values.len() as f64;
 
         let adjusted: Vec<f64> = if let Some(cv) = &control {

@@ -130,4 +130,20 @@ mod tests {
         assert!(guess > 0.0);
         assert!(guess < 2.0);
     }
+
+    #[test]
+    fn implied_vol_round_trip_reprices_market_price() {
+        let option_type = OptionType::Call;
+        let s = 100.0;
+        let k = 105.0;
+        let r = 0.03;
+        let t = 1.4;
+        let sigma = 0.28;
+
+        let market_price = black_scholes_price(option_type, s, k, r, sigma, t);
+        let iv = implied_vol_newton(option_type, s, k, r, t, market_price, 1e-12, 100).unwrap();
+        let repriced = black_scholes_price(option_type, s, k, r, iv, t);
+
+        assert_relative_eq!(repriced, market_price, epsilon = 1e-9);
+    }
 }

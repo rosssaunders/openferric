@@ -12,6 +12,20 @@ pub struct LookbackFloatingOption {
     pub observed_extreme: Option<f64>,
 }
 
+/// Fixed-strike lookback option.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LookbackFixedOption {
+    /// Call (payoff `max(S_max - K, 0)`) or put (payoff `max(K - S_min, 0)`).
+    pub option_type: OptionType,
+    /// Strike level.
+    pub strike: f64,
+    /// Expiry in years.
+    pub expiry: f64,
+    /// Observed running extreme up to valuation time.
+    /// For calls this is `S_max`; for puts this is `S_min`.
+    pub observed_extreme: Option<f64>,
+}
+
 /// Simple chooser option where the holder chooses call or put at `choose_time`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChooserOption {
@@ -64,6 +78,8 @@ pub struct CompoundOption {
 pub enum ExoticOption {
     /// Floating-strike lookback option.
     LookbackFloating(LookbackFloatingOption),
+    /// Fixed-strike lookback option.
+    LookbackFixed(LookbackFixedOption),
     /// Chooser option.
     Chooser(ChooserOption),
     /// Quanto option.
@@ -91,6 +107,26 @@ impl ExoticOption {
         })
     }
 
+    /// Builds a fixed-strike lookback call.
+    pub fn lookback_fixed_call(strike: f64, expiry: f64) -> Self {
+        Self::LookbackFixed(LookbackFixedOption {
+            option_type: OptionType::Call,
+            strike,
+            expiry,
+            observed_extreme: None,
+        })
+    }
+
+    /// Builds a fixed-strike lookback put.
+    pub fn lookback_fixed_put(strike: f64, expiry: f64) -> Self {
+        Self::LookbackFixed(LookbackFixedOption {
+            option_type: OptionType::Put,
+            strike,
+            expiry,
+            observed_extreme: None,
+        })
+    }
+
     /// Validates exotic instrument fields.
     pub fn validate(&self) -> Result<(), PricingError> {
         match self {
@@ -105,6 +141,25 @@ impl ExoticOption {
                 {
                     return Err(PricingError::InvalidInput(
                         "lookback observed_extreme must be > 0".to_string(),
+                    ));
+                }
+            }
+            Self::LookbackFixed(spec) => {
+                if spec.strike <= 0.0 {
+                    return Err(PricingError::InvalidInput(
+                        "lookback fixed strike must be > 0".to_string(),
+                    ));
+                }
+                if spec.expiry < 0.0 {
+                    return Err(PricingError::InvalidInput(
+                        "lookback fixed expiry must be >= 0".to_string(),
+                    ));
+                }
+                if let Some(extreme) = spec.observed_extreme
+                    && extreme <= 0.0
+                {
+                    return Err(PricingError::InvalidInput(
+                        "lookback fixed observed_extreme must be > 0".to_string(),
                     ));
                 }
             }

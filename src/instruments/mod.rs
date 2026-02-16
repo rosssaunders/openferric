@@ -8,6 +8,7 @@ pub mod vanilla;
 pub use asian::AsianOption;
 pub use barrier::{BarrierOption, BarrierOptionBuilder};
 pub use exotic::{
-    ChooserOption, CompoundOption, ExoticOption, LookbackFloatingOption, QuantoOption,
+    ChooserOption, CompoundOption, ExoticOption, LookbackFixedOption, LookbackFloatingOption,
+    QuantoOption,
 };
 pub use vanilla::VanillaOption;

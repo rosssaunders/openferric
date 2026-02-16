@@ -164,60 +164,6 @@ pub fn calibrate_svi(
     best
 }
 
-pub fn sabr_implied_vol_hagan(
-    forward: f64,
-    strike: f64,
-    maturity: f64,
-    alpha: f64,
-    beta: f64,
-    rho: f64,
-    nu: f64,
-) -> f64 {
-    let f = forward.max(1e-12);
-    let k = strike.max(1e-12);
-
-    if maturity <= 0.0 {
-        return 0.0;
-    }
-
-    let one_minus_beta = 1.0 - beta;
-    let fk = (f * k).powf(0.5 * one_minus_beta);
-    let log_fk = (f / k).ln();
-
-    let z = if alpha.abs() > 1e-12 {
-        (nu / alpha) * fk * log_fk
-    } else {
-        0.0
-    };
-
-    let x_z = if z.abs() < 1e-10 {
-        1.0 - 0.5 * rho * z + (rho * rho - 1.0 / 3.0) * z * z
-    } else {
-        ((1.0 - 2.0 * rho * z + z * z).sqrt() + z - rho).ln() - (1.0 - rho).ln()
-    };
-
-    let log_fk2 = log_fk * log_fk;
-    let log_fk4 = log_fk2 * log_fk2;
-
-    let denominator = fk
-        * (1.0
-            + one_minus_beta * one_minus_beta * log_fk2 / 24.0
-            + one_minus_beta.powi(4) * log_fk4 / 1920.0);
-
-    let term_t = 1.0
-        + ((one_minus_beta * one_minus_beta * alpha * alpha) / (24.0 * fk * fk)
-            + (rho * beta * nu * alpha) / (4.0 * fk)
-            + (2.0 - 3.0 * rho * rho) * nu * nu / 24.0)
-            * maturity;
-
-    if (f - k).abs() < 1e-10 {
-        (alpha / f.powf(one_minus_beta)) * term_t
-    } else {
-        let zx = if x_z.abs() > 1e-12 { z / x_z } else { 1.0 };
-        (alpha / denominator) * zx * term_t
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct VolSurface {
     expiries: Vec<f64>,
@@ -339,12 +285,6 @@ mod tests {
             / points.len() as f64;
 
         assert!(mse < 1e-6);
-    }
-
-    #[test]
-    fn sabr_hagan_vol_is_positive() {
-        let vol = sabr_implied_vol_hagan(100.0, 110.0, 1.0, 0.25, 0.7, -0.3, 0.6);
-        assert!(vol > 0.0);
     }
 
     #[test]

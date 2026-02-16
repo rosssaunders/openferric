@@ -2,33 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::{
-    Averaging, BarrierStyle, Instrument, PricingEngine, PricingError, PricingResult, StrikeType,
+    Averaging, BarrierStyle, ExerciseStyle, Instrument, OptionType, PricingEngine, PricingError,
+    PricingResult, StrikeType,
 };
 use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::Market;
 use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
-
-/// Shared payoff evaluator type for control variates.
-pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
-
-/// Control variate configuration.
-#[derive(Clone)]
-pub struct ControlVariateConfig {
-    /// Known expectation for the control variate.
-    pub expected: f64,
-    /// Path evaluator for the control variate quantity.
-    pub evaluator: PathEvaluator,
-}
-
-impl std::fmt::Debug for ControlVariateConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ControlVariateConfig")
-            .field("expected", &self.expected)
-            .field("evaluator", &"<path-evaluator>")
-            .finish()
-    }
-}
+use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
+use crate::pricing::european::black_scholes_price;
 
 /// Variance reduction scheme.
 #[derive(Debug, Clone)]
@@ -37,8 +19,10 @@ pub enum VarianceReduction {
     None,
     /// Antithetic variates.
     Antithetic,
-    /// User-provided control variate.
-    ControlVariate(ControlVariateConfig),
+    /// Built-in control variates:
+    /// - European vanilla uses Black-Scholes.
+    /// - Arithmetic fixed-strike Asian uses geometric Asian.
+    ControlVariate,
 }
 
 /// Instrument interface required by the generic Monte Carlo engine.
@@ -51,6 +35,10 @@ pub trait MonteCarloInstrument: Instrument {
     fn reference_strike(&self, spot: f64) -> f64;
     /// Computes path payoff.
     fn payoff_from_path(&self, path: &[f64]) -> f64;
+    /// Optional control variate for this instrument.
+    fn control_variate(&self, _market: &Market, _vol: f64) -> Option<ControlVariate> {
+        None
+    }
 }
 
 fn vanilla_payoff(option_type: crate::core::OptionType, spot: f64, strike: f64) -> f64 {
@@ -58,6 +46,19 @@ fn vanilla_payoff(option_type: crate::core::OptionType, spot: f64, strike: f64) 
         crate::core::OptionType::Call => (spot - strike).max(0.0),
         crate::core::OptionType::Put => (strike - spot).max(0.0),
     }
+}
+
+fn black_scholes_price_with_dividend(
+    option_type: OptionType,
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    vol: f64,
+    expiry: f64,
+) -> f64 {
+    let adjusted_spot = spot * (-dividend_yield * expiry).exp();
+    black_scholes_price(option_type, adjusted_spot, strike, rate, vol, expiry)
 }
 
 fn path_hits_barrier(path: &[f64], barrier: f64, direction: crate::core::BarrierDirection) -> bool {
@@ -120,6 +121,32 @@ impl MonteCarloInstrument for VanillaOption {
     fn payoff_from_path(&self, path: &[f64]) -> f64 {
         vanilla_payoff(self.option_type, path[path.len() - 1], self.strike)
     }
+
+    fn control_variate(&self, market: &Market, vol: f64) -> Option<ControlVariate> {
+        if !matches!(self.exercise, ExerciseStyle::European) {
+            return None;
+        }
+
+        let expected_discounted = black_scholes_price_with_dividend(
+            self.option_type,
+            market.spot,
+            self.strike,
+            market.rate,
+            market.dividend_yield,
+            vol,
+            self.expiry,
+        );
+        let discount_factor = (-market.rate * self.expiry).exp();
+        let option_type = self.option_type;
+        let strike = self.strike;
+
+        Some(ControlVariate {
+            expected: expected_discounted / discount_factor,
+            evaluator: Arc::new(move |path: &[f64]| {
+                vanilla_payoff(option_type, path[path.len() - 1], strike)
+            }),
+        })
+    }
 }
 
 impl MonteCarloInstrument for BarrierOption {
@@ -178,6 +205,42 @@ impl MonteCarloInstrument for AsianOption {
             StrikeType::Fixed => vanilla_payoff(self.option_type, avg, self.strike),
             StrikeType::Floating => vanilla_payoff(self.option_type, st, avg),
         }
+    }
+
+    fn control_variate(&self, market: &Market, vol: f64) -> Option<ControlVariate> {
+        if self.asian.averaging != Averaging::Arithmetic
+            || self.asian.strike_type != StrikeType::Fixed
+        {
+            return None;
+        }
+
+        let expected_discounted = geometric_asian_discrete_fixed_closed_form(
+            self.option_type,
+            market.spot,
+            self.strike,
+            market.rate,
+            market.dividend_yield,
+            vol,
+            &self.asian.observation_times,
+        );
+        let discount_factor = (-market.rate * self.expiry).exp();
+        let option_type = self.option_type;
+        let strike = self.strike;
+        let expiry = self.expiry;
+        let observation_times = self.asian.observation_times.clone();
+
+        Some(ControlVariate {
+            expected: expected_discounted / discount_factor,
+            evaluator: Arc::new(move |path: &[f64]| {
+                let geometric_avg = average_for_observations(
+                    path,
+                    expiry,
+                    &observation_times,
+                    Averaging::Geometric,
+                );
+                vanilla_payoff(option_type, geometric_avg, strike)
+            }),
+        })
     }
 }
 
@@ -272,10 +335,13 @@ where
         };
 
         let engine = match &self.variance_reduction {
-            VarianceReduction::ControlVariate(cfg) => base.with_control_variate(ControlVariate {
-                expected: cfg.expected,
-                evaluator: cfg.evaluator.clone(),
-            }),
+            VarianceReduction::ControlVariate => {
+                if let Some(cv) = instrument.control_variate(market, vol) {
+                    base.with_control_variate(cv)
+                } else {
+                    base
+                }
+            }
             _ => base,
         };
 
@@ -290,6 +356,14 @@ where
         diagnostics.insert("num_paths".to_string(), self.num_paths as f64);
         diagnostics.insert("num_steps".to_string(), self.num_steps as f64);
         diagnostics.insert("vol".to_string(), vol);
+        diagnostics.insert(
+            "variance_reduction".to_string(),
+            match self.variance_reduction {
+                VarianceReduction::None => 0.0,
+                VarianceReduction::Antithetic => 1.0,
+                VarianceReduction::ControlVariate => 2.0,
+            },
+        );
 
         Ok(PricingResult {
             price,
@@ -297,5 +371,90 @@ where
             greeks: None,
             diagnostics,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::PricingEngine;
+    use crate::instruments::VanillaOption;
+
+    #[test]
+    fn mc_european_call_matches_black_scholes_within_one_percent() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        let option = VanillaOption::european_call(100.0, 1.0);
+
+        let result = MonteCarloPricingEngine::new(100_000, 252, 42)
+            .price(&option, &market)
+            .expect("mc pricing succeeds");
+
+        let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
+        let rel_err = ((result.price - bs) / bs).abs();
+        assert!(
+            rel_err <= 0.01,
+            "MC/BS relative error too high: mc={} bs={} rel_err={}",
+            result.price,
+            bs,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn mc_antithetic_has_lower_stderr_than_plain_mc() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        let option = VanillaOption::european_call(100.0, 1.0);
+
+        let plain = MonteCarloPricingEngine::new(100_000, 252, 42)
+            .price(&option, &market)
+            .expect("plain MC succeeds");
+        let antithetic = MonteCarloPricingEngine::new(100_000, 252, 42)
+            .with_variance_reduction(VarianceReduction::Antithetic)
+            .price(&option, &market)
+            .expect("antithetic MC succeeds");
+
+        assert!(
+            antithetic.stderr.expect("stderr present") < plain.stderr.expect("stderr present"),
+            "expected antithetic stderr < plain stderr"
+        );
+    }
+
+    #[test]
+    fn mc_european_control_variate_is_within_half_percent_of_bs() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        let option = VanillaOption::european_call(100.0, 1.0);
+
+        let result = MonteCarloPricingEngine::new(100_000, 252, 42)
+            .with_variance_reduction(VarianceReduction::ControlVariate)
+            .price(&option, &market)
+            .expect("control-variate MC succeeds");
+
+        let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
+        let rel_err = ((result.price - bs) / bs).abs();
+        assert!(
+            rel_err <= 0.005,
+            "MC/BS relative error too high with control variate: mc={} bs={} rel_err={}",
+            result.price,
+            bs,
+            rel_err
+        );
     }
 }
