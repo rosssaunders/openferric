@@ -18,8 +18,8 @@ impl Future {
             return f64::NAN;
         }
 
-        let carry = self.risk_free_rate - self.dividend_yield + self.storage_cost
-            - self.convenience_yield;
+        let carry =
+            self.risk_free_rate - self.dividend_yield + self.storage_cost - self.convenience_yield;
         self.underlying_spot * (carry * self.expiry).exp()
     }
 

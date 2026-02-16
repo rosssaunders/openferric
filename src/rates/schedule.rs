@@ -33,7 +33,10 @@ pub fn generate_schedule(start: NaiveDate, end: NaiveDate, freq: Frequency) -> V
         return vec![start];
     }
 
-    let mut schedule = vec![adjust_business_day(start, BusinessDayConvention::ModifiedFollowing)];
+    let mut schedule = vec![adjust_business_day(
+        start,
+        BusinessDayConvention::ModifiedFollowing,
+    )];
     let mut current = start;
     let step_months = freq.months();
 
@@ -50,7 +53,10 @@ pub fn generate_schedule(start: NaiveDate, end: NaiveDate, freq: Frequency) -> V
         current = next;
     }
 
-    schedule.push(adjust_business_day(end, BusinessDayConvention::ModifiedFollowing));
+    schedule.push(adjust_business_day(
+        end,
+        BusinessDayConvention::ModifiedFollowing,
+    ));
     schedule
 }
 

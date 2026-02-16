@@ -55,7 +55,11 @@ impl<S: ImpliedVolSurface> DupireLocalVol<S> {
         let denom = strike * strike * d2cdk2;
 
         // Dupire formula in forward measure (r=0): sigma_loc^2 = 2*dC/dT / (K^2*d2C/dK2).
-        let local_var = if denom > 1e-12 { (2.0 * dcdt) / denom } else { -1.0 };
+        let local_var = if denom > 1e-12 {
+            (2.0 * dcdt) / denom
+        } else {
+            -1.0
+        };
         if local_var.is_finite() && local_var > 0.0 {
             local_var.sqrt()
         } else {
@@ -65,7 +69,14 @@ impl<S: ImpliedVolSurface> DupireLocalVol<S> {
 
     fn call_price(&self, strike: f64, expiry: f64) -> f64 {
         let vol = self.surface.implied_vol(strike, expiry).max(1e-8);
-        black_76_price(OptionType::Call, self.forward, strike, 0.0, vol, expiry.max(1e-8))
+        black_76_price(
+            OptionType::Call,
+            self.forward,
+            strike,
+            0.0,
+            vol,
+            expiry.max(1e-8),
+        )
     }
 }
 

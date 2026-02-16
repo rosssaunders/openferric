@@ -228,18 +228,27 @@ fn floating_lookback_put_formula(
     let phi = (vol * vol) / (2.0 * carry);
 
     s_max * df_r * normal_cdf(-b2) - spot * df_q * normal_cdf(-b1)
-        + spot * df_r * phi * (-(y.exp() * normal_cdf(b3)) + (carry * expiry).exp() * normal_cdf(b1))
+        + spot
+            * df_r
+            * phi
+            * (-(y.exp() * normal_cdf(b3)) + (carry * expiry).exp() * normal_cdf(b1))
 }
 
 fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -> f64 {
     if spec.expiry <= 0.0 {
         return match spec.option_type {
             OptionType::Call => {
-                let s_max = spec.observed_extreme.unwrap_or(market.spot).max(market.spot);
+                let s_max = spec
+                    .observed_extreme
+                    .unwrap_or(market.spot)
+                    .max(market.spot);
                 (s_max - spec.strike).max(0.0)
             }
             OptionType::Put => {
-                let s_min = spec.observed_extreme.unwrap_or(market.spot).min(market.spot);
+                let s_min = spec
+                    .observed_extreme
+                    .unwrap_or(market.spot)
+                    .min(market.spot);
                 (spec.strike - s_min).max(0.0)
             }
         };
@@ -248,7 +257,10 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
     let carry = market.rate - market.dividend_yield;
     match spec.option_type {
         OptionType::Call => {
-            let s_max = spec.observed_extreme.unwrap_or(market.spot).max(market.spot);
+            let s_max = spec
+                .observed_extreme
+                .unwrap_or(market.spot)
+                .max(market.spot);
             fixed_lookback_call_formula(
                 market.spot,
                 spec.strike,
@@ -261,7 +273,10 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
             )
         }
         OptionType::Put => {
-            let s_min = spec.observed_extreme.unwrap_or(market.spot).min(market.spot);
+            let s_min = spec
+                .observed_extreme
+                .unwrap_or(market.spot)
+                .min(market.spot);
             fixed_lookback_put_formula(
                 market.spot,
                 spec.strike,
@@ -291,12 +306,8 @@ fn fixed_lookback_call_formula(
         let eps = 1.0e-5;
         let q_hi = rate - eps;
         let q_lo = rate + eps;
-        let hi = fixed_lookback_call_formula(
-            spot, strike, s_max, rate, q_hi, eps, vol, expiry,
-        );
-        let lo = fixed_lookback_call_formula(
-            spot, strike, s_max, rate, q_lo, -eps, vol, expiry,
-        );
+        let hi = fixed_lookback_call_formula(spot, strike, s_max, rate, q_hi, eps, vol, expiry);
+        let lo = fixed_lookback_call_formula(spot, strike, s_max, rate, q_lo, -eps, vol, expiry);
         return 0.5 * (hi + lo);
     }
 
@@ -369,7 +380,8 @@ fn fixed_lookback_put_formula(
         let f3 = -f1 + shift;
         let power = (spot / s_min).powf(-2.0 * carry / (vol * vol));
 
-        df_r * (strike - s_min) - spot * df_q * normal_cdf(-f1) + s_min * df_r * normal_cdf(-f2)
+        df_r * (strike - s_min) - spot * df_q * normal_cdf(-f1)
+            + s_min * df_r * normal_cdf(-f2)
             + correction_scale * (power * normal_cdf(f3) - carry_term * normal_cdf(-f1))
     }
 }
@@ -553,7 +565,10 @@ mod tests {
                 observed_extreme: Some(100.0),
             });
 
-            let price = engine.price(&option, &market).expect("pricing succeeds").price;
+            let price = engine
+                .price(&option, &market)
+                .expect("pricing succeeds")
+                .price;
             assert_relative_eq!(price, expected, epsilon = 1e-4);
         }
     }

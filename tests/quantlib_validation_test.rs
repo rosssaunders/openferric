@@ -319,7 +319,10 @@ fn quantlib_haug_european_reference_values() {
             .build()
             .expect("valid market");
 
-        let price = engine.price(&option, &market).expect("pricing succeeds").price;
+        let price = engine
+            .price(&option, &market)
+            .expect("pricing succeeds")
+            .price;
         assert_relative_eq!(
             price,
             case.expected_value,
@@ -349,7 +352,10 @@ fn quantlib_haug_lookback_floating_reference_values() {
             .build()
             .expect("valid market");
 
-        let price = engine.price(&option, &market).expect("pricing succeeds").price;
+        let price = engine
+            .price(&option, &market)
+            .expect("pricing succeeds")
+            .price;
         assert_relative_eq!(
             price,
             case.expected_value,
@@ -408,7 +414,10 @@ fn quantlib_european_implied_vol_round_trip() {
             .build()
             .expect("valid market");
 
-        let price = engine.price(&option, &market).expect("pricing succeeds").price;
+        let price = engine
+            .price(&option, &market)
+            .expect("pricing succeeds")
+            .price;
 
         let spot_no_dividend = case.spot * (-case.dividend_yield * case.expiry).exp();
         let recovered = implied_vol_newton(

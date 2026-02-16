@@ -25,7 +25,7 @@ impl SabrParams {
             1.0 + (((one_minus_beta * one_minus_beta) / 24.0) * (alpha * alpha) / fk_pow
                 + (rho * beta * nu * alpha) / (4.0 * fk_pow.sqrt())
                 + ((2.0 - 3.0 * rho * rho) / 24.0) * (nu * nu))
-                    * t
+                * t
         };
 
         if (f - k).abs() <= 1e-14 {
@@ -232,8 +232,13 @@ pub fn fit_sabr(
         }
     }
     starts.sort_by(|a, b| {
-        sabr_objective(*a, forward, strikes, market_vols, t)
-            .total_cmp(&sabr_objective(*b, forward, strikes, market_vols, t))
+        sabr_objective(*a, forward, strikes, market_vols, t).total_cmp(&sabr_objective(
+            *b,
+            forward,
+            strikes,
+            market_vols,
+            t,
+        ))
     });
     starts.truncate(8);
 
@@ -267,7 +272,9 @@ mod tests {
         let forward = 0.04;
         let t = 5.0;
 
-        let strikes = [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05, 0.06, 0.08];
+        let strikes = [
+            0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05, 0.06, 0.08,
+        ];
         let expected = [
             2.380257906011173,
             2.107269276162069,

@@ -94,5 +94,9 @@ fn fra_forward_rate_matches_curve_forward_rate() {
     };
 
     let tau = year_fraction(start, end, day_count);
-    assert_relative_eq!(fra.forward_rate(&curve), curve.forward_rate(0.0, tau), epsilon = 1.0e-12);
+    assert_relative_eq!(
+        fra.forward_rate(&curve),
+        curve.forward_rate(0.0, tau),
+        epsilon = 1.0e-12
+    );
 }

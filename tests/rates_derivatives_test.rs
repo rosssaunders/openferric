@@ -32,7 +32,11 @@ fn futures_cost_of_carry_matches_manual_calc() {
 
     let quote = InterestRateFutureQuote::price_from_rate(0.0525);
     assert_relative_eq!(quote, 94.75, epsilon = 1.0e-12);
-    assert_relative_eq!(InterestRateFutureQuote::rate_from_price(quote), 0.0525, epsilon = 1.0e-12);
+    assert_relative_eq!(
+        InterestRateFutureQuote::rate_from_price(quote),
+        0.0525,
+        epsilon = 1.0e-12
+    );
 
     let convexity = InterestRateFutureQuote::convexity_adjustment(0.01, 1.0, 1.25);
     let fwd = InterestRateFutureQuote::forward_rate_from_futures_rate(0.05, 0.01, 1.0, 1.25);
