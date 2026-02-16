@@ -1,3 +1,7 @@
+pub mod short_rate;
+
+pub use short_rate::{CIR, HullWhite, Vasicek};
+
 #[derive(Debug, Clone, Copy)]
 pub struct Gbm {
     pub mu: f64,

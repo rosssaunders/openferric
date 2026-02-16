@@ -1,6 +1,7 @@
 //! OpenFerric: quantitative pricing library with trait-based instrument/engine APIs.
 
 pub mod core;
+pub mod credit;
 pub mod engines;
 pub mod instruments;
 pub mod market;
@@ -17,8 +18,10 @@ pub mod mc;
 pub mod pricing;
 
 /// Common imports for ergonomic usage.
+#[allow(ambiguous_glob_reexports)]
 pub mod prelude {
     pub use crate::core::*;
+    pub use crate::credit::*;
     pub use crate::engines::analytic::*;
     pub use crate::instruments::*;
     pub use crate::market::*;
