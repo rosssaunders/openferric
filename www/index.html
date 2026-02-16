@@ -1034,7 +1034,14 @@
         });
       }
 
-      // Preserve user camera position after first render
+      // Preserve user camera: read current camera from the live plot, fall back to default
+      const defaultCamera = { eye: { x: 1.65, y: 1.25, z: 0.8 } };
+      const currentCamera = (div._fullLayout && div._fullLayout.scene && div._fullLayout.scene._scene)
+        ? div._fullLayout.scene._scene.getCamera()
+        : (surfaceInitialized && div.layout && div.layout.scene && div.layout.scene.camera)
+          ? div.layout.scene.camera
+          : defaultCamera;
+
       const layout = {
         ...darkLayout,
         margin: { l: 0, r: 0, b: 0, t: 0 },
@@ -1042,13 +1049,10 @@
           xaxis: { title: 'ln(K/F)', ...axisStyle },
           yaxis: { title: 'T (yr)', ...axisStyle },
           zaxis: { title: 'IV (%)', ...axisStyle },
+          camera: currentCamera,
         },
         showlegend: false,
       };
-
-      if (!surfaceInitialized) {
-        layout.scene.camera = { eye: { x: 1.65, y: 1.25, z: 0.8 } };
-      }
 
       Plotly.react(div, traces, layout, { responsive: true, displayModeBar: false });
       surfaceInitialized = true;
