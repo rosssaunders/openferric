@@ -1,5 +1,11 @@
 use std::f64::consts::PI;
 
+pub mod fast_norm;
+
+pub use fast_norm::{
+    beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,
+};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MathError {
     NonConvergence,
@@ -7,86 +13,25 @@ pub enum MathError {
     InvalidInput(&'static str),
 }
 
+#[inline]
 pub fn normal_pdf(x: f64) -> f64 {
-    const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
-    INV_SQRT_2PI * (-0.5 * x * x).exp()
+    fast_norm_pdf(x)
 }
 
+#[inline(always)]
+pub fn branch_free_normal_cdf(x: f64) -> f64 {
+    hart_norm_cdf(x)
+}
+
+#[inline]
 pub fn normal_cdf(x: f64) -> f64 {
-    // Abramowitz & Stegun 7.1.26
-    let z = x.abs();
-    let t = 1.0 / (1.0 + 0.231_641_9 * z);
-    let poly = t
-        * (0.319_381_530
-            + t * (-0.356_563_782
-                + t * (1.781_477_937 + t * (-1.821_255_978 + t * 1.330_274_429))));
-    let approx = 1.0 - normal_pdf(z) * poly;
-    if x >= 0.0 { approx } else { 1.0 - approx }
+    branch_free_normal_cdf(x)
 }
 
 /// Inverse of the standard normal CDF.
+#[inline]
 pub fn normal_inv_cdf(p: f64) -> f64 {
-    if p.is_nan() || !(0.0..=1.0).contains(&p) {
-        return f64::NAN;
-    }
-    if p <= 0.0 {
-        return f64::NEG_INFINITY;
-    }
-    if p >= 1.0 {
-        return f64::INFINITY;
-    }
-
-    // Peter J. Acklam's rational approximation.
-    const A: [f64; 6] = [
-        -3.969_683_028_665_376e1,
-        2.209_460_984_245_205e2,
-        -2.759_285_104_469_687e2,
-        1.383_577_518_672_69e2,
-        -3.066_479_806_614_716e1,
-        2.506_628_277_459_239,
-    ];
-    const B: [f64; 5] = [
-        -5.447_609_879_822_406e1,
-        1.615_858_368_580_409e2,
-        -1.556_989_798_598_866e2,
-        6.680_131_188_771_972e1,
-        -1.328_068_155_288_572e1,
-    ];
-    const C: [f64; 6] = [
-        -7.784_894_002_430_293e-3,
-        -3.223_964_580_411_365e-1,
-        -2.400_758_277_161_838,
-        -2.549_732_539_343_734,
-        4.374_664_141_464_968,
-        2.938_163_982_698_783,
-    ];
-    const D: [f64; 4] = [
-        7.784_695_709_041_462e-3,
-        3.224_671_290_700_398e-1,
-        2.445_134_137_142_996,
-        3.754_408_661_907_416,
-    ];
-    const P_LOW: f64 = 0.024_25;
-    const P_HIGH: f64 = 1.0 - P_LOW;
-
-    let x = if p < P_LOW {
-        let q = (-2.0 * p.ln()).sqrt();
-        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
-    } else if p <= P_HIGH {
-        let q = p - 0.5;
-        let r = q * q;
-        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
-            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
-    } else {
-        let q = (-2.0 * (1.0 - p).ln()).sqrt();
-        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
-    };
-
-    // One Newton correction materially improves accuracy in the tails.
-    let err = normal_cdf(x) - p;
-    x - err / normal_pdf(x)
+    beasley_springer_moro_inv_cdf(p)
 }
 
 /// Bivariate standard normal CDF `P[X <= x, Y <= y]` with correlation `rho`.
@@ -137,6 +82,7 @@ pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
     (base + integral).clamp(0.0, 1.0)
 }
 
+#[inline]
 pub fn newton_raphson<F, G>(
     f: F,
     df: G,
@@ -218,6 +164,7 @@ impl CubicSpline {
         Ok(Self { x, y, y2 })
     }
 
+    #[inline]
     pub fn interpolate(&self, xq: f64) -> f64 {
         let n = self.x.len();
 
@@ -249,6 +196,7 @@ impl CubicSpline {
     }
 }
 
+#[inline]
 fn legendre_polynomial_and_derivative(n: usize, x: f64) -> (f64, f64) {
     if n == 0 {
         return (1.0, 0.0);
@@ -272,6 +220,7 @@ fn legendre_polynomial_and_derivative(n: usize, x: f64) -> (f64, f64) {
     (p_n, dp_n)
 }
 
+#[inline]
 pub fn gauss_legendre_nodes_weights(n: usize) -> Result<(Vec<f64>, Vec<f64>), MathError> {
     if n == 0 {
         return Err(MathError::InvalidInput("n must be > 0"));
@@ -307,6 +256,7 @@ pub fn gauss_legendre_nodes_weights(n: usize) -> Result<(Vec<f64>, Vec<f64>), Ma
     Ok((nodes, weights))
 }
 
+#[inline]
 pub fn gauss_legendre_integrate<F>(f: F, a: f64, b: f64, n: usize) -> Result<f64, MathError>
 where
     F: Fn(f64) -> f64,

@@ -1,13 +1,25 @@
 use std::collections::HashMap;
 
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;
+use crate::math::normal_inv_cdf;
+
+#[inline]
+fn uniform_open01(u: f64) -> f64 {
+    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
+}
+
+#[inline]
+fn sample_standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
+    normal_inv_cdf(uniform_open01(rng.random::<f64>()))
+}
 
 /// Monte Carlo spread-option engine under correlated GBM.
 #[derive(Debug, Clone)]
@@ -75,27 +87,32 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
             self.num_paths
         };
 
+        let simulate_sample = |i: usize| {
+            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
+            let z1 = sample_standard_normal(&mut rng);
+            let z2 = sample_standard_normal(&mut rng);
+
+            let payoff = terminal_spread_payoff(
+                instrument, z1, z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
+            );
+
+            if self.antithetic {
+                let anti = terminal_spread_payoff(
+                    instrument, -z1, -z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
+                );
+                0.5 * (payoff + anti)
+            } else {
+                payoff
+            }
+        };
+
+        #[cfg(feature = "parallel")]
         let payoffs = (0..samples)
             .into_par_iter()
-            .map(|i| {
-                let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
-                let z1: f64 = StandardNormal.sample(&mut rng);
-                let z2: f64 = StandardNormal.sample(&mut rng);
-
-                let payoff = terminal_spread_payoff(
-                    instrument, z1, z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
-                );
-
-                if self.antithetic {
-                    let anti = terminal_spread_payoff(
-                        instrument, -z1, -z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
-                    );
-                    0.5 * (payoff + anti)
-                } else {
-                    payoff
-                }
-            })
+            .map(simulate_sample)
             .collect::<Vec<_>>();
+        #[cfg(not(feature = "parallel"))]
+        let payoffs = (0..samples).map(simulate_sample).collect::<Vec<_>>();
 
         let n = payoffs.len() as f64;
         let mean = payoffs.iter().sum::<f64>() / n;

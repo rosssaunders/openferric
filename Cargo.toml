@@ -9,6 +9,8 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = []
 python = ["pyo3"]
+parallel = ["dep:rayon"]
+simd = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -16,7 +18,7 @@ rand = "0.9"
 rand_distr = "0.5"
 statrs = "0.18"
 nalgebra = "0.33"
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }
 num-complex = "0.4"
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 
@@ -26,4 +28,13 @@ criterion = "0.5"
 
 [[bench]]
 name = "pricing_bench"
+harness = false
+
+[[bench]]
+name = "parallel_bench"
+harness = false
+required-features = ["parallel"]
+
+[[bench]]
+name = "simd_bench"
 harness = false

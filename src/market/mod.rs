@@ -71,11 +71,37 @@ pub struct Market {
 
 impl Market {
     /// Starts a market builder.
+    #[inline]
     pub fn builder() -> MarketBuilder {
         MarketBuilder::default()
     }
 
+    /// Returns spot price.
+    #[inline]
+    pub fn spot(&self) -> f64 {
+        self.spot
+    }
+
+    /// Returns risk-free rate.
+    #[inline]
+    pub fn rate(&self) -> f64 {
+        self.rate
+    }
+
+    /// Returns dividend yield.
+    #[inline]
+    pub fn dividend(&self) -> f64 {
+        self.dividend_yield
+    }
+
+    /// Resolves volatility for strike and expiry.
+    #[inline]
+    pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
+        self.vol_for(strike, expiry)
+    }
+
     /// Resolves volatility for a strike/expiry pair.
+    #[inline]
     pub fn vol_for(&self, strike: f64, expiry: f64) -> f64 {
         self.vol.vol(strike, expiry)
     }
@@ -94,24 +120,28 @@ pub struct MarketBuilder {
 
 impl MarketBuilder {
     /// Sets the spot price.
+    #[inline]
     pub fn spot(mut self, spot: f64) -> Self {
         self.spot = Some(spot);
         self
     }
 
     /// Sets the flat risk-free rate.
+    #[inline]
     pub fn rate(mut self, rate: f64) -> Self {
         self.rate = Some(rate);
         self
     }
 
     /// Sets the continuous dividend yield.
+    #[inline]
     pub fn dividend_yield(mut self, dividend_yield: f64) -> Self {
         self.dividend_yield = Some(dividend_yield);
         self
     }
 
     /// Sets a flat volatility source.
+    #[inline]
     pub fn flat_vol(mut self, vol: f64) -> Self {
         self.flat_vol = Some(vol);
         self.surface = None;

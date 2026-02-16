@@ -1,11 +1,22 @@
+use crate::math::normal_inv_cdf;
 use crate::models::{Gbm, Heston};
-use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
+use rand::{Rng, SeedableRng};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::sync::Arc;
 
 pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
+
+#[inline]
+fn uniform_open01(u: f64) -> f64 {
+    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
+}
+
+#[inline]
+fn sample_standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
+    normal_inv_cdf(uniform_open01(rng.random::<f64>()))
+}
 
 pub trait PathGenerator: Send + Sync {
     fn steps(&self) -> usize;
@@ -125,34 +136,39 @@ impl MonteCarloEngine {
         let steps = generator.steps();
         let control = self.control_variate.clone();
 
+        let simulate_sample = |i: usize| {
+            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
+            let mut z1 = vec![0.0_f64; steps];
+            let mut z2 = vec![0.0_f64; steps];
+
+            for j in 0..steps {
+                z1[j] = sample_standard_normal(&mut rng);
+                z2[j] = sample_standard_normal(&mut rng);
+            }
+
+            let path = generator.generate_from_normals(&z1, &z2);
+            let x = payoff(&path);
+            let y = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
+
+            if self.antithetic {
+                let z1a: Vec<f64> = z1.iter().map(|v| -v).collect();
+                let z2a: Vec<f64> = z2.iter().map(|v| -v).collect();
+                let path_a = generator.generate_from_normals(&z1a, &z2a);
+                let xa = payoff(&path_a);
+                let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path_a));
+                (0.5 * (x + xa), 0.5 * (y + ya))
+            } else {
+                (x, y)
+            }
+        };
+
+        #[cfg(feature = "parallel")]
         let values = (0..samples)
             .into_par_iter()
-            .map(|i| {
-                let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
-                let mut z1 = vec![0.0_f64; steps];
-                let mut z2 = vec![0.0_f64; steps];
-
-                for j in 0..steps {
-                    z1[j] = StandardNormal.sample(&mut rng);
-                    z2[j] = StandardNormal.sample(&mut rng);
-                }
-
-                let path = generator.generate_from_normals(&z1, &z2);
-                let x = payoff(&path);
-                let y = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
-
-                if self.antithetic {
-                    let z1a: Vec<f64> = z1.iter().map(|v| -v).collect();
-                    let z2a: Vec<f64> = z2.iter().map(|v| -v).collect();
-                    let path_a = generator.generate_from_normals(&z1a, &z2a);
-                    let xa = payoff(&path_a);
-                    let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path_a));
-                    (0.5 * (x + xa), 0.5 * (y + ya))
-                } else {
-                    (x, y)
-                }
-            })
+            .map(simulate_sample)
             .collect::<Vec<_>>();
+        #[cfg(not(feature = "parallel"))]
+        let values = (0..samples).map(simulate_sample).collect::<Vec<_>>();
         let n = values.len() as f64;
 
         let adjusted: Vec<f64> = if let Some(cv) = &control {

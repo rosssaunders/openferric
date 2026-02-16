@@ -1,11 +1,23 @@
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingError};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
+use crate::math::normal_inv_cdf;
+
+#[inline]
+fn uniform_open01(u: f64) -> f64 {
+    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
+}
+
+#[inline]
+fn sample_standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
+    normal_inv_cdf(uniform_open01(rng.random::<f64>()))
+}
 
 /// Monte Carlo Greeks engine for European vanilla options under GBM.
 #[derive(Debug, Clone)]
@@ -140,14 +152,27 @@ impl MonteCarloGreeksEngine {
             self.num_paths
         };
 
-        let sums = (0..samples)
-            .into_par_iter()
-            .map(|i| {
-                let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
-                let z: f64 = StandardNormal.sample(&mut rng);
-                let base = single_path_contribution(
+        let simulate_sample = |i: usize| {
+            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(i as u64 * 7_919));
+            let z = sample_standard_normal(&mut rng);
+            let base = single_path_contribution(
+                instrument.option_type,
+                z,
+                spot,
+                strike,
+                spot_up,
+                spot_dn,
+                spot_span,
+                vol,
+                maturity,
+                drift,
+                sig_sqrt_t,
+            );
+
+            if self.antithetic {
+                let anti = single_path_contribution(
                     instrument.option_type,
-                    z,
+                    -z,
                     spot,
                     strike,
                     spot_up,
@@ -158,41 +183,35 @@ impl MonteCarloGreeksEngine {
                     drift,
                     sig_sqrt_t,
                 );
-
-                if self.antithetic {
-                    let anti = single_path_contribution(
-                        instrument.option_type,
-                        -z,
-                        spot,
-                        strike,
-                        spot_up,
-                        spot_dn,
-                        spot_span,
-                        vol,
-                        maturity,
-                        drift,
-                        sig_sqrt_t,
-                    );
-                    MonteCarloGreekEstimate {
-                        pathwise_delta: 0.5 * (base.pathwise_delta + anti.pathwise_delta),
-                        pathwise_gamma: 0.5 * (base.pathwise_gamma + anti.pathwise_gamma),
-                        lr_delta: 0.5 * (base.lr_delta + anti.lr_delta),
-                        lr_gamma: 0.5 * (base.lr_gamma + anti.lr_gamma),
-                        lr_vega: 0.5 * (base.lr_vega + anti.lr_vega),
-                    }
-                } else {
-                    base
-                }
-            })
-            .reduce(MonteCarloGreekEstimate::default, |lhs, rhs| {
                 MonteCarloGreekEstimate {
-                    pathwise_delta: lhs.pathwise_delta + rhs.pathwise_delta,
-                    pathwise_gamma: lhs.pathwise_gamma + rhs.pathwise_gamma,
-                    lr_delta: lhs.lr_delta + rhs.lr_delta,
-                    lr_gamma: lhs.lr_gamma + rhs.lr_gamma,
-                    lr_vega: lhs.lr_vega + rhs.lr_vega,
+                    pathwise_delta: 0.5 * (base.pathwise_delta + anti.pathwise_delta),
+                    pathwise_gamma: 0.5 * (base.pathwise_gamma + anti.pathwise_gamma),
+                    lr_delta: 0.5 * (base.lr_delta + anti.lr_delta),
+                    lr_gamma: 0.5 * (base.lr_gamma + anti.lr_gamma),
+                    lr_vega: 0.5 * (base.lr_vega + anti.lr_vega),
                 }
-            });
+            } else {
+                base
+            }
+        };
+        let add_estimates =
+            |lhs: MonteCarloGreekEstimate, rhs: MonteCarloGreekEstimate| MonteCarloGreekEstimate {
+                pathwise_delta: lhs.pathwise_delta + rhs.pathwise_delta,
+                pathwise_gamma: lhs.pathwise_gamma + rhs.pathwise_gamma,
+                lr_delta: lhs.lr_delta + rhs.lr_delta,
+                lr_gamma: lhs.lr_gamma + rhs.lr_gamma,
+                lr_vega: lhs.lr_vega + rhs.lr_vega,
+            };
+
+        #[cfg(feature = "parallel")]
+        let sums = (0..samples)
+            .into_par_iter()
+            .map(simulate_sample)
+            .reduce(MonteCarloGreekEstimate::default, add_estimates);
+        #[cfg(not(feature = "parallel"))]
+        let sums = (0..samples)
+            .map(simulate_sample)
+            .fold(MonteCarloGreekEstimate::default(), add_estimates);
 
         let n = samples as f64;
         Ok(MonteCarloGreekEstimate {

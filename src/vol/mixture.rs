@@ -99,10 +99,7 @@ fn unpack_params(params: &[f64], components: usize) -> (Vec<f64>, Vec<f64>) {
     let raw_vols = &params[components..(2 * components)];
 
     let weights = softmax(logits);
-    let vols = raw_vols
-        .iter()
-        .map(|x| x.exp().clamp(1e-4, 4.0))
-        .collect();
+    let vols = raw_vols.iter().map(|x| x.exp().clamp(1e-4, 4.0)).collect();
 
     (weights, vols)
 }

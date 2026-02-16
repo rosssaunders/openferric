@@ -226,13 +226,13 @@ fn strike_from_delta_newton(
     // Bisection fallback.
     let mut lo = spot * 1e-3;
     let mut hi = spot * 10.0;
-    let mut flo = bsm_delta(option_type, spot, lo, rate, dividend_yield, sigma, expiry)
-        - target_delta;
+    let mut flo =
+        bsm_delta(option_type, spot, lo, rate, dividend_yield, sigma, expiry) - target_delta;
 
     for _ in 0..300 {
         let mid = 0.5 * (lo + hi);
-        let fm = bsm_delta(option_type, spot, mid, rate, dividend_yield, sigma, expiry)
-            - target_delta;
+        let fm =
+            bsm_delta(option_type, spot, mid, rate, dividend_yield, sigma, expiry) - target_delta;
 
         if fm.abs() <= tol.max(1e-12) {
             return Ok(mid.max(1e-8));
@@ -489,8 +489,7 @@ pub fn vanna_volga_price(
     );
 
     let rr_adjustment = (call_25c_smile - call_25c_atm) - (put_25p_smile - put_25p_atm);
-    let bf_adjustment =
-        0.5 * ((call_25c_smile - call_25c_atm) + (put_25p_smile - put_25p_atm));
+    let bf_adjustment = 0.5 * ((call_25c_smile - call_25c_atm) + (put_25p_smile - put_25p_atm));
 
     base + vanna_weight * rr_adjustment + volga_weight * bf_adjustment
 }
@@ -518,7 +517,15 @@ pub fn shift_smile_for_spot_move(
                 .zip(slice.vols.iter())
                 .map(|(&k, &v)| {
                     (
-                        bsm_delta(OptionType::Call, spot_old, k, rate, dividend_yield, v, expiry),
+                        bsm_delta(
+                            OptionType::Call,
+                            spot_old,
+                            k,
+                            rate,
+                            dividend_yield,
+                            v,
+                            expiry,
+                        ),
                         v,
                     )
                 })
@@ -602,8 +609,9 @@ mod tests {
 
     #[test]
     fn sticky_delta_strike_solver_recovers_target_delta() {
-        let smile = StickyDeltaSmile::new(vec![-0.25, -0.1, 0.1, 0.25], vec![0.28, 0.24, 0.22, 0.24])
-            .unwrap();
+        let smile =
+            StickyDeltaSmile::new(vec![-0.25, -0.1, 0.1, 0.25], vec![0.28, 0.24, 0.22, 0.24])
+                .unwrap();
 
         let strike = smile
             .strike_from_delta(100.0, 0.02, 0.0, 1.0, 0.25, 100.0, 1e-12, 100)

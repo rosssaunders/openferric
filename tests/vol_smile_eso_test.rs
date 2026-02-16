@@ -97,9 +97,17 @@ fn two_component_mixture_fits_five_strike_smile_within_tenth_vol() {
         )
         .unwrap();
 
-        let vol_fit =
-            implied_vol_newton(OptionType::Call, spot, *k, rate, expiry, fit_price, 1e-10, 100)
-                .unwrap();
+        let vol_fit = implied_vol_newton(
+            OptionType::Call,
+            spot,
+            *k,
+            rate,
+            expiry,
+            fit_price,
+            1e-10,
+            100,
+        )
+        .unwrap();
 
         assert!(
             (vol_market - vol_fit).abs() < 0.1,
@@ -198,7 +206,9 @@ fn dilution_adjustment_reduces_eso_value_proportionally() {
         25.0,
     );
 
-    let v_undiluted = undiluted.price_binomial(100.0, 0.03, 0.0, 0.28, 900).unwrap();
+    let v_undiluted = undiluted
+        .price_binomial(100.0, 0.03, 0.0, 0.28, 900)
+        .unwrap();
     let v_diluted = diluted.price_binomial(100.0, 0.03, 0.0, 0.28, 900).unwrap();
 
     let expected = v_undiluted * (100.0 / 125.0);

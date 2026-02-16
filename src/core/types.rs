@@ -9,6 +9,7 @@ pub enum OptionType {
 
 impl OptionType {
     /// Returns +1.0 for calls and -1.0 for puts.
+    #[inline]
     pub fn sign(self) -> f64 {
         match self {
             Self::Call => 1.0,
