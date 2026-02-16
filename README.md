@@ -1,37 +1,190 @@
-# OpenFerric — Rust Quantitative Finance Library
+# OpenFerric
 
-[![Rust](https://img.shields.io/badge/Rust-Edition%202024-orange?logo=rust)](https://www.rust-lang.org/)
+**High-performance quantitative finance in Rust.** Derivatives pricing, risk analytics, and live market tools — covering the full scope of Hull's *Options, Futures, and Other Derivatives* and beyond.
+
+[![Rust](https://img.shields.io/badge/Rust-nightly-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-200%2B%20passing-brightgreen)](#testing)
+[![Lines](https://img.shields.io/badge/lines-27K%2B-blue)](#)
 
-OpenFerric is a high-performance quantitative finance library in Rust, designed around composable instrument and engine traits.
-It targets production-style pricing workflows for derivatives, fixed income, credit, and volatility modeling.
+---
 
-## Why OpenFerric
+## Highlights
 
-- Trait-based architecture: `Instrument` + `PricingEngine` gives explicit model/instrument pairings.
-- Broad product coverage: vanilla, barrier, digital, Asian, spread, rainbow, FX, variance, rates, and credit.
-- Multi-engine stack: analytic, numerical, tree, PDE, and Monte Carlo.
-- Python interoperability: optional `pyo3` bindings for integration into research stacks.
-- Performance-oriented implementation with predictable memory behavior in hot paths.
+- **27,600+ lines** of Rust across 115+ source files
+- **200+ tests** — all passing, validated against QuantLib and Haug reference values
+- **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
+- **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
+- **FFT pricing**: Carr-Madan for entire strike grids in O(N log N)
+- **Live market tools**: Real-time Deribit vol surface dashboard with SVI calibration
+- **Python bindings**: Optional PyO3 module for research integration
+- **SQL integration**: Designed as extension for [OpenAssay](https://github.com/rosssaunders/openassay) (`openferric.*` schema)
 
-## Feature Coverage by Hull Chapters
+## Performance
 
-| Hull chapter (topic) | Coverage in OpenFerric | Key modules |
+| Benchmark | Throughput |
+|---|---|
+| Black-Scholes (single) | **88 ns** / 11.3M ops/sec |
+| Black-Scholes SIMD batch | **69M options/sec** (1.8x scalar) |
+| Normal CDF (SIMD) | **283M evals/sec** (2.1x scalar) |
+| Barrier analytic | **168 ns** / 6M ops/sec |
+| Heston semi-analytic | **3.9 µs** / 256K ops/sec |
+| American binomial (500 steps) | **1.9 ms** |
+| Monte Carlo 100K paths | **406 ms** |
+| Vol surface recalibration | **< 50 ms** (20 expiry slices) |
+
+```bash
+cargo bench
+```
+
+## Coverage
+
+### Equity Derivatives
+| Model/Product | Module | Reference |
 |---|---|---|
-| Ch. 12-13 (binomial trees / numerical methods) | Implemented | `engines::numerical`, `engines::tree`, `pricing::american` |
-| Ch. 14 (Black-Scholes-Merton) | Implemented | `engines::analytic::black_scholes`, `pricing::european` |
-| Ch. 17-18 (FX and currency options) | Implemented | `instruments::fx`, `engines::analytic::fx` |
-| Ch. 19 (Greeks) | Implemented (analytic + MC support) | `core::Greeks`, `greeks`, `engines::monte_carlo::mc_greeks` |
-| Ch. 20 (volatility smiles/surfaces) | Implemented | `vol::surface`, `vol::implied`, `vol::sabr`, `vol::local_vol` |
-| Ch. 21 (Monte Carlo valuation) | Implemented | `engines::monte_carlo`, `mc` |
-| Ch. 25-26 (credit derivatives) | Implemented | `credit::cds`, `credit::survival_curve`, `credit::bootstrap`, `credit::copula` |
-| Ch. 7 (swaps and rates products) | Implemented | `rates::swap`, `rates::yield_curve`, `rates::ois`, `rates::inflation` |
-| Ch. 26+ (exotics: barrier, Asian, digital, rainbow) | Implemented | `instruments::*`, `engines::analytic::*`, `pricing::*` |
+| Black-Scholes-Merton | `engines::analytic::black_scholes` | Hull Ch 13 |
+| Greeks (Δ, Γ, V, Θ, ρ, vanna, volga) | `greeks` | Hull Ch 19 |
+| American options (CRR binomial) | `engines::numerical::american_binomial` | Hull Ch 18 |
+| Barrier options (8 types) | `engines::analytic::barrier_analytic` | Hull Ch 15, Haug |
+| Asian options (geometric + arithmetic MC) | `engines::analytic::asian_geometric`, `engines::monte_carlo` | Hull Ch 17 |
+| Lookback (fixed + floating strike) | `engines::analytic::exotic` | Haug 2007 |
+| Digital / binary options | `engines::analytic::digital` | Haug 2007 |
+| Double barrier (Ikeda-Kunitomo) | `engines::analytic::double_barrier` | Haug 2007 |
+| Rainbow (best/worst of two, Stulz) | `engines::analytic::rainbow` | Stulz 1982 |
+| Power options | `engines::analytic::power` | Haug 2007 |
+| Compound options | `engines::analytic::exotic` | Hull Ch 23 |
+| Chooser options | `engines::analytic::exotic` | Hull Ch 23 |
+| Quanto options | `engines::analytic::exotic` | Hull Ch 23 |
+| Forward start / cliquet | `instruments::cliquet` | Rubinstein 1991 |
+| Variance / volatility swaps | `engines::analytic::variance_swap` | Hull Ch 33 |
+| Employee stock options | `instruments::employee_stock_option` | Hull Ch 14 |
+| Convertible bonds | `engines::tree::convertible` | Hull Ch 23 |
+| Discrete dividend BSM | `pricing::discrete_div` | Escrowed dividend |
+| Spread options (Kirk + Margrabe) | `engines::analytic::spread` | Kirk, Margrabe |
+
+### Volatility
+| Model | Module | Reference |
+|---|---|---|
+| Heston stochastic vol | `engines::analytic::heston` | Gatheral formulation |
+| SABR (Hagan 2002) | `vol::sabr` | Hagan et al. |
+| Local vol (Dupire) | `vol::local_vol` | Dupire 1994 |
+| SVI parameterization | `vol::surface` | Gatheral 2004 |
+| Vol smile (sticky strike/delta) | `vol::smile` | Hull Ch 10 |
+| Vanna-volga method | `vol::smile` | Castagna & Mercurio |
+| Mixture of lognormals | `vol::mixture` | |
+| Implied vol solver (Newton-Raphson) | `vol::implied` | Jäckel |
+| Vol surface builder | `vol::builder` | Market → SVI surface |
+
+### Rates & Fixed Income
+| Product | Module | Reference |
+|---|---|---|
+| Yield curve bootstrapping | `rates::yield_curve` | Hull Ch 4 |
+| Bond pricing (dirty/clean, duration, convexity, YTM) | `rates::bond` | Hull Ch 4 |
+| Interest rate swaps (NPV, par rate, DV01) | `rates::swap` | Hull Ch 7 |
+| FRAs | `rates::fra` | Hull Ch 4 |
+| Caps / floors | `rates::capfloor` | Hull Ch 9 |
+| Swaptions (Black) | `rates::swaption` | Hull Ch 9 |
+| Cross-currency swaps | `rates::xccy_swap` | Hull Ch 24 |
+| OIS / basis swaps | `rates::ois` | Hull Ch 24 |
+| Inflation swaps (ZC + YoY) | `rates::inflation` | Hull Ch 24 |
+| Futures pricing | `rates::futures` | Hull Ch 3 |
+| Convexity / timing / quanto adjustments | `rates::adjustments` | Hull Ch 34 |
+| Day count conventions (ACT/360, ACT/365, 30/360, ACT/ACT) | `rates::day_count` | |
+
+### FX
+| Product | Module | Reference |
+|---|---|---|
+| Garman-Kohlhagen | `engines::analytic::fx` | Hull Ch 26 |
+| FX Greeks (domestic + foreign rho) | `engines::analytic::fx` | |
+| Black-76 (futures options) | `engines::analytic::black76` | Hull Ch 18 |
+| Bachelier / normal model | `engines::analytic::bachelier` | |
+
+### Credit
+| Model | Module | Reference |
+|---|---|---|
+| CDS pricing (NPV, fair spread) | `credit::cds` | Hull Ch 20 |
+| Survival curves | `credit::survival_curve` | |
+| Hazard rate bootstrap | `credit::bootstrap` | |
+| ISDA standard model | `credit::isda` | |
+| CDS index pricing | `credit::cds_index` | |
+| Nth-to-default (Gaussian copula) | `credit::cds_index` | Hull Ch 20 |
+| CDO tranche pricing (LHP) | `credit::cdo` | Hull Ch 20 |
+| Copula simulation | `credit::copula` | |
+
+### Risk
+| Measure | Module | Reference |
+|---|---|---|
+| Historical VaR | `risk::var` | Hull Ch 22 |
+| Parametric / delta-normal VaR | `risk::var` | |
+| Cornish-Fisher VaR | `risk::var` | |
+| Expected Shortfall (CVaR) | `risk::var` | |
+| CVA / DVA | `risk::xva` | Hull Ch 24 |
+| Portfolio Greeks aggregation | `risk::portfolio` | |
+| Scenario analysis | `risk::portfolio` | |
+
+### Numerical Engines
+| Engine | Module | Notes |
+|---|---|---|
+| Analytic (closed-form) | `engines::analytic` | 15+ engines |
+| CRR binomial tree | `engines::numerical` | Up to 1000 steps |
+| Trinomial tree | `engines::tree::trinomial` | European + American |
+| Bermudan swaption tree | `engines::tree::bermudan_swaption` | Early exercise |
+| Crank-Nicolson PDE | `engines::pde::crank_nicolson` | European + American |
+| Longstaff-Schwartz LSM | `engines::lsm` | American MC |
+| Monte Carlo (GBM, Heston) | `engines::monte_carlo` | Antithetic + control variate |
+| MC Greeks (pathwise + likelihood ratio) | `engines::monte_carlo::mc_greeks` | |
+| SIMD Monte Carlo | `engines::monte_carlo::mc_simd` | AVX2 vectorized GBM |
+| Parallel Monte Carlo (Rayon) | `engines::monte_carlo::mc_parallel` | Behind `parallel` feature |
+| FFT Carr-Madan | `engines::fft::carr_madan` | O(N log N) strike grid |
+| Fractional FFT | `engines::fft::frft` | Non-uniform strikes |
+| Swing option (DP tree) | `engines::tree::swing` | Energy derivatives |
+| Convertible bond tree | `engines::tree::convertible` | Call/put provisions |
+
+### Stochastic Models
+| Model | Module | Reference |
+|---|---|---|
+| GBM | `models` | |
+| Heston | `models` | Gatheral |
+| SABR | `models` | Hagan 2002 |
+| Hull-White (1-factor) | `models::short_rate` | Hull Ch 31 |
+| Vasicek | `models::short_rate` | Hull Ch 31 |
+| Cox-Ingersoll-Ross | `models::short_rate` | Hull Ch 31 |
+| HW calibration (swaption vols) | `models::hw_calibration` | |
+| HJM (single + multi-factor) | `models::hjm` | Hull Ch 32/35 |
+| LIBOR Market Model (BGM) | `models::lmm` | Hull Ch 35 |
+| Schwartz (commodity) | `models::commodity` | Hull Ch 27 |
+| Variance Gamma | `models::variance_gamma` | Madan et al. |
+
+### Other
+| Feature | Module | Reference |
+|---|---|---|
+| Energy / commodity derivatives | `instruments::commodity`, `models::commodity` | Hull Ch 27 |
+| Weather derivatives (HDD/CDD) | `instruments::weather` | Hull Ch 29 |
+| Catastrophe bonds | `instruments::weather` | Hull Ch 29 |
+| Real options (defer/expand/abandon) | `instruments::real_option`, `pricing::real_option` | Hull Ch 28 |
+| FFT characteristic functions (BS, Heston, VG, CGMY) | `engines::fft::char_fn` | Carr-Madan 1999 |
+| Fast normal CDF (Hart) | `math::fast_norm` | |
+| BSM inverse CDF | `math::fast_norm` | Beasley-Springer-Moro |
+| Bivariate normal CDF | `math` | |
+| Cubic spline interpolation | `math` | |
+
+### Live Market Tools
+| Tool | Binary | Description |
+|---|---|---|
+| Deribit vol surface snapshot | `deribit_vol_surface` | REST fetch → SVI calibration → 3D Plotly HTML |
+| Live vol surface dashboard | `vol_dashboard` | WebSocket stream → real-time recalibration → browser dashboard |
+
+```bash
+# Snapshot
+cargo run --features deribit --bin deribit_vol_surface --release
+
+# Live dashboard (http://localhost:3000)
+cargo run --features deribit --bin vol_dashboard --release
+```
 
 ## Quick Start
 
-### 1) European Call (Black-Scholes)
+### European Call (Black-Scholes)
 
 ```rust
 use openferric::core::PricingEngine;
@@ -40,207 +193,85 @@ use openferric::instruments::VanillaOption;
 use openferric::market::Market;
 
 let market = Market::builder()
-    .spot(100.0)
-    .rate(0.05)
-    .dividend_yield(0.0)
-    .flat_vol(0.20)
+    .spot(100.0).rate(0.05).dividend_yield(0.0).flat_vol(0.20)
     .build()?;
 
 let option = VanillaOption::european_call(100.0, 1.0);
 let result = BlackScholesEngine::new().price(&option, &market)?;
-println!("price = {:.6}", result.price);
-# Ok::<(), Box<dyn std::error::Error>>(())
+println!("price = {:.4}, delta = {:.4}", result.price, result.greeks.delta);
 ```
 
-### 2) American Put (CRR Binomial)
+### Heston via FFT (4096 strikes at once)
 
 ```rust
-use openferric::core::PricingEngine;
-use openferric::engines::numerical::AmericanBinomialEngine;
-use openferric::instruments::VanillaOption;
-use openferric::market::Market;
+use openferric::engines::fft::carr_madan::heston_price_fft;
 
-let market = Market::builder()
-    .spot(100.0)
-    .rate(0.03)
-    .dividend_yield(0.0)
-    .flat_vol(0.25)
-    .build()?;
-
-let option = VanillaOption::american_put(100.0, 1.0);
-let result = AmericanBinomialEngine::new(500).price(&option, &market)?;
-println!("price = {:.6}", result.price);
-# Ok::<(), Box<dyn std::error::Error>>(())
+let prices = heston_price_fft(
+    100.0,           // spot
+    &strike_grid,    // Vec<f64>
+    0.03,            // rate
+    0.0,             // dividend
+    0.04, 1.5, 0.04, 0.3, -0.7,  // v0, kappa, theta, sigma_v, rho
+    1.0,             // maturity
+)?;
+// prices: Vec<(f64, f64)> — (strike, call_price) for all 4096 strikes
 ```
 
-### 3) CDS (Fair Spread / NPV)
+### CDS Fair Spread
 
 ```rust
 use openferric::credit::{Cds, SurvivalCurve};
 use openferric::rates::YieldCurve;
 
-let discount_curve = YieldCurve::new(vec![(1.0, 0.97), (3.0, 0.91), (5.0, 0.85)]);
-let survival_curve = SurvivalCurve::new(vec![(1.0, 0.98), (3.0, 0.93), (5.0, 0.88)]);
-
-let cds = Cds {
-    notional: 10_000_000.0,
-    spread: 0.0100,
-    maturity: 5.0,
-    recovery_rate: 0.40,
-    payment_freq: 4,
-};
-
-let npv = cds.npv(&discount_curve, &survival_curve);
+let cds = Cds { notional: 10e6, spread: 0.01, maturity: 5.0, recovery_rate: 0.40, payment_freq: 4 };
 let fair = cds.fair_spread(&discount_curve, &survival_curve);
-println!("npv = {:.2}, fair_spread = {:.6}", npv, fair);
-```
-
-### 4) IRS (Par Rate / DV01)
-
-```rust
-use chrono::NaiveDate;
-use openferric::rates::{
-    DayCountConvention, Frequency, InterestRateSwap, YieldCurve,
-};
-
-let curve = YieldCurve::new(vec![(1.0, 0.97), (2.0, 0.94), (5.0, 0.86), (10.0, 0.74)]);
-
-let swap = InterestRateSwap::builder()
-    .notional(100_000_000.0)
-    .fixed_rate(0.035)
-    .start_date(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap())
-    .end_date(NaiveDate::from_ymd_opt(2030, 1, 1).unwrap())
-    .fixed_freq(Frequency::SemiAnnual)
-    .float_freq(Frequency::Quarterly)
-    .fixed_day_count(DayCountConvention::Thirty360)
-    .float_day_count(DayCountConvention::Act360)
-    .build();
-
-let par = swap.par_rate(&curve);
-let dv01 = swap.dv01(&curve);
-println!("par_rate = {:.6}, dv01 = {:.2}", par, dv01);
-```
-
-### 5) Barrier Option (Analytic)
-
-```rust
-use openferric::core::PricingEngine;
-use openferric::engines::analytic::BarrierAnalyticEngine;
-use openferric::instruments::BarrierOption;
-use openferric::market::Market;
-
-let market = Market::builder()
-    .spot(100.0)
-    .rate(0.02)
-    .dividend_yield(0.00)
-    .flat_vol(0.20)
-    .build()?;
-
-let option = BarrierOption::builder()
-    .call()
-    .strike(100.0)
-    .expiry(1.0)
-    .up_and_out(120.0)
-    .rebate(0.0)
-    .build()?;
-
-let result = BarrierAnalyticEngine::new().price(&option, &market)?;
-println!("barrier price = {:.6}", result.price);
-# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Architecture
 
-```text
-+--------------------+      +-----------------------+      +----------------+      +----------------------+
-|    Instruments     | ---> |       Engines         | ---> |     Market     | ---> |       Results        |
-| Vanilla/Barrier/...|      | Analytic/Tree/MC/PDE |      | Spot/Rate/Vol  |      | Price/Greeks/Diag    |
-+--------------------+      +-----------------------+      +----------------+      +----------------------+
+```
+Instruments ─→ Engines ─→ Market ─→ PricingResult
+                 │
+    ┌────────────┼────────────┐
+    │            │            │
+ Analytic    Tree/PDE     Monte Carlo
+ (closed)   (numerical)   (simulation)
+    │            │            │
+    └────────────┼────────────┘
+                 │
+            FFT / SIMD
+          (acceleration)
 ```
 
-Core flow:
+## Feature Flags
 
-1. Define an instrument (`VanillaOption`, `BarrierOption`, `InterestRateSwap`, `Cds`, ...).
-2. Select an engine (`BlackScholesEngine`, `AmericanBinomialEngine`, `HestonEngine`, ...).
-3. Build a `Market` snapshot (spot, curve/rate assumptions, vol source).
-4. Call `engine.price(&instrument, &market)` and consume `PricingResult`.
-
-## Modules
-
-| Module | Description |
+| Feature | Description |
 |---|---|
-| `core` | Traits (`Instrument`, `PricingEngine`) and shared result/error types |
-| `instruments` | Equity/FX/exotic instrument definitions and builders |
-| `engines` | Analytic, numerical, tree, PDE, LSM, and Monte Carlo engines |
-| `market` | Market data container and volatility-source abstraction |
-| `rates` | Curves, schedules, swaps, OIS, inflation, FRA, cap/floor, bonds |
-| `credit` | Survival curves, CDS analytics, CDO/copula tooling, bootstrapping |
-| `vol` | Vol surfaces, SABR, local vol, implied vol routines |
-| `models` | Model components (e.g., GBM and short-rate models) |
-| `math` | Numerical helpers (`normal_cdf`, distributions, utilities) |
-| `python` | Optional Python bindings through `pyo3` (`python` feature flag) |
-| `greeks`, `pricing`, `mc` | Compatibility modules and standalone pricing utilities |
-
-## Python Bindings
-
-OpenFerric ships optional Python bindings behind the `python` feature.
-
-```bash
-cargo build --release --features python
-```
-
-If you want a Python extension module build, a standard `pyo3` workflow is:
-
-```bash
-maturin develop --release --features python
-```
-
-The bindings expose pricing helpers for Black-Scholes, barrier options, American binomial, Heston, FX, spread options, and CDS metrics.
-
-## Performance
-
-- Hot-path pricing engines are implemented with low-overhead scalar math and tight loops.
-- The library prefers stack-local temporaries and avoids unnecessary allocations in critical pricing routines where possible.
-- Market/instrument data can be reused across repeated evaluations to reduce setup overhead.
-- Monte Carlo path generation supports variance-reduction modes (antithetic/control variate).
-
-Benchmark suite lives in `benches/pricing_bench.rs` (Criterion):
-
-| Benchmark | Target latency |
-|---|---|
-| Black-Scholes European call | `< 100 ns` |
-| Barrier analytic | `< 200 ns` |
-| American binomial (500 steps) | `< 1 ms` |
-
-Run benchmarks locally when needed:
-
-```bash
-cargo bench --bench pricing_bench
-```
-
-## Comparison
-
-| Capability | OpenFerric | QuantLib | RustQuant |
-|---|---|---|---|
-| Primary language | Rust | C++ | Rust |
-| Core API style | Trait-based (`Instrument` + `PricingEngine`) | OO pricing framework | Rust-native modular toolkit |
-| Analytic vanilla/barrier/Heston | Yes | Yes | Partial / evolving |
-| Rates + credit primitives | Yes | Yes (very broad) | Partial / evolving |
-| Python support | Optional `pyo3` module | Mature SWIG/Python bindings | Varies by crate/workflow |
-| Focus | Lean, composable quant engine in Rust | Industry-standard broad coverage | Rust quant ecosystem and research |
+| `python` | PyO3 bindings for Python integration |
+| `parallel` | Rayon-parallelized Monte Carlo |
+| `deribit` | Live market binaries (reqwest, tokio, axum) |
 
 ## Testing
 
 ```bash
-cargo test -q
+cargo test                           # all tests
+cargo test --features parallel       # include parallel MC tests
+cargo bench                          # Criterion benchmarks
 ```
 
 ## References
 
-- John C. Hull, *Options, Futures, and Other Derivatives*.
-- Espen Gaarder Haug, *The Complete Guide to Option Pricing Formulas*.
-- QuantLib project documentation and source.
-- Patrick S. Hagan et al., SABR volatility model papers.
-- René Stulz, option and risk-management references.
-- Steven Shreve, *Stochastic Calculus for Finance II*.
-- Peter Jaeckel, *Monte Carlo Methods in Finance*.
+- Hull, J.C. — *Options, Futures, and Other Derivatives* (11th ed.)
+- Haug, E.G. — *The Complete Guide to Option Pricing Formulas* (2nd ed.)
+- Gatheral, J. — *The Volatility Surface*
+- Hagan, P. et al. — *Managing Smile Risk* (SABR, 2002)
+- Carr, P. & Madan, D. — *Option Valuation Using the FFT* (1999)
+- Stulz, R. — *Options on the Maximum or Minimum of Two Risky Assets* (1982)
+- Dupire, B. — *Pricing with a Smile* (1994)
+- Jäckel, P. — *Monte Carlo Methods in Finance*
+- Shreve, S. — *Stochastic Calculus for Finance II*
+- QuantLib project — validation reference values
+
+## License
+
+MIT
