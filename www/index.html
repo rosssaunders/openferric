@@ -979,18 +979,68 @@
 
     // --- 3D Surface ---
     let surfaceInitialized = false;
+    let surfaceInteracting = false;
+    let surfaceDirty = false;
+
+    // Smooth zoom state
+    let zoomTarget = null;   // {x, y, z} target eye position
+    let zoomCurrent = null;  // {x, y, z} current animated eye
+    let zoomRafId = null;
+    const ZOOM_LERP = 0.15;  // interpolation factor per frame (0–1, higher = snappier)
+    const ZOOM_STEP = 0.08;  // distance factor per wheel tick
+
+    function animateZoom(div) {
+      if (!zoomTarget || !zoomCurrent) return;
+      // Lerp toward target
+      zoomCurrent.x += (zoomTarget.x - zoomCurrent.x) * ZOOM_LERP;
+      zoomCurrent.y += (zoomTarget.y - zoomCurrent.y) * ZOOM_LERP;
+      zoomCurrent.z += (zoomTarget.z - zoomCurrent.z) * ZOOM_LERP;
+
+      Plotly.relayout(div, {
+        'scene.camera.eye': { x: zoomCurrent.x, y: zoomCurrent.y, z: zoomCurrent.z }
+      });
+
+      // Keep animating until close enough
+      const dx = zoomTarget.x - zoomCurrent.x;
+      const dy = zoomTarget.y - zoomCurrent.y;
+      const dz = zoomTarget.z - zoomCurrent.z;
+      if (dx * dx + dy * dy + dz * dz > 1e-8) {
+        zoomRafId = requestAnimationFrame(() => animateZoom(div));
+      } else {
+        zoomCurrent.x = zoomTarget.x;
+        zoomCurrent.y = zoomTarget.y;
+        zoomCurrent.z = zoomTarget.z;
+        zoomRafId = null;
+        // End interaction after animation settles
+        surfaceInteracting = false;
+        if (surfaceDirty) { surfaceDirty = false; renderSurface(); }
+      }
+    }
+
     function renderSurface() {
       const div = document.getElementById('chart-surface');
       if (calibratedSlices.length === 0) return;
 
+      // Defer updates while user is rotating/zooming
+      if (surfaceInteracting && surfaceInitialized) {
+        surfaceDirty = true;
+        document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
+        return;
+      }
+
       // --- Compute data ---
-      const marketX = [], marketY = [], marketZ = [];
+      const marketX = [], marketY = [], marketZ = [], marketText = [];
       for (const sl of calibratedSlices) {
         for (const pt of sl.points) {
           if (pt.strike <= 0 || sl.forward <= 0) continue;
           marketX.push(Math.log(pt.strike / sl.forward));
           marketY.push(sl.T);
           marketZ.push(pt.market_iv);
+          marketText.push(
+            'Strike: $' + pt.strike.toLocaleString() +
+            '<br>Maturity: ' + (sl.expiryCode || sl.T.toFixed(4) + 'y') +
+            '<br>IV: ' + pt.market_iv.toFixed(2) + '%'
+          );
         }
       }
 
@@ -1031,6 +1081,8 @@
           {
             type: 'scatter3d', mode: 'markers', name: 'Market',
             x: marketX, y: marketY, z: marketZ,
+            text: marketText,
+            hovertemplate: '%{text}<extra></extra>',
             marker: { size: 2.2, color: '#d8e0ea', opacity: 0.85 },
           },
           {
@@ -1053,15 +1105,48 @@
           showlegend: false,
         };
 
-        Plotly.newPlot(div, traces, layout, { responsive: true, displayModeBar: false });
+        Plotly.newPlot(div, traces, layout, { responsive: true, displayModeBar: false, scrollZoom: false });
         surfaceInitialized = true;
+
+        // Pause data updates during user drag (rotation/pan)
+        div.addEventListener('mousedown', () => { surfaceInteracting = true; });
+        window.addEventListener('mouseup', () => {
+          if (surfaceInteracting && !zoomRafId) {
+            surfaceInteracting = false;
+            if (surfaceDirty) { surfaceDirty = false; renderSurface(); }
+          }
+        });
+
+        // Smooth animated zoom — intercept wheel, animate camera with lerp
+        div.addEventListener('wheel', (e) => {
+          e.preventDefault();
+          surfaceInteracting = true;
+
+          // Read current camera eye
+          const scene = div._fullLayout && div._fullLayout.scene;
+          const cam = scene && scene._scene ? scene._scene.getCamera() : null;
+          const eye = cam ? cam.eye : (zoomCurrent || { x: 1.65, y: 1.25, z: 0.8 });
+
+          if (!zoomCurrent) zoomCurrent = { x: eye.x, y: eye.y, z: eye.z };
+          // Use target if animation is in-flight, otherwise start from current eye
+          const base = zoomTarget || { x: eye.x, y: eye.y, z: eye.z };
+
+          const direction = e.deltaY > 0 ? 1 : -1; // positive = zoom out
+          const scale = 1 + direction * ZOOM_STEP;
+          zoomTarget = { x: base.x * scale, y: base.y * scale, z: base.z * scale };
+
+          if (!zoomRafId) {
+            zoomRafId = requestAnimationFrame(() => animateZoom(div));
+          }
+        }, { passive: false });
       } else {
         // --- Subsequent renders: restyle data only, never touch layout/camera ---
         Plotly.restyle(div, { x: [kGrid], y: [tGrid], z: [zGrid] }, [0]);
-        Plotly.restyle(div, { x: [marketX], y: [marketY], z: [marketZ] }, [1]);
+        Plotly.restyle(div, { x: [marketX], y: [marketY], z: [marketZ], text: [marketText] }, [1]);
         Plotly.restyle(div, { x: [kGrid], y: [tGrid], z: [diffZ] }, [2]);
       }
 
+      surfaceDirty = false;
       document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
     }
 
