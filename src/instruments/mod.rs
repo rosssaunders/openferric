@@ -6,8 +6,10 @@ pub mod cliquet;
 pub mod digital;
 pub mod exotic;
 pub mod fx;
+pub mod power;
 pub mod spread;
 pub mod vanilla;
+pub mod variance_swap;
 
 pub use asian::AsianOption;
 pub use barrier::{BarrierOption, BarrierOptionBuilder};
@@ -18,5 +20,7 @@ pub use exotic::{
     QuantoOption,
 };
 pub use fx::FxOption;
+pub use power::PowerOption;
 pub use spread::SpreadOption;
 pub use vanilla::VanillaOption;
+pub use variance_swap::{VarianceOptionQuote, VarianceSwap, VolatilitySwap};
