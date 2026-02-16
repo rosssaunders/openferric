@@ -1,5 +1,4 @@
-use rand::Rng;
-use rand::SeedableRng;
+use rand::{Rng, RngExt, SeedableRng};
 use rand::rngs::StdRng;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;

@@ -528,7 +528,7 @@ pub fn py_survival_prob(hazard_rate: f64, t: f64) -> f64 {
 }
 
 #[pymodule]
-pub fn openferric(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
+pub fn openferric(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_bs_price, module)?)?;
     module.add_function(wrap_pyfunction!(py_bs_greeks, module)?)?;
     module.add_function(wrap_pyfunction!(py_barrier_price, module)?)?;

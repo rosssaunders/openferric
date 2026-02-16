@@ -1,7 +1,7 @@
 use crate::math::normal_inv_cdf;
 use crate::models::{Gbm, Heston};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::sync::Arc;

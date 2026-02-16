@@ -1,4 +1,5 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 use openferric::engines::analytic::{bs_price_batch, normal_cdf_batch_approx};
 use openferric::engines::monte_carlo::{mc_european_call_soa, mc_european_call_soa_scalar};
 use openferric::pricing::{OptionType, european::black_scholes_price};

@@ -21,25 +21,25 @@ deribit = [
     "dep:futures-util",
     "dep:tower-http",
 ]
-wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:serde", "dep:serde_json", "dep:getrandom", "dep:getrandom03"]
+wasm = ["dep:wasm-bindgen", "dep:getrandom", "dep:getrandom03"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-rand = "0.9"
-rand_distr = "0.5"
+rand = "0.10"
+rand_distr = "0.6"
 statrs = "0.18"
-nalgebra = "0.33"
+nalgebra = "0.34"
 rayon = { version = "1.11", optional = true }
 num-complex = "0.4"
-pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
-reqwest = { version = "0.12", features = ["json"], optional = true }
+pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
+reqwest = { version = "0.13", features = ["json", "query"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-axum = { version = "0.7", features = ["ws"], optional = true }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"], optional = true }
 futures-util = { version = "0.3", optional = true }
-tower-http = { version = "0.5", features = ["cors"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 getrandom = { version = "0.2", features = ["js"], optional = true }
@@ -47,7 +47,7 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"], 
 
 [dev-dependencies]
 approx = "0.5"
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "pricing_bench"
