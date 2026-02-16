@@ -204,8 +204,14 @@
     <!-- Row 1, Col 1: 3D Surface -->
     <div class="panel" style="grid-row: 1;">
       <div class="panel-head">
-        <div class="panel-title">3D Vol Surface (SVI fit + market)</div>
+        <div class="panel-title" id="surface-title">3D Vol Surface (SVI fit + market)</div>
         <div class="toolbar">
+          <label for="model-select">model</label>
+          <select id="model-select">
+            <option value="svi" selected>SVI</option>
+            <option value="sabr">SABR</option>
+            <option value="vv">Vanna-Volga</option>
+          </select>
           <span id="calib-time" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></span>
         </div>
       </div>
@@ -380,6 +386,18 @@
     }
 
     // =====================================================================
+    //  Active model selection
+    // =====================================================================
+    let activeModel = 'svi'; // 'svi' | 'sabr' | 'vv'
+
+    document.getElementById('model-select').addEventListener('change', (e) => {
+      activeModel = e.target.value;
+      dirty = true;
+      baselineSurface = null; // reset baseline on model switch
+      scheduleCalibration();
+    });
+
+    // =====================================================================
     //  SVI (JS fallback when WASM unavailable)
     // =====================================================================
     function sviTotalVariance(p, k) {
@@ -399,7 +417,84 @@
     }
 
     // =====================================================================
-    //  Calibration (per-expiry)
+    //  SABR (Hagan's closed-form approximation — JS fallback)
+    // =====================================================================
+    function sabrImpliedVol(p, f, k, t) {
+      if (t <= 0 || f <= 0 || k <= 0) return 0;
+      const alpha = Math.max(p.alpha, 1e-12);
+      const beta = Math.max(0, Math.min(1, p.beta));
+      const rho = Math.max(-0.999, Math.min(0.999, p.rho));
+      const nu = Math.max(0, p.nu);
+      const omb = 1 - beta;
+
+      function timeFactor(fkPow) {
+        return 1 + ((omb*omb/24)*alpha*alpha/fkPow
+          + (rho*beta*nu*alpha)/(4*Math.sqrt(fkPow))
+          + ((2-3*rho*rho)/24)*nu*nu) * t;
+      }
+
+      if (Math.abs(f - k) <= 1e-14) {
+        const fPow = Math.pow(f, omb);
+        return (alpha / fPow) * timeFactor(Math.pow(f, 2*omb));
+      }
+
+      const fk = f * k;
+      const fkPowHalf = Math.pow(fk, 0.5*omb);
+      const fkPow = Math.pow(fk, omb);
+      const logFk = Math.log(f/k);
+      const logFk2 = logFk*logFk;
+
+      const z = alpha > 1e-14 ? (nu/alpha)*fkPowHalf*logFk : 0;
+      let zOverXz;
+      if (Math.abs(z) < 1e-8) {
+        zOverXz = 1 - 0.5*rho*z + ((2-3*rho*rho)/12)*z*z;
+      } else {
+        const num = Math.sqrt(1 - 2*rho*z + z*z) + z - rho;
+        const xz = Math.log(num / (1 - rho));
+        zOverXz = Math.abs(xz) > 1e-14 ? z/xz : 1;
+      }
+
+      const denom = fkPowHalf*(1 + (omb*omb/24)*logFk2 + (Math.pow(omb,4)/1920)*logFk2*logFk2);
+      const vol = (alpha/denom) * zOverXz * timeFactor(fkPow);
+      return isFinite(vol) ? Math.max(vol, 0) : 0;
+    }
+
+    function sabrIvPct(p, k, t, forward) {
+      if (!p || !isFinite(t) || t <= 0 || !isFinite(forward) || forward <= 0) return NaN;
+      const strike = forward * Math.exp(k);
+      return sabrImpliedVol(p, forward, strike, t) * 100;
+    }
+
+    // =====================================================================
+    //  Vanna-Volga smile construction
+    // =====================================================================
+    function vvIvPct(p, k, t) {
+      // p = { atmVol, rr25, bf25 } — all in decimal (not pct)
+      if (!p || !isFinite(t) || t <= 0) return NaN;
+      const atmVol = p.atmVol;
+      const scale = Math.max(atmVol * Math.sqrt(t), 1e-8);
+      // Vanna-volga adjustment: linear in k for skew, quadratic for convexity
+      const vannaW = k / scale;
+      const volgaW = (k * k) / (scale * scale);
+      // vol_25c = atm + bf + 0.5*rr, vol_25p = atm + bf - 0.5*rr
+      const rr = p.rr25;
+      const bf = p.bf25;
+      const vol = atmVol + vannaW * rr * 0.5 + volgaW * bf;
+      return Math.max(vol, 1e-8) * 100;
+    }
+
+    // =====================================================================
+    //  Generic model IV evaluation (dispatches on activeModel)
+    // =====================================================================
+    function sliceIvPct(sl, k) {
+      if (sl.modelType === 'svi') return sviIvPct(sl.params, k, sl.T);
+      if (sl.modelType === 'sabr') return sabrIvPct(sl.params, k, sl.T, sl.forward);
+      if (sl.modelType === 'vv') return vvIvPct(sl.params, k, sl.T);
+      return NaN;
+    }
+
+    // =====================================================================
+    //  Calibration (per-expiry, model-aware)
     // =====================================================================
     let calibrationScheduled = false;
     let lastCalibTime = 0;
@@ -422,6 +517,7 @@
       const now = Date.now();
       const nowSec = now / 1000;
       const t0 = performance.now();
+      const model = activeModel;
 
       // Group by expiry code
       const grouped = new Map();
@@ -444,13 +540,10 @@
         const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
         if (!isFinite(forward) || forward <= 0) continue;
 
-        // Build (k, w) pairs
-        const points = [];
+        // Build per-quote data
         const qByK = [];
         for (const q of quotes) {
           const k = Math.log(q.strike / forward);
-          const w = q.mark_iv * q.mark_iv * T;
-          points.push(k, w);
           qByK.push({ k, q });
         }
 
@@ -464,33 +557,73 @@
           }
         }
 
-        const atmW = Math.max(atmVol * atmVol * T, 1e-6);
-        const initA = atmW * 0.4;
-        const initB = atmW * 0.8;
-        const initRho = -0.2;
-        const initM = 0.0;
-        const initSigma = 0.25;
+        // ---- Model-specific calibration ----
+        let params, modelType;
 
-        let params;
-        if (wasmReady) {
-          const flat = new Float64Array(points);
-          const wp = wasm.calibrate_svi_wasm(flat, initA, initB, initRho, initM, initSigma, 600, 0.01);
-          params = { a: wp.a, b: wp.b, rho: wp.rho, m: wp.m, sigma: wp.sigma };
+        if (model === 'sabr') {
+          // SABR: fit in strike/vol space
+          modelType = 'sabr';
+          const strikes = qByK.map(({ q }) => q.strike);
+          const vols = qByK.map(({ q }) => q.mark_iv);
+
+          if (wasmReady) {
+            const strikesArr = new Float64Array(strikes);
+            const volsArr = new Float64Array(vols);
+            const wp = wasm.fit_sabr_wasm(forward, strikesArr, volsArr, T, 0.5);
+            params = { alpha: wp.alpha, beta: wp.beta, rho: wp.rho, nu: wp.nu };
+          } else {
+            params = fitSabrFallback(forward, strikes, vols, T, 0.5);
+          }
+        } else if (model === 'vv') {
+          // Vanna-Volga: derive from ATM + 25d RR/BF
+          modelType = 'vv';
+          // Sort by moneyness to find 25-delta wing vols
+          const sorted = [...qByK].sort((a, b) => a.k - b.k);
+          // Approximate: put wing ~ 25th percentile, call wing ~ 75th percentile
+          const n = sorted.length;
+          const putIdx = Math.max(0, Math.round(n * 0.15));
+          const callIdx = Math.min(n - 1, Math.round(n * 0.85));
+          const putVol = sorted[putIdx].q.mark_iv;
+          const callVol = sorted[callIdx].q.mark_iv;
+          const rr25 = callVol - putVol;
+          const bf25 = 0.5 * (callVol + putVol) - atmVol;
+          params = { atmVol, rr25, bf25 };
         } else {
-          params = calibrateSviFallback(points, initA, initB, initRho, initM, initSigma, 600, 0.01);
+          // SVI (default)
+          modelType = 'svi';
+          const points = [];
+          for (const { k, q } of qByK) {
+            points.push(k, q.mark_iv * q.mark_iv * T);
+          }
+          const atmW = Math.max(atmVol * atmVol * T, 1e-6);
+
+          if (wasmReady) {
+            const flat = new Float64Array(points);
+            const wp = wasm.calibrate_svi_wasm(flat, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 600, 0.01);
+            params = { a: wp.a, b: wp.b, rho: wp.rho, m: wp.m, sigma: wp.sigma };
+          } else {
+            params = calibrateSviFallback(points, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 600, 0.01);
+          }
         }
 
-        // Compute RMSE and slice points
+        // Compute fitted IV and RMSE for all models
         let errSq = 0;
         const slicePoints = [];
         for (const { k, q } of qByK) {
-          const fittedIv = Math.sqrt(Math.max(sviTotalVariance(params, k), 1e-12) / T);
-          const err = (fittedIv - q.mark_iv) * 100;
+          let fittedIvPct;
+          if (modelType === 'svi') {
+            fittedIvPct = Math.sqrt(Math.max(sviTotalVariance(params, k), 1e-12) / T) * 100;
+          } else if (modelType === 'sabr') {
+            fittedIvPct = sabrImpliedVol(params, forward, q.strike, T) * 100;
+          } else {
+            fittedIvPct = vvIvPct(params, k, T);
+          }
+          const err = fittedIvPct - q.mark_iv * 100;
           errSq += err * err;
           slicePoints.push({
             strike: q.strike,
             market_iv: q.mark_iv * 100,
-            fitted_iv: fittedIv * 100,
+            fitted_iv: fittedIvPct,
             bid_iv: (q.bid_iv || 0) * 100,
             ask_iv: (q.ask_iv || 0) * 100,
           });
@@ -498,18 +631,22 @@
         slicePoints.sort((a, b) => a.strike - b.strike);
         const rmse = Math.sqrt(errSq / qByK.length);
 
-        // Skew / kurtosis proxy
-        const skew = sviDwDk(params, 0);
+        // Skew / kurtosis proxy (use model-specific IV)
+        const tmpSl = { modelType, params, T, forward };
+        const ivAt0 = sliceIvPct(tmpSl, 0);
         const eps = 0.001;
-        const dw1 = sviDwDk(params, eps);
-        const dw0 = sviDwDk(params, -eps);
-        const kurtProxy = (dw1 - dw0) / (2 * eps);
+        const ivPlus = sliceIvPct(tmpSl, eps);
+        const ivMinus = sliceIvPct(tmpSl, -eps);
+        const skew = isFinite(ivPlus) && isFinite(ivMinus) ? (ivPlus - ivMinus) / (2 * eps) : 0;
+        const kurtProxy = isFinite(ivPlus) && isFinite(ivMinus) && isFinite(ivAt0)
+          ? (ivPlus - 2*ivAt0 + ivMinus) / (eps * eps) : 0;
 
         slices.push({
           expiryCode,
           expiryLabel: expiryCode,
           T,
           params,
+          modelType,
           rmse,
           n: qByK.length,
           atmVol: atmVol * 100,
@@ -525,6 +662,11 @@
 
       calibTimeUs = Math.round((performance.now() - t0) * 1000);
 
+      // Update surface title
+      const modelNames = { svi: 'SVI', sabr: 'SABR', vv: 'Vanna-Volga' };
+      document.getElementById('surface-title').textContent =
+        `3D Vol Surface (${modelNames[model] || model} fit + market)`;
+
       // Save previous IVs for heatmap diff
       const newIvMap = new Map();
       for (const sl of slices) {
@@ -538,6 +680,8 @@
         baselineSurface = slices.map(s => ({
           expiryCode: s.expiryCode,
           T: s.T,
+          forward: s.forward,
+          modelType: s.modelType,
           params: { ...s.params },
         }));
       }
@@ -566,6 +710,83 @@
       requestAnimationFrame(() => {
         renderAll();
       });
+    }
+
+    // =====================================================================
+    //  SABR calibration JS fallback (simple grid + gradient descent)
+    // =====================================================================
+    function fitSabrFallback(forward, strikes, marketVols, t, beta) {
+      beta = Math.max(0, Math.min(1, beta));
+      if (forward <= 0 || t <= 0 || strikes.length === 0) {
+        return { alpha: 0.2, beta, rho: 0, nu: 0.5 };
+      }
+
+      // Find ATM vol
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < strikes.length; i++) {
+        const d = Math.abs(strikes[i] - forward);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      const atmVol = Math.max(marketVols[bestIdx], 1e-4);
+      const alphaGuess = atmVol * Math.pow(forward, 1 - beta);
+
+      function obj(p) {
+        let mse = 0;
+        for (let i = 0; i < strikes.length; i++) {
+          const mv = sabrImpliedVol(p, forward, strikes[i], t);
+          if (!isFinite(mv)) return Infinity;
+          const e = mv - marketVols[i];
+          mse += e * e;
+        }
+        return mse / strikes.length;
+      }
+
+      function project(p) {
+        return {
+          alpha: Math.max(p.alpha, 1e-8),
+          beta,
+          rho: Math.max(-0.999, Math.min(0.999, p.rho)),
+          nu: Math.max(p.nu, 1e-8),
+        };
+      }
+
+      // Grid search
+      let best = project({ alpha: alphaGuess, beta, rho: -0.3, nu: 0.5 });
+      let bestObj = obj(best);
+      for (const am of [0.6, 0.8, 1.0, 1.2, 1.5]) {
+        for (const rho of [-0.7, -0.4, -0.2, 0, 0.2]) {
+          for (const nu of [0.2, 0.4, 0.7, 1.0]) {
+            const cand = project({ alpha: alphaGuess * am, beta, rho, nu });
+            const co = obj(cand);
+            if (co < bestObj) { best = cand; bestObj = co; }
+          }
+        }
+      }
+
+      // Gradient refinement
+      const fields = ['alpha', 'rho', 'nu'];
+      let p = best, pObj = bestObj, lr = 1e-4;
+      for (let iter = 0; iter < 200; iter++) {
+        const g = [];
+        const eps = 1e-5;
+        for (const f of fields) {
+          const pp = { ...p }; pp[f] += eps;
+          const pm = { ...p }; pm[f] -= eps;
+          g.push((obj(project(pp)) - obj(project(pm))) / (2 * eps));
+        }
+        const gn = Math.sqrt(g.reduce((s, v) => s + v*v, 0));
+        if (gn < 1e-12) break;
+        const cand = project({
+          alpha: p.alpha - lr * g[0],
+          beta,
+          rho: p.rho - lr * g[1],
+          nu: p.nu - lr * g[2],
+        });
+        const co = obj(cand);
+        if (co < pObj) { p = cand; pObj = co; lr *= 1.1; }
+        else { lr *= 0.5; if (lr < 1e-10) break; }
+      }
+      return p;
     }
 
     // JS fallback calibration (simple gradient descent — same multi-start as Rust)
@@ -660,29 +881,25 @@
     // =====================================================================
     //  25-delta strike finder (Newton's method)
     // =====================================================================
-    function find25DeltaStrikes(params, T, forward, spot) {
-      // Find strikes where |BSM delta| = 0.25
-      // For calls: delta = N(d1) = 0.25 => d1 = norminv(0.25) ~ -0.6745
-      // For puts: delta = N(d1) - 1 = -0.25 => d1 = norminv(0.75) ~ 0.6745
-      // d1 = (-k + 0.5*sigma^2*T) / (sigma*sqrt(T))  where sigma = IV(k)
-      if (T <= 0 || forward <= 0) return { call25: NaN, put25: NaN };
+    function find25DeltaStrikes(sl) {
+      // Find strikes where |BSM delta| = 0.25 using model-generic IV
+      if (sl.T <= 0 || sl.forward <= 0) return { call25Iv: NaN, put25Iv: NaN };
 
+      const T = sl.T;
       const sqrtT = Math.sqrt(T);
-      // Target d1 for 25-delta call and put
       const d1Call = -0.6745;
       const d1Put = 0.6745;
 
       function solveK(targetD1) {
-        let k = 0; // start ATM
+        let k = 0;
         for (let i = 0; i < 20; i++) {
-          const ivPct = sviIvPct(params, k, T);
+          const ivPct = sliceIvPct(sl, k);
           if (!isFinite(ivPct) || ivPct <= 0) return NaN;
           const sigma = ivPct / 100;
           const d1 = (-k + 0.5 * sigma * sigma * T) / (sigma * sqrtT);
           const err = d1 - targetD1;
-          // Finite difference for derivative
           const dk = 0.001;
-          const ivPctP = sviIvPct(params, k + dk, T);
+          const ivPctP = sliceIvPct(sl, k + dk);
           if (!isFinite(ivPctP) || ivPctP <= 0) return NaN;
           const sigmaP = ivPctP / 100;
           const d1p = (-(k + dk) + 0.5 * sigmaP * sigmaP * T) / (sigmaP * sqrtT);
@@ -700,8 +917,8 @@
       return {
         call25K: kCall,
         put25K: kPut,
-        call25Iv: sviIvPct(params, kCall, T),
-        put25Iv: sviIvPct(params, kPut, T),
+        call25Iv: sliceIvPct(sl, kCall),
+        put25Iv: sliceIvPct(sl, kPut),
       };
     }
 
@@ -761,6 +978,7 @@
     }
 
     // --- 3D Surface ---
+    let surfaceInitialized = false;
     function renderSurface() {
       const div = document.getElementById('chart-surface');
       if (calibratedSlices.length === 0) return;
@@ -786,11 +1004,11 @@
       const kGrid = [];
       for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
       const tGrid = calibratedSlices.map(s => s.T);
-      const zGrid = calibratedSlices.map(s => kGrid.map(k => sviIvPct(s.params, k, s.T)));
+      const zGrid = calibratedSlices.map(s => kGrid.map(k => sliceIvPct(s, k)));
 
       const traces = [
         {
-          type: 'surface', name: 'SVI fit', x: kGrid, y: tGrid, z: zGrid,
+          type: 'surface', name: 'Fitted', x: kGrid, y: tGrid, z: zGrid,
           opacity: 0.82, showscale: false,
           colorscale: [[0,'#144f83'],[0.5,'#1e8ac8'],[1,'#39dba7']],
         },
@@ -803,10 +1021,11 @@
 
       // Surface diff from baseline
       if (baselineSurface && baselineSurface.length > 0) {
-        const diffZ = calibratedSlices.map((sl, idx) => {
+        const diffZ = calibratedSlices.map((sl) => {
           const base = baselineSurface.find(b => b.expiryCode === sl.expiryCode);
           if (!base) return kGrid.map(() => 0);
-          return kGrid.map(k => sviIvPct(sl.params, k, sl.T) - sviIvPct(base.params, k, base.T));
+          const baseSl = { modelType: base.modelType, params: base.params, T: base.T, forward: base.forward };
+          return kGrid.map(k => sliceIvPct(sl, k) - sliceIvPct(baseSl, k));
         });
         traces.push({
           type: 'surface', name: 'Session diff', x: kGrid, y: tGrid, z: diffZ,
@@ -815,18 +1034,24 @@
         });
       }
 
-      Plotly.react(div, traces, {
+      // Preserve user camera position after first render
+      const layout = {
         ...darkLayout,
         margin: { l: 0, r: 0, b: 0, t: 0 },
         scene: {
           xaxis: { title: 'ln(K/F)', ...axisStyle },
           yaxis: { title: 'T (yr)', ...axisStyle },
           zaxis: { title: 'IV (%)', ...axisStyle },
-          camera: { eye: { x: 1.65, y: 1.25, z: 0.8 } },
         },
         showlegend: false,
-        transition: { duration: 150, easing: 'cubic-in-out' },
-      }, { responsive: true, displayModeBar: false });
+      };
+
+      if (!surfaceInitialized) {
+        layout.scene.camera = { eye: { x: 1.65, y: 1.25, z: 0.8 } };
+      }
+
+      Plotly.react(div, traces, layout, { responsive: true, displayModeBar: false });
+      surfaceInitialized = true;
 
       document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
     }
@@ -973,7 +1198,7 @@
       for (const sl of calibratedSlices) {
         const row = [];
         for (const strike of sampledStrikes) {
-          const iv = sviIvPct(sl.params, Math.log(strike / sl.forward), sl.T);
+          const iv = sliceIvPct(sl, Math.log(strike / sl.forward));
           if (!isFinite(iv) || iv <= 0 || sl.T <= 0) { row.push(0); continue; }
 
           if (wasmReady) {
@@ -1056,10 +1281,10 @@
       // 25-delta RR and BF
       const rr25 = [], bf25 = [];
       for (const sl of calibratedSlices) {
-        const d = find25DeltaStrikes(sl.params, sl.T, sl.forward, spotPrice);
+        const d = find25DeltaStrikes(sl);
         if (isFinite(d.call25Iv) && isFinite(d.put25Iv)) {
           rr25.push(d.call25Iv - d.put25Iv);
-          bf25.push(0.5 * (d.call25Iv + d.put25Iv) - sviIvPct(sl.params, 0, sl.T));
+          bf25.push(0.5 * (d.call25Iv + d.put25Iv) - sliceIvPct(sl, 0));
         } else {
           rr25.push(NaN);
           bf25.push(NaN);
@@ -1115,9 +1340,9 @@
       const tbody = document.querySelector('#skew-table tbody');
       tbody.innerHTML = '';
       for (const sl of calibratedSlices) {
-        const d = find25DeltaStrikes(sl.params, sl.T, sl.forward, spotPrice);
+        const d = find25DeltaStrikes(sl);
         const rr25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (d.call25Iv - d.put25Iv) : NaN;
-        const bf25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (0.5*(d.call25Iv+d.put25Iv) - sviIvPct(sl.params, 0, sl.T)) : NaN;
+        const bf25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (0.5*(d.call25Iv+d.put25Iv) - sliceIvPct(sl, 0)) : NaN;
 
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${sl.expiryLabel}</td>`

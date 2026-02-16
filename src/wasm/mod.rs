@@ -2,6 +2,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::greeks::black_scholes_merton_greeks;
 use crate::pricing::OptionType;
+use crate::vol::sabr::{SabrParams, fit_sabr};
 use crate::vol::surface::{SviParams, calibrate_svi};
 
 /// SVI parameters exposed to JavaScript via wasm-bindgen.
@@ -77,6 +78,53 @@ pub fn calibrate_svi_wasm(
         rho: result.rho,
         m: result.m,
         sigma: result.sigma,
+    }
+}
+
+/// SABR parameters exposed to JavaScript via wasm-bindgen.
+#[wasm_bindgen]
+pub struct WasmSabrParams {
+    pub alpha: f64,
+    pub beta: f64,
+    pub rho: f64,
+    pub nu: f64,
+}
+
+#[wasm_bindgen]
+impl WasmSabrParams {
+    /// Compute SABR implied vol for a given forward, strike, and time to expiry.
+    pub fn implied_vol(&self, forward: f64, strike: f64, t: f64) -> f64 {
+        let inner = SabrParams {
+            alpha: self.alpha,
+            beta: self.beta,
+            rho: self.rho,
+            nu: self.nu,
+        };
+        inner.implied_vol(forward, strike, t)
+    }
+}
+
+/// Calibrate SABR parameters from flat arrays.
+///
+/// `strikes_flat` and `vols_flat` are parallel arrays of market strikes and implied vols.
+/// `beta` is fixed (typically 0.5 for equity/crypto, 1.0 for lognormal, 0.0 for normal).
+///
+/// Returns a `WasmSabrParams` struct with calibrated parameters.
+#[wasm_bindgen]
+pub fn fit_sabr_wasm(
+    forward: f64,
+    strikes_flat: &[f64],
+    vols_flat: &[f64],
+    t: f64,
+    beta: f64,
+) -> WasmSabrParams {
+    let result = fit_sabr(forward, strikes_flat, vols_flat, t, beta);
+
+    WasmSabrParams {
+        alpha: result.alpha,
+        beta: result.beta,
+        rho: result.rho,
+        nu: result.nu,
     }
 }
 
