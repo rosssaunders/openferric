@@ -6,6 +6,10 @@ edition = "2024"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[features]
+default = []
+python = ["pyo3"]
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 rand = "0.9"
@@ -14,7 +18,7 @@ statrs = "0.18"
 nalgebra = "0.33"
 rayon = "1.10"
 num-complex = "0.4"
-pyo3 = { version = "0.20", features = ["extension-module"] }
+pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 approx = "0.5"

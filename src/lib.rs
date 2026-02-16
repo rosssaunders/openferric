@@ -6,6 +6,7 @@ pub mod instruments;
 pub mod market;
 pub mod math;
 pub mod models;
+#[cfg(feature = "python")]
 pub mod python;
 pub mod rates;
 pub mod vol;
