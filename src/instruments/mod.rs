@@ -2,6 +2,7 @@
 
 pub mod asian;
 pub mod barrier;
+pub mod black76;
 pub mod cliquet;
 pub mod convertible;
 pub mod digital;
@@ -16,6 +17,7 @@ pub mod variance_swap;
 
 pub use asian::AsianOption;
 pub use barrier::{BarrierOption, BarrierOptionBuilder};
+pub use black76::FuturesOption;
 pub use cliquet::{CliquetOption, ForwardStartOption};
 pub use convertible::ConvertibleBond;
 pub use digital::{AssetOrNothingOption, CashOrNothingOption, GapOption};

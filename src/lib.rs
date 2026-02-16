@@ -10,6 +10,7 @@ pub mod models;
 #[cfg(feature = "python")]
 pub mod python;
 pub mod rates;
+pub mod risk;
 pub mod vol;
 
 // Legacy modules kept for compatibility with existing consumers.

@@ -22,3 +22,8 @@ pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+criterion = "0.5"
+
+[[bench]]
+name = "pricing_bench"
+harness = false

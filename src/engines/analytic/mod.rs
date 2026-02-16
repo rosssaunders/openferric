@@ -1,8 +1,10 @@
 //! Closed-form analytic pricing engines.
 
 pub mod asian_geometric;
+pub mod bachelier;
 pub mod barrier_analytic;
 pub mod binary_barrier;
+pub mod black76;
 pub mod black_scholes;
 pub mod digital;
 pub mod double_barrier;
@@ -15,9 +17,11 @@ pub mod spread;
 pub mod variance_swap;
 
 pub use asian_geometric::GeometricAsianEngine;
+pub use bachelier::{bachelier_greeks, bachelier_price};
 pub use barrier_analytic::BarrierAnalyticEngine;
 pub use binary_barrier::{BinaryBarrierType, cash_or_nothing_barrier_price};
 pub use black_scholes::{BlackScholesEngine, black_scholes};
+pub use black76::{Black76Engine, black76_greeks, black76_price};
 pub use digital::DigitalAnalyticEngine;
 pub use double_barrier::DoubleBarrierAnalyticEngine;
 pub use exotic::ExoticAnalyticEngine;
