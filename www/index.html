@@ -983,6 +983,7 @@
       const div = document.getElementById('chart-surface');
       if (calibratedSlices.length === 0) return;
 
+      // --- Compute data ---
       const marketX = [], marketY = [], marketZ = [];
       for (const sl of calibratedSlices) {
         for (const pt of sl.points) {
@@ -1006,56 +1007,60 @@
       const tGrid = calibratedSlices.map(s => s.T);
       const zGrid = calibratedSlices.map(s => kGrid.map(k => sliceIvPct(s, k)));
 
-      const traces = [
-        {
-          type: 'surface', name: 'Fitted', x: kGrid, y: tGrid, z: zGrid,
-          opacity: 0.82, showscale: false,
-          colorscale: [[0,'#144f83'],[0.5,'#1e8ac8'],[1,'#39dba7']],
-        },
-        {
-          type: 'scatter3d', mode: 'markers', name: 'Market',
-          x: marketX, y: marketY, z: marketZ,
-          marker: { size: 2.2, color: '#d8e0ea', opacity: 0.85 },
-        },
-      ];
-
-      // Surface diff from baseline
+      // Diff surface data (zeros if no baseline yet)
+      let diffZ;
       if (baselineSurface && baselineSurface.length > 0) {
-        const diffZ = calibratedSlices.map((sl) => {
+        diffZ = calibratedSlices.map((sl) => {
           const base = baselineSurface.find(b => b.expiryCode === sl.expiryCode);
           if (!base) return kGrid.map(() => 0);
           const baseSl = { modelType: base.modelType, params: base.params, T: base.T, forward: base.forward };
           return kGrid.map(k => sliceIvPct(sl, k) - sliceIvPct(baseSl, k));
         });
-        traces.push({
-          type: 'surface', name: 'Session diff', x: kGrid, y: tGrid, z: diffZ,
-          opacity: 0.45, showscale: false,
-          colorscale: [[0,'#ff4444'],[0.5,'#333333'],[1,'#44ff44']],
-        });
+      } else {
+        diffZ = calibratedSlices.map(() => kGrid.map(() => 0));
       }
 
-      // Preserve user camera: read current camera from the live plot, fall back to default
-      const defaultCamera = { eye: { x: 1.65, y: 1.25, z: 0.8 } };
-      const currentCamera = (div._fullLayout && div._fullLayout.scene && div._fullLayout.scene._scene)
-        ? div._fullLayout.scene._scene.getCamera()
-        : (surfaceInitialized && div.layout && div.layout.scene && div.layout.scene.camera)
-          ? div.layout.scene.camera
-          : defaultCamera;
+      // --- First render: create all 3 traces + layout ---
+      if (!surfaceInitialized) {
+        const traces = [
+          {
+            type: 'surface', name: 'Fitted', x: kGrid, y: tGrid, z: zGrid,
+            opacity: 0.82, showscale: false,
+            colorscale: [[0,'#144f83'],[0.5,'#1e8ac8'],[1,'#39dba7']],
+          },
+          {
+            type: 'scatter3d', mode: 'markers', name: 'Market',
+            x: marketX, y: marketY, z: marketZ,
+            marker: { size: 2.2, color: '#d8e0ea', opacity: 0.85 },
+          },
+          {
+            type: 'surface', name: 'Session diff', x: kGrid, y: tGrid, z: diffZ,
+            opacity: 0.45, showscale: false,
+            colorscale: [[0,'#ff4444'],[0.5,'#333333'],[1,'#44ff44']],
+          },
+        ];
 
-      const layout = {
-        ...darkLayout,
-        margin: { l: 0, r: 0, b: 0, t: 0 },
-        scene: {
-          xaxis: { title: 'ln(K/F)', ...axisStyle },
-          yaxis: { title: 'T (yr)', ...axisStyle },
-          zaxis: { title: 'IV (%)', ...axisStyle },
-          camera: currentCamera,
-        },
-        showlegend: false,
-      };
+        const layout = {
+          ...darkLayout,
+          uirevision: 'stable',
+          margin: { l: 0, r: 0, b: 0, t: 0 },
+          scene: {
+            xaxis: { title: 'ln(K/F)', ...axisStyle },
+            yaxis: { title: 'T (yr)', ...axisStyle },
+            zaxis: { title: 'IV (%)', ...axisStyle },
+            camera: { eye: { x: 1.65, y: 1.25, z: 0.8 } },
+          },
+          showlegend: false,
+        };
 
-      Plotly.react(div, traces, layout, { responsive: true, displayModeBar: false });
-      surfaceInitialized = true;
+        Plotly.newPlot(div, traces, layout, { responsive: true, displayModeBar: false });
+        surfaceInitialized = true;
+      } else {
+        // --- Subsequent renders: restyle data only, never touch layout/camera ---
+        Plotly.restyle(div, { x: [kGrid], y: [tGrid], z: [zGrid] }, [0]);
+        Plotly.restyle(div, { x: [marketX], y: [marketY], z: [marketZ] }, [1]);
+        Plotly.restyle(div, { x: [kGrid], y: [tGrid], z: [diffZ] }, [2]);
+      }
 
       document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
     }
