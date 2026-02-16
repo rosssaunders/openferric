@@ -1,5 +1,6 @@
 use crate::rates::YieldCurve;
 
+#[cfg(test)]
 use super::cds::Cds;
 
 /// Survival-probability term structure keyed by maturity tenor in years.
@@ -64,80 +65,12 @@ impl SurvivalCurve {
         payment_freq: usize,
         discount_curve: &YieldCurve,
     ) -> Self {
-        if payment_freq == 0 || !(0.0..1.0).contains(&recovery_rate) {
-            return Self::new(vec![]);
-        }
-
-        let mut quotes = cds_spreads
-            .iter()
-            .copied()
-            .filter(|(maturity, spread)| *maturity > 0.0 && *spread >= 0.0)
-            .collect::<Vec<_>>();
-        quotes.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-        let mut pillar_times = Vec::with_capacity(quotes.len());
-        let mut hazards = Vec::with_capacity(quotes.len());
-
-        for (maturity, spread) in quotes {
-            let eval = |lambda: f64| {
-                let mut t = pillar_times.clone();
-                t.push(maturity);
-                let mut h = hazards.clone();
-                h.push(lambda.max(1.0e-10));
-
-                let survival_curve = Self::from_piecewise_hazard(&t, &h);
-                let cds = Cds {
-                    notional: 1.0,
-                    spread,
-                    maturity,
-                    recovery_rate,
-                    payment_freq,
-                };
-                cds.npv(discount_curve, &survival_curve)
-            };
-
-            let mut lo = 1.0e-8;
-            let mut hi = 1.0;
-            let mut f_lo = eval(lo);
-            let mut f_hi = eval(hi);
-
-            let mut grow_iter = 0;
-            while f_lo.signum() == f_hi.signum() && grow_iter < 40 {
-                hi *= 2.0;
-                f_hi = eval(hi);
-                grow_iter += 1;
-            }
-
-            let solved = if f_lo.signum() != f_hi.signum() {
-                for _ in 0..100 {
-                    let mid = 0.5 * (lo + hi);
-                    let f_mid = eval(mid);
-
-                    if f_mid.abs() < 1.0e-12 || (hi - lo) < 1.0e-10 {
-                        lo = mid;
-                        hi = mid;
-                        break;
-                    }
-
-                    if f_mid.signum() == f_lo.signum() {
-                        lo = mid;
-                        f_lo = f_mid;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                0.5 * (lo + hi)
-            } else if f_lo.abs() <= f_hi.abs() {
-                lo
-            } else {
-                hi
-            };
-
-            pillar_times.push(maturity);
-            hazards.push(solved.max(1.0e-10));
-        }
-
-        Self::from_piecewise_hazard(&pillar_times, &hazards)
+        super::bootstrap::bootstrap_survival_curve_from_cds_spreads(
+            cds_spreads,
+            recovery_rate,
+            payment_freq,
+            discount_curve,
+        )
     }
 
     /// Returns survival probability at tenor `t` using log-linear interpolation.
@@ -179,6 +112,46 @@ impl SurvivalCurve {
             return 0.0;
         }
         (self.survival_prob(t1) - self.survival_prob(t2)).clamp(0.0, 1.0)
+    }
+
+    /// Inverse survival function `S^{-1}(p)` under piecewise-exponential interpolation.
+    pub fn inverse_survival_prob(&self, p: f64) -> f64 {
+        if p >= 1.0 {
+            return 0.0;
+        }
+        if p <= 0.0 || self.tenors.is_empty() {
+            return f64::INFINITY;
+        }
+
+        let target = p.clamp(1.0e-15, 1.0 - 1.0e-15);
+        let first = self.tenors[0];
+        if target >= first.1 {
+            return invert_log_linear(0.0, 1.0, first.0, first.1, target);
+        }
+
+        for window in self.tenors.windows(2) {
+            let left = window[0];
+            let right = window[1];
+            if target <= left.1 && target >= right.1 {
+                return invert_log_linear(left.0, left.1, right.0, right.1, target);
+            }
+        }
+
+        if self.tenors.len() == 1 {
+            let h = hazard_between(0.0, 1.0, first.0, first.1);
+            if h <= 0.0 {
+                return f64::INFINITY;
+            }
+            return -target.ln() / h;
+        }
+
+        let left = self.tenors[self.tenors.len() - 2];
+        let right = self.tenors[self.tenors.len() - 1];
+        let h_tail = hazard_between(left.0, left.1, right.0, right.1);
+        if h_tail <= 0.0 {
+            return f64::INFINITY;
+        }
+        right.0 - (target / right.1).ln() / h_tail
     }
 }
 
@@ -229,6 +202,14 @@ fn log_linear_prob(t1: f64, p1: f64, t2: f64, p2: f64, t: f64) -> f64 {
     }
     let w = (t - t1) / (t2 - t1);
     (p1.ln() + w * (p2.ln() - p1.ln())).exp()
+}
+
+fn invert_log_linear(t1: f64, p1: f64, t2: f64, p2: f64, p: f64) -> f64 {
+    if (p1 - p2).abs() <= 1.0e-15 || (t2 - t1).abs() <= f64::EPSILON {
+        return t1.max(0.0);
+    }
+    let w = (p.ln() - p1.ln()) / (p2.ln() - p1.ln());
+    (t1 + w * (t2 - t1)).max(0.0)
 }
 
 #[cfg(test)]
@@ -303,5 +284,16 @@ mod tests {
             true_curve.survival_prob(6.0),
             epsilon = 2e-3
         );
+    }
+
+    #[test]
+    fn inverse_survival_inverts_survival_probability() {
+        let curve = SurvivalCurve::new(vec![(1.0, 0.96), (3.0, 0.88), (5.0, 0.80), (10.0, 0.62)]);
+
+        for &t in &[0.1, 0.75, 2.0, 4.5, 7.0] {
+            let s = curve.survival_prob(t);
+            let t_back = curve.inverse_survival_prob(s);
+            assert_relative_eq!(t_back, t, epsilon = 1.0e-10);
+        }
     }
 }
