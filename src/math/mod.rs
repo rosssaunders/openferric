@@ -24,6 +24,54 @@ pub fn normal_cdf(x: f64) -> f64 {
     if x >= 0.0 { approx } else { 1.0 - approx }
 }
 
+/// Bivariate standard normal CDF `P[X <= x, Y <= y]` with correlation `rho`.
+///
+/// Uses Plackett's identity with one-dimensional Gauss-Legendre integration:
+/// `Phi2(x,y,rho) = Phi(x)Phi(y) + ∫_0^rho phi2(x,y,r) dr`.
+pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
+    if x.is_nan() || y.is_nan() || rho.is_nan() {
+        return f64::NAN;
+    }
+
+    let rho = rho.clamp(-1.0, 1.0);
+
+    if x <= -10.0 || y <= -10.0 {
+        return 0.0;
+    }
+    if x >= 10.0 {
+        return normal_cdf(y);
+    }
+    if y >= 10.0 {
+        return normal_cdf(x);
+    }
+
+    if rho.abs() < 1.0e-12 {
+        return normal_cdf(x) * normal_cdf(y);
+    }
+    if rho >= 1.0 - 1.0e-12 {
+        return normal_cdf(x.min(y));
+    }
+    if rho <= -1.0 + 1.0e-12 {
+        // For rho = -1: P(X <= x, Y <= y) = max(P(X <= x) - P(X < -y), 0).
+        return (normal_cdf(x) - normal_cdf(-y)).max(0.0);
+    }
+
+    let base = normal_cdf(x) * normal_cdf(y);
+    let integral = gauss_legendre_integrate(
+        |r| {
+            let one_minus_r2 = 1.0 - r * r;
+            let exponent = -(x * x - 2.0 * r * x * y + y * y) / (2.0 * one_minus_r2);
+            exponent.exp() / (2.0 * PI * one_minus_r2.sqrt())
+        },
+        0.0,
+        rho,
+        96,
+    )
+    .unwrap_or(0.0);
+
+    (base + integral).clamp(0.0, 1.0)
+}
+
 pub fn newton_raphson<F, G>(
     f: F,
     df: G,
@@ -222,6 +270,37 @@ mod tests {
         assert_relative_eq!(normal_cdf(0.0), 0.5, epsilon = 1e-9);
         assert_relative_eq!(normal_cdf(1.0), 0.841_344_746, epsilon = 2e-5);
         assert_relative_eq!(normal_cdf(-1.0), 1.0 - normal_cdf(1.0), epsilon = 1e-12);
+    }
+
+    #[test]
+    fn bivariate_cdf_matches_closed_form_at_origin() {
+        // Phi2(0, 0; rho) = 1/4 + asin(rho)/(2*pi).
+        let rho = 0.5_f64;
+        let expected = 0.25 + rho.asin() / (2.0 * PI);
+        assert_relative_eq!(
+            bivariate_normal_cdf(0.0, 0.0, rho),
+            expected,
+            epsilon = 2e-5
+        );
+
+        let rho_neg = -0.5_f64;
+        let expected_neg = 0.25 + rho_neg.asin() / (2.0 * PI);
+        assert_relative_eq!(
+            bivariate_normal_cdf(0.0, 0.0, rho_neg),
+            expected_neg,
+            epsilon = 2e-5
+        );
+    }
+
+    #[test]
+    fn bivariate_cdf_has_basic_symmetry() {
+        let x = 0.35;
+        let y = -0.70;
+        let rho = 0.42;
+
+        let xy = bivariate_normal_cdf(x, y, rho);
+        let yx = bivariate_normal_cdf(y, x, rho);
+        assert_relative_eq!(xy, yx, epsilon = 2e-6);
     }
 
     #[test]

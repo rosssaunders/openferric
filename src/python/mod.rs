@@ -1,170 +1,124 @@
-use pyo3::exceptions::{PyTypeError, PyValueError};
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 
-use crate::core::{
-    BarrierDirection, BarrierSpec, BarrierStyle, ExerciseStyle, OptionType, PricingEngine,
-    PricingError, PricingResult,
+use crate::core::{BarrierDirection, BarrierStyle, ExerciseStyle, OptionType, PricingEngine};
+use crate::credit::{Cds, SurvivalCurve};
+use crate::engines::analytic::{
+    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, HestonEngine,
+    kirk_spread_price, margrabe_exchange_price,
 };
-use crate::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine};
-use crate::engines::numerical::AmericanBinomialEngine;
-use crate::instruments::{BarrierOption, VanillaOption};
-use crate::market::{Market, VolSource};
+use crate::greeks::black_scholes_merton_greeks;
+use crate::instruments::{
+    AssetOrNothingOption, CashOrNothingOption, ExoticOption, FxOption, LookbackFixedOption,
+    LookbackFloatingOption, SpreadOption, VanillaOption,
+};
+use crate::market::Market;
+use crate::pricing::american::crr_binomial_american;
+use crate::pricing::barrier::barrier_price_closed_form_with_carry_and_rebate;
+use crate::pricing::european::black_scholes_price;
+use crate::rates::YieldCurve;
+use crate::vol::implied::implied_vol_newton;
+use crate::vol::sabr::SabrParams;
 
-#[pyclass(module = "openferric")]
-#[derive(Debug, Clone, Default)]
-pub struct PyMarket {
-    spot: Option<f64>,
-    rate: Option<f64>,
-    dividend_yield: Option<f64>,
-    flat_vol: Option<f64>,
-    reference_date: Option<String>,
-}
-
-#[pymethods]
-impl PyMarket {
-    #[new]
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn spot<'py>(mut slf: PyRefMut<'py, Self>, spot: f64) -> PyRefMut<'py, Self> {
-        slf.spot = Some(spot);
-        slf
-    }
-
-    fn rate<'py>(mut slf: PyRefMut<'py, Self>, rate: f64) -> PyRefMut<'py, Self> {
-        slf.rate = Some(rate);
-        slf
-    }
-
-    fn dividend_yield<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        dividend_yield: f64,
-    ) -> PyRefMut<'py, Self> {
-        slf.dividend_yield = Some(dividend_yield);
-        slf
-    }
-
-    fn flat_vol<'py>(mut slf: PyRefMut<'py, Self>, vol: f64) -> PyRefMut<'py, Self> {
-        slf.flat_vol = Some(vol);
-        slf
-    }
-
-    fn reference_date<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        reference_date: String,
-    ) -> PyRefMut<'py, Self> {
-        slf.reference_date = Some(reference_date);
-        slf
-    }
-
-    fn build(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let market = self.to_market().map_err(pricing_error_to_py)?;
-        market_to_dict(py, &market)
-    }
-}
-
-impl PyMarket {
-    fn to_market(&self) -> Result<Market, PricingError> {
-        let mut builder = Market::builder();
-
-        if let Some(spot) = self.spot {
-            builder = builder.spot(spot);
-        }
-        if let Some(rate) = self.rate {
-            builder = builder.rate(rate);
-        }
-        if let Some(dividend_yield) = self.dividend_yield {
-            builder = builder.dividend_yield(dividend_yield);
-        }
-        if let Some(flat_vol) = self.flat_vol {
-            builder = builder.flat_vol(flat_vol);
-        }
-        if let Some(reference_date) = &self.reference_date {
-            builder = builder.reference_date(reference_date.clone());
-        }
-
-        builder.build()
-    }
-}
-
-fn pricing_error_to_py(err: PricingError) -> PyErr {
-    PyValueError::new_err(err.to_string())
-}
-
-fn parse_option_type(value: &str) -> PyResult<OptionType> {
+fn parse_option_type(value: &str) -> Option<OptionType> {
     match value.to_ascii_lowercase().as_str() {
-        "call" => Ok(OptionType::Call),
-        "put" => Ok(OptionType::Put),
-        _ => Err(PyValueError::new_err("option_type must be 'call' or 'put'")),
+        "call" => Some(OptionType::Call),
+        "put" => Some(OptionType::Put),
+        _ => None,
     }
 }
 
-fn parse_barrier_style(value: &str) -> PyResult<BarrierStyle> {
+fn parse_barrier_style(value: &str) -> Option<BarrierStyle> {
     match value.to_ascii_lowercase().as_str() {
-        "in" => Ok(BarrierStyle::In),
-        "out" => Ok(BarrierStyle::Out),
-        _ => Err(PyValueError::new_err("barrier_type must be 'in' or 'out'")),
+        "in" => Some(BarrierStyle::In),
+        "out" => Some(BarrierStyle::Out),
+        _ => None,
     }
 }
 
-fn parse_barrier_direction(value: &str) -> PyResult<BarrierDirection> {
+fn parse_barrier_direction(value: &str) -> Option<BarrierDirection> {
     match value.to_ascii_lowercase().as_str() {
-        "up" => Ok(BarrierDirection::Up),
-        "down" => Ok(BarrierDirection::Down),
-        _ => Err(PyValueError::new_err("barrier_dir must be 'up' or 'down'")),
+        "up" => Some(BarrierDirection::Up),
+        "down" => Some(BarrierDirection::Down),
+        _ => None,
     }
 }
 
-fn market_to_dict(py: Python<'_>, market: &Market) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("spot", market.spot)?;
-    dict.set_item("rate", market.rate)?;
-    dict.set_item("dividend_yield", market.dividend_yield)?;
-    dict.set_item("reference_date", market.reference_date.clone())?;
-
-    match &market.vol {
-        VolSource::Flat(vol) => dict.set_item("flat_vol", *vol)?,
-        VolSource::Surface(_) => {
-            return Err(PyTypeError::new_err(
-                "only flat volatility is supported by Python bindings",
-            ));
-        }
-    }
-
-    Ok(dict.into())
+#[derive(Debug, Clone, Copy)]
+enum DigitalKind {
+    CashOrNothing,
+    AssetOrNothing,
 }
 
-fn pricing_result_to_dict(py: Python<'_>, result: PricingResult) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("price", result.price)?;
-    dict.set_item("stderr", result.stderr)?;
+fn parse_digital_kind(value: &str) -> Option<DigitalKind> {
+    match value.to_ascii_lowercase().as_str() {
+        "cash" | "cash-or-nothing" | "cash_or_nothing" => Some(DigitalKind::CashOrNothing),
+        "asset" | "asset-or-nothing" | "asset_or_nothing" => Some(DigitalKind::AssetOrNothing),
+        _ => None,
+    }
+}
 
-    if let Some(greeks) = result.greeks {
-        let greeks_dict = PyDict::new(py);
-        greeks_dict.set_item("delta", greeks.delta)?;
-        greeks_dict.set_item("gamma", greeks.gamma)?;
-        greeks_dict.set_item("vega", greeks.vega)?;
-        greeks_dict.set_item("theta", greeks.theta)?;
-        greeks_dict.set_item("rho", greeks.rho)?;
-        dict.set_item("greeks", greeks_dict)?;
-    } else {
-        dict.set_item("greeks", py.None())?;
+#[derive(Debug, Clone, Copy)]
+enum SpreadMethod {
+    Kirk,
+    Margrabe,
+}
+
+fn parse_spread_method(value: &str) -> Option<SpreadMethod> {
+    match value.to_ascii_lowercase().as_str() {
+        "kirk" => Some(SpreadMethod::Kirk),
+        "margrabe" => Some(SpreadMethod::Margrabe),
+        _ => None,
+    }
+}
+
+fn build_market(spot: f64, rate: f64, div_yield: f64, vol: f64) -> Option<Market> {
+    Market::builder()
+        .spot(spot)
+        .rate(rate)
+        .dividend_yield(div_yield)
+        .flat_vol(vol.max(1e-8))
+        .build()
+        .ok()
+}
+
+fn tenor_grid(maturity: f64, payment_freq: usize) -> Vec<f64> {
+    if maturity <= 0.0 || payment_freq == 0 {
+        return vec![];
     }
 
-    let diagnostics_dict = PyDict::new(py);
-    for (key, value) in result.diagnostics {
-        diagnostics_dict.set_item(key, value)?;
-    }
-    dict.set_item("diagnostics", diagnostics_dict)?;
+    let dt = 1.0 / payment_freq as f64;
+    let mut times = Vec::new();
+    let mut t = 0.0;
 
-    Ok(dict.into())
+    while t + dt < maturity - 1e-12 {
+        t += dt;
+        times.push(t);
+    }
+    times.push(maturity);
+    times
 }
 
 #[pyfunction]
-pub fn price_european(
-    py: Python<'_>,
+pub fn py_bs_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    vol: f64,
+    rate: f64,
+    option_type: &str,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    black_scholes_price(option_type, spot, strike, rate, vol, expiry)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_bs_greeks(
     spot: f64,
     strike: f64,
     expiry: f64,
@@ -172,68 +126,30 @@ pub fn price_european(
     rate: f64,
     div_yield: f64,
     option_type: &str,
-) -> PyResult<PyObject> {
-    let option_type = parse_option_type(option_type)?;
-
-    let instrument = VanillaOption {
-        option_type,
-        strike,
-        expiry,
-        exercise: ExerciseStyle::European,
+    greek: &str,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
     };
-    let market = Market::builder()
-        .spot(spot)
-        .rate(rate)
-        .dividend_yield(div_yield)
-        .flat_vol(vol)
-        .build()
-        .map_err(pricing_error_to_py)?;
 
-    let engine = BlackScholesEngine::new();
-    let result = engine
-        .price(&instrument, &market)
-        .map_err(pricing_error_to_py)?;
-    pricing_result_to_dict(py, result)
-}
+    let greeks =
+        black_scholes_merton_greeks(option_type, spot, strike, rate, div_yield, vol, expiry);
 
-#[pyfunction(signature = (spot, strike, expiry, vol, rate, div_yield, option_type, steps = 500))]
-pub fn price_american(
-    py: Python<'_>,
-    spot: f64,
-    strike: f64,
-    expiry: f64,
-    vol: f64,
-    rate: f64,
-    div_yield: f64,
-    option_type: &str,
-    steps: usize,
-) -> PyResult<PyObject> {
-    let option_type = parse_option_type(option_type)?;
-
-    let instrument = VanillaOption {
-        option_type,
-        strike,
-        expiry,
-        exercise: ExerciseStyle::American,
-    };
-    let market = Market::builder()
-        .spot(spot)
-        .rate(rate)
-        .dividend_yield(div_yield)
-        .flat_vol(vol)
-        .build()
-        .map_err(pricing_error_to_py)?;
-
-    let engine = AmericanBinomialEngine::new(steps);
-    let result = engine
-        .price(&instrument, &market)
-        .map_err(pricing_error_to_py)?;
-    pricing_result_to_dict(py, result)
+    match greek.to_ascii_lowercase().as_str() {
+        "delta" => greeks.delta,
+        "gamma" => greeks.gamma,
+        "vega" => greeks.vega,
+        "theta" => greeks.theta,
+        "rho" => greeks.rho,
+        "vanna" => greeks.vanna,
+        "volga" | "vomma" => greeks.volga,
+        _ => f64::NAN,
+    }
 }
 
 #[pyfunction]
-pub fn price_barrier(
-    py: Python<'_>,
+#[allow(clippy::too_many_arguments)]
+pub fn py_barrier_price(
     spot: f64,
     strike: f64,
     expiry: f64,
@@ -244,42 +160,388 @@ pub fn price_barrier(
     option_type: &str,
     barrier_type: &str,
     barrier_dir: &str,
-) -> PyResult<PyObject> {
-    let option_type = parse_option_type(option_type)?;
-    let style = parse_barrier_style(barrier_type)?;
-    let direction = parse_barrier_direction(barrier_dir)?;
+    rebate: f64,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+    let Some(style) = parse_barrier_style(barrier_type) else {
+        return f64::NAN;
+    };
+    let Some(direction) = parse_barrier_direction(barrier_dir) else {
+        return f64::NAN;
+    };
 
-    let instrument = BarrierOption {
+    barrier_price_closed_form_with_carry_and_rebate(
+        option_type,
+        style,
+        direction,
+        spot,
+        strike,
+        barrier,
+        rate,
+        div_yield,
+        vol,
+        expiry,
+        rebate,
+    )
+}
+
+#[pyfunction]
+pub fn py_american_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    vol: f64,
+    rate: f64,
+    option_type: &str,
+    steps: usize,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    crr_binomial_american(option_type, spot, strike, rate, vol, expiry, steps.max(1))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_heston_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    option_type: &str,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    let instrument = VanillaOption {
         option_type,
         strike,
         expiry,
-        barrier: BarrierSpec {
-            direction,
-            style,
-            level: barrier,
-            rebate: 0.0,
-        },
+        exercise: ExerciseStyle::European,
     };
-    let market = Market::builder()
-        .spot(spot)
-        .rate(rate)
-        .dividend_yield(div_yield)
-        .flat_vol(vol)
-        .build()
-        .map_err(pricing_error_to_py)?;
 
-    let engine = BarrierAnalyticEngine::new();
-    let result = engine
+    let Some(market) = build_market(spot, rate, div_yield, v0.abs().sqrt()) else {
+        return f64::NAN;
+    };
+
+    HestonEngine::new(v0, kappa, theta, sigma_v, rho)
         .price(&instrument, &market)
-        .map_err(pricing_error_to_py)?;
-    pricing_result_to_dict(py, result)
+        .map(|x| x.price)
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+pub fn py_fx_price(
+    spot_fx: f64,
+    strike_fx: f64,
+    maturity: f64,
+    vol: f64,
+    domestic_rate: f64,
+    foreign_rate: f64,
+    option_type: &str,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    let instrument = FxOption::new(
+        option_type,
+        domestic_rate,
+        foreign_rate,
+        spot_fx,
+        strike_fx,
+        vol,
+        maturity,
+    );
+
+    let Some(market) = build_market(spot_fx, domestic_rate, foreign_rate, vol) else {
+        return f64::NAN;
+    };
+
+    GarmanKohlhagenEngine::new()
+        .price(&instrument, &market)
+        .map(|x| x.price)
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_digital_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    vol: f64,
+    rate: f64,
+    div_yield: f64,
+    option_type: &str,
+    digital_type: &str,
+    cash: f64,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+    let Some(digital_type) = parse_digital_kind(digital_type) else {
+        return f64::NAN;
+    };
+
+    let Some(market) = build_market(spot, rate, div_yield, vol) else {
+        return f64::NAN;
+    };
+
+    let engine = DigitalAnalyticEngine::new();
+
+    match digital_type {
+        DigitalKind::CashOrNothing => {
+            let instrument = CashOrNothingOption::new(option_type, strike, cash, expiry);
+            engine
+                .price(&instrument, &market)
+                .map(|x| x.price)
+                .unwrap_or(f64::NAN)
+        }
+        DigitalKind::AssetOrNothing => {
+            let instrument = AssetOrNothingOption::new(option_type, strike, expiry);
+            engine
+                .price(&instrument, &market)
+                .map(|x| x.price)
+                .unwrap_or(f64::NAN)
+        }
+    }
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_spread_price(
+    s1: f64,
+    s2: f64,
+    k: f64,
+    vol1: f64,
+    vol2: f64,
+    rho: f64,
+    q1: f64,
+    q2: f64,
+    r: f64,
+    t: f64,
+    method: &str,
+) -> f64 {
+    let Some(method) = parse_spread_method(method) else {
+        return f64::NAN;
+    };
+
+    let option = SpreadOption {
+        s1,
+        s2,
+        k,
+        vol1,
+        vol2,
+        rho,
+        q1,
+        q2,
+        r,
+        t,
+    };
+
+    match method {
+        SpreadMethod::Kirk => kirk_spread_price(&option),
+        SpreadMethod::Margrabe => margrabe_exchange_price(&option),
+    }
+    .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_lookback_floating(
+    spot: f64,
+    expiry: f64,
+    vol: f64,
+    rate: f64,
+    div_yield: f64,
+    option_type: &str,
+    observed_extreme: f64,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    let observed_extreme = if observed_extreme > 0.0 {
+        Some(observed_extreme)
+    } else {
+        None
+    };
+
+    let instrument = ExoticOption::LookbackFloating(LookbackFloatingOption {
+        option_type,
+        expiry,
+        observed_extreme,
+    });
+
+    let Some(market) = build_market(spot, rate, div_yield, vol) else {
+        return f64::NAN;
+    };
+
+    ExoticAnalyticEngine::new()
+        .price(&instrument, &market)
+        .map(|x| x.price)
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_lookback_fixed(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    vol: f64,
+    rate: f64,
+    div_yield: f64,
+    option_type: &str,
+    observed_extreme: f64,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    let observed_extreme = if observed_extreme > 0.0 {
+        Some(observed_extreme)
+    } else {
+        None
+    };
+
+    let instrument = ExoticOption::LookbackFixed(LookbackFixedOption {
+        option_type,
+        strike,
+        expiry,
+        observed_extreme,
+    });
+
+    let Some(market) = build_market(spot, rate, div_yield, vol) else {
+        return f64::NAN;
+    };
+
+    ExoticAnalyticEngine::new()
+        .price(&instrument, &market)
+        .map(|x| x.price)
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+pub fn py_implied_vol(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    rate: f64,
+    market_price: f64,
+    option_type: &str,
+) -> f64 {
+    let Some(option_type) = parse_option_type(option_type) else {
+        return f64::NAN;
+    };
+
+    implied_vol_newton(
+        option_type,
+        spot,
+        strike,
+        rate,
+        expiry,
+        market_price,
+        1e-10,
+        100,
+    )
+    .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+pub fn py_sabr_vol(
+    forward: f64,
+    strike: f64,
+    expiry: f64,
+    alpha: f64,
+    beta: f64,
+    rho: f64,
+    nu: f64,
+) -> f64 {
+    SabrParams {
+        alpha,
+        beta,
+        rho,
+        nu,
+    }
+    .implied_vol(forward, strike, expiry)
+}
+
+#[pyfunction]
+pub fn py_cds_npv(
+    notional: f64,
+    spread: f64,
+    maturity: f64,
+    recovery_rate: f64,
+    payment_freq: usize,
+    discount_rate: f64,
+    hazard_rate: f64,
+) -> f64 {
+    if payment_freq == 0 {
+        return f64::NAN;
+    }
+
+    let cds = Cds {
+        notional,
+        spread,
+        maturity,
+        recovery_rate,
+        payment_freq,
+    };
+
+    let tenors = tenor_grid(maturity, payment_freq);
+    let discount_curve = YieldCurve::new(
+        tenors
+            .iter()
+            .map(|t| (*t, (-discount_rate * *t).exp()))
+            .collect(),
+    );
+
+    let hazards = vec![hazard_rate.max(0.0); tenors.len()];
+    let survival_curve = SurvivalCurve::from_piecewise_hazard(&tenors, &hazards);
+
+    cds.npv(&discount_curve, &survival_curve)
+}
+
+#[pyfunction]
+pub fn py_survival_prob(hazard_rate: f64, t: f64) -> f64 {
+    if t <= 0.0 {
+        return 1.0;
+    }
+
+    let tt = t.max(1e-8);
+    let tenors = vec![tt];
+    let hazards = vec![hazard_rate.max(0.0)];
+    let curve = SurvivalCurve::from_piecewise_hazard(&tenors, &hazards);
+    curve.survival_prob(tt)
 }
 
 #[pymodule]
 pub fn openferric(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
-    module.add_class::<PyMarket>()?;
-    module.add_function(wrap_pyfunction!(price_european, module)?)?;
-    module.add_function(wrap_pyfunction!(price_american, module)?)?;
-    module.add_function(wrap_pyfunction!(price_barrier, module)?)?;
+    module.add_function(wrap_pyfunction!(py_bs_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_bs_greeks, module)?)?;
+    module.add_function(wrap_pyfunction!(py_barrier_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_american_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_heston_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_fx_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_digital_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_spread_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_lookback_floating, module)?)?;
+    module.add_function(wrap_pyfunction!(py_lookback_fixed, module)?)?;
+    module.add_function(wrap_pyfunction!(py_implied_vol, module)?)?;
+    module.add_function(wrap_pyfunction!(py_sabr_vol, module)?)?;
+    module.add_function(wrap_pyfunction!(py_cds_npv, module)?)?;
+    module.add_function(wrap_pyfunction!(py_survival_prob, module)?)?;
     Ok(())
 }
