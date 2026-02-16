@@ -275,6 +275,149 @@ impl MonteCarloPricingEngine {
     }
 }
 
+/// Dedicated Monte Carlo engine for arithmetic-average fixed-strike Asian options.
+#[derive(Debug, Clone, Copy)]
+pub struct ArithmeticAsianMC {
+    /// Number of simulated paths.
+    pub paths: usize,
+    /// Number of time steps per path.
+    pub steps: usize,
+    /// RNG seed.
+    pub seed: u64,
+    /// Enables geometric-Asian control variate.
+    pub control_variate: bool,
+}
+
+impl ArithmeticAsianMC {
+    /// Creates an arithmetic Asian Monte Carlo engine.
+    pub fn new(paths: usize, steps: usize, seed: u64) -> Self {
+        Self {
+            paths,
+            steps,
+            seed,
+            control_variate: true,
+        }
+    }
+
+    /// Enables/disables control variate.
+    pub fn with_control_variate(mut self, control_variate: bool) -> Self {
+        self.control_variate = control_variate;
+        self
+    }
+}
+
+impl PricingEngine<AsianOption> for ArithmeticAsianMC {
+    fn price(
+        &self,
+        instrument: &AsianOption,
+        market: &Market,
+    ) -> Result<PricingResult, PricingError> {
+        instrument.validate()?;
+
+        if instrument.asian.averaging != Averaging::Arithmetic {
+            return Err(PricingError::InvalidInput(
+                "ArithmeticAsianMC requires Averaging::Arithmetic".to_string(),
+            ));
+        }
+        if instrument.asian.strike_type != StrikeType::Fixed {
+            return Err(PricingError::InvalidInput(
+                "ArithmeticAsianMC currently supports StrikeType::Fixed only".to_string(),
+            ));
+        }
+        if self.paths == 0 {
+            return Err(PricingError::InvalidInput(
+                "arithmetic asian mc paths must be > 0".to_string(),
+            ));
+        }
+        if self.steps == 0 {
+            return Err(PricingError::InvalidInput(
+                "arithmetic asian mc steps must be > 0".to_string(),
+            ));
+        }
+
+        let maturity = instrument.expiry;
+        let vol = market.vol_for(instrument.strike, maturity);
+        if vol <= 0.0 || !vol.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "market volatility must be finite and > 0".to_string(),
+            ));
+        }
+
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: market.rate - market.dividend_yield,
+                sigma: vol,
+            },
+            s0: market.spot,
+            maturity,
+            steps: self.steps,
+        };
+
+        let mut engine = MonteCarloEngine::new(self.paths, self.seed).with_antithetic(true);
+        if self.control_variate {
+            let expected_discounted = geometric_asian_discrete_fixed_closed_form(
+                instrument.option_type,
+                market.spot,
+                instrument.strike,
+                market.rate,
+                market.dividend_yield,
+                vol,
+                &instrument.asian.observation_times,
+            );
+            let discount_factor = (-market.rate * maturity).exp();
+            let option_type = instrument.option_type;
+            let strike = instrument.strike;
+            let expiry = instrument.expiry;
+            let observation_times = instrument.asian.observation_times.clone();
+
+            let cv = ControlVariate {
+                expected: expected_discounted / discount_factor,
+                evaluator: Arc::new(move |path: &[f64]| {
+                    let geometric_avg = average_for_observations(
+                        path,
+                        expiry,
+                        &observation_times,
+                        Averaging::Geometric,
+                    );
+                    vanilla_payoff(option_type, geometric_avg, strike)
+                }),
+            };
+            engine = engine.with_control_variate(cv);
+        }
+
+        let discount = (-market.rate * maturity).exp();
+        let (price, stderr) = engine.run(
+            &generator,
+            |path| {
+                let arithmetic_avg = average_for_observations(
+                    path,
+                    maturity,
+                    &instrument.asian.observation_times,
+                    Averaging::Arithmetic,
+                );
+                vanilla_payoff(instrument.option_type, arithmetic_avg, instrument.strike)
+            },
+            discount,
+        );
+
+        let mut diagnostics = HashMap::new();
+        diagnostics.insert("num_paths".to_string(), self.paths as f64);
+        diagnostics.insert("num_steps".to_string(), self.steps as f64);
+        diagnostics.insert("vol".to_string(), vol);
+        diagnostics.insert(
+            "control_variate".to_string(),
+            if self.control_variate { 1.0 } else { 0.0 },
+        );
+
+        Ok(PricingResult {
+            price,
+            stderr: Some(stderr),
+            greeks: None,
+            diagnostics,
+        })
+    }
+}
+
 impl<T> PricingEngine<T> for MonteCarloPricingEngine
 where
     T: MonteCarloInstrument + Sync,
@@ -377,8 +520,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::PricingEngine;
-    use crate::instruments::VanillaOption;
+    use crate::core::{AsianSpec, PricingEngine};
+    use crate::instruments::{AsianOption, VanillaOption};
 
     #[test]
     fn mc_european_call_matches_black_scholes_within_one_percent() {
@@ -454,6 +597,65 @@ mod tests {
             "MC/BS relative error too high with control variate: mc={} bs={} rel_err={}",
             result.price,
             bs,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn geometric_asian_kemna_vorst_reference_is_approximately_5_31() {
+        // 12 equally-spaced averaging dates on [0, 1].
+        let observation_times: Vec<f64> = (0..12).map(|m| m as f64 / 11.0).collect();
+        let price = geometric_asian_discrete_fixed_closed_form(
+            OptionType::Call,
+            100.0,
+            100.0,
+            0.05,
+            0.0,
+            0.20,
+            &observation_times,
+        );
+
+        assert!(
+            (price - 5.31).abs() <= 0.15,
+            "geometric Asian reference mismatch: got={} expected≈5.31",
+            price
+        );
+    }
+
+    #[test]
+    fn arithmetic_asian_mc_kemna_turnbull_reference_within_two_percent() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.20)
+            .build()
+            .expect("valid market");
+
+        let observation_times: Vec<f64> = (0..12).map(|m| m as f64 / 11.0).collect();
+        let option = AsianOption::new(
+            OptionType::Call,
+            100.0,
+            1.0,
+            AsianSpec {
+                averaging: Averaging::Arithmetic,
+                strike_type: StrikeType::Fixed,
+                observation_times,
+            },
+        );
+
+        let result = ArithmeticAsianMC::new(100_000, 252, 42)
+            .with_control_variate(true)
+            .price(&option, &market)
+            .expect("arithmetic Asian MC succeeds");
+
+        let expected = 5.73;
+        let rel_err = ((result.price - expected) / expected).abs();
+        assert!(
+            rel_err <= 0.02,
+            "arithmetic Asian MC mismatch: mc={} expected={} rel_err={}",
+            result.price,
+            expected,
             rel_err
         );
     }

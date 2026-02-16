@@ -12,6 +12,7 @@ pub mod fx;
 pub mod power;
 pub mod rainbow;
 pub mod spread;
+pub mod swing;
 pub mod vanilla;
 pub mod variance_swap;
 
@@ -30,5 +31,6 @@ pub use fx::FxOption;
 pub use power::PowerOption;
 pub use rainbow::{BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption};
 pub use spread::SpreadOption;
+pub use swing::SwingOption;
 pub use vanilla::VanillaOption;
 pub use variance_swap::{VarianceOptionQuote, VarianceSwap, VolatilitySwap};

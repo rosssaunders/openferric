@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine, HestonEngine};
 use openferric::engines::monte_carlo::MonteCarloPricingEngine;

@@ -45,10 +45,10 @@ impl AsianOption {
             .asian
             .observation_times
             .iter()
-            .any(|&t| t <= 0.0 || t > self.expiry)
+            .any(|&t| t < 0.0 || t > self.expiry)
         {
             return Err(PricingError::InvalidInput(
-                "asian observation_times must lie in (0, expiry]".to_string(),
+                "asian observation_times must lie in [0, expiry]".to_string(),
             ));
         }
         Ok(())
