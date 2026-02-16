@@ -3,6 +3,7 @@ pub mod hjm;
 pub mod hw_calibration;
 pub mod lmm;
 pub mod short_rate;
+pub mod variance_gamma;
 
 pub use commodity::{
     CommodityForwardCurve, FuturesQuote, SchwartzOneFactor, SchwartzSmithTwoFactor,
@@ -14,6 +15,7 @@ pub use hw_calibration::{
 };
 pub use lmm::{LmmModel, LmmParams, black_swaption_price, initial_swap_rate_annuity};
 pub use short_rate::{CIR, HullWhite, Vasicek};
+pub use variance_gamma::VarianceGamma;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Gbm {

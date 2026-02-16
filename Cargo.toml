@@ -38,3 +38,7 @@ required-features = ["parallel"]
 [[bench]]
 name = "simd_bench"
 harness = false
+
+[[bench]]
+name = "fft_bench"
+harness = false
