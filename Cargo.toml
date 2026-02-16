@@ -11,6 +11,7 @@ default = []
 python = ["pyo3"]
 parallel = ["dep:rayon"]
 simd = []
+deribit = ["dep:reqwest", "dep:tokio", "dep:serde_json"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -21,6 +22,9 @@ nalgebra = "0.33"
 rayon = { version = "1.10", optional = true }
 num-complex = "0.4"
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
