@@ -11,7 +11,16 @@ default = []
 python = ["pyo3"]
 parallel = ["dep:rayon"]
 simd = []
-deribit = ["dep:reqwest", "dep:tokio", "dep:serde_json"]
+deribit = [
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:axum",
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "dep:tower-http",
+]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -23,8 +32,13 @@ rayon = { version = "1.10", optional = true }
 num-complex = "0.4"
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+axum = { version = "0.7", features = ["ws"], optional = true }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
+futures-util = { version = "0.3", optional = true }
+tower-http = { version = "0.5", features = ["cors"], optional = true }
 
 [dev-dependencies]
 approx = "0.5"
