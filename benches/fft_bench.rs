@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use num_complex::Complex;
 use openferric::core::PricingEngine;
-use openferric::engines::analytic::HestonEngine;
+use openferric::engines::analytic::{HestonEngine, BlackScholesEngine};
 use openferric::engines::fft::{
     BlackScholesCharFn, CarrMadanParams, carr_madan_fft, carr_madan_fft_complex,
     carr_madan_fft_strikes, heston_price_fft,
@@ -221,12 +221,183 @@ fn bench_fft_4096_rustfft_vs_realfft(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_heston_fft_different_strikes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heston_fft_strikes");
+    
+    let spot = 100.0;
+    let rate = 0.05;
+    let dividend = 0.0;
+    let maturity = 1.0;
+    let v0 = 0.04;
+    let kappa = 2.0;
+    let theta = 0.04;
+    let sigma_v = 0.5;
+    let rho = -0.7;
+    
+    let strikes = [80.0, 90.0, 100.0, 110.0, 120.0];
+    
+    for strike in strikes.iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(strike), strike, |b, _| {
+            b.iter(|| {
+                let strike_array = [*strike];
+                let prices = heston_price_fft(
+                    spot,
+                    &strike_array,
+                    rate,
+                    dividend,
+                    v0,
+                    kappa,
+                    theta,
+                    sigma_v,
+                    rho,
+                    maturity,
+                );
+                black_box(prices)
+            })
+        });
+    }
+    
+    group.finish();
+}
+
+fn bench_heston_fft_vs_bs_analytic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heston_vs_bs");
+    
+    let spot = 100.0;
+    let strike = 100.0;
+    let rate = 0.05;
+    let dividend = 0.0;
+    let maturity = 1.0;
+    let v0 = 0.04;
+    let kappa = 2.0;
+    let theta = 0.04;
+    let sigma_v = 0.3;
+    let rho = -0.5;
+    
+    group.bench_function("heston_fft", |b| {
+        b.iter(|| {
+            let strike_array = [strike];
+            let prices = heston_price_fft(
+                spot,
+                &strike_array,
+                rate,
+                dividend,
+                v0,
+                kappa,
+                theta,
+                sigma_v,
+                rho,
+                maturity,
+            );
+            black_box(prices)
+        })
+    });
+    
+    // Black-Scholes analytic for comparison
+    let option = VanillaOption::european_call(strike, maturity);
+    let market = Market::builder()
+        .spot(spot)
+        .rate(rate)
+        .dividend_yield(dividend)
+        .flat_vol(theta.sqrt()) // Use theta as vol for comparison
+        .build()
+        .expect("valid market");
+    let bs_engine = BlackScholesEngine::new();
+    
+    group.bench_function("bs_analytic", |b| {
+        b.iter(|| {
+            let price = bs_engine
+                .price(&option, &market)
+                .expect("pricing should succeed")
+                .price;
+            black_box(price)
+        })
+    });
+    
+    group.finish();
+}
+
+fn bench_heston_fft_parameter_regimes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heston_fft_regimes");
+    
+    let spot = 100.0;
+    let strike = 100.0;
+    let rate = 0.05;
+    let dividend = 0.0;
+    let maturity = 1.0;
+    
+    // Low volatility regime
+    group.bench_function("low_vol_regime", |b| {
+        b.iter(|| {
+            let strike_array = [strike];
+            let prices = heston_price_fft(
+                spot,
+                &strike_array,
+                rate,
+                dividend,
+                0.01,  // v0: low initial variance
+                3.0,   // kappa: fast mean reversion
+                0.01,  // theta: low long-term variance
+                0.1,   // sigma_v: low vol-of-vol
+                -0.3,  // rho: mild negative correlation
+                maturity,
+            );
+            black_box(prices)
+        })
+    });
+    
+    // High volatility regime
+    group.bench_function("high_vol_regime", |b| {
+        b.iter(|| {
+            let strike_array = [strike];
+            let prices = heston_price_fft(
+                spot,
+                &strike_array,
+                rate,
+                dividend,
+                0.16,  // v0: high initial variance
+                0.5,   // kappa: slow mean reversion
+                0.16,  // theta: high long-term variance
+                0.8,   // sigma_v: high vol-of-vol
+                -0.8,  // rho: strong negative correlation
+                maturity,
+            );
+            black_box(prices)
+        })
+    });
+    
+    // Standard regime
+    group.bench_function("standard_regime", |b| {
+        b.iter(|| {
+            let strike_array = [strike];
+            let prices = heston_price_fft(
+                spot,
+                &strike_array,
+                rate,
+                dividend,
+                0.04,  // v0
+                2.0,   // kappa
+                0.04,  // theta
+                0.5,   // sigma_v
+                -0.7,  // rho
+                maturity,
+            );
+            black_box(prices)
+        })
+    });
+    
+    group.finish();
+}
+
 criterion_group!(
     fft_benches,
     bench_heston_gauss_laguerre_vs_fft,
     bench_bs_fft_vs_analytic,
     bench_carr_madan_scaling,
     bench_carr_madan_4096_complex_vs_dispatch,
-    bench_fft_4096_rustfft_vs_realfft
+    bench_fft_4096_rustfft_vs_realfft,
+    bench_heston_fft_different_strikes,
+    bench_heston_fft_vs_bs_analytic,
+    bench_heston_fft_parameter_regimes
 );
 criterion_main!(fft_benches);

@@ -1,8 +1,9 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use openferric::core::PricingEngine;
+use openferric::core::{PricingEngine, BarrierDirection, BarrierStyle};
 use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine, HestonEngine};
 use openferric::engines::monte_carlo::MonteCarloPricingEngine;
 use openferric::engines::numerical::AmericanBinomialEngine;
+use openferric::engines::fft::heston_price_fft;
 use openferric::instruments::{BarrierOption, VanillaOption};
 use openferric::market::Market;
 use std::hint::black_box;
@@ -126,12 +127,114 @@ fn bench_barrier_analytic(c: &mut Criterion) {
     });
 }
 
+fn bench_barrier_all_types(c: &mut Criterion) {
+    let market = benchmark_market();
+    let engine = BarrierAnalyticEngine::new();
+    let mut group = c.benchmark_group("barrier_all_types");
+
+    let barrier_specs = [
+        ("down_and_out", BarrierDirection::Down, BarrierStyle::Out, 90.0),
+        ("up_and_out", BarrierDirection::Up, BarrierStyle::Out, 110.0),
+        ("down_and_in", BarrierDirection::Down, BarrierStyle::In, 90.0),
+        ("up_and_in", BarrierDirection::Up, BarrierStyle::In, 110.0),
+    ];
+
+    for (name, direction, style, barrier_level) in barrier_specs.iter() {
+        let mut builder = BarrierOption::builder().call().strike(100.0).expiry(1.0).rebate(0.0);
+        
+        builder = match (direction, style) {
+            (BarrierDirection::Down, BarrierStyle::Out) => builder.down_and_out(*barrier_level),
+            (BarrierDirection::Up, BarrierStyle::Out) => builder.up_and_out(*barrier_level),
+            (BarrierDirection::Down, BarrierStyle::In) => builder.down_and_in(*barrier_level),
+            (BarrierDirection::Up, BarrierStyle::In) => builder.up_and_in(*barrier_level),
+        };
+
+        let option = builder.build().expect("barrier option should be valid");
+
+        group.bench_with_input(BenchmarkId::new("barrier", name), &name, |b, _| {
+            b.iter(|| {
+                let px = engine
+                    .price(black_box(&option), black_box(&market))
+                    .expect("pricing should succeed")
+                    .price;
+                black_box(px)
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_black_scholes_path_counts(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let mut group = c.benchmark_group("bs_path_counts");
+
+    for paths in [1_000_usize, 10_000, 100_000] {
+        let engine = MonteCarloPricingEngine::new(paths, 252, 42);
+        group.bench_with_input(BenchmarkId::from_parameter(paths), &paths, |b, _| {
+            b.iter(|| {
+                let px = engine
+                    .price(black_box(&option), black_box(&market))
+                    .expect("pricing should succeed")
+                    .price;
+                black_box(px)
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_heston_analytic_vs_fft(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let mut group = c.benchmark_group("heston_analytic_vs_fft");
+
+    // Analytic Heston
+    let analytic_engine = HestonEngine::new(0.04, 2.0, 0.04, 0.5, -0.7);
+    group.bench_function("heston_analytic", |b| {
+        b.iter(|| {
+            let px = analytic_engine
+                .price(black_box(&option), black_box(&market))
+                .expect("pricing should succeed")
+                .price;
+            black_box(px)
+        })
+    });
+
+    // FFT Heston (single strike)
+    group.bench_function("heston_fft_single", |b| {
+        b.iter(|| {
+            let strikes = [100.0];
+            let prices = heston_price_fft(
+                100.0, // spot
+                &strikes, // strike array
+                0.05,  // rate
+                0.0,   // dividend
+                0.04,  // v0
+                2.0,   // kappa
+                0.04,  // theta
+                0.5,   // sigma_v
+                -0.7,  // rho
+                1.0,   // time
+            );
+            black_box(prices)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     pricing_benches,
     bench_black_scholes_european,
     bench_american_binomial_steps,
     bench_heston_european,
     bench_monte_carlo_european,
-    bench_barrier_analytic
+    bench_barrier_analytic,
+    bench_barrier_all_types,
+    bench_black_scholes_path_counts,
+    bench_heston_analytic_vs_fft
 );
 criterion_main!(pricing_benches);
