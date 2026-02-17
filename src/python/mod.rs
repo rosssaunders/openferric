@@ -527,6 +527,199 @@ pub fn py_survival_prob(hazard_rate: f64, t: f64) -> f64 {
     curve.survival_prob(tt)
 }
 
+// ── FFT / Lévy process pricing ──────────────────────────────────────────
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_heston_fft_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+) -> f64 {
+    use crate::engines::fft::{CarrMadanParams, HestonCharFn, carr_madan_price_at_strikes};
+    let cf = HestonCharFn::new(spot, rate, div_yield, expiry, v0, kappa, theta, sigma_v, rho);
+    carr_madan_price_at_strikes(&cf, rate, expiry, spot, &[strike], CarrMadanParams::default())
+        .ok()
+        .and_then(|v| v.first().map(|(_, p)| *p))
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+pub fn py_vg_fft_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    sigma: f64,
+    theta_vg: f64,
+    nu: f64,
+) -> f64 {
+    use crate::engines::fft::CarrMadanParams;
+    use crate::models::VarianceGamma;
+    let vg = VarianceGamma { sigma, theta: theta_vg, nu };
+    vg.european_calls_fft(spot, &[strike], rate, div_yield, expiry, CarrMadanParams::default())
+        .ok()
+        .and_then(|v| v.first().map(|(_, p)| *p))
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_cgmy_fft_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    c: f64,
+    g: f64,
+    m: f64,
+    y: f64,
+) -> f64 {
+    use crate::engines::fft::CarrMadanParams;
+    use crate::models::Cgmy;
+    let cgmy = Cgmy { c, g, m, y };
+    cgmy.european_calls_fft(spot, &[strike], rate, div_yield, expiry, CarrMadanParams::default())
+        .ok()
+        .and_then(|v| v.first().map(|(_, p)| *p))
+        .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+pub fn py_nig_fft_price(
+    spot: f64,
+    strike: f64,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    alpha: f64,
+    beta: f64,
+    delta: f64,
+) -> f64 {
+    use crate::engines::fft::CarrMadanParams;
+    use crate::models::Nig;
+    let nig = Nig { alpha, beta, delta };
+    nig.european_calls_fft(spot, &[strike], rate, div_yield, expiry, CarrMadanParams::default())
+        .ok()
+        .and_then(|v| v.first().map(|(_, p)| *p))
+        .unwrap_or(f64::NAN)
+}
+
+// ── Rates ───────────────────────────────────────────────────────────────
+
+#[pyfunction]
+pub fn py_swaption_price(
+    notional: f64,
+    strike: f64,
+    swap_tenor: f64,
+    option_expiry: f64,
+    vol: f64,
+    discount_rate: f64,
+    option_type: &str,
+) -> f64 {
+    use crate::rates::swaption::Swaption;
+    let is_payer = match option_type.to_ascii_lowercase().as_str() {
+        "payer" | "call" => true,
+        "receiver" | "put" => false,
+        _ => return f64::NAN,
+    };
+    let swaption = Swaption {
+        notional,
+        strike,
+        option_expiry,
+        swap_tenor,
+        is_payer,
+    };
+    let tenors: Vec<(f64, f64)> = (1..=((option_expiry + swap_tenor).ceil() as usize * 4))
+        .map(|i| {
+            let t = i as f64 * 0.25;
+            (t, (-discount_rate * t).exp())
+        })
+        .collect();
+    let curve = YieldCurve::new(tenors);
+    swaption.price(&curve, vol)
+}
+
+// ── XVA ─────────────────────────────────────────────────────────────────
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_cva(
+    times: Vec<f64>,
+    ee_profile: Vec<f64>,
+    discount_rate: f64,
+    hazard_rate: f64,
+    lgd: f64,
+) -> f64 {
+    use crate::risk::XvaCalculator;
+    let discount_curve = YieldCurve::new(
+        times.iter().map(|t| (*t, (-discount_rate * *t).exp())).collect(),
+    );
+    let hazards = vec![hazard_rate; times.len()];
+    let survival = SurvivalCurve::from_piecewise_hazard(&times, &hazards);
+    let own_survival = SurvivalCurve::from_piecewise_hazard(&times, &vec![0.0; times.len()]);
+    let calc = XvaCalculator::new(discount_curve, survival, own_survival, lgd, 0.0);
+    calc.cva_from_expected_exposure(&times, &ee_profile)
+}
+
+#[pyfunction]
+pub fn py_sa_ccr_ead(
+    replacement_cost: f64,
+    notional: f64,
+    maturity: f64,
+    asset_class: &str,
+) -> f64 {
+    use crate::risk::kva::{SaCcrAssetClass, sa_ccr_ead};
+    let ac = match asset_class.to_ascii_lowercase().as_str() {
+        "ir" | "interest_rate" => SaCcrAssetClass::InterestRate,
+        "fx" | "foreign_exchange" => SaCcrAssetClass::ForeignExchange,
+        "credit" => SaCcrAssetClass::Credit,
+        "equity" => SaCcrAssetClass::Equity,
+        "commodity" => SaCcrAssetClass::Commodity,
+        _ => return f64::NAN,
+    };
+    sa_ccr_ead(replacement_cost, notional, maturity, ac)
+}
+
+// ── VaR ─────────────────────────────────────────────────────────────────
+
+#[pyfunction]
+pub fn py_historical_var(returns: Vec<f64>, confidence: f64) -> f64 {
+    use crate::risk::var::historical_var;
+    historical_var(&returns, confidence)
+}
+
+#[pyfunction]
+pub fn py_historical_es(returns: Vec<f64>, confidence: f64) -> f64 {
+    use crate::risk::var::historical_expected_shortfall;
+    historical_expected_shortfall(&returns, confidence)
+}
+
+// ── Vol surface ─────────────────────────────────────────────────────────
+
+#[pyfunction]
+pub fn py_svi_vol(
+    strike: f64,
+    forward: f64,
+    a: f64,
+    b: f64,
+    rho: f64,
+    m: f64,
+    sigma: f64,
+) -> f64 {
+    let k = (strike / forward).ln();
+    let total_var = a + b * (rho * (k - m) + ((k - m).powi(2) + sigma * sigma).sqrt());
+    if total_var > 0.0 { total_var.sqrt() } else { f64::NAN }
+}
+
 #[pymodule]
 pub fn openferric(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_bs_price, module)?)?;
@@ -543,5 +736,19 @@ pub fn openferric(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_sabr_vol, module)?)?;
     module.add_function(wrap_pyfunction!(py_cds_npv, module)?)?;
     module.add_function(wrap_pyfunction!(py_survival_prob, module)?)?;
+    // FFT / Lévy
+    module.add_function(wrap_pyfunction!(py_heston_fft_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_vg_fft_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_cgmy_fft_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_nig_fft_price, module)?)?;
+    // Rates
+    module.add_function(wrap_pyfunction!(py_swaption_price, module)?)?;
+    // XVA / Risk
+    module.add_function(wrap_pyfunction!(py_cva, module)?)?;
+    module.add_function(wrap_pyfunction!(py_sa_ccr_ead, module)?)?;
+    module.add_function(wrap_pyfunction!(py_historical_var, module)?)?;
+    module.add_function(wrap_pyfunction!(py_historical_es, module)?)?;
+    // Vol
+    module.add_function(wrap_pyfunction!(py_svi_vol, module)?)?;
     Ok(())
 }
