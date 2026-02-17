@@ -316,6 +316,98 @@ impl CharacteristicFunction for CgmyCharFn {
     }
 }
 
+/// Normal Inverse Gaussian (NIG) characteristic function for `ln(S_T)`.
+///
+/// NIG CF: `exp(i*u*mu*t + delta*t*(sqrt(alpha^2 - beta^2) - sqrt(alpha^2 - (beta + i*u)^2)))`
+#[derive(Debug, Clone, Copy)]
+pub struct NigCharFn {
+    pub ln_spot: f64,
+    pub drift: f64,
+    pub maturity: f64,
+    pub alpha: f64,
+    pub beta: f64,
+    pub delta: f64,
+}
+
+impl NigCharFn {
+    pub fn new(
+        spot: f64,
+        drift: f64,
+        maturity: f64,
+        alpha: f64,
+        beta: f64,
+        delta: f64,
+    ) -> Self {
+        Self {
+            ln_spot: spot.ln(),
+            drift,
+            maturity,
+            alpha,
+            beta,
+            delta,
+        }
+    }
+
+    pub fn risk_neutral(
+        spot: f64,
+        rate: f64,
+        dividend_yield: f64,
+        maturity: f64,
+        alpha: f64,
+        beta: f64,
+        delta: f64,
+    ) -> Result<Self, String> {
+        if alpha <= 0.0 {
+            return Err("NIG requires alpha > 0".to_string());
+        }
+        if beta.abs() >= alpha {
+            return Err("NIG requires |beta| < alpha".to_string());
+        }
+        if delta <= 0.0 {
+            return Err("NIG requires delta > 0".to_string());
+        }
+        let beta_plus_1 = beta + 1.0;
+        if beta_plus_1.abs() >= alpha {
+            return Err("NIG martingale condition requires |beta + 1| < alpha".to_string());
+        }
+        let gamma_bar = (alpha * alpha - beta * beta).sqrt();
+        let gamma_bar_1 = (alpha * alpha - beta_plus_1 * beta_plus_1).sqrt();
+        let omega = delta * (gamma_bar_1 - gamma_bar);
+        Ok(Self::new(
+            spot,
+            rate - dividend_yield + omega,
+            maturity,
+            alpha,
+            beta,
+            delta,
+        ))
+    }
+}
+
+impl CharacteristicFunction for NigCharFn {
+    fn cf(&self, u: Complex<f64>) -> Complex<f64> {
+        let i = Complex::new(0.0, 1.0);
+        let alpha2 = Complex::new(self.alpha * self.alpha, 0.0);
+        let beta_iu = Complex::new(self.beta, 0.0) + i * u;
+        let gamma_bar = (self.alpha * self.alpha - self.beta * self.beta).sqrt();
+
+        let nig_exponent = Complex::new(self.delta * self.maturity, 0.0)
+            * (Complex::new(gamma_bar, 0.0) - (alpha2 - beta_iu * beta_iu).sqrt());
+
+        let log_phi = i * u * (self.ln_spot + self.drift * self.maturity) + nig_exponent;
+        log_phi.exp()
+    }
+
+    fn dcf_dlog_spot(&self, u: Complex<f64>) -> Option<Complex<f64>> {
+        let i = Complex::new(0.0, 1.0);
+        Some(i * u * self.cf(u))
+    }
+
+    fn d2cf_dlog_spot2(&self, u: Complex<f64>) -> Option<Complex<f64>> {
+        Some(-u * u * self.cf(u))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

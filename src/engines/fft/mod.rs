@@ -12,6 +12,7 @@ pub use carr_madan::{
     carr_madan_fft_strikes, heston_price_fft, interpolate_strike_prices, try_heston_price_fft,
 };
 pub use char_fn::{
-    BlackScholesCharFn, CgmyCharFn, CharacteristicFunction, HestonCharFn, VarianceGammaCharFn,
+    BlackScholesCharFn, CgmyCharFn, CharacteristicFunction, HestonCharFn, NigCharFn,
+    VarianceGammaCharFn,
 };
 pub use frft::{carr_madan_frft_grid, carr_madan_price_at_strikes, frft};

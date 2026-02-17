@@ -1,8 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 mod simd_tests {
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
-    use statrs::distribution::{Continuous, ContinuousCDF, Normal};
+    use rand::{RngExt, SeedableRng};
     #[cfg(feature = "simd")]
     use std::arch::x86_64::*;
 
@@ -10,6 +9,7 @@ mod simd_tests {
     use openferric::engines::analytic::{bs_greeks_batch, bs_price_batch, normal_cdf_batch_approx};
     #[cfg(feature = "simd")]
     use openferric::math::simd_math::{exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
+    use openferric::math::{normal_cdf, normal_pdf};
     use openferric::pricing::european::black_scholes_price;
 
     fn bs_greeks_scalar_reference(
@@ -24,28 +24,27 @@ mod simd_tests {
         if t <= 0.0 || vol <= 0.0 {
             return (0.0, 0.0, 0.0, 0.0);
         }
-        let n = Normal::new(0.0, 1.0).expect("normal distribution should be valid");
         let sqrt_t = t.sqrt();
         let sig_sqrt_t = vol * sqrt_t;
         let d1 = ((s / k).ln() + (r - q + 0.5 * vol * vol) * t) / sig_sqrt_t;
         let d2 = d1 - sig_sqrt_t;
         let df_r = (-r * t).exp();
         let df_q = (-q * t).exp();
-        let pdf = n.pdf(d1);
+        let pdf = normal_pdf(d1);
 
         let delta = if is_call {
-            df_q * n.cdf(d1)
+            df_q * normal_cdf(d1)
         } else {
-            df_q * (n.cdf(d1) - 1.0)
+            df_q * (normal_cdf(d1) - 1.0)
         };
         let gamma = df_q * pdf / (s * vol * sqrt_t);
         let vega = s * df_q * pdf * sqrt_t;
         let theta = if is_call {
-            -s * df_q * pdf * vol / (2.0 * sqrt_t) + q * s * df_q * n.cdf(d1)
-                - r * k * df_r * n.cdf(d2)
+            -s * df_q * pdf * vol / (2.0 * sqrt_t) + q * s * df_q * normal_cdf(d1)
+                - r * k * df_r * normal_cdf(d2)
         } else {
-            -s * df_q * pdf * vol / (2.0 * sqrt_t) - q * s * df_q * n.cdf(-d1)
-                + r * k * df_r * n.cdf(-d2)
+            -s * df_q * pdf * vol / (2.0 * sqrt_t) - q * s * df_q * normal_cdf(-d1)
+                + r * k * df_r * normal_cdf(-d2)
         };
         (delta, gamma, vega, theta)
     }
@@ -90,7 +89,6 @@ mod simd_tests {
 
     #[test]
     fn simd_normal_cdf_matches_statrs_within_1e7() {
-        let normal = Normal::new(0.0, 1.0).expect("normal distribution should be valid");
         let n = 1201usize;
         let mut xs = Vec::with_capacity(n);
         for i in 0..n {
@@ -98,7 +96,7 @@ mod simd_tests {
         }
         let approx = normal_cdf_batch_approx(&xs);
         for i in 0..n {
-            let reference = normal.cdf(xs[i]);
+            let reference = normal_cdf(xs[i]);
             assert!(
                 (approx[i] - reference).abs() <= 1e-7,
                 "x={} approx={} ref={} diff={}",
@@ -256,7 +254,7 @@ mod simd_tests {
 #[cfg(target_arch = "aarch64")]
 mod neon_tests {
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use openferric::core::OptionType;
     use openferric::engines::analytic::bs_price_batch;

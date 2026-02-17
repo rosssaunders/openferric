@@ -1,7 +1,9 @@
 //! Instrument definitions.
 
 pub mod asian;
+pub mod autocallable;
 pub mod barrier;
+pub mod basket;
 pub mod black76;
 pub mod cliquet;
 pub mod commodity;
@@ -21,7 +23,9 @@ pub mod variance_swap;
 pub mod weather;
 
 pub use asian::AsianOption;
+pub use autocallable::{Autocallable, PhoenixAutocallable};
 pub use barrier::{BarrierOption, BarrierOptionBuilder};
+pub use basket::{BasketOption, BasketType};
 pub use black76::FuturesOption;
 pub use cliquet::{CliquetOption, ForwardStartOption};
 pub use commodity::{CommodityForward, CommodityFutures, CommodityOption, CommoditySpreadOption};

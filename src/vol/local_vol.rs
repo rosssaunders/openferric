@@ -80,6 +80,15 @@ impl<S: ImpliedVolSurface> DupireLocalVol<S> {
     }
 }
 
+pub fn dupire_local_vol<S: ImpliedVolSurface>(
+    surface: S,
+    forward: f64,
+    spot: f64,
+    expiry: f64,
+) -> f64 {
+    DupireLocalVol::new(surface, forward).local_vol(spot, expiry)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
