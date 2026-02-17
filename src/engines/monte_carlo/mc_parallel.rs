@@ -1,10 +1,10 @@
-use rand::Rng;
 use rayon::prelude::*;
 
 use crate::core::{ExerciseStyle, OptionType, PricingResult};
 use crate::engines::analytic::black_scholes::{bs_delta, bs_gamma, bs_vega};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
+use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 use crate::math::normal_inv_cdf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,14 +51,16 @@ fn simulate_chunk(
     n_steps: usize,
     n_paths: usize,
 ) -> (f64, f64, usize) {
-    let mut rng = rand::rng();
+    // Use thread-id-based seed for reproducibility per chunk
+    let chunk_seed = std::thread::current().id().as_u64().get();
+    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, chunk_seed);
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
     for _ in 0..n_paths {
         let mut spot = spot0;
         for _ in 0..n_steps {
-            let z = normal_inv_cdf(uniform_open01(rng.random::<f64>()));
+            let z = sample_standard_normal(&mut rng);
             spot *= (dt_drift + dt_vol * z).exp();
             spot = spot.max(1.0e-12);
         }

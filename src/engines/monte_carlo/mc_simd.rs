@@ -1,8 +1,6 @@
 //! SIMD-friendly Monte Carlo routines using structure-of-arrays (SoA) path layout.
 
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
+use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use crate::math::simd_math::{exp_f64x4, load_f64x4, splat_f64x4, store_f64x4};
@@ -43,12 +41,12 @@ pub fn simulate_gbm_paths_soa_scalar(
     let dt = t / num_steps as f64;
     let drift = (r - q - 0.5 * vol * vol) * dt;
     let diffusion = vol * dt.sqrt();
-    let mut rng = StdRng::seed_from_u64(seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
     let mut z = vec![0.0_f64; num_paths];
 
     for step in 0..num_steps {
         for zi in &mut z {
-            *zi = StandardNormal.sample(&mut rng);
+            *zi = sample_standard_normal(&mut rng);
         }
 
         let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
@@ -163,12 +161,12 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     let drift_v = unsafe { splat_f64x4(drift) };
     let diffusion_v = unsafe { splat_f64x4(diffusion) };
 
-    let mut rng = StdRng::seed_from_u64(seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
     let mut z = vec![0.0_f64; num_paths];
 
     for step in 0..num_steps {
         for zi in &mut z {
-            *zi = StandardNormal.sample(&mut rng);
+            *zi = sample_standard_normal(&mut rng);
         }
 
         let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
