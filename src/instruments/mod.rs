@@ -1,6 +1,7 @@
 //! Instrument definitions.
 
 pub mod asian;
+pub mod mbs;
 pub mod autocallable;
 pub mod barrier;
 pub mod basket;

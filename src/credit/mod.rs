@@ -4,6 +4,7 @@ pub mod bootstrap;
 pub mod cdo;
 pub mod cds;
 pub mod cds_index;
+pub mod cds_option;
 pub mod copula;
 pub mod isda;
 pub mod survival_curve;
