@@ -4,15 +4,15 @@
 
 [![Rust](https://img.shields.io/badge/Rust-nightly-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-200%2B%20passing-brightgreen)](#testing)
-[![Lines](https://img.shields.io/badge/lines-27K%2B-blue)](#)
+[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen)](#testing)
+[![Lines](https://img.shields.io/badge/lines-36K%2B-blue)](#)
 
 ---
 
 ## Highlights
 
-- **27,600+ lines** of Rust across 115+ source files
-- **200+ tests** — all passing, validated against QuantLib and Haug reference values
+- **36,600+ lines** of Rust across 149 source files
+- **316 tests** — all passing, validated against QuantLib, Haug, and Alan Lewis reference values
 - **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
 - **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
 - **FFT pricing**: Carr-Madan for entire strike grids in O(N log N)
@@ -253,24 +253,52 @@ Instruments ─→ Engines ─→ Market ─→ PricingResult
 
 ## Testing
 
+Test vectors are externally validated — not self-generated. The `tests/quantlib_reference.rs` suite includes:
+
+- **43 European option cases** from Haug's *Option Pricing Formulas* (pag. 2-8, 24, 27)
+- **10 Heston model cases** from Alan Lewis's 12-digit reference prices ([wilmott.com](http://wilmott.com/messageview.cfm?catid=34&threadid=90957))
+- **4 Heston cached regression cases** from QuantLib's `hestonmodel.cpp`
+- **72 barrier option cases** from Haug pag. 72 (all 4 barrier types × calls/puts × 2 vol levels)
+
+QuantLib's C++ test suite is included as a git submodule at `vendor/QuantLib/` for reference.
+
 ```bash
-cargo test                           # all tests
-cargo test --features parallel       # include parallel MC tests
-cargo bench                          # Criterion benchmarks
+cargo test                              # all 316 tests
+cargo test --test quantlib_reference    # reference suite only
+cargo test --features parallel          # include parallel MC tests
+cargo bench                             # Criterion benchmarks
 ```
 
 ## References
 
+### Textbooks
 - Hull, J.C. — *Options, Futures, and Other Derivatives* (11th ed.)
 - Haug, E.G. — *The Complete Guide to Option Pricing Formulas* (2nd ed.)
-- Gatheral, J. — *The Volatility Surface*
-- Hagan, P. et al. — *Managing Smile Risk* (SABR, 2002)
-- Carr, P. & Madan, D. — *Option Valuation Using the FFT* (1999)
-- Stulz, R. — *Options on the Maximum or Minimum of Two Risky Assets* (1982)
-- Dupire, B. — *Pricing with a Smile* (1994)
+- Gatheral, J. — *The Volatility Surface: A Practitioner's Guide*
 - Jäckel, P. — *Monte Carlo Methods in Finance*
-- Shreve, S. — *Stochastic Calculus for Finance II*
-- QuantLib project — validation reference values
+- Shreve, S. — *Stochastic Calculus for Finance II: Continuous-Time Models*
+- Glasserman, P. — *Monte Carlo Methods in Financial Engineering*
+
+### Papers
+- Carr, P. & Madan, D. — *Option Valuation Using the FFT* (1999)
+- Hagan, P. et al. — *Managing Smile Risk* (Wilmott, 2002)
+- Dupire, B. — *Pricing with a Smile* (Risk, 1994)
+- Stulz, R. — *Options on the Maximum or Minimum of Two Risky Assets* (1982)
+- Madan, D., Carr, P. & Chang, E. — *The Variance Gamma Process and Option Pricing* (1998)
+- Carr, P., Geman, H., Madan, D. & Yor, M. — *The Fine Structure of Asset Returns: An Empirical Investigation* (CGMY, 2002)
+- Barndorff-Nielsen, O. — *Normal Inverse Gaussian Distributions and Stochastic Volatility Modelling* (NIG, 1997)
+- Hagan, P. — *Convexity Conundrums: Pricing CMS Swaps, Caps, and Floors* (Wilmott, 2003)
+- Lewis, A. — *A Simple Option Formula for General Jump-Diffusion and Other Exponential Lévy Processes* (2001)
+- Ikeda, M. & Kunitomo, N. — *Pricing Options with Curved Boundaries* (1992)
+- Rubinstein, M. — *Pay Now, Choose Later* (1991)
+- Castagna, A. & Mercurio, F. — *The Vanna-Volga Method for Implied Volatilities* (Risk, 2007)
+
+## Acknowledgements
+
+- **[QuantLib](https://www.quantlib.org/)** — Reference test vectors extracted from the QuantLib C++ test suite (BSD-3-Clause license). QuantLib is included as a git submodule at `vendor/QuantLib/` for reproducibility.
+- **[Alan Lewis](http://wilmott.com/)** — High-precision Heston model reference prices used for validation.
+- **E.G. Haug** — Extensive option pricing test cases from *The Complete Guide to Option Pricing Formulas*.
+- **J.C. Hull** — Structural coverage follows *Options, Futures, and Other Derivatives*.
 
 ## License
 
