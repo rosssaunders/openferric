@@ -1,6 +1,9 @@
 //! SIMD-accelerated Black-Scholes batch routines with scalar fallback.
 
 /// Scalar Abramowitz & Stegun 7.1.26 normal CDF approximation.
+///
+/// Branch-free implementation using bit-level sign extraction,
+/// eliminating branch misprediction on random inputs.
 #[inline]
 pub fn normal_cdf_approx(x: f64) -> f64 {
     const P: f64 = 0.231_641_9;
@@ -12,11 +15,17 @@ pub fn normal_cdf_approx(x: f64) -> f64 {
     const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
 
     let z = x.abs();
-    let t = 1.0 / (1.0 + P * z);
-    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
+    let t = 1.0 / P.mul_add(z, 1.0);
+    let poly = A5.mul_add(t, A4)
+        .mul_add(t, A3)
+        .mul_add(t, A2)
+        .mul_add(t, A1)
+        * t;
     let pdf = INV_SQRT_2PI * (-0.5 * z * z).exp();
-    let approx = 1.0 - pdf * poly;
-    if x < 0.0 { 1.0 - approx } else { approx }
+    let cdf_pos = pdf.mul_add(-poly, 1.0);
+    // Branch-free sign handling via bit extraction.
+    let sign = (x.to_bits() >> 63) as f64;
+    sign.mul_add(1.0 - 2.0 * cdf_pos, cdf_pos)
 }
 
 /// Batch normal CDF approximation with runtime SIMD dispatch and scalar fallback.
@@ -173,11 +182,11 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
     let df_r = (-r * t).exp();
     let df_q = (-q * t).exp();
 
-    if is_call {
-        spot * df_q * normal_cdf_approx(d1) - strike * df_r * normal_cdf_approx(d2)
-    } else {
-        strike * df_r * normal_cdf_approx(-d2) - spot * df_q * normal_cdf_approx(-d1)
-    }
+    // Only 2 CDF evaluations; put uses put-call parity: P = C - S*df_q + K*df_r.
+    let s_df_q = spot * df_q;
+    let k_df_r = strike * df_r;
+    let call = s_df_q * normal_cdf_approx(d1) - k_df_r * normal_cdf_approx(d2);
+    if is_call { call } else { call - s_df_q + k_df_r }
 }
 
 #[inline]
@@ -209,20 +218,23 @@ fn bs_greeks_scalar(
     let df_q = (-q * t).exp();
     let pdf = normal_pdf_scalar(d1);
 
+    // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
+    let nd1 = normal_cdf_approx(d1);
+    let nd2 = normal_cdf_approx(d2);
+
     let delta = if is_call {
-        df_q * normal_cdf_approx(d1)
+        df_q * nd1
     } else {
-        df_q * (normal_cdf_approx(d1) - 1.0)
+        df_q * (nd1 - 1.0)
     };
     let gamma = df_q * pdf / (spot * vol * sqrt_t);
     let vega = spot * df_q * pdf * sqrt_t;
 
+    let theta_common = -spot * df_q * pdf * vol / (2.0 * sqrt_t);
     let theta = if is_call {
-        -spot * df_q * pdf * vol / (2.0 * sqrt_t) + q * spot * df_q * normal_cdf_approx(d1)
-            - r * strike * df_r * normal_cdf_approx(d2)
+        theta_common + q * spot * df_q * nd1 - r * strike * df_r * nd2
     } else {
-        -spot * df_q * pdf * vol / (2.0 * sqrt_t) - q * spot * df_q * normal_cdf_approx(-d1)
-            + r * strike * df_r * normal_cdf_approx(-d2)
+        theta_common - q * spot * df_q * (1.0 - nd1) + r * strike * df_r * (1.0 - nd2)
     };
 
     (delta, gamma, vega, theta)
@@ -299,9 +311,9 @@ mod neon_impl {
         let q_v = unsafe { splat_f64x2(q) };
         let r_v = unsafe { splat_f64x2(r) };
         let one = unsafe { splat_f64x2(1.0) };
-        let two = unsafe { splat_f64x2(2.0) };
-        let zero = vdupq_n_f64(0.0);
         let denom_gamma_v = unsafe { splat_f64x2(denom_gamma) };
+        // Pre-compute theta time denominator to avoid per-iteration divide.
+        let neg_inv_2sqrt_t = unsafe { splat_f64x2(-0.5 / sqrt_t) };
 
         let n = spots.len();
         let mut i = 0usize;
@@ -315,10 +327,9 @@ mod neon_impl {
             let d1 = vmulq_f64(vaddq_f64(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = vsubq_f64(d1, sig_sqrt_t_v);
 
+            // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
             let nd1 = unsafe { norm_cdf_f64x2(d1) };
             let nd2 = unsafe { norm_cdf_f64x2(d2) };
-            let nmd1 = unsafe { norm_cdf_f64x2(vsubq_f64(zero, d1)) };
-            let nmd2 = unsafe { norm_cdf_f64x2(vsubq_f64(zero, d2)) };
             let pdf_d1 = unsafe { norm_pdf_f64x2(d1) };
 
             let delta_call = vmulq_f64(df_q_v, nd1);
@@ -328,25 +339,31 @@ mod neon_impl {
             let gamma_v = vdivq_f64(vmulq_f64(df_q_v, pdf_d1), vmulq_f64(s, denom_gamma_v));
             let vega_v = vmulq_f64(vmulq_f64(vmulq_f64(s, df_q_v), pdf_d1), sqrt_t_v);
 
-            let theta_common = vmulq_f64(vmulq_f64(vmulq_f64(s, df_q_v), pdf_d1), vol_v);
-            let theta_common = vdivq_f64(vsubq_f64(zero, theta_common), vmulq_f64(two, sqrt_t_v));
-
-            let theta_call = vsubq_f64(
-                vaddq_f64(
-                    theta_common,
-                    vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, nd1)),
-                ),
-                vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, nd2)),
+            // theta_common = S * df_q * pdf(d1) * vol * (-1/(2*sqrt_t))
+            let theta_common = vmulq_f64(
+                vmulq_f64(vmulq_f64(vmulq_f64(s, df_q_v), pdf_d1), vol_v),
+                neg_inv_2sqrt_t,
             );
 
-            let theta_put = vaddq_f64(
+            let theta_v = if is_call {
                 vsubq_f64(
-                    theta_common,
-                    vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, nmd1)),
-                ),
-                vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, nmd2)),
-            );
-            let theta_v = if is_call { theta_call } else { theta_put };
+                    vaddq_f64(
+                        theta_common,
+                        vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, nd1)),
+                    ),
+                    vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, nd2)),
+                )
+            } else {
+                let nmd1 = vsubq_f64(one, nd1);
+                let nmd2 = vsubq_f64(one, nd2);
+                vaddq_f64(
+                    vsubq_f64(
+                        theta_common,
+                        vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, nmd1)),
+                    ),
+                    vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, nmd2)),
+                )
+            };
 
             // SAFETY: bounds are checked in loop condition.
             unsafe {
@@ -430,7 +447,6 @@ mod avx2_impl {
         let sig_sqrt_t_v = unsafe { splat_f64x4(sig_sqrt_t) };
         let df_r_v = unsafe { splat_f64x4(df_r) };
         let df_q_v = unsafe { splat_f64x4(df_q) };
-        let zero = _mm256_setzero_pd();
 
         let n = spots.len();
         let mut i = 0usize;
@@ -444,25 +460,28 @@ mod avx2_impl {
             let d1 = _mm256_mul_pd(_mm256_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm256_sub_pd(d1, sig_sqrt_t_v);
 
+            // Only 2 CDF evaluations regardless of call/put.
+            // Put uses put-call parity: P = C - S*df_q + K*df_r.
             let nd1 = unsafe { norm_cdf_f64x4(d1) };
             let nd2 = unsafe { norm_cdf_f64x4(d2) };
 
+            let s_df_q = _mm256_mul_pd(s, df_q_v);
+            let k_df_r = _mm256_mul_pd(k, df_r_v);
+
             let call = _mm256_sub_pd(
-                _mm256_mul_pd(_mm256_mul_pd(s, df_q_v), nd1),
-                _mm256_mul_pd(_mm256_mul_pd(k, df_r_v), nd2),
+                _mm256_mul_pd(s_df_q, nd1),
+                _mm256_mul_pd(k_df_r, nd2),
             );
 
-            let put = _mm256_sub_pd(
-                _mm256_mul_pd(_mm256_mul_pd(k, df_r_v), unsafe {
-                    norm_cdf_f64x4(_mm256_sub_pd(zero, d2))
-                }),
-                _mm256_mul_pd(_mm256_mul_pd(s, df_q_v), unsafe {
-                    norm_cdf_f64x4(_mm256_sub_pd(zero, d1))
-                }),
-            );
+            let result = if is_call {
+                call
+            } else {
+                // Put-call parity: P = C - S*df_q + K*df_r
+                _mm256_add_pd(_mm256_sub_pd(call, s_df_q), k_df_r)
+            };
 
             // SAFETY: bounds are checked in loop condition.
-            unsafe { store_f64x4(out, i, if is_call { call } else { put }) };
+            unsafe { store_f64x4(out, i, result) };
             i += 4;
         }
 
@@ -516,8 +535,10 @@ mod avx2_impl {
         let q_v = unsafe { splat_f64x4(q) };
         let r_v = unsafe { splat_f64x4(r) };
         let one = unsafe { splat_f64x4(1.0) };
-        let zero = _mm256_setzero_pd();
         let denom_gamma_v = unsafe { splat_f64x4(denom_gamma) };
+        // Pre-compute the theta time denominator: -1/(2*sqrt_t).
+        // This replaces a negate + divide per iteration with a single multiply.
+        let neg_inv_2sqrt_t = unsafe { splat_f64x4(-0.5 / sqrt_t) };
 
         let n = spots.len();
         let mut i = 0usize;
@@ -531,10 +552,9 @@ mod avx2_impl {
             let d1 = _mm256_mul_pd(_mm256_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm256_sub_pd(d1, sig_sqrt_t_v);
 
+            // Only 2 CDF evaluations + derive negations via 1-CDF (no extra CDF calls).
             let nd1 = unsafe { norm_cdf_f64x4(d1) };
             let nd2 = unsafe { norm_cdf_f64x4(d2) };
-            let nmd1 = unsafe { norm_cdf_f64x4(_mm256_sub_pd(zero, d1)) };
-            let nmd2 = unsafe { norm_cdf_f64x4(_mm256_sub_pd(zero, d2)) };
             let pdf_d1 = unsafe { norm_pdf_f64x4(d1) };
 
             let delta_call = _mm256_mul_pd(df_q_v, nd1);
@@ -548,29 +568,35 @@ mod avx2_impl {
 
             let vega_v = _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(s, df_q_v), pdf_d1), sqrt_t_v);
 
-            let theta_common =
-                _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(s, df_q_v), pdf_d1), vol_v);
-            let theta_common = _mm256_div_pd(
-                _mm256_sub_pd(zero, theta_common),
-                _mm256_mul_pd(unsafe { splat_f64x4(2.0) }, sqrt_t_v),
+            // theta_common = -S * df_q * pdf(d1) * vol / (2*sqrt_t)
+            //              = S * df_q * pdf(d1) * vol * (-1/(2*sqrt_t))
+            let theta_common = _mm256_mul_pd(
+                _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(s, df_q_v), pdf_d1), vol_v),
+                neg_inv_2sqrt_t,
             );
 
-            let theta_call = _mm256_sub_pd(
-                _mm256_add_pd(
-                    theta_common,
-                    _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, nd1)),
-                ),
-                _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, nd2)),
-            );
-
-            let theta_put = _mm256_add_pd(
+            let theta_v = if is_call {
+                // theta_call = common + q*S*df_q*N(d1) - r*K*df_r*N(d2)
                 _mm256_sub_pd(
-                    theta_common,
-                    _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, nmd1)),
-                ),
-                _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, nmd2)),
-            );
-            let theta_v = if is_call { theta_call } else { theta_put };
+                    _mm256_add_pd(
+                        theta_common,
+                        _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, nd1)),
+                    ),
+                    _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, nd2)),
+                )
+            } else {
+                // For put, use N(-d) = 1 - N(d) without extra CDF calls.
+                let nmd1 = _mm256_sub_pd(one, nd1);
+                let nmd2 = _mm256_sub_pd(one, nd2);
+                // theta_put = common - q*S*df_q*N(-d1) + r*K*df_r*N(-d2)
+                _mm256_add_pd(
+                    _mm256_sub_pd(
+                        theta_common,
+                        _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, nmd1)),
+                    ),
+                    _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, nmd2)),
+                )
+            };
 
             // SAFETY: bounds are checked in loop condition.
             unsafe {

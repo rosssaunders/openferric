@@ -7,7 +7,8 @@ use crate::core::{
 use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::Market;
 use crate::math::arena::PricingArena;
-use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
+use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
+use crate::math::fast_rng::{FastRngKind, Xoshiro256PlusPlus, stream_seed, uniform_open01};
 use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
@@ -161,30 +162,33 @@ pub fn mc_european_with_arena(
     let drift = (mu - 0.5 * vol * vol) * dt;
     let diffusion = vol * sqrt_dt;
 
-    let _ = arena.path_slice(n_steps + 1);
+    // Only the payoff buffer is needed; path buffer is not used since European
+    // vanilla payoff depends only on the terminal spot price.
     let _ = arena.payoff_slice(n_paths);
-
-    let path_buffer = &mut arena.path_buffer;
     let payoff_buffer = &mut arena.payoff_buffer;
 
+    let option_type = instrument.option_type;
+    let strike = instrument.strike;
+    let spot = market.spot;
+
     for (i, payoff_slot) in payoff_buffer.iter_mut().enumerate().take(n_paths) {
-        let mut rng = FastRng::from_seed(
-            FastRngKind::Xoshiro256PlusPlus,
-            resolve_stream_seed(ARENA_MC_SEED, i, true),
-        );
+        // Use raw Xoshiro directly — eliminates FastRng enum dispatch on every
+        // random draw. Produces identical values as FastRng::Xoshiro256PlusPlus.
+        let mut xrng = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i));
 
-        let path = &mut path_buffer[..(n_steps + 1)];
-        let mut s = market.spot;
-        path[0] = s;
-
-        for j in 0..n_steps {
-            let z = sample_standard_normal(&mut rng);
-            let _ = sample_standard_normal(&mut rng);
+        // Track only terminal spot — no intermediate path writes needed for
+        // European vanilla (eliminates n_steps cache-dirtying writes per path).
+        let mut s = spot;
+        for _ in 0..n_steps {
+            let u = xrng.next_f64();
+            // Advance RNG state by one draw to match the 2-draws-per-step
+            // protocol used by MonteCarloEngine::run (Heston needs both).
+            xrng.next_u64();
+            let z = beasley_springer_moro_inv_cdf(uniform_open01(u));
             s *= (drift + diffusion * z).exp();
-            path[j + 1] = s;
         }
 
-        *payoff_slot = vanilla_payoff(instrument.option_type, path[n_steps], instrument.strike);
+        *payoff_slot = vanilla_payoff(option_type, s, strike);
     }
 
     let n = n_paths as f64;
@@ -896,14 +900,14 @@ mod tests {
 
         let first = mc_european_with_arena(&option, &market, 4_000, 32, &mut arena);
         let second = mc_european_with_arena(&option, &market, 4_000, 96, &mut arena);
-        let grown_len = arena.path_buffer.len();
         let third = mc_european_with_arena(&option, &market, 4_000, 32, &mut arena);
 
         assert!(first.price.is_finite());
         assert!(second.price.is_finite());
         assert!(third.price.is_finite());
-        assert!(grown_len >= 97);
-        assert_eq!(arena.path_buffer.len(), grown_len);
+        // Payoff buffer grows to accommodate the larger path count.
+        assert!(arena.payoff_buffer.len() >= 4_000);
+        // Same seed + same parameters ⇒ identical results.
         assert_eq!(first.price, third.price);
         assert_eq!(first.stderr, third.stderr);
     }
