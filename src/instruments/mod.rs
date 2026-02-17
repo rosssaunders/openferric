@@ -15,9 +15,11 @@ pub mod exotic;
 pub mod fx;
 pub mod power;
 pub mod rainbow;
+pub mod range_accrual;
 pub mod real_option;
 pub mod spread;
 pub mod swing;
+pub mod tarf;
 pub mod vanilla;
 pub mod variance_swap;
 pub mod weather;
@@ -39,6 +41,7 @@ pub use exotic::{
 };
 pub use fx::FxOption;
 pub use power::PowerOption;
+pub use range_accrual::{DualRangeAccrual, RangeAccrual};
 pub use rainbow::{BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption};
 pub use real_option::{
     AbandonmentOption, DeferInvestmentOption, DiscreteCashFlow, ExpandOption,
@@ -46,6 +49,7 @@ pub use real_option::{
 };
 pub use spread::SpreadOption;
 pub use swing::SwingOption;
+pub use tarf::{Tarf, TarfType};
 pub use vanilla::VanillaOption;
 pub use variance_swap::{VarianceOptionQuote, VarianceSwap, VolatilitySwap};
 pub use weather::{

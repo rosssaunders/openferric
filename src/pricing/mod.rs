@@ -6,6 +6,8 @@ pub mod basket;
 pub mod bermudan;
 pub mod discrete_div;
 pub mod european;
+pub mod range_accrual;
 pub mod real_option;
+pub mod tarf;
 
 pub use crate::core::types::OptionType;

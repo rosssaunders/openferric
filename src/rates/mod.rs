@@ -3,6 +3,7 @@
 pub mod adjustments;
 pub mod bond;
 pub mod capfloor;
+pub mod cms;
 pub mod day_count;
 pub mod fra;
 pub mod futures;
