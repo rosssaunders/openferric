@@ -1,5 +1,6 @@
-//! Risk analytics: VaR/ES, XVA, and portfolio-level aggregation.
+//! Risk analytics: VaR/ES, XVA, portfolio-level aggregation, and crypto stress testing.
 
+pub mod crypto_stress;
 pub mod fva;
 pub mod kva;
 pub mod mva;
@@ -8,6 +9,12 @@ pub mod var;
 pub mod wrong_way_risk;
 pub mod xva;
 
+pub use crypto_stress::{
+    CryptoAsset, CryptoOptionPosition, CryptoPortfolio, GreeksAtSpot, GreeksAtVol,
+    HistoricalScenario, HistoricalScenarioResult, PnlGridCell, PortfolioGreeks,
+    PositionAttribution, RiskMetrics, StressConfig, StressTestEngine, StressTestResult,
+    ThetaDecayPoint, historical_crypto_scenarios,
+};
 pub use fva::{CsaTerms, fva_from_profile, funding_exposure_profile};
 pub use kva::{
     SaCcrAssetClass, kva_from_profile, netting_set_exposure, regulatory_capital, sa_ccr_ead,
