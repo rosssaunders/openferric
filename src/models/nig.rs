@@ -1,3 +1,19 @@
+//! Normal Inverse Gaussian (NIG) process for heavy-tailed asset dynamics.
+//!
+//! The NIG distribution (Barndorff-Nielsen 1997) provides a flexible model
+//! for asset returns with semi-heavy tails and asymmetry, via subordination
+//! of Brownian motion by an inverse Gaussian process.
+//!
+//! # Example
+//! ```
+//! use openferric::models::Nig;
+//! use openferric::engines::fft::CarrMadanParams;
+//!
+//! let nig = Nig { alpha: 15.0, beta: -5.0, delta: 0.5 };
+//! let prices = nig.european_calls_fft(100.0, &[100.0], 0.03, 0.0, 1.0, CarrMadanParams::default()).unwrap();
+//! assert!(prices[0].1 > 0.0);
+//! ```
+
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

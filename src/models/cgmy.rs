@@ -1,3 +1,19 @@
+//! CGMY tempered stable process for heavy-tailed asset dynamics.
+//!
+//! The CGMY model (Carr, Geman, Madan, Yor 2002) generalises the Variance-Gamma
+//! process via the fine structure exponent Y, allowing infinite activity and
+//! infinite variation depending on the parameter regime.
+//!
+//! # Example
+//! ```
+//! use openferric::models::Cgmy;
+//! use openferric::engines::fft::CarrMadanParams;
+//!
+//! let cgmy = Cgmy { c: 1.0, g: 5.0, m: 10.0, y: 0.5 };
+//! let prices = cgmy.european_calls_fft(100.0, &[100.0], 0.03, 0.0, 1.0, CarrMadanParams::default()).unwrap();
+//! assert!(prices[0].1 > 0.0);
+//! ```
+
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
