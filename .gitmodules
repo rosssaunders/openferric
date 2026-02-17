@@ -1,0 +1,3 @@
+[submodule "vendor/QuantLib"]
+	path = vendor/QuantLib
+	url = https://github.com/lballabio/QuantLib.git
