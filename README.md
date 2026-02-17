@@ -4,15 +4,15 @@
 
 [![Rust](https://img.shields.io/badge/Rust-nightly-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen)](#testing)
-[![Lines](https://img.shields.io/badge/lines-36K%2B-blue)](#)
+[![Tests](https://img.shields.io/badge/tests-366%20passing-brightgreen)](#testing)
+[![Lines](https://img.shields.io/badge/lines-40K%2B-blue)](#)
 
 ---
 
 ## Highlights
 
-- **36,600+ lines** of Rust across 149 source files
-- **316 tests** — all passing, validated against QuantLib, Haug, and Alan Lewis reference values
+- **40,300+ lines** of Rust across 160 source files
+- **366 tests** — all passing, validated against QuantLib, Haug, Alan Lewis, and Fabozzi reference values
 - **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
 - **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
 - **FFT pricing**: Carr-Madan for entire strike grids in O(N log N)
@@ -71,6 +71,8 @@ cargo bench
 | SVI parameterization | `vol::surface` | Gatheral 2004 |
 | Vol smile (sticky strike/delta) | `vol::smile` | Hull Ch 10 |
 | Vanna-volga method | `vol::smile` | Castagna & Mercurio |
+| Andreasen-Huge (arb-free interp) | `vol::andreasen_huge` | Andreasen & Huge 2011 |
+| Fengler (arb-free smoothing) | `vol::fengler` | Fengler 2009 |
 | Mixture of lognormals | `vol::mixture` | |
 | Implied vol solver (Newton-Raphson) | `vol::implied` | Jäckel |
 | Vol surface builder | `vol::builder` | Market → SVI surface |
@@ -110,6 +112,7 @@ cargo bench
 | Nth-to-default (Gaussian copula) | `credit::cds_index` | Hull Ch 20 |
 | CDO tranche pricing (LHP) | `credit::cdo` | Hull Ch 20 |
 | Copula simulation | `credit::copula` | |
+| CDS options (Black model) | `credit::cds_option` | Hull Ch 25 |
 
 ### Risk
 | Measure | Module | Reference |
@@ -121,6 +124,10 @@ cargo bench
 | CVA / DVA | `risk::xva` | Hull Ch 24 |
 | Portfolio Greeks aggregation | `risk::portfolio` | |
 | Scenario analysis | `risk::portfolio` | |
+| FVA (Funding Value Adjustment) | `risk::fva` | Hull Ch 24 |
+| MVA (Margin Value Adjustment) | `risk::mva` | Hull Ch 24 |
+| KVA (Capital Value Adjustment) | `risk::kva` | Hull Ch 24 |
+| Wrong-way risk (alpha, copula, HW) | `risk::wrong_way_risk` | Hull Ch 23 |
 
 ### Numerical Engines
 | Engine | Module | Notes |
@@ -129,7 +136,10 @@ cargo bench
 | CRR binomial tree | `engines::numerical` | Up to 1000 steps |
 | Trinomial tree | `engines::tree::trinomial` | European + American |
 | Bermudan swaption tree | `engines::tree::bermudan_swaption` | Early exercise |
-| Crank-Nicolson PDE | `engines::pde::crank_nicolson` | European + American |
+| Explicit FD (forward Euler) | `engines::pde::explicit_fd` | Hull Ch 21 |
+| Implicit FD (backward Euler) | `engines::pde::implicit_fd` | Hull Ch 21 |
+| Crank-Nicolson PDE | `engines::pde::crank_nicolson` | Hull Ch 21 |
+| Hopscotch | `engines::pde::hopscotch` | Hull Ch 21 |
 | Longstaff-Schwartz LSM | `engines::lsm` | American MC |
 | Monte Carlo (GBM, Heston) | `engines::monte_carlo` | Antithetic + control variate |
 | MC Greeks (pathwise + likelihood ratio) | `engines::monte_carlo::mc_greeks` | |
@@ -139,6 +149,8 @@ cargo bench
 | Fractional FFT | `engines::fft::frft` | Non-uniform strikes |
 | Swing option (DP tree) | `engines::tree::swing` | Energy derivatives |
 | Convertible bond tree | `engines::tree::convertible` | Call/put provisions |
+| Generalized binomial (FX/futures/commodity) | `engines::tree::generalized_binomial` | Hull Ch 16 |
+| Two-asset binomial (Rubinstein) | `engines::tree::two_asset_tree` | Rubinstein 1994 |
 
 ### Stochastic Models
 | Model | Module | Reference |
@@ -161,6 +173,9 @@ cargo bench
 | Energy / commodity derivatives | `instruments::commodity`, `models::commodity` | Hull Ch 27 |
 | Weather derivatives (HDD/CDD) | `instruments::weather` | Hull Ch 29 |
 | Catastrophe bonds | `instruments::weather` | Hull Ch 29 |
+| MBS pass-through (PSA/CPR prepayment) | `instruments::mbs` | Hull Ch 8, Fabozzi |
+| IO/PO strips | `instruments::mbs` | Hull Ch 8 |
+| WAL, OAS, effective duration | `instruments::mbs` | Fabozzi |
 | Real options (defer/expand/abandon) | `instruments::real_option`, `pricing::real_option` | Hull Ch 28 |
 | FFT characteristic functions (BS, Heston, VG, CGMY) | `engines::fft::char_fn` | Carr-Madan 1999 |
 | Fast normal CDF (Hart) | `math::fast_norm` | |
@@ -263,7 +278,7 @@ Test vectors are externally validated — not self-generated. The `tests/quantli
 QuantLib's C++ test suite is included as a git submodule at `vendor/QuantLib/` for reference.
 
 ```bash
-cargo test                              # all 316 tests
+cargo test                              # all 366 tests
 cargo test --test quantlib_reference    # reference suite only
 cargo test --features parallel          # include parallel MC tests
 cargo bench                             # Criterion benchmarks
@@ -278,6 +293,7 @@ cargo bench                             # Criterion benchmarks
 - Jäckel, P. — *Monte Carlo Methods in Finance*
 - Shreve, S. — *Stochastic Calculus for Finance II: Continuous-Time Models*
 - Glasserman, P. — *Monte Carlo Methods in Financial Engineering*
+- Fabozzi, F.J. — *Fixed Income Analysis* (CFA Institute)
 
 ### Papers
 - Carr, P. & Madan, D. — *Option Valuation Using the FFT* (1999)
@@ -298,6 +314,7 @@ cargo bench                             # Criterion benchmarks
 - **[QuantLib](https://www.quantlib.org/)** — Reference test vectors extracted from the QuantLib C++ test suite (BSD-3-Clause license). QuantLib is included as a git submodule at `vendor/QuantLib/` for reproducibility.
 - **[Alan Lewis](http://wilmott.com/)** — High-precision Heston model reference prices used for validation.
 - **E.G. Haug** — Extensive option pricing test cases from *The Complete Guide to Option Pricing Formulas*.
+- **F.J. Fabozzi** — MBS/ABS prepayment and pricing reference values from *Fixed Income Analysis*.
 - **J.C. Hull** — Structural coverage follows *Options, Futures, and Other Derivatives*.
 
 ## License
