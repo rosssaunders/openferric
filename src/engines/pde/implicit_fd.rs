@@ -90,6 +90,7 @@ fn boundary_values(
 }
 
 /// In-place tridiagonal solve using pre-allocated scratch buffers.
+#[inline]
 fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
@@ -101,29 +102,30 @@ fn solve_tridiagonal_inplace(
 ) -> Result<(), PricingError> {
     let n = diag.len();
 
-    let denom0 = diag[0];
-    if denom0.abs() <= 1.0e-14 || !denom0.is_finite() {
+    let inv_denom0 = 1.0 / diag[0];
+    if !inv_denom0.is_finite() {
         return Err(PricingError::NumericalError(
             "tridiagonal solver singular matrix".to_string(),
         ));
     }
-    c_star[0] = if n > 1 { upper[0] / denom0 } else { 0.0 };
-    d_star[0] = rhs[0] / denom0;
+    c_star[0] = if n > 1 { upper[0] * inv_denom0 } else { 0.0 };
+    d_star[0] = rhs[0] * inv_denom0;
 
     for i in 1..n {
-        let denom = diag[i] - lower[i] * c_star[i - 1];
-        if denom.abs() <= 1.0e-14 || !denom.is_finite() {
+        let denom = (-lower[i]).mul_add(c_star[i - 1], diag[i]);
+        if denom.abs() <= 1.0e-14 {
             return Err(PricingError::NumericalError(
                 "tridiagonal solver singular matrix".to_string(),
             ));
         }
-        c_star[i] = if i < n - 1 { upper[i] / denom } else { 0.0 };
-        d_star[i] = (rhs[i] - lower[i] * d_star[i - 1]) / denom;
+        let inv_denom = 1.0 / denom;
+        c_star[i] = if i < n - 1 { upper[i] * inv_denom } else { 0.0 };
+        d_star[i] = (-lower[i]).mul_add(d_star[i - 1], rhs[i]) * inv_denom;
     }
 
     x[n - 1] = d_star[n - 1];
     for i in (0..(n - 1)).rev() {
-        x[i] = d_star[i] - c_star[i] * x[i + 1];
+        x[i] = (-c_star[i]).mul_add(x[i + 1], d_star[i]);
     }
     Ok(())
 }
@@ -248,9 +250,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
 
             next_values[0] = lower_bv;
             next_values[n_s] = upper_bv;
-            for (k, v) in interior.iter().enumerate() {
-                next_values[k + 1] = *v;
-            }
+            next_values[1..n_s].copy_from_slice(&interior);
 
             let can_exercise = match &instrument.exercise {
                 ExerciseStyle::European => false,
@@ -266,7 +266,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 }
             }
 
-            values.copy_from_slice(&next_values);
+            std::mem::swap(&mut values, &mut next_values);
         }
 
         let price = if market.spot <= 0.0 {
@@ -281,10 +281,10 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("num_time_steps", n_t as f64);
-        diagnostics.insert("num_space_steps", n_s as f64);
-        diagnostics.insert("s_max", s_max);
-        diagnostics.insert("vol", vol);
+        diagnostics.insert_key(crate::core::DiagKey::NumTimeSteps, n_t as f64);
+        diagnostics.insert_key(crate::core::DiagKey::NumSpaceSteps, n_s as f64);
+        diagnostics.insert_key(crate::core::DiagKey::SMax, s_max);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
         Ok(PricingResult {
             price,

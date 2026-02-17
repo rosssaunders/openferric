@@ -190,12 +190,14 @@ pub fn resolve_stream_seed(base_seed: u64, stream_index: usize, reproducible: bo
     }
 }
 
-#[inline]
+/// Maps [0, 1) → (ε, 1−ε) for safe inverse-CDF transformation.
+/// Uses `f64::max/min` which compiles to branchless `maxsd/minsd` on x86.
+#[inline(always)]
 pub fn uniform_open01(u: f64) -> f64 {
-    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
+    u.max(f64::EPSILON).min(1.0 - f64::EPSILON)
 }
 
-#[inline]
+#[inline(always)]
 pub fn sample_standard_normal(rng: &mut FastRng) -> f64 {
     beasley_springer_moro_inv_cdf(uniform_open01(rng.random_f64()))
 }

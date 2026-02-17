@@ -9,6 +9,13 @@ pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 pub trait PathGenerator: Send + Sync {
     fn steps(&self) -> usize;
     fn generate_from_normals(&self, normals_1: &[f64], normals_2: &[f64]) -> Vec<f64>;
+
+    /// Write path directly into a pre-allocated buffer, avoiding per-path heap allocation.
+    /// Default implementation delegates to `generate_from_normals` and copies.
+    fn generate_into(&self, normals_1: &[f64], normals_2: &[f64], out: &mut [f64]) {
+        let path = self.generate_from_normals(normals_1, normals_2);
+        out[..path.len()].copy_from_slice(&path);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -25,23 +32,24 @@ impl PathGenerator for GbmPathGenerator {
     }
 
     fn generate_from_normals(&self, normals_1: &[f64], _normals_2: &[f64]) -> Vec<f64> {
+        let mut path = vec![0.0_f64; self.steps + 1];
+        self.generate_into(normals_1, _normals_2, &mut path);
+        path
+    }
+
+    fn generate_into(&self, normals_1: &[f64], _normals_2: &[f64], out: &mut [f64]) {
         let dt = self.maturity / self.steps as f64;
         let sqrt_dt = dt.sqrt();
-        // Exact log-Euler (exponential) GBM step: S_{t+dt} = S_t * exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z).
-        // Always positive (no clamp needed), eliminates bias from Euler discretization.
         let drift = (self.model.mu - 0.5 * self.model.sigma * self.model.sigma) * dt;
         let diffusion = self.model.sigma * sqrt_dt;
 
-        let mut path = Vec::with_capacity(self.steps + 1);
         let mut s = self.s0;
-        path.push(s);
+        out[0] = s;
 
-        for &z in normals_1.iter().take(self.steps) {
-            s *= (drift + diffusion * z).exp();
-            path.push(s);
+        for (j, &z) in normals_1.iter().enumerate().take(self.steps) {
+            s *= diffusion.mul_add(z, drift).exp();
+            out[j + 1] = s;
         }
-
-        path
     }
 }
 
@@ -59,21 +67,25 @@ impl PathGenerator for HestonPathGenerator {
     }
 
     fn generate_from_normals(&self, normals_1: &[f64], normals_2: &[f64]) -> Vec<f64> {
+        let mut path = vec![0.0_f64; self.steps + 1];
+        self.generate_into(normals_1, normals_2, &mut path);
+        path
+    }
+
+    fn generate_into(&self, normals_1: &[f64], normals_2: &[f64], out: &mut [f64]) {
         let dt = self.maturity / self.steps as f64;
 
-        let mut path = Vec::with_capacity(self.steps + 1);
         let mut s = self.s0;
         let mut v = self.model.v0;
-        path.push(s);
+        out[0] = s;
 
-        for (&z1, &z2) in normals_1.iter().zip(normals_2.iter()).take(self.steps) {
+        for (j, (&z1, &z2)) in normals_1.iter().zip(normals_2.iter()).enumerate().take(self.steps)
+        {
             let (s_next, v_next) = self.model.step_euler(s, v, dt, z1, z2);
             s = s_next.max(1e-12);
             v = v_next.max(0.0);
-            path.push(s);
+            out[j + 1] = s;
         }
-
-        path
     }
 }
 
@@ -158,33 +170,37 @@ impl MonteCarloEngine {
         let rng_kind = self.rng_kind;
         let reproducible = self.reproducible;
         let base_seed = self.seed;
+        let path_len = steps + 1;
 
         let simulate_sample = |i: usize| {
             let seed = resolve_stream_seed(base_seed, i, reproducible);
             let mut rng = FastRng::from_seed(rng_kind, seed);
+
+            // Pre-allocate z1, z2, path once per thread via closure capture.
+            // These are stack-local and reused for antithetic paths.
             let mut z1 = vec![0.0_f64; steps];
             let mut z2 = vec![0.0_f64; steps];
+            let mut path = vec![0.0_f64; path_len];
 
             for j in 0..steps {
                 z1[j] = sample_standard_normal(&mut rng);
                 z2[j] = sample_standard_normal(&mut rng);
             }
 
-            let path = generator.generate_from_normals(&z1, &z2);
+            generator.generate_into(&z1, &z2, &mut path);
             let x = payoff(&path);
             let y = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
 
             if self.antithetic {
-                // Negate in-place instead of allocating new vectors.
                 for v in z1.iter_mut() {
                     *v = -*v;
                 }
                 for v in z2.iter_mut() {
                     *v = -*v;
                 }
-                let path_a = generator.generate_from_normals(&z1, &z2);
-                let xa = payoff(&path_a);
-                let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path_a));
+                generator.generate_into(&z1, &z2, &mut path);
+                let xa = payoff(&path);
+                let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
                 (0.5 * (x + xa), 0.5 * (y + ya))
             } else {
                 (x, y)
@@ -200,41 +216,60 @@ impl MonteCarloEngine {
         let values = (0..samples).map(simulate_sample).collect::<Vec<_>>();
         let n = values.len() as f64;
 
-        let adjusted: Vec<f64> = if let Some(cv) = &control {
+        // Single-pass statistics: avoid allocating an entire `adjusted` Vec.
+        if let Some(cv) = &control {
             let mean_x = values.iter().map(|(x, _)| *x).sum::<f64>() / n;
             let mean_y = values.iter().map(|(_, y)| *y).sum::<f64>() / n;
 
-            let cov_xy = values
-                .iter()
-                .map(|(x, y)| (x - mean_x) * (y - mean_y))
-                .sum::<f64>()
-                / (n - 1.0).max(1.0);
-
-            let var_y = values
-                .iter()
-                .map(|(_, y)| (y - mean_y).powi(2))
-                .sum::<f64>()
-                / (n - 1.0).max(1.0);
+            let mut cov_xy = 0.0_f64;
+            let mut var_y = 0.0_f64;
+            for &(x, y) in &values {
+                let dx = x - mean_x;
+                let dy = y - mean_y;
+                cov_xy += dx * dy;
+                var_y += dy * dy;
+            }
+            let denom = (n - 1.0).max(1.0);
+            cov_xy /= denom;
+            var_y /= denom;
 
             let beta = if var_y > 1e-16 { cov_xy / var_y } else { 0.0 };
-            values
-                .iter()
-                .map(|(x, y)| x + beta * (cv.expected - y))
-                .collect()
-        } else {
-            values.iter().map(|(x, _)| *x).collect()
-        };
+            let cv_expected = cv.expected;
 
-        let mean = adjusted.iter().sum::<f64>() / n;
-        let var = if adjusted.len() > 1 {
-            adjusted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0)
+            // Compute mean and variance of adjusted values in a single pass.
+            let mut sum = 0.0_f64;
+            let mut sum_sq = 0.0_f64;
+            for &(x, y) in &values {
+                let adj = x + beta * (cv_expected - y);
+                sum += adj;
+                sum_sq += adj * adj;
+            }
+            let mean = sum / n;
+            let var = if n > 1.0 {
+                (sum_sq - sum * sum / n) / (n - 1.0)
+            } else {
+                0.0
+            };
+            let price = discount_factor * mean;
+            let stderr = discount_factor * (var / n).sqrt();
+            (price, stderr)
         } else {
-            0.0
-        };
-
-        let price = discount_factor * mean;
-        let stderr = discount_factor * (var / n).sqrt();
-        (price, stderr)
+            let mut sum = 0.0_f64;
+            let mut sum_sq = 0.0_f64;
+            for &(x, _) in &values {
+                sum += x;
+                sum_sq += x * x;
+            }
+            let mean = sum / n;
+            let var = if n > 1.0 {
+                (sum_sq - sum * sum / n) / (n - 1.0)
+            } else {
+                0.0
+            };
+            let price = discount_factor * mean;
+            let stderr = discount_factor * (var / n).sqrt();
+            (price, stderr)
+        }
     }
 }
 

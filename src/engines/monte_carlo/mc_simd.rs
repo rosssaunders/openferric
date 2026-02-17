@@ -54,7 +54,7 @@ pub fn simulate_gbm_paths_soa_scalar(
         let next = &mut prev_tail[0];
 
         for i in 0..num_paths {
-            let growth = (drift + diffusion * z[i]).exp();
+            let growth = diffusion.mul_add(z[i], drift).exp();
             next[i] = prev[i] * growth;
         }
     }
@@ -188,7 +188,7 @@ unsafe fn simulate_gbm_paths_soa_avx2(
         }
 
         while i < num_paths {
-            let growth = (drift + diffusion * z[i]).exp();
+            let growth = diffusion.mul_add(z[i], drift).exp();
             next[i] = prev[i] * growth;
             i += 1;
         }
