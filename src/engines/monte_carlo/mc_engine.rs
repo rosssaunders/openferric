@@ -185,7 +185,7 @@ pub fn mc_european_with_arena(
             // protocol used by MonteCarloEngine::run (Heston needs both).
             xrng.next_u64();
             let z = beasley_springer_moro_inv_cdf(uniform_open01(u));
-            s *= (drift + diffusion * z).exp();
+            s *= diffusion.mul_add(z, drift).exp();
         }
 
         *payoff_slot = vanilla_payoff(option_type, s, strike);
@@ -193,17 +193,24 @@ pub fn mc_european_with_arena(
 
     let n = n_paths as f64;
     let payoffs = &payoff_buffer[..n_paths];
-    let mean = payoffs.iter().sum::<f64>() / n;
+    // Single-pass mean and variance (avoids iterating the buffer twice).
+    let mut sum = 0.0_f64;
+    let mut sum_sq = 0.0_f64;
+    for &v in payoffs {
+        sum += v;
+        sum_sq += v * v;
+    }
+    let mean = sum / n;
     let variance = if n_paths > 1 {
-        payoffs.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0)
+        (sum_sq - sum * sum / n) / (n - 1.0)
     } else {
         0.0
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", n_steps as f64);
-    diagnostics.insert("vol", vol);
+    diagnostics.insert_key(crate::core::DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(crate::core::DiagKey::NumSteps, n_steps as f64);
+    diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
     PricingResult {
         price: discount * mean,
@@ -584,9 +591,9 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
         );
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("num_paths", self.paths as f64);
-        diagnostics.insert("num_steps", self.steps as f64);
-        diagnostics.insert("vol", vol);
+        diagnostics.insert_key(crate::core::DiagKey::NumPaths, self.paths as f64);
+        diagnostics.insert_key(crate::core::DiagKey::NumSteps, self.steps as f64);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
         Ok(PricingResult {
             price,
@@ -679,9 +686,9 @@ where
         );
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("num_paths", self.num_paths as f64);
-        diagnostics.insert("num_steps", self.num_steps as f64);
-        diagnostics.insert("vol", vol);
+        diagnostics.insert_key(crate::core::DiagKey::NumPaths, self.num_paths as f64);
+        diagnostics.insert_key(crate::core::DiagKey::NumSteps, self.num_steps as f64);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
         Ok(PricingResult {
             price,

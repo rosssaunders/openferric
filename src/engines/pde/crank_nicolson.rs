@@ -96,6 +96,7 @@ fn boundary_values(
 
 /// In-place tridiagonal solve using pre-allocated scratch buffers.
 /// Writes solution into `x`. `c_star` and `d_star` are scratch space.
+#[inline]
 fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
@@ -107,29 +108,33 @@ fn solve_tridiagonal_inplace(
 ) -> Result<(), PricingError> {
     let n = diag.len();
 
-    let denom0 = diag[0];
-    if denom0.abs() <= 1.0e-14 || !denom0.is_finite() {
+    let inv_denom0 = 1.0 / diag[0];
+    if !inv_denom0.is_finite() {
         return Err(PricingError::NumericalError(
             "tridiagonal solver singular matrix".to_string(),
         ));
     }
-    c_star[0] = if n > 1 { upper[0] / denom0 } else { 0.0 };
-    d_star[0] = rhs[0] / denom0;
+    c_star[0] = if n > 1 { upper[0] * inv_denom0 } else { 0.0 };
+    d_star[0] = rhs[0] * inv_denom0;
 
     for i in 1..n {
-        let denom = diag[i] - lower[i] * c_star[i - 1];
-        if denom.abs() <= 1.0e-14 || !denom.is_finite() {
+        // denom = diag[i] - lower[i] * c_star[i-1]  →  FMA
+        let denom = (-lower[i]).mul_add(c_star[i - 1], diag[i]);
+        if denom.abs() <= 1.0e-14 {
             return Err(PricingError::NumericalError(
                 "tridiagonal solver singular matrix".to_string(),
             ));
         }
-        c_star[i] = if i < n - 1 { upper[i] / denom } else { 0.0 };
-        d_star[i] = (rhs[i] - lower[i] * d_star[i - 1]) / denom;
+        let inv_denom = 1.0 / denom;
+        c_star[i] = if i < n - 1 { upper[i] * inv_denom } else { 0.0 };
+        // (rhs[i] - lower[i] * d_star[i-1]) / denom  →  FMA + mul
+        d_star[i] = (-lower[i]).mul_add(d_star[i - 1], rhs[i]) * inv_denom;
     }
 
     x[n - 1] = d_star[n - 1];
     for i in (0..(n - 1)).rev() {
-        x[i] = d_star[i] - c_star[i] * x[i + 1];
+        // d_star[i] - c_star[i] * x[i+1]  →  FMA
+        x[i] = (-c_star[i]).mul_add(x[i + 1], d_star[i]);
     }
     Ok(())
 }
@@ -245,11 +250,13 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 tau_new,
             );
 
+            // RHS = B * values; use FMA for the tridiagonal multiply.
             for k in 0..interior_n {
                 let i = k + 1;
-                rhs_buf[k] = rhs_lower[k] * values[i - 1]
-                    + rhs_diag[k] * values[i]
-                    + rhs_upper[k] * values[i + 1];
+                rhs_buf[k] = rhs_lower[k].mul_add(
+                    values[i - 1],
+                    rhs_diag[k].mul_add(values[i], rhs_upper[k] * values[i + 1]),
+                );
             }
 
             rhs_buf[0] -= lhs_lower[0] * lower_new;
@@ -267,9 +274,7 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
 
             next_values[0] = lower_new;
             next_values[n_s] = upper_new;
-            for (k, v) in interior.iter().enumerate() {
-                next_values[k + 1] = *v;
-            }
+            next_values[1..n_s].copy_from_slice(&interior);
 
             let can_exercise = match &instrument.exercise {
                 ExerciseStyle::European => false,
@@ -285,7 +290,8 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 }
             }
 
-            values.copy_from_slice(&next_values);
+            // Swap instead of copy — eliminates full memcpy per timestep.
+            std::mem::swap(&mut values, &mut next_values);
         }
 
         let price = if market.spot <= 0.0 {
@@ -300,10 +306,10 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("num_time_steps", n_t as f64);
-        diagnostics.insert("num_space_steps", n_s as f64);
-        diagnostics.insert("s_max", s_max);
-        diagnostics.insert("vol", vol);
+        diagnostics.insert_key(crate::core::DiagKey::NumTimeSteps, n_t as f64);
+        diagnostics.insert_key(crate::core::DiagKey::NumSpaceSteps, n_s as f64);
+        diagnostics.insert_key(crate::core::DiagKey::SMax, s_max);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
         Ok(PricingResult {
             price,

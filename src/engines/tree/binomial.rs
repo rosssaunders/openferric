@@ -114,22 +114,23 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
             if can_exercise {
                 let mut st = base;
                 for j in 0..=i {
-                    let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
+                    // disc * (p * values[j+1] + (1-p) * values[j])  →  FMA
+                    let continuation = disc * p.mul_add(values[j + 1], one_minus_p * values[j]);
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[j] = continuation.max(exercise);
                     st *= ratio;
                 }
             } else {
                 for j in 0..=i {
-                    values[j] = disc * (p * values[j + 1] + one_minus_p * values[j]);
+                    values[j] = disc * p.mul_add(values[j + 1], one_minus_p * values[j]);
                 }
             }
             base *= u;
         }
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("num_steps", self.steps as f64);
-        diagnostics.insert("vol", vol);
+        diagnostics.insert_key(crate::core::DiagKey::NumSteps, self.steps as f64);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
         Ok(PricingResult {
             price: values[0],

@@ -196,7 +196,7 @@ impl PricingEngine<VanillaOption> for HestonEngine {
         }
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("integral", integral);
+        diagnostics.insert_key(crate::core::DiagKey::Integral, integral);
 
         Ok(PricingResult {
             price,

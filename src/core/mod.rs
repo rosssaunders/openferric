@@ -188,7 +188,7 @@ impl Diagnostics {
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.entries[0].is_none()
     }
 
     #[inline]
@@ -196,7 +196,13 @@ impl Diagnostics {
         let key = DiagKey::from_str(key).unwrap_or_else(|| {
             panic!("unsupported diagnostics key `{key}`; add it to core::DiagKey")
         });
+        self.insert_key(key, value)
+    }
 
+    /// Insert a diagnostic value using a pre-resolved `DiagKey`, avoiding the
+    /// string-to-enum match on the hot path.
+    #[inline]
+    pub fn insert_key(&mut self, key: DiagKey, value: f64) -> Option<f64> {
         for entry in &mut self.entries {
             if let Some((entry_key, existing)) = entry {
                 if *entry_key == key {

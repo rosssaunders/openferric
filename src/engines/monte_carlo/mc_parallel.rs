@@ -61,7 +61,7 @@ fn simulate_chunk(
         let mut spot = spot0;
         for _ in 0..n_steps {
             let z = sample_standard_normal(&mut rng);
-            spot *= (dt_drift + dt_vol * z).exp();
+            spot *= dt_vol.mul_add(z, dt_drift).exp();
             spot = spot.max(1.0e-12);
         }
         let px = payoff(option_type, spot, strike);

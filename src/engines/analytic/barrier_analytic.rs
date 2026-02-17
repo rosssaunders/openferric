@@ -44,8 +44,8 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
         );
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("vol", vol);
-        diagnostics.insert("barrier_level", instrument.barrier.level);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
+        diagnostics.insert_key(crate::core::DiagKey::BarrierLevel, instrument.barrier.level);
 
         Ok(PricingResult {
             price,

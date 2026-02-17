@@ -1,6 +1,6 @@
 //! Fast approximations for the standard normal CDF and inverse CDF.
 
-#[inline]
+#[inline(always)]
 pub fn fast_norm_pdf(x: f64) -> f64 {
     const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
     INV_SQRT_2PI * (-0.5 * x * x).exp()
@@ -37,7 +37,7 @@ pub fn hart_norm_cdf(x: f64) -> f64 {
 }
 
 /// Beasley-Springer-Moro approximation for the inverse standard normal CDF.
-#[inline]
+#[inline(always)]
 pub fn beasley_springer_moro_inv_cdf(p: f64) -> f64 {
     if p.is_nan() || !(0.0..=1.0).contains(&p) {
         return f64::NAN;
@@ -84,17 +84,17 @@ pub fn beasley_springer_moro_inv_cdf(p: f64) -> f64 {
 
     if p < P_LOW {
         let q = (-2.0 * p.ln()).sqrt();
-        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+        C[0].mul_add(q, C[1]).mul_add(q, C[2]).mul_add(q, C[3]).mul_add(q, C[4]).mul_add(q, C[5])
+            / D[0].mul_add(q, D[1]).mul_add(q, D[2]).mul_add(q, D[3]).mul_add(q, 1.0)
     } else if p <= P_HIGH {
         let q = p - 0.5;
         let r = q * q;
-        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
-            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+        A[0].mul_add(r, A[1]).mul_add(r, A[2]).mul_add(r, A[3]).mul_add(r, A[4]).mul_add(r, A[5]) * q
+            / B[0].mul_add(r, B[1]).mul_add(r, B[2]).mul_add(r, B[3]).mul_add(r, B[4]).mul_add(r, 1.0)
     } else {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
-        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+        -C[0].mul_add(q, C[1]).mul_add(q, C[2]).mul_add(q, C[3]).mul_add(q, C[4]).mul_add(q, C[5])
+            / D[0].mul_add(q, D[1]).mul_add(q, D[2]).mul_add(q, D[3]).mul_add(q, 1.0)
     }
 }
 

@@ -1,4 +1,5 @@
 use std::f64::consts::PI;
+use std::sync::LazyLock;
 
 pub mod arena;
 pub mod fast_norm;
@@ -24,7 +25,7 @@ pub enum MathError {
     InvalidInput(&'static str),
 }
 
-#[inline]
+#[inline(always)]
 pub fn normal_pdf(x: f64) -> f64 {
     fast_norm_pdf(x)
 }
@@ -34,13 +35,13 @@ pub fn branch_free_normal_cdf(x: f64) -> f64 {
     hart_norm_cdf(x)
 }
 
-#[inline]
+#[inline(always)]
 pub fn normal_cdf(x: f64) -> f64 {
     branch_free_normal_cdf(x)
 }
 
 /// Inverse of the standard normal CDF.
-#[inline]
+#[inline(always)]
 pub fn normal_inv_cdf(p: f64) -> f64 {
     beasley_springer_moro_inv_cdf(p)
 }
@@ -78,17 +79,35 @@ pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
     }
 
     let base = normal_cdf(x) * normal_cdf(y);
-    let integral = gauss_legendre_integrate(
-        |r| {
-            let one_minus_r2 = 1.0 - r * r;
-            let exponent = -(x * x - 2.0 * r * x * y + y * y) / (2.0 * one_minus_r2);
-            exponent.exp() / (2.0 * PI * one_minus_r2.sqrt())
-        },
-        0.0,
-        rho,
-        96,
-    )
-    .unwrap_or(0.0);
+
+    // Use pre-computed 96-point Gauss-Legendre nodes/weights.
+    // Previous code called gauss_legendre_nodes_weights(96) on every invocation,
+    // which runs 96 Newton-Raphson iterations to find Legendre roots — for constants.
+    static GL96: LazyLock<([f64; 96], [f64; 96])> = LazyLock::new(|| {
+        let (nodes, weights) = gauss_legendre_nodes_weights(96).unwrap();
+        let mut n = [0.0_f64; 96];
+        let mut w = [0.0_f64; 96];
+        n.copy_from_slice(&nodes);
+        w.copy_from_slice(&weights);
+        (n, w)
+    });
+
+    let (nodes, weights) = &*GL96;
+    let c1 = 0.5 * rho;
+    let c2 = 0.5 * rho;
+    let inv_2pi = 0.5 / PI;
+    let x2 = x * x;
+    let y2 = y * y;
+    let xy2 = 2.0 * x * y;
+
+    let mut sum = 0.0;
+    for i in 0..96 {
+        let r = c1 * nodes[i] + c2;
+        let one_minus_r2 = 1.0 - r * r;
+        let exponent = -(x2 - r * xy2 + y2) / (2.0 * one_minus_r2);
+        sum += weights[i] * exponent.exp() / one_minus_r2.sqrt();
+    }
+    let integral = c1 * sum * inv_2pi;
 
     (base + integral).clamp(0.0, 1.0)
 }

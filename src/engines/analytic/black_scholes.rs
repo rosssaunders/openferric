@@ -318,9 +318,9 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
         );
 
         let mut diagnostics = crate::core::Diagnostics::new();
-        diagnostics.insert("vol", vol);
-        diagnostics.insert("d1", d1);
-        diagnostics.insert("d2", d2);
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
+        diagnostics.insert_key(crate::core::DiagKey::D1, d1);
+        diagnostics.insert_key(crate::core::DiagKey::D2, d2);
 
         Ok(PricingResult {
             price,

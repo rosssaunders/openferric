@@ -77,12 +77,17 @@ pub fn mc_european_qmc_with_seed(
     let mut sobol = SobolSequence::new(n_steps, seed);
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
+    // Pre-allocate the uniform buffer once; avoid per-sample Vec allocation.
+    let mut uniforms = vec![0.0_f64; n_steps];
 
-    for uniforms in sobol.by_ref().take(n_paths) {
+    for _ in 0..n_paths {
+        if !sobol.next_into(&mut uniforms) {
+            break;
+        }
         let mut spot = market.spot;
-        for u in uniforms {
+        for &u in &uniforms {
             let z = normal_inv_cdf(uniform_open01(u));
-            spot *= (dt_drift + dt_vol * z).exp();
+            spot *= dt_vol.mul_add(z, dt_drift).exp();
             spot = spot.max(1.0e-12);
         }
 
@@ -100,9 +105,9 @@ pub fn mc_european_qmc_with_seed(
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", n_steps as f64);
-    diagnostics.insert("vol", vol);
+    diagnostics.insert_key(crate::core::DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(crate::core::DiagKey::NumSteps, n_steps as f64);
+    diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
     PricingResult {
         price: discount * mean,

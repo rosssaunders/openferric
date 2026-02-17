@@ -38,15 +38,16 @@ impl SobolSequence {
     pub fn dimensions(&self) -> usize {
         self.dimensions
     }
-}
 
-impl Iterator for SobolSequence {
-    type Item = Vec<f64>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Advances the sequence and writes the next point into `out`.
+    ///
+    /// Returns `false` if the sequence is exhausted (after 2^64 - 1 points).
+    /// This avoids the heap allocation that the `Iterator` impl requires.
+    #[inline]
+    pub fn next_into(&mut self, out: &mut [f64]) -> bool {
         let next_index = self.index.wrapping_add(1);
         if next_index == 0 {
-            return None;
+            return false;
         }
         let c = next_index.trailing_zeros() as usize;
 
@@ -56,13 +57,25 @@ impl Iterator for SobolSequence {
 
         self.index = next_index;
 
-        let mut point = Vec::with_capacity(self.dimensions);
         for dim in 0..self.dimensions {
             let scrambled = self.x[dim] ^ self.scramblers[dim];
-            point.push((scrambled as f64 + 0.5) * INV_U64_RANGE);
+            out[dim] = (scrambled as f64 + 0.5) * INV_U64_RANGE;
         }
 
-        Some(point)
+        true
+    }
+}
+
+impl Iterator for SobolSequence {
+    type Item = Vec<f64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut point = vec![0.0_f64; self.dimensions];
+        if self.next_into(&mut point) {
+            Some(point)
+        } else {
+            None
+        }
     }
 }
 
