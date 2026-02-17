@@ -1,0 +1,137 @@
+{
+  "allowCustomDataForDataTypeAny": true,
+  "functions": [
+    {
+      "id": "BS_PRICE",
+      "name": "OPENFERRIC.BS_PRICE",
+      "description": "Black-Scholes European option price",
+      "parameters": [
+        {"name": "spot", "type": "number", "description": "Spot price"},
+        {"name": "strike", "type": "number", "description": "Strike price"},
+        {"name": "rate", "type": "number", "description": "Risk-free rate (decimal)"},
+        {"name": "div_yield", "type": "number", "description": "Dividend yield (decimal)"},
+        {"name": "vol", "type": "number", "description": "Volatility (decimal)"},
+        {"name": "maturity", "type": "number", "description": "Time to expiry (years)"},
+        {"name": "is_call", "type": "boolean", "description": "TRUE for call, FALSE for put"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "BS_IMPLIED_VOL",
+      "name": "OPENFERRIC.BS_IMPLIED_VOL",
+      "description": "Black-Scholes implied volatility",
+      "parameters": [
+        {"name": "price", "type": "number", "description": "Option market price"},
+        {"name": "spot", "type": "number", "description": "Spot price"},
+        {"name": "strike", "type": "number", "description": "Strike price"},
+        {"name": "rate", "type": "number", "description": "Risk-free rate"},
+        {"name": "div_yield", "type": "number", "description": "Dividend yield"},
+        {"name": "maturity", "type": "number", "description": "Time to expiry (years)"},
+        {"name": "is_call", "type": "boolean", "description": "TRUE for call, FALSE for put"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "BS_GREEKS",
+      "name": "OPENFERRIC.BS_GREEKS",
+      "description": "BSM Greeks: delta, gamma, vega, theta, rho, vanna, volga",
+      "parameters": [
+        {"name": "spot", "type": "number"},
+        {"name": "strike", "type": "number"},
+        {"name": "rate", "type": "number"},
+        {"name": "div_yield", "type": "number"},
+        {"name": "vol", "type": "number"},
+        {"name": "maturity", "type": "number"},
+        {"name": "is_call", "type": "boolean"}
+      ],
+      "result": {"type": "string"}
+    },
+    {
+      "id": "HESTON_PRICE",
+      "name": "OPENFERRIC.HESTON_PRICE",
+      "description": "Heston stochastic volatility European option price",
+      "parameters": [
+        {"name": "spot", "type": "number"},
+        {"name": "strike", "type": "number"},
+        {"name": "rate", "type": "number"},
+        {"name": "div_yield", "type": "number"},
+        {"name": "v0", "type": "number", "description": "Initial variance"},
+        {"name": "kappa", "type": "number", "description": "Mean reversion speed"},
+        {"name": "theta", "type": "number", "description": "Long-run variance"},
+        {"name": "sigma_v", "type": "number", "description": "Vol of vol"},
+        {"name": "rho", "type": "number", "description": "Correlation"},
+        {"name": "maturity", "type": "number"},
+        {"name": "is_call", "type": "boolean"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "BARRIER_PRICE",
+      "name": "OPENFERRIC.BARRIER_PRICE",
+      "description": "Barrier option price (up-in, up-out, down-in, down-out)",
+      "parameters": [
+        {"name": "spot", "type": "number"},
+        {"name": "strike", "type": "number"},
+        {"name": "barrier", "type": "number"},
+        {"name": "rate", "type": "number"},
+        {"name": "div_yield", "type": "number"},
+        {"name": "vol", "type": "number"},
+        {"name": "maturity", "type": "number"},
+        {"name": "barrier_type", "type": "string", "description": "up-in, up-out, down-in, down-out"},
+        {"name": "is_call", "type": "boolean"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "BOND_PRICE",
+      "name": "OPENFERRIC.BOND_PRICE",
+      "description": "Fixed-rate bond price (flat yield)",
+      "parameters": [
+        {"name": "face_value", "type": "number"},
+        {"name": "coupon_rate", "type": "number"},
+        {"name": "maturity", "type": "number"},
+        {"name": "yield_rate", "type": "number"},
+        {"name": "frequency", "type": "number", "description": "Coupons per year (1, 2, 4)"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "CDS_SPREAD",
+      "name": "OPENFERRIC.CDS_SPREAD",
+      "description": "CDS fair spread from flat hazard rate",
+      "parameters": [
+        {"name": "notional", "type": "number"},
+        {"name": "maturity", "type": "number"},
+        {"name": "recovery", "type": "number"},
+        {"name": "hazard_rate", "type": "number"},
+        {"name": "discount_rate", "type": "number"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "VAR",
+      "name": "OPENFERRIC.VAR",
+      "description": "Historical Value-at-Risk",
+      "parameters": [
+        {"name": "returns", "type": "number", "dimensionality": "matrix"},
+        {"name": "confidence", "type": "number", "description": "e.g. 0.95 or 0.99"}
+      ],
+      "result": {"type": "number"}
+    },
+    {
+      "id": "SABR_VOL",
+      "name": "OPENFERRIC.SABR_VOL",
+      "description": "SABR implied volatility",
+      "parameters": [
+        {"name": "forward", "type": "number"},
+        {"name": "strike", "type": "number"},
+        {"name": "t", "type": "number"},
+        {"name": "alpha", "type": "number"},
+        {"name": "beta", "type": "number"},
+        {"name": "rho", "type": "number"},
+        {"name": "nu", "type": "number"}
+      ],
+      "result": {"type": "number"}
+    }
+  ]
+}
