@@ -167,6 +167,9 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
             c_coeff[k] = alpha + beta;
         }
 
+        // Pre-allocate double-buffer to eliminate per-timestep clone + allocation.
+        let mut next_values = vec![0.0_f64; n_s + 1];
+
         for n in (0..n_t).rev() {
             let tau_new = instrument.expiry - n as f64 * dt;
             let (lower_bv, upper_bv) = boundary_values(
@@ -179,7 +182,8 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
                 tau_new,
             );
 
-            let mut next_values = values.clone();
+            // Copy old values then apply boundary conditions.
+            next_values.copy_from_slice(&values);
             next_values[0] = lower_bv;
             next_values[n_s] = upper_bv;
 
@@ -187,7 +191,6 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
             for k in 0..interior_n {
                 let i = k + 1;
                 if (i + n) % 2 == 0 {
-                    // Explicit: V_i^{new} = V_i^{old} + dt * L V_i^{old}
                     let l_v = a_coeff[k] * values[i - 1]
                         + b_coeff[k] * values[i]
                         + c_coeff[k] * values[i + 1];
@@ -196,11 +199,6 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
             }
 
             // Second pass: implicit updates where (i + n) is odd
-            // Using already-updated neighbors from the explicit pass
-            // Implicit: V_i^{new} = V_i^{old} + dt * L V_i^{mixed}
-            // where L uses next_values for neighbors but V_i^{new} for center
-            // => V_i^{new} = V_i^{old} + dt * (a * next[i-1] + b * V_i^{new} + c * next[i+1])
-            // => V_i^{new} (1 - dt * b) = V_i^{old} + dt * (a * next[i-1] + c * next[i+1])
             for k in 0..interior_n {
                 let i = k + 1;
                 if (i + n) % 2 != 0 {
@@ -225,7 +223,7 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
                 }
             }
 
-            values = next_values;
+            values.copy_from_slice(&next_values);
         }
 
         let price = if market.spot <= 0.0 {

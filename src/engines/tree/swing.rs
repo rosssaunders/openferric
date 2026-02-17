@@ -113,32 +113,39 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
 
         let rights = instrument.max_exercises;
 
+        // Multiplicative recurrence: spot * u^j * d^(n-j) = spot * d^n * (u/d)^j
+        let ratio = u / d;
+
         let mut next = vec![vec![0.0_f64; self.steps + 1]; rights + 1];
         for rem in 0..=rights {
             let used = rights - rem;
             let feasible_without_exercise = used >= instrument.min_exercises;
 
-            for j in 0..=self.steps {
-                let hold_value = if feasible_without_exercise {
-                    0.0
-                } else {
-                    f64::NEG_INFINITY
-                };
+            let hold_value = if feasible_without_exercise {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            };
 
-                let mut value = hold_value;
-                if exercise_flags[self.steps] && rem > 0 {
-                    let used_if_exercise = rights - (rem - 1);
-                    if used_if_exercise >= instrument.min_exercises {
-                        let st = market.spot
-                            * u.powf(j as f64)
-                            * d.powf((self.steps.saturating_sub(j)) as f64);
+            if exercise_flags[self.steps] && rem > 0 {
+                let used_if_exercise = rights - (rem - 1);
+                if used_if_exercise >= instrument.min_exercises {
+                    let mut st = market.spot * d.powi(self.steps as i32);
+                    for j in 0..=self.steps {
                         let payoff =
                             instrument.payoff_per_exercise * (st - instrument.strike).max(0.0);
-                        value = value.max(payoff);
+                        next[rem][j] = hold_value.max(payoff);
+                        st *= ratio;
+                    }
+                } else {
+                    for j in 0..=self.steps {
+                        next[rem][j] = hold_value;
                     }
                 }
-
-                next[rem][j] = value;
+            } else {
+                for j in 0..=self.steps {
+                    next[rem][j] = hold_value;
+                }
             }
         }
 
@@ -153,32 +160,41 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
                     continue;
                 }
 
-                for j in 0..=i {
-                    let hold = expected_continuation(next[rem][j + 1], next[rem][j], p, disc);
+                let needs_exercise_check = exercise_flags[i] && rem > 0;
+                let exercise_feasible = if needs_exercise_check {
+                    let used_if_exercise = rights - (rem - 1);
+                    let min_needed_after =
+                        instrument.min_exercises.saturating_sub(used_if_exercise);
+                    let max_possible_after = opportunities[i + 1].min(rem - 1);
+                    max_possible_after >= min_needed_after
+                } else {
+                    false
+                };
 
-                    let mut best = hold;
-                    if exercise_flags[i] && rem > 0 {
-                        let used_if_exercise = rights - (rem - 1);
-                        let min_needed_after =
-                            instrument.min_exercises.saturating_sub(used_if_exercise);
-                        let max_possible_after = opportunities[i + 1].min(rem - 1);
-                        if max_possible_after >= min_needed_after {
-                            let continuation_after_exercise = expected_continuation(
-                                next[rem - 1][j + 1],
-                                next[rem - 1][j],
-                                p,
-                                disc,
-                            );
-                            if continuation_after_exercise.is_finite() {
-                                let st = market.spot * u.powf(j as f64) * d.powf((i - j) as f64);
-                                let payoff = instrument.payoff_per_exercise
-                                    * (st - instrument.strike).max(0.0);
-                                best = best.max(payoff + continuation_after_exercise);
-                            }
+                if exercise_feasible {
+                    let mut st = market.spot * d.powi(i as i32);
+                    for j in 0..=i {
+                        let hold = expected_continuation(next[rem][j + 1], next[rem][j], p, disc);
+                        let mut best = hold;
+                        let continuation_after_exercise = expected_continuation(
+                            next[rem - 1][j + 1],
+                            next[rem - 1][j],
+                            p,
+                            disc,
+                        );
+                        if continuation_after_exercise.is_finite() {
+                            let payoff = instrument.payoff_per_exercise
+                                * (st - instrument.strike).max(0.0);
+                            best = best.max(payoff + continuation_after_exercise);
                         }
+                        current[rem][j] = best;
+                        st *= ratio;
                     }
-
-                    current[rem][j] = best;
+                } else {
+                    for j in 0..=i {
+                        current[rem][j] =
+                            expected_continuation(next[rem][j + 1], next[rem][j], p, disc);
+                    }
                 }
             }
 

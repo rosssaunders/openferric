@@ -94,21 +94,18 @@ fn boundary_values(
     }
 }
 
-fn solve_tridiagonal(
+/// In-place tridiagonal solve using pre-allocated scratch buffers.
+/// Writes solution into `x`. `c_star` and `d_star` are scratch space.
+fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
     upper: &[f64],
     rhs: &[f64],
-) -> Result<Vec<f64>, PricingError> {
+    c_star: &mut [f64],
+    d_star: &mut [f64],
+    x: &mut [f64],
+) -> Result<(), PricingError> {
     let n = diag.len();
-    if n == 0 || lower.len() != n || upper.len() != n || rhs.len() != n {
-        return Err(PricingError::NumericalError(
-            "tridiagonal solver dimension mismatch".to_string(),
-        ));
-    }
-
-    let mut c_star = vec![0.0_f64; n];
-    let mut d_star = vec![0.0_f64; n];
 
     let denom0 = diag[0];
     if denom0.abs() <= 1.0e-14 || !denom0.is_finite() {
@@ -130,12 +127,11 @@ fn solve_tridiagonal(
         d_star[i] = (rhs[i] - lower[i] * d_star[i - 1]) / denom;
     }
 
-    let mut x = vec![0.0_f64; n];
     x[n - 1] = d_star[n - 1];
     for i in (0..(n - 1)).rev() {
         x[i] = d_star[i] - c_star[i] * x[i + 1];
     }
-    Ok(x)
+    Ok(())
 }
 
 impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
@@ -220,6 +216,23 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             rhs_upper[k] = 0.5 * dt * c;
         }
 
+        // Pre-allocate all scratch buffers once to eliminate per-timestep allocations.
+        // Previous code allocated 6+ vectors per timestep (rhs, lower clone, upper clone,
+        // c_star, d_star, x, next_values). For 200 timesteps that was 1400+ heap allocs.
+        let mut rhs_buf = vec![0.0_f64; interior_n];
+        let mut solve_lower = vec![0.0_f64; interior_n];
+        let mut solve_upper = vec![0.0_f64; interior_n];
+        let mut c_star = vec![0.0_f64; interior_n];
+        let mut d_star = vec![0.0_f64; interior_n];
+        let mut interior = vec![0.0_f64; interior_n];
+        let mut next_values = vec![0.0_f64; n_s + 1];
+
+        // Pre-copy the LHS bands with zeroed boundary entries (they never change).
+        solve_lower.copy_from_slice(&lhs_lower);
+        solve_lower[0] = 0.0;
+        solve_upper.copy_from_slice(&lhs_upper);
+        solve_upper[interior_n - 1] = 0.0;
+
         for n in (0..n_t).rev() {
             let tau_new = instrument.expiry - n as f64 * dt;
             let (lower_new, upper_new) = boundary_values(
@@ -232,25 +245,26 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 tau_new,
             );
 
-            let mut rhs = vec![0.0_f64; interior_n];
             for k in 0..interior_n {
                 let i = k + 1;
-                rhs[k] = rhs_lower[k] * values[i - 1]
+                rhs_buf[k] = rhs_lower[k] * values[i - 1]
                     + rhs_diag[k] * values[i]
                     + rhs_upper[k] * values[i + 1];
             }
 
-            rhs[0] -= lhs_lower[0] * lower_new;
-            rhs[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_new;
+            rhs_buf[0] -= lhs_lower[0] * lower_new;
+            rhs_buf[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_new;
 
-            let mut lower = lhs_lower.clone();
-            let mut upper = lhs_upper.clone();
-            lower[0] = 0.0;
-            upper[interior_n - 1] = 0.0;
+            solve_tridiagonal_inplace(
+                &solve_lower,
+                &lhs_diag,
+                &solve_upper,
+                &rhs_buf,
+                &mut c_star,
+                &mut d_star,
+                &mut interior,
+            )?;
 
-            let interior = solve_tridiagonal(&lower, &lhs_diag, &upper, &rhs)?;
-
-            let mut next_values = vec![0.0_f64; n_s + 1];
             next_values[0] = lower_new;
             next_values[n_s] = upper_new;
             for (k, v) in interior.iter().enumerate() {
@@ -271,7 +285,7 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 }
             }
 
-            values = next_values;
+            values.copy_from_slice(&next_values);
         }
 
         let price = if market.spot <= 0.0 {

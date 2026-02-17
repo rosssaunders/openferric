@@ -113,14 +113,20 @@ where
 
     let n = steps + 1;
 
-    // Terminal payoffs: values[i][j] = payoff at node where
-    // S1 = s1 * u1^i * d1^(steps-i), S2 = s2 * u2^j * d2^(steps-j)
+    // Terminal payoffs using multiplicative recurrence to eliminate powf().
+    // S1 = s1 * d1^steps * (u1/d1)^i, S2 = s2 * d2^steps * (u2/d2)^j
+    let ratio1 = u1 / d1;
+    let ratio2 = u2 / d2;
     let mut values = vec![vec![0.0_f64; n]; n];
-    for i in 0..n {
-        let s1_t = s1 * u1.powf(i as f64) * d1.powf((steps - i) as f64);
-        for j in 0..n {
-            let s2_t = s2 * u2.powf(j as f64) * d2.powf((steps - j) as f64);
-            values[i][j] = payoff_fn(s1_t, s2_t);
+    {
+        let mut s1_t = s1 * d1.powi(steps as i32);
+        for i in 0..n {
+            let mut s2_t = s2 * d2.powi(steps as i32);
+            for j in 0..n {
+                values[i][j] = payoff_fn(s1_t, s2_t);
+                s2_t *= ratio2;
+            }
+            s1_t *= ratio1;
         }
     }
 

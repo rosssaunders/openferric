@@ -58,18 +58,31 @@ fn rollback_american_binomial(
 ) -> f64 {
     debug_assert!(values.len() >= steps + 1);
 
-    for (j, value) in values.iter_mut().enumerate().take(steps + 1) {
-        let st = spot0 * u.powf(j as f64) * d.powf((steps - j) as f64);
-        *value = intrinsic(option_type, st, strike);
+    // Multiplicative recurrence replaces O(steps^2) powf() calls with multiplications.
+    // spot0 * u^j * d^(steps-j) = spot0 * d^steps * (u/d)^j
+    let ratio = u / d;
+    let one_minus_p = 1.0 - p;
+
+    // Terminal payoffs: start at spot0 * d^steps, multiply by ratio each step.
+    {
+        let mut st = spot0 * d.powi(steps as i32);
+        for j in 0..=steps {
+            values[j] = intrinsic(option_type, st, strike);
+            st *= ratio;
+        }
     }
 
+    // Rollback: maintain base = spot0 * d^i via multiplicative update.
+    let mut base = spot0 * d.powi((steps - 1) as i32);
     for i in (0..steps).rev() {
+        let mut st = base;
         for j in 0..=i {
-            let continuation = disc * (p * values[j + 1] + (1.0 - p) * values[j]);
-            let st = spot0 * u.powf(j as f64) * d.powf((i - j) as f64);
+            let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
             let exercise = intrinsic(option_type, st, strike);
             values[j] = continuation.max(exercise);
+            st *= ratio;
         }
+        base *= u; // d^(i-1) = d^i * u since u = 1/d
     }
 
     values[0]

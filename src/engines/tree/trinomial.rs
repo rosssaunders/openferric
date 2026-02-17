@@ -111,42 +111,55 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
             _ => None,
         };
 
+        // Terminal payoffs: replace powf() with multiplicative recurrence.
+        // spot * u^j for j = -steps..=steps: start at spot * u^(-steps) = spot * d^steps,
+        // multiply by u at each step.
         let mut values = vec![0.0_f64; 2 * self.steps + 1];
-        for j in -(self.steps as isize)..=(self.steps as isize) {
-            let idx = (j + self.steps as isize) as usize;
-            let st = market.spot * u.powf(j as f64);
-            values[idx] = intrinsic(instrument.option_type, st, instrument.strike);
+        {
+            let mut st = market.spot * d.powi(self.steps as i32);
+            for idx in 0..(2 * self.steps + 1) {
+                values[idx] = intrinsic(instrument.option_type, st, instrument.strike);
+                st *= u;
+            }
         }
 
+        // Rollback using single buffer (values shrinks logically but buffer is reused).
+        // At step i, we need 2*i+1 nodes centered around 0.
+        // The previous step (i+1) has 2*(i+1)+1 nodes, stored in values[0..2*(i+1)+1].
         for i in (0..self.steps).rev() {
-            let mut next_values = vec![0.0_f64; 2 * i + 1];
-            for j in -(i as isize)..=(i as isize) {
-                let next_shift = i + 1;
-                let up_idx = (j + next_shift as isize + 1) as usize;
-                let mid_idx = (j + next_shift as isize) as usize;
-                let down_idx = (j + next_shift as isize - 1) as usize;
+            let can_exercise = match &instrument.exercise {
+                ExerciseStyle::European => false,
+                ExerciseStyle::American => true,
+                ExerciseStyle::Bermudan { .. } => {
+                    bermudan_flags.as_ref().is_some_and(|flags| flags[i])
+                }
+            };
 
-                let continuation =
-                    disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
+            let cur_width = 2 * i + 1;
 
-                let can_exercise = match &instrument.exercise {
-                    ExerciseStyle::European => false,
-                    ExerciseStyle::American => true,
-                    ExerciseStyle::Bermudan { .. } => {
-                        bermudan_flags.as_ref().is_some_and(|flags| flags[i])
-                    }
-                };
-
-                let idx = (j + i as isize) as usize;
-                if can_exercise {
-                    let st = market.spot * u.powf(j as f64);
+            if can_exercise {
+                // spot * u^j for j = -i..=i: start at spot * d^i, multiply by u.
+                let mut st = market.spot * d.powi(i as i32);
+                for k in 0..cur_width {
+                    // Map: k corresponds to j = k - i, indices in previous layer offset by 1.
+                    let up_idx = k + 2;
+                    let mid_idx = k + 1;
+                    let down_idx = k;
+                    let continuation =
+                        disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
-                    next_values[idx] = continuation.max(exercise);
-                } else {
-                    next_values[idx] = continuation;
+                    values[k] = continuation.max(exercise);
+                    st *= u;
+                }
+            } else {
+                for k in 0..cur_width {
+                    let up_idx = k + 2;
+                    let mid_idx = k + 1;
+                    let down_idx = k;
+                    values[k] =
+                        disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
                 }
             }
-            values = next_values;
         }
 
         let mut diagnostics = crate::core::Diagnostics::new();
