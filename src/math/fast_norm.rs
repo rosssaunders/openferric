@@ -9,6 +9,9 @@ pub fn fast_norm_pdf(x: f64) -> f64 {
 /// Hart-style polynomial approximation for the standard normal CDF.
 ///
 /// This form has max absolute error around 7.8e-8.
+/// Uses `mul_add` for fused multiply-add on the Horner polynomial chain,
+/// which maps to hardware FMA on supported architectures and improves both
+/// throughput and accuracy by eliminating intermediate rounding.
 #[inline]
 pub fn hart_norm_cdf(x: f64) -> f64 {
     const P: f64 = 0.231_641_9;
@@ -19,14 +22,18 @@ pub fn hart_norm_cdf(x: f64) -> f64 {
     const A5: f64 = 1.330_274_429;
 
     let z = x.abs();
-    let t = 1.0 / (1.0 + P * z);
-    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
-    let cdf_pos = 1.0 - fast_norm_pdf(z) * poly;
+    let t = 1.0 / P.mul_add(z, 1.0);
+    let poly = A5.mul_add(t, A4)
+        .mul_add(t, A3)
+        .mul_add(t, A2)
+        .mul_add(t, A1)
+        * t;
+    let cdf_pos = fast_norm_pdf(z).mul_add(-poly, 1.0);
 
     // Branch-free sign handling:
     // sign = 0 for x >= 0, sign = 1 for x < 0.
     let sign = (x.to_bits() >> 63) as f64;
-    cdf_pos + sign * (1.0 - 2.0 * cdf_pos)
+    sign.mul_add(1.0 - 2.0 * cdf_pos, cdf_pos)
 }
 
 /// Beasley-Springer-Moro approximation for the inverse standard normal CDF.

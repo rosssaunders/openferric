@@ -88,15 +88,17 @@ pub unsafe fn ln_f64x4(x: __m256d) -> __m256d {
         52,
     );
 
-    let mut exp_lanes = [0_i64; 4];
-    // SAFETY: exp_lanes has room for 4 i64 values.
-    unsafe { _mm256_storeu_si256(exp_lanes.as_mut_ptr() as *mut __m256i, exp_bits) };
-    let mut k_lanes = [0.0_f64; 4];
-    for i in 0..4 {
-        k_lanes[i] = (exp_lanes[i] - 1023) as f64;
-    }
-    // SAFETY: k_lanes contains 4 f64 values.
-    let mut k = unsafe { _mm256_loadu_pd(k_lanes.as_ptr()) };
+    // Convert biased exponent to f64 entirely in SIMD (no store-load roundtrip).
+    // Subtract bias 1023 in integer domain, then pack 4×i64 → 4×i32 and use
+    // hardware i32→f64 conversion. Exponents are in [-1023, 1024] so i32 is safe.
+    let bias = _mm256_set1_epi64x(1023);
+    let unbiased = _mm256_sub_epi64(exp_bits, bias);
+    // Pack: extract low 32 bits of each i64 lane via shuffle, then combine.
+    let shuffled = _mm256_shuffle_epi32(unbiased, 0b10_00_10_00);
+    let lo128 = _mm256_castsi256_si128(shuffled);
+    let hi128 = _mm256_extracti128_si256(shuffled, 1);
+    let packed_i32 = _mm_unpacklo_epi64(lo128, hi128); // [k0, k1, k2, k3] as i32
+    let mut k = _mm256_cvtepi32_pd(packed_i32);
 
     let mant_bits = _mm256_or_si256(
         _mm256_and_si256(x_bits, _mm256_set1_epi64x(0x000f_ffff_ffff_ffff_u64 as i64)),

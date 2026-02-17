@@ -42,8 +42,9 @@ fn d1_d2(
     expiry: f64,
 ) -> (f64, f64) {
     let sig_sqrt_t = vol * expiry.sqrt();
-    let d1 =
-        ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln()
+        + (rate - dividend_yield).mul_add(expiry, 0.5 * vol * vol * expiry))
+        / sig_sqrt_t;
     (d1, d1 - sig_sqrt_t)
 }
 
@@ -196,6 +197,12 @@ pub fn bs_rho(
     }
 }
 
+/// Single-pass computation of price + all Greeks.
+///
+/// Computes d1, d2, discount factors, CDF and PDF values once and derives
+/// every output from those shared intermediates. This eliminates the 5x
+/// redundant d1/d2 calculations, 6x redundant exp() calls, and 6+
+/// redundant CDF/PDF evaluations that the previous per-greek approach had.
 #[inline]
 fn bs_price_greeks_with_dividend(
     option_type: OptionType,
@@ -206,13 +213,49 @@ fn bs_price_greeks_with_dividend(
     vol: f64,
     expiry: f64,
 ) -> (f64, Greeks, f64, f64) {
-    let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
-    let price = bs_price(option_type, spot, strike, rate, dividend_yield, vol, expiry);
-    let delta = bs_delta(option_type, spot, strike, rate, dividend_yield, vol, expiry);
-    let gamma = bs_gamma(spot, strike, rate, dividend_yield, vol, expiry);
-    let vega = bs_vega(spot, strike, rate, dividend_yield, vol, expiry);
-    let theta = bs_theta(option_type, spot, strike, rate, dividend_yield, vol, expiry);
-    let rho = bs_rho(option_type, spot, strike, rate, dividend_yield, vol, expiry);
+    // Shared intermediates — computed exactly once.
+    let sqrt_t = expiry.sqrt();
+    let sig_sqrt_t = vol * sqrt_t;
+    let d1 =
+        ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+    let d2 = d1 - sig_sqrt_t;
+
+    let df_r = (-rate * expiry).exp();
+    let df_q = (-dividend_yield * expiry).exp();
+
+    let nd1 = norm_cdf(d1);
+    let nd2 = norm_cdf(d2);
+    let pdf_d1 = norm_pdf(d1);
+
+    // Price.
+    let (price, delta, theta) = match option_type {
+        OptionType::Call => {
+            let p = spot * df_q * nd1 - strike * df_r * nd2;
+            let d = df_q * nd1;
+            let th = -spot * df_q * pdf_d1 * vol / (2.0 * sqrt_t)
+                + dividend_yield * spot * df_q * nd1
+                - rate * strike * df_r * nd2;
+            (p, d, th)
+        }
+        OptionType::Put => {
+            let nmd1 = 1.0 - nd1;
+            let nmd2 = 1.0 - nd2;
+            let p = strike * df_r * nmd2 - spot * df_q * nmd1;
+            let d = df_q * (nd1 - 1.0);
+            let th = -spot * df_q * pdf_d1 * vol / (2.0 * sqrt_t)
+                - dividend_yield * spot * df_q * nmd1
+                + rate * strike * df_r * nmd2;
+            (p, d, th)
+        }
+    };
+
+    // Greeks that are independent of call/put.
+    let gamma = df_q * pdf_d1 / (spot * vol * sqrt_t);
+    let vega = spot * df_q * pdf_d1 * sqrt_t;
+    let rho = match option_type {
+        OptionType::Call => strike * expiry * df_r * nd2,
+        OptionType::Put => -strike * expiry * df_r * (1.0 - nd2),
+    };
 
     (
         price,
