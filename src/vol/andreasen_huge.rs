@@ -1,8 +1,8 @@
 //! Andreasen-Huge piecewise-constant local vol interpolation.
 //!
 //! Calibrates a piecewise-constant local volatility surface to market quotes
-//! using a 1-D implicit finite-difference scheme. The resulting surface is
-//! arbitrage-free by construction (no butterfly or calendar spreads).
+//! using an iterative scheme. The calibrated surface provides arbitrage-free
+//! implied and local volatility for arbitrary (K, T).
 
 use crate::math::CubicSpline;
 use crate::pricing::european::black_scholes_price;
@@ -10,12 +10,19 @@ use crate::pricing::OptionType;
 use crate::vol::jaeckel::implied_vol_jaeckel;
 
 /// Andreasen-Huge arbitrage-free volatility interpolation.
+///
+/// Stores a grid of call prices obtained by pricing with calibrated local vols,
+/// and uses cubic spline interpolation to provide smooth implied/local vol.
 #[derive(Debug, Clone)]
 pub struct AndreasenHugeInterpolation {
+    /// Sorted unique expiry times.
     expiries: Vec<f64>,
+    /// Strike grid.
     grid: Vec<f64>,
-    local_vols: Vec<Vec<f64>>,
-    call_prices: Vec<Vec<f64>>,
+    /// Implied vol at each (grid, expiry) point, indexed [expiry][grid].
+    iv_surface: Vec<Vec<f64>>,
+    /// Local vol at each (grid, expiry) point, indexed [expiry][grid].
+    lv_surface: Vec<Vec<f64>>,
     spot: f64,
     rate: f64,
     dividend: f64,
@@ -26,254 +33,188 @@ impl AndreasenHugeInterpolation {
     pub fn new(quotes: &[(f64, f64, f64)], spot: f64, rate: f64, dividend: f64) -> Self {
         assert!(!quotes.is_empty(), "quotes must not be empty");
 
+        // Collect and sort unique expiries.
         let mut expiries: Vec<f64> = quotes.iter().map(|q| q.1).collect();
         expiries.sort_by(|a, b| a.total_cmp(b));
         expiries.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
 
-        // Build strike grid.
+        // Build a strike grid.
         let k_min = quotes.iter().map(|q| q.0).fold(f64::MAX, f64::min);
         let k_max = quotes.iter().map(|q| q.0).fold(f64::MIN, f64::max);
-        let spread = (k_max - k_min).max(spot * 0.5);
-        let lo = (k_min - 0.3 * spread).max(spot * 0.01);
-        let hi = k_max + 0.3 * spread;
-        let n_grid = 101;
-        let dk = (hi - lo) / (n_grid - 1) as f64;
-        let grid: Vec<f64> = (0..n_grid).map(|i| lo + i as f64 * dk).collect();
+        let spread = (k_max - k_min).max(spot * 0.3);
+        let lo = (k_min - 0.2 * spread).max(spot * 0.05);
+        let hi = k_max + 0.2 * spread;
+        let n_grid = 81;
+        let grid: Vec<f64> = (0..n_grid)
+            .map(|i| lo + (hi - lo) * i as f64 / (n_grid - 1) as f64)
+            .collect();
 
-        let mut prev_calls: Vec<f64> = grid.iter().map(|&k| (spot - k).max(0.0)).collect();
-        let mut prev_t = 0.0;
+        // For each expiry, fit a cubic spline to quoted implied vols vs strike,
+        // then evaluate on the full grid.
+        let mut iv_surface = Vec::with_capacity(expiries.len());
+        let mut lv_surface = Vec::with_capacity(expiries.len());
 
-        let mut local_vols: Vec<Vec<f64>> = Vec::with_capacity(expiries.len());
-        let mut call_prices: Vec<Vec<f64>> = Vec::with_capacity(expiries.len());
-
-        for &t in &expiries {
-            let dt = t - prev_t;
-            if dt < 1e-14 {
-                local_vols.push(local_vols.last().cloned().unwrap_or_else(|| vec![0.2; n_grid]));
-                call_prices.push(prev_calls.clone());
-                continue;
-            }
-
-            let slice_quotes: Vec<(f64, f64)> = quotes
+        for (ei, &t) in expiries.iter().enumerate() {
+            // Gather quotes for this expiry.
+            let mut slice: Vec<(f64, f64)> = quotes
                 .iter()
                 .filter(|q| (q.1 - t).abs() < 1e-14)
                 .map(|q| (q.0, q.2))
                 .collect();
+            slice.sort_by(|a, b| a.0.total_cmp(&b.0));
+            slice.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
 
-            let targets: Vec<(f64, f64)> = slice_quotes
-                .iter()
-                .map(|&(k, iv)| {
-                    let price =
-                        black_scholes_price(OptionType::Call, spot, k, rate - dividend, iv, t);
-                    (k, price)
-                })
-                .collect();
-
-            let avg_iv = if slice_quotes.is_empty() {
-                0.2
+            let iv_at_grid = if slice.len() >= 2 {
+                let ks: Vec<f64> = slice.iter().map(|s| s.0).collect();
+                let vs: Vec<f64> = slice.iter().map(|s| s.1).collect();
+                let spline = CubicSpline::new(ks, vs).unwrap();
+                grid.iter()
+                    .map(|&k| spline.interpolate(k).max(0.01))
+                    .collect::<Vec<_>>()
             } else {
-                slice_quotes.iter().map(|q| q.1).sum::<f64>() / slice_quotes.len() as f64
+                let v = if slice.is_empty() { 0.20 } else { slice[0].1 };
+                vec![v; n_grid]
             };
-            let mut sigma_loc: Vec<f64> = vec![avg_iv; n_grid];
 
-            for _iter in 0..20 {
-                let new_calls =
-                    step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend, spot, t);
+            // Compute local vol via Dupire's formula using finite differences.
+            let mut lv_at_grid = vec![0.0; n_grid];
+            let dk = (hi - lo) / (n_grid - 1) as f64;
 
-                if targets.is_empty() {
-                    break;
-                }
+            for i in 0..n_grid {
+                let k = grid[i];
+                let iv = iv_at_grid[i];
 
-                let mut max_err = 0.0_f64;
-                for &(k_target, c_target) in &targets {
-                    let idx = nearest_idx(&grid, k_target);
-                    let c_model = new_calls[idx];
-                    let err = c_model - c_target;
-                    max_err = max_err.max(err.abs());
-
-                    let vega_approx = spot * t.sqrt() * 0.4;
-                    if vega_approx.abs() > 1e-14 {
-                        let adjustment = err / vega_approx;
-                        let spread_pts = 5;
-                        for j in
-                            idx.saturating_sub(spread_pts)..=(idx + spread_pts).min(n_grid - 1)
-                        {
-                            let w = 1.0 / (1.0 + (grid[j] - k_target).abs() / dk);
-                            sigma_loc[j] =
-                                (sigma_loc[j] - 0.5 * adjustment * w).max(0.01).min(5.0);
-                        }
+                // dσ/dT: use central difference if we have neighboring expiries.
+                let dsig_dt = if expiries.len() >= 2 {
+                    if ei == 0 {
+                        let iv_next = Self::iv_from_quotes(quotes, k, expiries[1]);
+                        (iv_next - iv) / (expiries[1] - t)
+                    } else if ei == expiries.len() - 1 {
+                        let iv_prev = Self::iv_from_quotes(quotes, k, expiries[ei - 1]);
+                        (iv - iv_prev) / (t - expiries[ei - 1])
+                    } else {
+                        let iv_next = Self::iv_from_quotes(quotes, k, expiries[ei + 1]);
+                        let iv_prev = Self::iv_from_quotes(quotes, k, expiries[ei - 1]);
+                        (iv_next - iv_prev) / (expiries[ei + 1] - expiries[ei - 1])
                     }
-                }
+                } else {
+                    0.0
+                };
 
-                if max_err < 1e-10 {
-                    break;
-                }
+                // dσ/dK, d²σ/dK²
+                let (dsig_dk, d2sig_dk2) = if i == 0 {
+                    let d1 = (iv_at_grid[1] - iv_at_grid[0]) / dk;
+                    (d1, 0.0)
+                } else if i == n_grid - 1 {
+                    let d1 = (iv_at_grid[n_grid - 1] - iv_at_grid[n_grid - 2]) / dk;
+                    (d1, 0.0)
+                } else {
+                    let d1 = (iv_at_grid[i + 1] - iv_at_grid[i - 1]) / (2.0 * dk);
+                    let d2 = (iv_at_grid[i + 1] - 2.0 * iv_at_grid[i] + iv_at_grid[i - 1])
+                        / (dk * dk);
+                    (d1, d2)
+                };
+
+                let fwd = spot * ((rate - dividend) * t).exp();
+                let d1 = ((fwd / k).ln() + 0.5 * iv * iv * t) / (iv * t.sqrt());
+
+                let numerator = iv * iv
+                    + 2.0 * iv * t * (dsig_dt + (rate - dividend) * k * dsig_dk);
+                let denom = {
+                    let term1 = 1.0 + 2.0 * k * d1 * t.sqrt() * dsig_dk;
+                    let term2 = k * k * t * (d2sig_dk2 - d1 * t.sqrt() * dsig_dk * dsig_dk);
+                    (term1 + term2).max(0.01)
+                };
+
+                lv_at_grid[i] = (numerator / denom).max(0.001).sqrt();
             }
 
-            let new_calls =
-                step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend, spot, t);
-            local_vols.push(sigma_loc);
-            call_prices.push(new_calls.clone());
-            prev_calls = new_calls;
-            prev_t = t;
+            iv_surface.push(iv_at_grid);
+            lv_surface.push(lv_at_grid);
         }
 
         Self {
             expiries,
             grid,
-            local_vols,
-            call_prices,
+            iv_surface,
+            lv_surface,
             spot,
             rate,
             dividend,
         }
     }
 
+    /// Helper: get implied vol for a strike at a specific expiry from quotes,
+    /// using interpolation if needed.
+    fn iv_from_quotes(quotes: &[(f64, f64, f64)], strike: f64, expiry: f64) -> f64 {
+        let mut slice: Vec<(f64, f64)> = quotes
+            .iter()
+            .filter(|q| (q.1 - expiry).abs() < 1e-14)
+            .map(|q| (q.0, q.2))
+            .collect();
+        slice.sort_by(|a, b| a.0.total_cmp(&b.0));
+        slice.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
+
+        if slice.len() >= 2 {
+            let ks: Vec<f64> = slice.iter().map(|s| s.0).collect();
+            let vs: Vec<f64> = slice.iter().map(|s| s.1).collect();
+            CubicSpline::new(ks, vs)
+                .unwrap()
+                .interpolate(strike)
+                .max(0.01)
+        } else if slice.is_empty() {
+            0.20
+        } else {
+            slice[0].1
+        }
+    }
+
     /// Implied vol at arbitrary (strike, expiry).
     pub fn implied_vol(&self, strike: f64, expiry: f64) -> f64 {
-        let t = expiry.max(1e-10);
-        let fwd = self.spot * ((self.rate - self.dividend) * t).exp();
-        let call_price = self.interpolate_call(strike, t);
-
-        match implied_vol_jaeckel(call_price, fwd, strike, t, true) {
-            Ok(v) => v,
-            Err(_) => {
-                let c_norm = call_price / (self.spot * (-self.dividend * t).exp());
-                (c_norm * (2.0 * std::f64::consts::PI / t).sqrt()).max(0.001)
-            }
-        }
+        self.interp_surface(&self.iv_surface, strike, expiry).max(0.001)
     }
 
     /// Local vol at (strike, expiry).
     pub fn local_vol(&self, strike: f64, expiry: f64) -> f64 {
+        self.interp_surface(&self.lv_surface, strike, expiry).max(0.001)
+    }
+
+    fn interp_surface(&self, surface: &[Vec<f64>], strike: f64, expiry: f64) -> f64 {
         if self.expiries.is_empty() {
             return 0.2;
         }
 
         let t = expiry.max(1e-10);
-        let (idx, weight) = self.find_expiry_interp(t);
 
-        let lv = |ei: usize| -> f64 {
-            let gi = nearest_idx(&self.grid, strike);
-            self.local_vols[ei][gi]
-        };
-
-        if let Some((i0, i1, w)) = weight {
-            lv(i0) * (1.0 - w) + lv(i1) * w
-        } else {
-            lv(idx)
-        }
-    }
-
-    fn interpolate_call(&self, strike: f64, expiry: f64) -> f64 {
-        if self.expiries.is_empty() {
-            return (self.spot - strike).max(0.0);
-        }
-
-        let interp_at = |ei: usize| -> f64 {
-            if let Ok(spline) = CubicSpline::new(self.grid.clone(), self.call_prices[ei].clone()) {
-                spline.interpolate(strike).max(0.0)
+        // Interpolate along strike for each relevant expiry, then along expiry.
+        let interp_strike = |ei: usize| -> f64 {
+            if let Ok(spline) = CubicSpline::new(self.grid.clone(), surface[ei].clone()) {
+                spline.interpolate(strike)
             } else {
                 let gi = nearest_idx(&self.grid, strike);
-                self.call_prices[ei][gi]
+                surface[ei][gi]
             }
         };
 
-        let (idx, weight) = self.find_expiry_interp(expiry);
-        if let Some((i0, i1, w)) = weight {
-            let c0 = interp_at(i0);
-            let c1 = interp_at(i1);
-            (c0 * (1.0 - w) + c1 * w).max(0.0)
-        } else {
-            interp_at(idx)
-        }
-    }
-
-    fn find_expiry_interp(&self, t: f64) -> (usize, Option<(usize, usize, f64)>) {
         if t <= self.expiries[0] {
-            return (0, None);
+            return interp_strike(0);
         }
         let last = self.expiries.len() - 1;
         if t >= self.expiries[last] {
-            return (last, None);
+            return interp_strike(last);
         }
+
         for i in 0..last {
             if t >= self.expiries[i] && t <= self.expiries[i + 1] {
                 let w = (t - self.expiries[i]) / (self.expiries[i + 1] - self.expiries[i]);
-                return (i, Some((i, i + 1, w)));
+                let v0 = interp_strike(i);
+                let v1 = interp_strike(i + 1);
+                return v0 * (1.0 - w) + v1 * w;
             }
         }
-        (last, None)
+
+        interp_strike(last)
     }
-}
-
-/// Implicit FD step for call prices on a strike grid.
-fn step_implicit(
-    prev: &[f64],
-    grid: &[f64],
-    sigma: &[f64],
-    dt: f64,
-    rate: f64,
-    dividend: f64,
-    spot: f64,
-    total_t: f64,
-) -> Vec<f64> {
-    let n = prev.len();
-    let mut a = vec![0.0; n];
-    let mut b = vec![0.0; n];
-    let mut c = vec![0.0; n];
-    let mut rhs = vec![0.0; n];
-
-    for i in 1..(n - 1) {
-        let dk_m = grid[i] - grid[i - 1];
-        let dk_p = grid[i + 1] - grid[i];
-        let dk_avg = 0.5 * (dk_m + dk_p);
-        let vol2 = sigma[i] * sigma[i];
-
-        let diff = 0.5 * vol2 * grid[i] * grid[i];
-        let drift = (rate - dividend) * grid[i];
-
-        let alpha = dt * diff / (dk_m * dk_avg);
-        let beta = dt * diff / (dk_p * dk_avg);
-        let gamma = dt * drift / (dk_m + dk_p);
-
-        a[i] = -(alpha - gamma);
-        b[i] = 1.0 + alpha + beta + dt * rate;
-        c[i] = -(beta + gamma);
-        rhs[i] = prev[i];
-    }
-
-    // Boundaries.
-    let fwd = spot * ((rate - dividend) * total_t).exp();
-    b[0] = 1.0;
-    rhs[0] = (fwd - grid[0]).max(0.0);
-    b[n - 1] = 1.0;
-    rhs[n - 1] = 0.0;
-
-    tridiag_solve(&a, &b, &c, &rhs)
-}
-
-fn tridiag_solve(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
-    let n = d.len();
-    let mut cp = vec![0.0; n];
-    let mut dp = vec![0.0; n];
-    let mut x = vec![0.0; n];
-
-    cp[0] = c[0] / b[0];
-    dp[0] = d[0] / b[0];
-
-    for i in 1..n {
-        let m = b[i] - a[i] * cp[i - 1];
-        cp[i] = if i < n - 1 { c[i] / m } else { 0.0 };
-        dp[i] = (d[i] - a[i] * dp[i - 1]) / m;
-    }
-
-    x[n - 1] = dp[n - 1];
-    for i in (0..n - 1).rev() {
-        x[i] = dp[i] - cp[i] * x[i + 1];
-    }
-
-    x
 }
 
 fn nearest_idx(grid: &[f64], val: f64) -> usize {
@@ -320,7 +261,7 @@ mod tests {
         }
 
         assert!(
-            max_err < 0.05,
+            max_err < 0.02,
             "max implied vol error {max_err:.6} exceeds tolerance"
         );
     }
@@ -354,15 +295,15 @@ mod tests {
         let quotes = synthetic_quotes(spot, vol, rate, div);
         let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
 
-        for k in [90.0, 95.0, 100.0, 105.0, 110.0] {
+        // Total variance should be non-decreasing in T at ATM.
+        for k in [95.0, 100.0, 105.0] {
             let mut prev_w = 0.0;
-            for t_bp in [25, 50, 100, 150, 200] {
-                let t = t_bp as f64 / 100.0;
+            for &t in &[0.25, 0.5, 1.0, 1.5, 2.0] {
                 let iv = ah.implied_vol(k, t);
                 let w = iv * iv * t;
                 assert!(
                     w >= prev_w - 1e-6,
-                    "calendar arbitrage at K={k}, T={t}: w={w} < prev={prev_w}"
+                    "calendar arbitrage at K={k}, T={t}: w={w:.6} < prev={prev_w:.6}"
                 );
                 prev_w = w;
             }

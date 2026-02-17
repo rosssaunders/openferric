@@ -234,9 +234,9 @@ mod tests {
     use super::*;
 
     fn synthetic_data() -> (Vec<(f64, f64, f64)>, Vec<(f64, f64)>) {
-        let spot = 100.0;
-        let rate = 0.02;
-        let vol = 0.20;
+        let spot: f64 = 100.0;
+        let rate: f64 = 0.02;
+        let vol: f64 = 0.20;
         let expiries = [0.25, 0.5, 1.0, 2.0];
         let offsets = [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3];
 
