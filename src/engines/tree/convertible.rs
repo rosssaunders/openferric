@@ -126,26 +126,34 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
         let disc = (-(market.rate + self.credit_spread) * dt).exp();
         let coupon = instrument.face_value * instrument.coupon_rate * dt;
 
+        // Multiplicative recurrence: spot * u^j * d^(n-j) = spot * d^n * (u/d)^j
+        let ratio = u / d;
+        let one_minus_p = 1.0 - p;
+
         let mut values = vec![0.0_f64; self.steps + 1];
-        for (j, value) in values.iter_mut().enumerate() {
-            let st = market.spot * u.powf(j as f64) * d.powf((self.steps - j) as f64);
-            let continuation = instrument.face_value;
-            let conversion = instrument.conversion_ratio * st;
-            *value = apply_embedded_features(
-                continuation,
-                conversion,
-                instrument.put_price,
-                instrument.call_price,
-            );
+        {
+            let mut st = market.spot * d.powi(self.steps as i32);
+            for value in values.iter_mut() {
+                let continuation = instrument.face_value;
+                let conversion = instrument.conversion_ratio * st;
+                *value = apply_embedded_features(
+                    continuation,
+                    conversion,
+                    instrument.put_price,
+                    instrument.call_price,
+                );
+                st *= ratio;
+            }
         }
 
         let mut delta_up = if self.steps == 1 { values[1] } else { 0.0 };
         let mut delta_down = if self.steps == 1 { values[0] } else { 0.0 };
 
+        let mut base = market.spot * d.powi((self.steps - 1) as i32);
         for i in (0..self.steps).rev() {
+            let mut st = base;
             for j in 0..=i {
-                let continuation = disc * (p * values[j + 1] + (1.0 - p) * values[j] + coupon);
-                let st = market.spot * u.powf(j as f64) * d.powf((i - j) as f64);
+                let continuation = disc * (p * values[j + 1] + one_minus_p * values[j] + coupon);
                 let conversion = instrument.conversion_ratio * st;
                 values[j] = apply_embedded_features(
                     continuation,
@@ -153,12 +161,14 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
                     instrument.put_price,
                     instrument.call_price,
                 );
+                st *= ratio;
             }
 
             if i == 1 {
                 delta_down = values[0];
                 delta_up = values[1];
             }
+            base *= u;
         }
 
         let s_up = market.spot * u;

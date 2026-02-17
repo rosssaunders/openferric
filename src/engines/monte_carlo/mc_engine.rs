@@ -157,6 +157,9 @@ pub fn mc_european_with_arena(
     let sqrt_dt = dt.sqrt();
     let mu = market.rate - market.dividend_yield;
     let discount = (-market.rate * instrument.expiry).exp();
+    // Exact log-Euler GBM step: always positive, no clamp needed.
+    let drift = (mu - 0.5 * vol * vol) * dt;
+    let diffusion = vol * sqrt_dt;
 
     let _ = arena.path_slice(n_steps + 1);
     let _ = arena.payoff_slice(n_paths);
@@ -177,8 +180,7 @@ pub fn mc_european_with_arena(
         for j in 0..n_steps {
             let z = sample_standard_normal(&mut rng);
             let _ = sample_standard_normal(&mut rng);
-            s += mu * s * dt + vol * s * sqrt_dt * z;
-            s = s.max(1.0e-12);
+            s *= (drift + diffusion * z).exp();
             path[j + 1] = s;
         }
 

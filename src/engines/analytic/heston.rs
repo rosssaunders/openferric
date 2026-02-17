@@ -1,4 +1,5 @@
 use std::f64::consts::PI;
+use std::sync::LazyLock;
 
 use num_complex::Complex64;
 
@@ -114,12 +115,12 @@ impl HestonEngine {
         // Gatheral/Lewis log-strike integral:
         // C = e^{-rT} * (F - sqrt(F*K)/pi * int_0^inf Re[e^{i u ln(F/K)} psi(u-i/2)/(u^2+1/4)] du)
         // where psi is the characteristic function of ln(S_T/F).
-        let (nodes, weights) = gauss_laguerre_32();
+        let (nodes, _weights) = gauss_laguerre_32();
+        let adjusted_weights = &*GL32_ADJUSTED_WEIGHTS;
         let mut integral = 0.0;
 
         for idx in 0..32 {
             let x = nodes[idx];
-            let w = weights[idx];
             let u = Complex64::new(x, 0.0);
             let shifted = u - half_i;
 
@@ -129,8 +130,8 @@ impl HestonEngine {
             let denominator = u * u + 0.25;
             let integrand = (numerator / denominator).re;
 
-            // Transform plain integral to Gauss-Laguerre form by inserting exp(x).
-            integral += w * x.exp() * integrand;
+            // Use precomputed w * exp(x) to avoid 32 exp() calls per pricing invocation.
+            integral += adjusted_weights[idx] * integrand;
         }
 
         let call = df_r * (forward - (forward * strike).sqrt() * integral / PI);
@@ -209,6 +210,16 @@ impl PricingEngine<VanillaOption> for HestonEngine {
 fn gauss_laguerre_32() -> (&'static [f64; 32], &'static [f64; 32]) {
     (&GL32_NODES, &GL32_WEIGHTS)
 }
+
+/// Pre-computed weights * exp(node) for Gauss-Laguerre quadrature.
+/// Computed once on first access, eliminates 32 exp() calls per Heston pricing invocation.
+static GL32_ADJUSTED_WEIGHTS: LazyLock<[f64; 32]> = LazyLock::new(|| {
+    let mut adj = [0.0_f64; 32];
+    for i in 0..32 {
+        adj[i] = GL32_WEIGHTS[i] * GL32_NODES[i].exp();
+    }
+    adj
+});
 
 const GL32_NODES: [f64; 32] = [
     4.448_936_583_326_695e-2,

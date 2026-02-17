@@ -89,21 +89,17 @@ fn boundary_values(
     }
 }
 
-fn solve_tridiagonal(
+/// In-place tridiagonal solve using pre-allocated scratch buffers.
+fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
     upper: &[f64],
     rhs: &[f64],
-) -> Result<Vec<f64>, PricingError> {
+    c_star: &mut [f64],
+    d_star: &mut [f64],
+    x: &mut [f64],
+) -> Result<(), PricingError> {
     let n = diag.len();
-    if n == 0 || lower.len() != n || upper.len() != n || rhs.len() != n {
-        return Err(PricingError::NumericalError(
-            "tridiagonal solver dimension mismatch".to_string(),
-        ));
-    }
-
-    let mut c_star = vec![0.0_f64; n];
-    let mut d_star = vec![0.0_f64; n];
 
     let denom0 = diag[0];
     if denom0.abs() <= 1.0e-14 || !denom0.is_finite() {
@@ -125,12 +121,11 @@ fn solve_tridiagonal(
         d_star[i] = (rhs[i] - lower[i] * d_star[i - 1]) / denom;
     }
 
-    let mut x = vec![0.0_f64; n];
     x[n - 1] = d_star[n - 1];
     for i in (0..(n - 1)).rev() {
         x[i] = d_star[i] - c_star[i] * x[i + 1];
     }
-    Ok(x)
+    Ok(())
 }
 
 impl PricingEngine<VanillaOption> for ImplicitFdEngine {
@@ -209,6 +204,20 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
             lhs_upper[k] = -dt * c;
         }
 
+        // Pre-allocate all scratch buffers once to eliminate per-timestep allocations.
+        let mut rhs_buf = vec![0.0_f64; interior_n];
+        let mut solve_lower = vec![0.0_f64; interior_n];
+        let mut solve_upper = vec![0.0_f64; interior_n];
+        let mut c_star = vec![0.0_f64; interior_n];
+        let mut d_star = vec![0.0_f64; interior_n];
+        let mut interior = vec![0.0_f64; interior_n];
+        let mut next_values = vec![0.0_f64; n_s + 1];
+
+        solve_lower.copy_from_slice(&lhs_lower);
+        solve_lower[0] = 0.0;
+        solve_upper.copy_from_slice(&lhs_upper);
+        solve_upper[interior_n - 1] = 0.0;
+
         for n in (0..n_t).rev() {
             let tau_new = instrument.expiry - n as f64 * dt;
             let (lower_bv, upper_bv) = boundary_values(
@@ -221,22 +230,22 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 tau_new,
             );
 
-            let mut rhs = vec![0.0_f64; interior_n];
             for k in 0..interior_n {
-                rhs[k] = values[k + 1];
+                rhs_buf[k] = values[k + 1];
             }
+            rhs_buf[0] -= lhs_lower[0] * lower_bv;
+            rhs_buf[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_bv;
 
-            rhs[0] -= lhs_lower[0] * lower_bv;
-            rhs[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_bv;
+            solve_tridiagonal_inplace(
+                &solve_lower,
+                &lhs_diag,
+                &solve_upper,
+                &rhs_buf,
+                &mut c_star,
+                &mut d_star,
+                &mut interior,
+            )?;
 
-            let mut lower = lhs_lower.clone();
-            let mut upper = lhs_upper.clone();
-            lower[0] = 0.0;
-            upper[interior_n - 1] = 0.0;
-
-            let interior = solve_tridiagonal(&lower, &lhs_diag, &upper, &rhs)?;
-
-            let mut next_values = vec![0.0_f64; n_s + 1];
             next_values[0] = lower_bv;
             next_values[n_s] = upper_bv;
             for (k, v) in interior.iter().enumerate() {
@@ -257,7 +266,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 }
             }
 
-            values = next_values;
+            values.copy_from_slice(&next_values);
         }
 
         let price = if market.spot <= 0.0 {

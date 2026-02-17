@@ -153,6 +153,26 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
             *v = intrinsic(instrument.option_type, s, instrument.strike);
         }
 
+        // Pre-compute spatial coefficients once (they are constant across timesteps).
+        // Previous code recomputed alpha, beta, a, b, c per space point per timestep.
+        let mut coeff_a = vec![0.0_f64; n_s + 1];
+        let mut coeff_b = vec![0.0_f64; n_s + 1];
+        let mut coeff_c = vec![0.0_f64; n_s + 1];
+        let ds_sq = ds * ds;
+        let half_vol_sq = 0.5 * vol * vol;
+        let half_drift_ds = (market.rate - market.dividend_yield) / (2.0 * ds);
+        for i in 1..n_s {
+            let s = i as f64 * ds;
+            let alpha = half_vol_sq * s * s / ds_sq;
+            let beta = half_drift_ds * s;
+            coeff_a[i] = alpha - beta;
+            coeff_b[i] = -2.0 * alpha - market.rate;
+            coeff_c[i] = alpha + beta;
+        }
+
+        // Double-buffer to eliminate per-timestep allocation.
+        let mut next_values = vec![0.0_f64; n_s + 1];
+
         for n in (0..actual_steps).rev() {
             let tau_new = instrument.expiry - n as f64 * dt;
             let (lower_bv, upper_bv) = boundary_values(
@@ -165,20 +185,14 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 tau_new,
             );
 
-            let mut next_values = vec![0.0_f64; n_s + 1];
             next_values[0] = lower_bv;
             next_values[n_s] = upper_bv;
 
             for i in 1..n_s {
-                let s = i as f64 * ds;
-                let alpha = 0.5 * vol * vol * s * s / (ds * ds);
-                let beta = (market.rate - market.dividend_yield) * s / (2.0 * ds);
-
-                let a = alpha - beta;
-                let b = -2.0 * alpha - market.rate;
-                let c = alpha + beta;
-
-                next_values[i] = values[i] + dt * (a * values[i - 1] + b * values[i] + c * values[i + 1]);
+                next_values[i] = values[i]
+                    + dt * (coeff_a[i] * values[i - 1]
+                        + coeff_b[i] * values[i]
+                        + coeff_c[i] * values[i + 1]);
             }
 
             let can_exercise = match &instrument.exercise {
@@ -195,7 +209,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 }
             }
 
-            values = next_values;
+            values.copy_from_slice(&next_values);
         }
 
         let price = if market.spot <= 0.0 {

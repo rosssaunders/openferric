@@ -27,14 +27,17 @@ impl PathGenerator for GbmPathGenerator {
     fn generate_from_normals(&self, normals_1: &[f64], _normals_2: &[f64]) -> Vec<f64> {
         let dt = self.maturity / self.steps as f64;
         let sqrt_dt = dt.sqrt();
+        // Exact log-Euler (exponential) GBM step: S_{t+dt} = S_t * exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z).
+        // Always positive (no clamp needed), eliminates bias from Euler discretization.
+        let drift = (self.model.mu - 0.5 * self.model.sigma * self.model.sigma) * dt;
+        let diffusion = self.model.sigma * sqrt_dt;
 
         let mut path = Vec::with_capacity(self.steps + 1);
         let mut s = self.s0;
         path.push(s);
 
         for &z in normals_1.iter().take(self.steps) {
-            s += self.model.mu * s * dt + self.model.sigma * s * sqrt_dt * z;
-            s = s.max(1e-12);
+            s *= (drift + diffusion * z).exp();
             path.push(s);
         }
 
@@ -172,9 +175,14 @@ impl MonteCarloEngine {
             let y = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
 
             if self.antithetic {
-                let z1a: Vec<f64> = z1.iter().map(|v| -v).collect();
-                let z2a: Vec<f64> = z2.iter().map(|v| -v).collect();
-                let path_a = generator.generate_from_normals(&z1a, &z2a);
+                // Negate in-place instead of allocating new vectors.
+                for v in z1.iter_mut() {
+                    *v = -*v;
+                }
+                for v in z2.iter_mut() {
+                    *v = -*v;
+                }
+                let path_a = generator.generate_from_normals(&z1, &z2);
                 let xa = payoff(&path_a);
                 let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path_a));
                 (0.5 * (x + xa), 0.5 * (y + ya))

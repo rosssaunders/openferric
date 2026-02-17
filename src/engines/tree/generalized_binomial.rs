@@ -86,28 +86,37 @@ impl PricingEngine<VanillaOption> for GeneralizedBinomialEngine {
         }
         let disc = (-market.rate * dt).exp();
 
+        // Multiplicative recurrence: spot * u^j * d^(n-j) = spot * d^n * (u/d)^j
+        let ratio = u / d;
+        let one_minus_p = 1.0 - p;
+
         let mut values = vec![0.0_f64; self.steps + 1];
-        for (j, value) in values.iter_mut().enumerate().take(self.steps + 1) {
-            let st = market.spot * u.powf(j as f64) * d.powf((self.steps - j) as f64);
-            *value = intrinsic(instrument.option_type, st, instrument.strike);
+        {
+            let mut st = market.spot * d.powi(self.steps as i32);
+            for j in 0..=self.steps {
+                values[j] = intrinsic(instrument.option_type, st, instrument.strike);
+                st *= ratio;
+            }
         }
 
-        for i in (0..self.steps).rev() {
-            for j in 0..=i {
-                let continuation = disc * (p * values[j + 1] + (1.0 - p) * values[j]);
+        let is_american = matches!(instrument.exercise, ExerciseStyle::American);
 
-                let can_exercise = match &instrument.exercise {
-                    ExerciseStyle::European => false,
-                    ExerciseStyle::American => true,
-                    ExerciseStyle::Bermudan { .. } => false,
-                };
-
-                if can_exercise {
-                    let st = market.spot * u.powf(j as f64) * d.powf((i - j) as f64);
+        if is_american {
+            let mut base = market.spot * d.powi((self.steps - 1) as i32);
+            for i in (0..self.steps).rev() {
+                let mut st = base;
+                for j in 0..=i {
+                    let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[j] = continuation.max(exercise);
-                } else {
-                    values[j] = continuation;
+                    st *= ratio;
+                }
+                base *= u;
+            }
+        } else {
+            for i in (0..self.steps).rev() {
+                for j in 0..=i {
+                    values[j] = disc * (p * values[j + 1] + one_minus_p * values[j]);
                 }
             }
         }
