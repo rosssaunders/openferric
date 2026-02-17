@@ -5,6 +5,7 @@ pub mod kva;
 pub mod mva;
 pub mod portfolio;
 pub mod var;
+pub mod wrong_way_risk;
 pub mod xva;
 
 pub use fva::{CsaTerms, fva_from_profile, funding_exposure_profile};
