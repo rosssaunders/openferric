@@ -540,11 +540,37 @@
         const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
         if (!isFinite(forward) || forward <= 0) continue;
 
-        // Build per-quote data
-        const qByK = [];
+        // Build per-quote data, filtering illiquid/suspect points
+        const qByKRaw = [];
         for (const q of quotes) {
           const k = Math.log(q.strike / forward);
-          qByK.push({ k, q });
+          qByKRaw.push({ k, q });
+        }
+
+        // Filter: require positive mark_iv, positive open interest or bid_iv > 0
+        // For short expiries (< 7d), also clip extreme wings where bid-ask is very wide
+        const qByK = qByKRaw.filter(({ k, q }) => {
+          if (!q.mark_iv || q.mark_iv <= 0) return false;
+          // Remove points with zero bid (no real market)
+          if (q.bid_iv !== undefined && q.bid_iv <= 0 && q.open_interest <= 0) return false;
+          // Remove extreme wings with wide bid-ask spread (> 50% of mid)
+          if (q.bid_iv > 0 && q.ask_iv > 0) {
+            const spread = q.ask_iv - q.bid_iv;
+            const mid = (q.ask_iv + q.bid_iv) / 2;
+            if (mid > 0 && spread / mid > 0.5) return false;
+          }
+          // For very short expiries, restrict to near-ATM strikes
+          if (T < 7/365 && Math.abs(k) > 0.15) return false;
+          if (T < 30/365 && Math.abs(k) > 0.5) return false;
+          return true;
+        });
+
+        // If filtering removed too many points, fall back to raw (need at least 3 for SVI)
+        if (qByK.length < 3) {
+          qByK.length = 0;
+          for (const item of qByKRaw) {
+            if (item.q.mark_iv > 0) qByK.push(item);
+          }
         }
 
         // ATM vol (closest to k=0)
@@ -589,20 +615,28 @@
           const bf25 = 0.5 * (callVol + putVol) - atmVol;
           params = { atmVol, rr25, bf25 };
         } else {
-          // SVI (default)
+          // SVI (default) — weighted by open interest
           modelType = 'svi';
           const points = [];
+          // Weight points by open interest: repeat high-OI points more
+          const maxOi = Math.max(1, ...qByK.map(({ q }) => q.open_interest || 0));
           for (const { k, q } of qByK) {
-            points.push(k, q.mark_iv * q.mark_iv * T);
+            const w = q.mark_iv * q.mark_iv * T;
+            const oi = q.open_interest || 0;
+            // Each point gets 1 + floor(oi/maxOi * 4) repetitions (1-5x weight)
+            const reps = 1 + Math.floor((oi / maxOi) * 4);
+            for (let r = 0; r < reps; r++) {
+              points.push(k, w);
+            }
           }
           const atmW = Math.max(atmVol * atmVol * T, 1e-6);
 
           if (wasmReady) {
             const flat = new Float64Array(points);
-            const wp = wasm.calibrate_svi_wasm(flat, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 600, 0.01);
+            const wp = wasm.calibrate_svi_wasm(flat, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 2000, 0.005);
             params = { a: wp.a, b: wp.b, rho: wp.rho, m: wp.m, sigma: wp.sigma };
           } else {
-            params = calibrateSviFallback(points, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 600, 0.01);
+            params = calibrateSviFallback(points, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 2000, 0.005);
           }
         }
 
