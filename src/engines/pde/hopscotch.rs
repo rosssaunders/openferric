@@ -134,6 +134,9 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
         let dt = instrument.expiry / n_t as f64;
         let s_max = self.s_max_multiplier * instrument.strike;
         let ds = s_max / n_s as f64;
+        // Pre-compute reciprocals to replace division with multiplication in coefficient setup.
+        let inv_ds_sq = 1.0 / (ds * ds);
+        let inv_2ds = 1.0 / (2.0 * ds);
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
         let bermudan_flags = match &instrument.exercise {
@@ -156,15 +159,28 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
         let mut b_coeff = vec![0.0_f64; interior_n];
         let mut c_coeff = vec![0.0_f64; interior_n];
 
+        let half_vol_sq = 0.5 * vol * vol;
+        let drift = market.rate - market.dividend_yield;
         for k in 0..interior_n {
             let i = k + 1;
             let s = i as f64 * ds;
-            let alpha = 0.5 * vol * vol * s * s / (ds * ds);
-            let beta = (market.rate - market.dividend_yield) * s / (2.0 * ds);
+            let alpha = half_vol_sq * s * s * inv_ds_sq;
+            let beta = drift * s * inv_2ds;
 
             a_coeff[k] = alpha - beta;
             b_coeff[k] = -2.0 * alpha - market.rate;
             c_coeff[k] = alpha + beta;
+        }
+
+        // Pre-compute dt*coefficients and implicit solver reciprocals to eliminate
+        // per-timestep multiplication/division.
+        let mut dt_a = vec![0.0_f64; interior_n];
+        let mut dt_c = vec![0.0_f64; interior_n];
+        let mut inv_1_minus_dt_b = vec![0.0_f64; interior_n];
+        for k in 0..interior_n {
+            dt_a[k] = dt * a_coeff[k];
+            dt_c[k] = dt * c_coeff[k];
+            inv_1_minus_dt_b[k] = 1.0 / (1.0 - dt * b_coeff[k]);
         }
 
         // Pre-allocate double-buffer to eliminate per-timestep clone + allocation.
@@ -203,9 +219,9 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
                 let i = k + 1;
                 if (i + n) % 2 != 0 {
                     let rhs = values[i]
-                        + dt * (a_coeff[k] * next_values[i - 1]
-                            + c_coeff[k] * next_values[i + 1]);
-                    next_values[i] = rhs / (1.0 - dt * b_coeff[k]);
+                        + dt_a[k] * next_values[i - 1]
+                        + dt_c[k] * next_values[i + 1];
+                    next_values[i] = rhs * inv_1_minus_dt_b[k];
                 }
             }
 
@@ -223,7 +239,7 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
                 }
             }
 
-            values.copy_from_slice(&next_values);
+            std::mem::swap(&mut values, &mut next_values);
         }
 
         let price = if market.spot <= 0.0 {

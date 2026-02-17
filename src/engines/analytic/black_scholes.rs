@@ -206,13 +206,41 @@ fn bs_price_greeks_with_dividend(
     vol: f64,
     expiry: f64,
 ) -> (f64, Greeks, f64, f64) {
+    // Fused computation: single d1/d2, df_r, df_q, pdf(d1), cdf(d1), cdf(d2).
+    // Previous code called d1_d2() 6 times, exp() 10+ times, and norm_cdf() 8+ times.
     let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
-    let price = bs_price(option_type, spot, strike, rate, dividend_yield, vol, expiry);
-    let delta = bs_delta(option_type, spot, strike, rate, dividend_yield, vol, expiry);
-    let gamma = bs_gamma(spot, strike, rate, dividend_yield, vol, expiry);
-    let vega = bs_vega(spot, strike, rate, dividend_yield, vol, expiry);
-    let theta = bs_theta(option_type, spot, strike, rate, dividend_yield, vol, expiry);
-    let rho = bs_rho(option_type, spot, strike, rate, dividend_yield, vol, expiry);
+    let sqrt_t = expiry.sqrt();
+    let df_r = (-rate * expiry).exp();
+    let df_q = (-dividend_yield * expiry).exp();
+    let nd1 = norm_cdf(d1);
+    let nd2 = norm_cdf(d2);
+    let pdf_d1 = norm_pdf(d1);
+
+    let (price, delta, theta, rho) = match option_type {
+        OptionType::Call => {
+            let price = spot * df_q * nd1 - strike * df_r * nd2;
+            let delta = df_q * nd1;
+            let theta = -spot * df_q * pdf_d1 * vol / (2.0 * sqrt_t)
+                + dividend_yield * spot * df_q * nd1
+                - rate * strike * df_r * nd2;
+            let rho = strike * expiry * df_r * nd2;
+            (price, delta, theta, rho)
+        }
+        OptionType::Put => {
+            let nmd1 = 1.0 - nd1;
+            let nmd2 = 1.0 - nd2;
+            let price = strike * df_r * nmd2 - spot * df_q * nmd1;
+            let delta = df_q * (nd1 - 1.0);
+            let theta = -spot * df_q * pdf_d1 * vol / (2.0 * sqrt_t)
+                - dividend_yield * spot * df_q * nmd1
+                + rate * strike * df_r * nmd2;
+            let rho = -strike * expiry * df_r * nmd2;
+            (price, delta, theta, rho)
+        }
+    };
+
+    let gamma = df_q * pdf_d1 / (spot * vol * sqrt_t);
+    let vega = spot * df_q * pdf_d1 * sqrt_t;
 
     (
         price,

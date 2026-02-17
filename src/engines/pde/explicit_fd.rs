@@ -158,13 +158,13 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
         let mut coeff_a = vec![0.0_f64; n_s + 1];
         let mut coeff_b = vec![0.0_f64; n_s + 1];
         let mut coeff_c = vec![0.0_f64; n_s + 1];
-        let ds_sq = ds * ds;
+        let inv_ds_sq = 1.0 / (ds * ds);
         let half_vol_sq = 0.5 * vol * vol;
-        let half_drift_ds = (market.rate - market.dividend_yield) / (2.0 * ds);
+        let half_drift_inv_ds = (market.rate - market.dividend_yield) / (2.0 * ds);
         for i in 1..n_s {
             let s = i as f64 * ds;
-            let alpha = half_vol_sq * s * s / ds_sq;
-            let beta = half_drift_ds * s;
+            let alpha = half_vol_sq * s * s * inv_ds_sq;
+            let beta = half_drift_inv_ds * s;
             coeff_a[i] = alpha - beta;
             coeff_b[i] = -2.0 * alpha - market.rate;
             coeff_c[i] = alpha + beta;
@@ -209,7 +209,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 }
             }
 
-            values.copy_from_slice(&next_values);
+            std::mem::swap(&mut values, &mut next_values);
         }
 
         let price = if market.spot <= 0.0 {

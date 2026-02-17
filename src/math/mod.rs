@@ -1,4 +1,5 @@
 use std::f64::consts::PI;
+use std::sync::LazyLock;
 
 pub mod arena;
 pub mod fast_norm;
@@ -45,6 +46,11 @@ pub fn normal_inv_cdf(p: f64) -> f64 {
     beasley_springer_moro_inv_cdf(p)
 }
 
+/// Cached 96-point Gauss-Legendre nodes and weights for bivariate CDF integration.
+/// Avoids recomputing GL roots (80 Newton iterations x 96 points) on every call.
+static GL96_CACHED: LazyLock<(Vec<f64>, Vec<f64>)> =
+    LazyLock::new(|| gauss_legendre_nodes_weights(96).unwrap());
+
 /// Bivariate standard normal CDF `P[X <= x, Y <= y]` with correlation `rho`.
 ///
 /// Uses Plackett's identity with one-dimensional Gauss-Legendre integration:
@@ -78,17 +84,23 @@ pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
     }
 
     let base = normal_cdf(x) * normal_cdf(y);
-    let integral = gauss_legendre_integrate(
-        |r| {
+    // Use cached GL96 nodes/weights instead of recomputing per call.
+    let (ref nodes, ref weights) = *GL96_CACHED;
+    let c1 = 0.5 * rho;
+    let c2 = 0.5 * rho;
+    let inv_2pi = 1.0 / (2.0 * PI);
+    let integral: f64 = nodes
+        .iter()
+        .zip(weights.iter())
+        .map(|(&xi, &wi)| {
+            let r = c1 * xi + c2;
             let one_minus_r2 = 1.0 - r * r;
             let exponent = -(x * x - 2.0 * r * x * y + y * y) / (2.0 * one_minus_r2);
-            exponent.exp() / (2.0 * PI * one_minus_r2.sqrt())
-        },
-        0.0,
-        rho,
-        96,
-    )
-    .unwrap_or(0.0);
+            wi * exponent.exp() / (one_minus_r2.sqrt())
+        })
+        .sum::<f64>()
+        * c1
+        * inv_2pi;
 
     (base + integral).clamp(0.0, 1.0)
 }

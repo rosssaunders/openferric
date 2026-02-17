@@ -101,6 +101,10 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         let pm = pm.max(0.0);
         let pd = pd.max(0.0);
         let disc = (-market.rate * dt).exp();
+        // Pre-fuse disc*prob to save multiplies per inner-loop iteration.
+        let disc_pu = disc * pu;
+        let disc_pm = disc * pm * m;
+        let disc_pd = disc * pd;
 
         let bermudan_flags = match &instrument.exercise {
             ExerciseStyle::Bermudan { dates } => Some(bermudan_exercise_steps(
@@ -141,23 +145,16 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
                 // spot * u^j for j = -i..=i: start at spot * d^i, multiply by u.
                 let mut st = market.spot * d.powi(i as i32);
                 for k in 0..cur_width {
-                    // Map: k corresponds to j = k - i, indices in previous layer offset by 1.
-                    let up_idx = k + 2;
-                    let mid_idx = k + 1;
-                    let down_idx = k;
                     let continuation =
-                        disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
+                        disc_pu * values[k + 2] + disc_pm * values[k + 1] + disc_pd * values[k];
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[k] = continuation.max(exercise);
                     st *= u;
                 }
             } else {
                 for k in 0..cur_width {
-                    let up_idx = k + 2;
-                    let mid_idx = k + 1;
-                    let down_idx = k;
                     values[k] =
-                        disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
+                        disc_pu * values[k + 2] + disc_pm * values[k + 1] + disc_pd * values[k];
                 }
             }
         }

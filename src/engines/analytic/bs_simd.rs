@@ -1,6 +1,7 @@
 //! SIMD-accelerated Black-Scholes batch routines with scalar fallback.
 
 /// Scalar Abramowitz & Stegun 7.1.26 normal CDF approximation.
+/// Uses `mul_add` (FMA) Horner evaluation.
 #[inline]
 pub fn normal_cdf_approx(x: f64) -> f64 {
     const P: f64 = 0.231_641_9;
@@ -12,10 +13,13 @@ pub fn normal_cdf_approx(x: f64) -> f64 {
     const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
 
     let z = x.abs();
-    let t = 1.0 / (1.0 + P * z);
-    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
+    let t = 1.0 / P.mul_add(z, 1.0);
+    let poly = A5.mul_add(t, A4)
+        .mul_add(t, A3)
+        .mul_add(t, A2)
+        .mul_add(t, A1) * t;
     let pdf = INV_SQRT_2PI * (-0.5 * z * z).exp();
-    let approx = 1.0 - pdf * poly;
+    let approx = pdf.mul_add(-poly, 1.0);
     if x < 0.0 { 1.0 - approx } else { approx }
 }
 
