@@ -8,6 +8,7 @@ pub mod day_count;
 pub mod fra;
 pub mod futures;
 pub mod inflation;
+pub mod multi_curve;
 pub mod ois;
 pub mod schedule;
 pub mod swap;
