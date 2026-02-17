@@ -615,28 +615,32 @@
           const bf25 = 0.5 * (callVol + putVol) - atmVol;
           params = { atmVol, rr25, bf25 };
         } else {
-          // SVI (default) — weighted by open interest
+          // SVI (default) — fit in implied-variance space (σ²), then convert back
+          // This avoids numerical issues with tiny total variance at short expiries.
           modelType = 'svi';
           const points = [];
           // Weight points by open interest: repeat high-OI points more
           const maxOi = Math.max(1, ...qByK.map(({ q }) => q.open_interest || 0));
           for (const { k, q } of qByK) {
-            const w = q.mark_iv * q.mark_iv * T;
+            // Use implied variance (σ²) NOT total variance (σ²T) for stable numerics
+            const iv2 = q.mark_iv * q.mark_iv;
             const oi = q.open_interest || 0;
-            // Each point gets 1 + floor(oi/maxOi * 4) repetitions (1-5x weight)
             const reps = 1 + Math.floor((oi / maxOi) * 4);
             for (let r = 0; r < reps; r++) {
-              points.push(k, w);
+              points.push(k, iv2);
             }
           }
-          const atmW = Math.max(atmVol * atmVol * T, 1e-6);
+          const atmIv2 = Math.max(atmVol * atmVol, 1e-4);
 
           if (wasmReady) {
             const flat = new Float64Array(points);
-            const wp = wasm.calibrate_svi_wasm(flat, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 2000, 0.005);
-            params = { a: wp.a, b: wp.b, rho: wp.rho, m: wp.m, sigma: wp.sigma };
+            const wp = wasm.calibrate_svi_wasm(flat, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
+            // Convert back: SVI was fit to σ², so params.a etc are in σ² space
+            // To get total variance: w(k) = T * svi(k), so just scale a by T
+            params = { a: wp.a * T, b: wp.b * T, rho: wp.rho, m: wp.m, sigma: wp.sigma };
           } else {
-            params = calibrateSviFallback(points, atmW*0.4, atmW*0.8, -0.2, 0.0, 0.25, 2000, 0.005);
+            const fp = calibrateSviFallback(points, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
+            params = { a: fp.a * T, b: fp.b * T, rho: fp.rho, m: fp.m, sigma: fp.sigma };
           }
         }
 
