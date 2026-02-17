@@ -195,9 +195,24 @@ pub fn uniform_open01(u: f64) -> f64 {
     u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
 }
 
+/// Sample from standard normal distribution using the inverse CDF method.
+/// For Xoshiro256++ and PCG64, `next_f64()` produces values in [0, 1-2^-53]
+/// so the full clamp is unnecessary — only the zero guard is needed.
 #[inline]
 pub fn sample_standard_normal(rng: &mut FastRng) -> f64 {
-    beasley_springer_moro_inv_cdf(uniform_open01(rng.random_f64()))
+    let u = match rng {
+        FastRng::Xoshiro256PlusPlus(r) => {
+            let raw = r.next_f64();
+            // Zero has probability 1/2^53 ≈ 1.1e-16; guard for ln() in tail.
+            if raw == 0.0 { f64::EPSILON } else { raw }
+        }
+        FastRng::Pcg64(r) => {
+            let raw = r.next_f64();
+            if raw == 0.0 { f64::EPSILON } else { raw }
+        }
+        _ => uniform_open01(rng.random_f64()),
+    };
+    beasley_springer_moro_inv_cdf(u)
 }
 
 #[cfg(test)]

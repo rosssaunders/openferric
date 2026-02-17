@@ -9,6 +9,7 @@ pub fn fast_norm_pdf(x: f64) -> f64 {
 /// Hart-style polynomial approximation for the standard normal CDF.
 ///
 /// This form has max absolute error around 7.8e-8.
+/// Uses `mul_add` (FMA) Horner evaluation for the polynomial chain.
 #[inline]
 pub fn hart_norm_cdf(x: f64) -> f64 {
     const P: f64 = 0.231_641_9;
@@ -19,14 +20,17 @@ pub fn hart_norm_cdf(x: f64) -> f64 {
     const A5: f64 = 1.330_274_429;
 
     let z = x.abs();
-    let t = 1.0 / (1.0 + P * z);
-    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
-    let cdf_pos = 1.0 - fast_norm_pdf(z) * poly;
+    let t = 1.0 / P.mul_add(z, 1.0);
+    let poly = A5.mul_add(t, A4)
+        .mul_add(t, A3)
+        .mul_add(t, A2)
+        .mul_add(t, A1) * t;
+    let cdf_pos = fast_norm_pdf(z).mul_add(-poly, 1.0);
 
     // Branch-free sign handling:
     // sign = 0 for x >= 0, sign = 1 for x < 0.
     let sign = (x.to_bits() >> 63) as f64;
-    cdf_pos + sign * (1.0 - 2.0 * cdf_pos)
+    sign.mul_add(1.0 - 2.0 * cdf_pos, cdf_pos)
 }
 
 /// Beasley-Springer-Moro approximation for the inverse standard normal CDF.
@@ -77,17 +81,17 @@ pub fn beasley_springer_moro_inv_cdf(p: f64) -> f64 {
 
     if p < P_LOW {
         let q = (-2.0 * p.ln()).sqrt();
-        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+        C[0].mul_add(q, C[1]).mul_add(q, C[2]).mul_add(q, C[3]).mul_add(q, C[4]).mul_add(q, C[5])
+            / D[0].mul_add(q, D[1]).mul_add(q, D[2]).mul_add(q, D[3]).mul_add(q, 1.0)
     } else if p <= P_HIGH {
         let q = p - 0.5;
         let r = q * q;
-        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
-            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+        A[0].mul_add(r, A[1]).mul_add(r, A[2]).mul_add(r, A[3]).mul_add(r, A[4]).mul_add(r, A[5]) * q
+            / B[0].mul_add(r, B[1]).mul_add(r, B[2]).mul_add(r, B[3]).mul_add(r, B[4]).mul_add(r, 1.0)
     } else {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
-        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+        -C[0].mul_add(q, C[1]).mul_add(q, C[2]).mul_add(q, C[3]).mul_add(q, C[4]).mul_add(q, C[5])
+            / D[0].mul_add(q, D[1]).mul_add(q, D[2]).mul_add(q, D[3]).mul_add(q, 1.0)
     }
 }
 

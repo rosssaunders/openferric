@@ -61,7 +61,9 @@ fn rollback_american_binomial(
     // Multiplicative recurrence replaces O(steps^2) powf() calls with multiplications.
     // spot0 * u^j * d^(steps-j) = spot0 * d^steps * (u/d)^j
     let ratio = u / d;
-    let one_minus_p = 1.0 - p;
+    // Pre-fuse disc*p and disc*(1-p) to save one multiply per inner-loop iteration.
+    let disc_p = disc * p;
+    let disc_1mp = disc * (1.0 - p);
 
     // Terminal payoffs: start at spot0 * d^steps, multiply by ratio each step.
     {
@@ -77,7 +79,7 @@ fn rollback_american_binomial(
     for i in (0..steps).rev() {
         let mut st = base;
         for j in 0..=i {
-            let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
+            let continuation = disc_p * values[j + 1] + disc_1mp * values[j];
             let exercise = intrinsic(option_type, st, strike);
             values[j] = continuation.max(exercise);
             st *= ratio;

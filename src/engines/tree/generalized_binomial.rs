@@ -88,7 +88,9 @@ impl PricingEngine<VanillaOption> for GeneralizedBinomialEngine {
 
         // Multiplicative recurrence: spot * u^j * d^(n-j) = spot * d^n * (u/d)^j
         let ratio = u / d;
-        let one_minus_p = 1.0 - p;
+        // Pre-fuse disc*p and disc*(1-p) to save one multiply per inner-loop iteration.
+        let disc_p = disc * p;
+        let disc_1mp = disc * (1.0 - p);
 
         let mut values = vec![0.0_f64; self.steps + 1];
         {
@@ -106,7 +108,7 @@ impl PricingEngine<VanillaOption> for GeneralizedBinomialEngine {
             for i in (0..self.steps).rev() {
                 let mut st = base;
                 for j in 0..=i {
-                    let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
+                    let continuation = disc_p * values[j + 1] + disc_1mp * values[j];
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[j] = continuation.max(exercise);
                     st *= ratio;
@@ -116,7 +118,7 @@ impl PricingEngine<VanillaOption> for GeneralizedBinomialEngine {
         } else {
             for i in (0..self.steps).rev() {
                 for j in 0..=i {
-                    values[j] = disc * (p * values[j + 1] + one_minus_p * values[j]);
+                    values[j] = disc_p * values[j + 1] + disc_1mp * values[j];
                 }
             }
         }

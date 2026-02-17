@@ -128,7 +128,10 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
 
         // Multiplicative recurrence: spot * u^j * d^(n-j) = spot * d^n * (u/d)^j
         let ratio = u / d;
-        let one_minus_p = 1.0 - p;
+        // Pre-fuse disc*p and disc*(1-p) to save one multiply per inner-loop iteration.
+        let disc_p = disc * p;
+        let disc_1mp = disc * (1.0 - p);
+        let disc_coupon = disc * coupon;
 
         let mut values = vec![0.0_f64; self.steps + 1];
         {
@@ -153,7 +156,7 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
         for i in (0..self.steps).rev() {
             let mut st = base;
             for j in 0..=i {
-                let continuation = disc * (p * values[j + 1] + one_minus_p * values[j] + coupon);
+                let continuation = disc_p * values[j + 1] + disc_1mp * values[j] + disc_coupon;
                 let conversion = instrument.conversion_ratio * st;
                 values[j] = apply_embedded_features(
                     continuation,

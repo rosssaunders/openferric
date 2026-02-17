@@ -90,6 +90,7 @@ fn boundary_values(
 }
 
 /// In-place tridiagonal solve using pre-allocated scratch buffers.
+/// Uses reciprocal multiplication and splits last element to eliminate branch.
 fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
@@ -107,17 +108,31 @@ fn solve_tridiagonal_inplace(
             "tridiagonal solver singular matrix".to_string(),
         ));
     }
-    c_star[0] = if n > 1 { upper[0] / denom0 } else { 0.0 };
-    d_star[0] = rhs[0] / denom0;
+    let inv0 = 1.0 / denom0;
+    c_star[0] = if n > 1 { upper[0] * inv0 } else { 0.0 };
+    d_star[0] = rhs[0] * inv0;
 
-    for i in 1..n {
+    for i in 1..n.saturating_sub(1) {
         let denom = diag[i] - lower[i] * c_star[i - 1];
         if denom.abs() <= 1.0e-14 || !denom.is_finite() {
             return Err(PricingError::NumericalError(
                 "tridiagonal solver singular matrix".to_string(),
             ));
         }
-        c_star[i] = if i < n - 1 { upper[i] / denom } else { 0.0 };
+        let inv = 1.0 / denom;
+        c_star[i] = upper[i] * inv;
+        d_star[i] = (rhs[i] - lower[i] * d_star[i - 1]) * inv;
+    }
+
+    if n > 1 {
+        let i = n - 1;
+        let denom = diag[i] - lower[i] * c_star[i - 1];
+        if denom.abs() <= 1.0e-14 || !denom.is_finite() {
+            return Err(PricingError::NumericalError(
+                "tridiagonal solver singular matrix".to_string(),
+            ));
+        }
+        c_star[i] = 0.0;
         d_star[i] = (rhs[i] - lower[i] * d_star[i - 1]) / denom;
     }
 
@@ -168,6 +183,9 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
         let dt = instrument.expiry / n_t as f64;
         let s_max = self.s_max_multiplier * instrument.strike;
         let ds = s_max / n_s as f64;
+        // Pre-compute reciprocals to replace division with multiplication in coefficient setup.
+        let inv_ds_sq = 1.0 / (ds * ds);
+        let inv_2ds = 1.0 / (2.0 * ds);
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
         let bermudan_flags = match &instrument.exercise {
@@ -189,11 +207,13 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
         let mut lhs_diag = vec![0.0_f64; interior_n];
         let mut lhs_upper = vec![0.0_f64; interior_n];
 
+        let half_vol_sq = 0.5 * vol * vol;
+        let drift = market.rate - market.dividend_yield;
         for k in 0..interior_n {
             let i = k + 1;
             let s = i as f64 * ds;
-            let alpha = 0.5 * vol * vol * s * s / (ds * ds);
-            let beta = (market.rate - market.dividend_yield) * s / (2.0 * ds);
+            let alpha = half_vol_sq * s * s * inv_ds_sq;
+            let beta = drift * s * inv_2ds;
 
             let a = alpha - beta;
             let b = -2.0 * alpha - market.rate;
@@ -266,7 +286,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 }
             }
 
-            values.copy_from_slice(&next_values);
+            std::mem::swap(&mut values, &mut next_values);
         }
 
         let price = if market.spot <= 0.0 {
