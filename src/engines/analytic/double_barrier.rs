@@ -113,7 +113,6 @@ fn double_knock_out_zero_rebate(
     for n in -n_max..=n_max {
         let nf = n as f64;
         // Compute powers via exp(n * ln(u/l)) instead of repeated powf.
-        let u_over_l_n = (nf * ln_u_over_l).exp();
         let l_over_u_n = (-nf * ln_u_over_l).exp();
         let u_over_l_2n = (2.0 * nf * ln_u_over_l).exp();
         let l_over_u_2n = (-2.0 * nf * ln_u_over_l).exp();
