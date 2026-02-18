@@ -44,9 +44,41 @@ fn split_paths(n_paths: usize, n_chunks: usize) -> Vec<usize> {
 /// Instead of simulating per-step, directly samples terminal spot:
 ///   S_T = S_0 * exp(total_drift + total_diffusion * Z)
 /// One exp() per path instead of one per step.
+///
+/// Uses batch SIMD inverse CDF when AVX2+FMA are available: pre-generates
+/// a block of uniform randoms, batch-converts to normals, then processes
+/// the block with vectorized exp + payoff. This amortizes the inv-CDF cost
+/// across 4-wide SIMD lanes and improves cache locality.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn simulate_chunk_exact(
+    option_type: OptionType,
+    strike: f64,
+    spot0: f64,
+    total_drift: f64,
+    total_diffusion: f64,
+    n_paths: usize,
+    chunk_seed: u64,
+) -> (f64, f64, usize) {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe {
+                simulate_chunk_exact_avx2(
+                    option_type, strike, spot0, total_drift, total_diffusion,
+                    n_paths, chunk_seed,
+                )
+            };
+        }
+    }
+    simulate_chunk_exact_scalar(
+        option_type, strike, spot0, total_drift, total_diffusion,
+        n_paths, chunk_seed,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn simulate_chunk_exact_scalar(
     option_type: OptionType,
     strike: f64,
     spot0: f64,
@@ -59,7 +91,6 @@ fn simulate_chunk_exact(
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
-    // Process 8 paths at a time for instruction-level parallelism.
     let mut remaining = n_paths;
     while remaining >= 8 {
         let z0 = sample_standard_normal(&mut rng);
@@ -101,6 +132,105 @@ fn simulate_chunk_exact(
         sum += px;
         sum_sq += px * px;
         remaining -= 1;
+    }
+
+    (sum, sum_sq, n_paths)
+}
+
+/// AVX2+FMA accelerated chunk simulation with batch inverse CDF.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn simulate_chunk_exact_avx2(
+    option_type: OptionType,
+    strike: f64,
+    spot0: f64,
+    total_drift: f64,
+    total_diffusion: f64,
+    n_paths: usize,
+    chunk_seed: u64,
+) -> (f64, f64, usize) {
+    use std::arch::x86_64::*;
+    use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4};
+    use crate::math::fast_rng::Xoshiro256PlusPlus;
+
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(chunk_seed);
+    let mut sum = 0.0_f64;
+    let mut sum_sq = 0.0_f64;
+
+    let spot_v = splat_f64x4(spot0);
+    let drift_v = splat_f64x4(total_drift);
+    let diff_v = splat_f64x4(total_diffusion);
+    let strike_v = splat_f64x4(strike);
+    let zero_v = _mm256_setzero_pd();
+
+    // Block size for batch normal generation (fits in L1 cache).
+    const BLOCK: usize = 512;
+    let mut normals = [0.0_f64; BLOCK];
+
+    let mut remaining = n_paths;
+
+    // Process full blocks of BLOCK paths.
+    while remaining >= BLOCK {
+        crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals);
+
+        let mut j = 0usize;
+        while j + 4 <= BLOCK {
+            let z_vec = _mm256_loadu_pd(normals.as_ptr().add(j));
+            let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
+            let growth = fast_exp_f64x4(exponent);
+            let s_terminal = _mm256_mul_pd(spot_v, growth);
+
+            let payoff_v = match option_type {
+                OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
+                OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+            };
+
+            // Extract and accumulate (horizontal reduction every 4 payoffs).
+            let mut pay = [0.0_f64; 4];
+            _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
+            sum += pay[0] + pay[1] + pay[2] + pay[3];
+            sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+            j += 4;
+        }
+        remaining -= BLOCK;
+    }
+
+    // Handle remaining paths with smaller batch.
+    if remaining >= 4 {
+        let batch = remaining & !3;
+        crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals[..batch]);
+
+        let mut j = 0usize;
+        while j + 4 <= batch {
+            let z_vec = _mm256_loadu_pd(normals.as_ptr().add(j));
+            let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
+            let growth = fast_exp_f64x4(exponent);
+            let s_terminal = _mm256_mul_pd(spot_v, growth);
+
+            let payoff_v = match option_type {
+                OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
+                OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+            };
+
+            let mut pay = [0.0_f64; 4];
+            _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
+            sum += pay[0] + pay[1] + pay[2] + pay[3];
+            sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+            j += 4;
+        }
+        remaining -= batch;
+    }
+
+    // Scalar tail
+    let mut fast_rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus,
+        chunk_seed.wrapping_add(0x1234_5678));
+    for _ in 0..remaining {
+        let z = sample_standard_normal(&mut fast_rng);
+        let s = spot0 * total_diffusion.mul_add(z, total_drift).exp();
+        let px = payoff(option_type, s, strike);
+        sum += px;
+        sum_sq += px * px;
     }
 
     (sum, sum_sq, n_paths)
