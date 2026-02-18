@@ -5,7 +5,6 @@ use crate::engines::analytic::black_scholes::{bs_delta, bs_gamma, bs_vega};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
-use crate::math::normal_inv_cdf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GreeksGridPoint {
@@ -40,15 +39,19 @@ fn split_paths(n_paths: usize, n_chunks: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Exact single-step GBM chunk for European vanilla options.
+///
+/// Instead of simulating per-step, directly samples terminal spot:
+///   S_T = S_0 * exp(total_drift + total_diffusion * Z)
+/// One exp() per path instead of one per step.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn simulate_chunk(
+fn simulate_chunk_exact(
     option_type: OptionType,
     strike: f64,
     spot0: f64,
-    dt_drift: f64,
-    dt_vol: f64,
-    n_steps: usize,
+    total_drift: f64,
+    total_diffusion: f64,
     n_paths: usize,
     chunk_seed: u64,
 ) -> (f64, f64, usize) {
@@ -56,29 +59,48 @@ fn simulate_chunk(
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
-    for _ in 0..n_paths {
-        let mut spot = spot0;
-        // Unrolled inner loop: process 4 steps at a time
-        let mut step = 0;
-        while step + 4 <= n_steps {
-            let z0 = sample_standard_normal(&mut rng);
-            let z1 = sample_standard_normal(&mut rng);
-            let z2 = sample_standard_normal(&mut rng);
-            let z3 = sample_standard_normal(&mut rng);
-            spot *= dt_vol.mul_add(z0, dt_drift).exp();
-            spot *= dt_vol.mul_add(z1, dt_drift).exp();
-            spot *= dt_vol.mul_add(z2, dt_drift).exp();
-            spot *= dt_vol.mul_add(z3, dt_drift).exp();
-            step += 4;
-        }
-        while step < n_steps {
-            let z = sample_standard_normal(&mut rng);
-            spot *= dt_vol.mul_add(z, dt_drift).exp();
-            step += 1;
-        }
-        let px = payoff(option_type, spot, strike);
+    // Process 8 paths at a time for instruction-level parallelism.
+    let mut remaining = n_paths;
+    while remaining >= 8 {
+        let z0 = sample_standard_normal(&mut rng);
+        let z1 = sample_standard_normal(&mut rng);
+        let z2 = sample_standard_normal(&mut rng);
+        let z3 = sample_standard_normal(&mut rng);
+        let z4 = sample_standard_normal(&mut rng);
+        let z5 = sample_standard_normal(&mut rng);
+        let z6 = sample_standard_normal(&mut rng);
+        let z7 = sample_standard_normal(&mut rng);
+
+        let s0 = spot0 * total_diffusion.mul_add(z0, total_drift).exp();
+        let s1 = spot0 * total_diffusion.mul_add(z1, total_drift).exp();
+        let s2 = spot0 * total_diffusion.mul_add(z2, total_drift).exp();
+        let s3 = spot0 * total_diffusion.mul_add(z3, total_drift).exp();
+        let s4 = spot0 * total_diffusion.mul_add(z4, total_drift).exp();
+        let s5 = spot0 * total_diffusion.mul_add(z5, total_drift).exp();
+        let s6 = spot0 * total_diffusion.mul_add(z6, total_drift).exp();
+        let s7 = spot0 * total_diffusion.mul_add(z7, total_drift).exp();
+
+        let p0 = payoff(option_type, s0, strike);
+        let p1 = payoff(option_type, s1, strike);
+        let p2 = payoff(option_type, s2, strike);
+        let p3 = payoff(option_type, s3, strike);
+        let p4 = payoff(option_type, s4, strike);
+        let p5 = payoff(option_type, s5, strike);
+        let p6 = payoff(option_type, s6, strike);
+        let p7 = payoff(option_type, s7, strike);
+
+        sum += p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7;
+        sum_sq += p0 * p0 + p1 * p1 + p2 * p2 + p3 * p3
+                + p4 * p4 + p5 * p5 + p6 * p6 + p7 * p7;
+        remaining -= 8;
+    }
+    while remaining > 0 {
+        let z = sample_standard_normal(&mut rng);
+        let s = spot0 * total_diffusion.mul_add(z, total_drift).exp();
+        let px = payoff(option_type, s, strike);
         sum += px;
         sum_sq += px * px;
+        remaining -= 1;
     }
 
     (sum, sum_sq, n_paths)
@@ -86,14 +108,15 @@ fn simulate_chunk(
 
 /// Parallel Monte Carlo pricer for European vanilla options.
 ///
+/// Uses exact single-step GBM simulation — one exp() per path, not per step.
 /// Work is explicitly split into thread-sized chunks and reduced in parallel.
 pub fn mc_european_parallel(
     instrument: &VanillaOption,
     market: &Market,
     n_paths: usize,
-    n_steps: usize,
+    _n_steps: usize,
 ) -> PricingResult {
-    if n_paths == 0 || n_steps == 0 {
+    if n_paths == 0 {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -130,10 +153,11 @@ pub fn mc_european_parallel(
         };
     }
 
-    let dt = instrument.expiry / n_steps as f64;
-    let dt_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * dt;
-    let dt_vol = vol * dt.sqrt();
-    let discount = (-market.rate * instrument.expiry).exp();
+    let t = instrument.expiry;
+    // Exact terminal-value drift and diffusion.
+    let total_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * t;
+    let total_diffusion = vol * t.sqrt();
+    let discount = (-market.rate * t).exp();
 
     let chunks = split_paths(n_paths, rayon::current_num_threads());
     let base_seed: u64 = 0xDEAD_BEEF_CAFE_BABE;
@@ -142,13 +166,12 @@ pub fn mc_european_parallel(
         .enumerate()
         .map(|(i, &chunk)| {
             let chunk_seed = base_seed.wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
-            simulate_chunk(
+            simulate_chunk_exact(
                 instrument.option_type,
                 instrument.strike,
                 market.spot,
-                dt_drift,
-                dt_vol,
-                n_steps,
+                total_drift,
+                total_diffusion,
                 chunk,
                 chunk_seed,
             )
@@ -168,7 +191,7 @@ pub fn mc_european_parallel(
 
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", n_steps as f64);
+    diagnostics.insert("num_steps", 1.0);
     diagnostics.insert("num_threads", rayon::current_num_threads() as f64);
     diagnostics.insert("vol", vol);
 
@@ -180,14 +203,14 @@ pub fn mc_european_parallel(
     }
 }
 
-/// Sequential baseline using the same path generation kernel as the parallel pricer.
+/// Sequential baseline using exact single-step GBM simulation.
 pub fn mc_european_sequential(
     instrument: &VanillaOption,
     market: &Market,
     n_paths: usize,
-    n_steps: usize,
+    _n_steps: usize,
 ) -> PricingResult {
-    if n_paths == 0 || n_steps == 0 {
+    if n_paths == 0 {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -221,18 +244,17 @@ pub fn mc_european_sequential(
             diagnostics: crate::core::Diagnostics::new(),
         };
     }
-    let dt = instrument.expiry / n_steps as f64;
-    let dt_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * dt;
-    let dt_vol = vol * dt.sqrt();
-    let discount = (-market.rate * instrument.expiry).exp();
+    let t = instrument.expiry;
+    let total_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * t;
+    let total_diffusion = vol * t.sqrt();
+    let discount = (-market.rate * t).exp();
 
-    let (sum, sum_sq, total_paths) = simulate_chunk(
+    let (sum, sum_sq, total_paths) = simulate_chunk_exact(
         instrument.option_type,
         instrument.strike,
         market.spot,
-        dt_drift,
-        dt_vol,
-        n_steps,
+        total_drift,
+        total_diffusion,
         n_paths,
         0xDEAD_BEEF_CAFE_BABE,
     );
@@ -246,7 +268,7 @@ pub fn mc_european_sequential(
 
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", n_steps as f64);
+    diagnostics.insert("num_steps", 1.0);
     diagnostics.insert("vol", vol);
 
     PricingResult {
