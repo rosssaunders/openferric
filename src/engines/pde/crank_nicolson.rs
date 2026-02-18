@@ -264,13 +264,35 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             );
 
             // RHS = B * values; use FMA chains for the tridiagonal multiply.
-            // Ordering: outer FMA on diagonal (largest term) for best precision.
-            for k in 0..interior_n {
-                let i = k + 1;
-                rhs_buf[k] = rhs_diag[k].mul_add(
-                    values[i],
-                    rhs_lower[k].mul_add(values[i - 1], rhs_upper[k] * values[i + 1]),
-                );
+            // SIMD path when available, otherwise scalar FMA.
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            {
+                if interior_n >= 4 && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                    unsafe {
+                        pde_rhs_avx2(
+                            &rhs_lower, &rhs_diag, &rhs_upper,
+                            &values, &mut rhs_buf, interior_n,
+                        );
+                    }
+                } else {
+                    for k in 0..interior_n {
+                        let i = k + 1;
+                        rhs_buf[k] = rhs_diag[k].mul_add(
+                            values[i],
+                            rhs_lower[k].mul_add(values[i - 1], rhs_upper[k] * values[i + 1]),
+                        );
+                    }
+                }
+            }
+            #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+            {
+                for k in 0..interior_n {
+                    let i = k + 1;
+                    rhs_buf[k] = rhs_diag[k].mul_add(
+                        values[i],
+                        rhs_lower[k].mul_add(values[i - 1], rhs_upper[k] * values[i + 1]),
+                    );
+                }
             }
 
             rhs_buf[0] -= lhs_lower[0] * lower_new;
@@ -339,6 +361,50 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             greeks: None,
             diagnostics,
         })
+    }
+}
+
+/// AVX2+FMA tridiagonal RHS multiply: rhs[k] = diag[k]*v[k+1] + lower[k]*v[k] + upper[k]*v[k+2]
+/// Processes 4 elements at a time.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn pde_rhs_avx2(
+    lower: &[f64],
+    diag: &[f64],
+    upper: &[f64],
+    values: &[f64],
+    rhs: &mut [f64],
+    n: usize,
+) {
+    use std::arch::x86_64::*;
+
+    let mut k = 0usize;
+    while k + 4 <= n {
+        let i = k + 1; // values index offset
+        unsafe {
+            let l = _mm256_loadu_pd(lower.as_ptr().add(k));
+            let d = _mm256_loadu_pd(diag.as_ptr().add(k));
+            let u = _mm256_loadu_pd(upper.as_ptr().add(k));
+
+            let v_lo = _mm256_loadu_pd(values.as_ptr().add(i - 1)); // values[k..k+4]
+            let v_mid = _mm256_loadu_pd(values.as_ptr().add(i));    // values[k+1..k+5]
+            let v_hi = _mm256_loadu_pd(values.as_ptr().add(i + 1)); // values[k+2..k+6]
+
+            // rhs[k] = diag[k] * v_mid + lower[k] * v_lo + upper[k] * v_hi
+            let result = _mm256_fmadd_pd(d, v_mid, _mm256_fmadd_pd(l, v_lo, _mm256_mul_pd(u, v_hi)));
+            _mm256_storeu_pd(rhs.as_mut_ptr().add(k), result);
+        }
+        k += 4;
+    }
+
+    // Scalar remainder
+    while k < n {
+        let i = k + 1;
+        rhs[k] = diag[k].mul_add(
+            values[i],
+            lower[k].mul_add(values[i - 1], upper[k] * values[i + 1]),
+        );
+        k += 1;
     }
 }
 

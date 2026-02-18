@@ -128,18 +128,34 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
                     st *= ratio;
                 }
             } else {
-                // Unroll by 4 for the simple non-exercise weighted-average path.
-                let mut j = 0;
-                while j + 4 <= i + 1 {
-                    values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
-                    values[j + 1] = disc_p.mul_add(values[j + 2], disc_1mp * values[j + 1]);
-                    values[j + 2] = disc_p.mul_add(values[j + 3], disc_1mp * values[j + 2]);
-                    values[j + 3] = disc_p.mul_add(values[j + 4], disc_1mp * values[j + 3]);
-                    j += 4;
+                // SIMD backward induction when available.
+                #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+                {
+                    if i >= 3 && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                        // SAFETY: Guarded by runtime CPU feature detection.
+                        unsafe { binomial_backward_avx2(&mut values, i, disc_p, disc_1mp) };
+                    } else {
+                        let mut j = 0;
+                        while j <= i {
+                            values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
+                            j += 1;
+                        }
+                    }
                 }
-                while j <= i {
-                    values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
-                    j += 1;
+                #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+                {
+                    let mut j = 0;
+                    while j + 4 <= i + 1 {
+                        values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
+                        values[j + 1] = disc_p.mul_add(values[j + 2], disc_1mp * values[j + 1]);
+                        values[j + 2] = disc_p.mul_add(values[j + 3], disc_1mp * values[j + 2]);
+                        values[j + 3] = disc_p.mul_add(values[j + 4], disc_1mp * values[j + 3]);
+                        j += 4;
+                    }
+                    while j <= i {
+                        values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
+                        j += 1;
+                    }
                 }
             }
             base *= u;
@@ -155,5 +171,49 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
             greeks: None,
             diagnostics,
         })
+    }
+}
+
+/// AVX2+FMA backward induction: `values[j] = disc_p * values[j+1] + disc_1mp * values[j]`
+/// for j in 0..=step_index. Processes 4 nodes at a time with FMA.
+///
+/// Because each value[j] depends on value[j+1] (which was also just updated),
+/// we process from the END backwards to avoid write-after-read hazards.
+/// Actually — the dependency is: values[j] reads values[j+1] which has NOT yet
+/// been overwritten (we iterate j=0..=i, so j+1 is ahead). With forward iteration,
+/// values[j] reads the old values[j+1]. With SIMD we load 4 consecutive "up" values
+/// (shifted by 1) and 4 "down" values, both from the OLD array, so there's no hazard
+/// as long as we don't write ahead of our read window. We process sequentially in blocks
+/// of 4 which is safe.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn binomial_backward_avx2(
+    values: &mut [f64],
+    step_index: usize,
+    disc_p: f64,
+    disc_1mp: f64,
+) {
+    use std::arch::x86_64::*;
+
+    let dp = _mm256_set1_pd(disc_p);
+    let d1mp = _mm256_set1_pd(disc_1mp);
+    let n = step_index + 1; // number of nodes to update
+    let mut j = 0usize;
+
+    while j + 4 <= n {
+        // values[j..j+4] = disc_1mp * values[j..j+4] + disc_p * values[j+1..j+5]
+        unsafe {
+            let v_down = _mm256_loadu_pd(values.as_ptr().add(j));
+            let v_up = _mm256_loadu_pd(values.as_ptr().add(j + 1));
+            let result = _mm256_fmadd_pd(dp, v_up, _mm256_mul_pd(d1mp, v_down));
+            _mm256_storeu_pd(values.as_mut_ptr().add(j), result);
+        }
+        j += 4;
+    }
+
+    // Scalar remainder
+    while j < n {
+        values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
+        j += 1;
     }
 }

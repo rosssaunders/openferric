@@ -103,16 +103,53 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         let disc = (-market.rate * dt).exp();
 
         // Flat 2D array for paths: paths[path_idx * stride + step]
-        let stride = self.num_steps + 1;
+        // Pad stride to multiple of 8 (64 bytes / cache line) for better memory access patterns.
+        let raw_stride = self.num_steps + 1;
+        let stride = (raw_stride + 7) & !7;
         let mut paths = vec![0.0_f64; self.num_paths * stride];
 
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
-        for pi in 0..self.num_paths {
-            let base = pi * stride;
-            paths[base] = market.spot;
-            for ti in 1..=self.num_steps {
-                let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-                paths[base + ti] = paths[base + ti - 1] * step_vol.mul_add(z, drift).exp();
+
+        // Use batch SIMD inverse CDF when available.
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                let buf_size = (self.num_steps + 3) & !3;
+                let mut normal_buf = vec![0.0_f64; buf_size];
+                for pi in 0..self.num_paths {
+                    let base = pi * stride;
+                    paths[base] = market.spot;
+                    unsafe {
+                        crate::math::simd_math::fill_normals_simd(
+                            &mut rng,
+                            &mut normal_buf[..self.num_steps],
+                        );
+                    }
+                    for ti in 1..=self.num_steps {
+                        let z = normal_buf[ti - 1];
+                        paths[base + ti] = paths[base + ti - 1] * step_vol.mul_add(z, drift).exp();
+                    }
+                }
+            } else {
+                for pi in 0..self.num_paths {
+                    let base = pi * stride;
+                    paths[base] = market.spot;
+                    for ti in 1..=self.num_steps {
+                        let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+                        paths[base + ti] = paths[base + ti - 1] * step_vol.mul_add(z, drift).exp();
+                    }
+                }
+            }
+        }
+        #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+        {
+            for pi in 0..self.num_paths {
+                let base = pi * stride;
+                paths[base] = market.spot;
+                for ti in 1..=self.num_steps {
+                    let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+                    paths[base + ti] = paths[base + ti - 1] * step_vol.mul_add(z, drift).exp();
+                }
             }
         }
 
@@ -159,21 +196,37 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 continue;
             }
 
-            // Fixed-size 3x3 regression using nalgebra Matrix3/Vector3 (no heap allocation)
-            let mut xtx = Matrix3::<f64>::zeros();
-            let mut xty = Vector3::<f64>::zeros();
+            // Inlined 3x3 symmetric normal equations (avoids nalgebra iterator overhead).
+            // XtX is symmetric so we only compute the upper triangle + diagonal.
+            let mut s1 = 0.0_f64;
+            let mut s_s = 0.0_f64;
+            let mut s_s2 = 0.0_f64;
+            let mut s_s3 = 0.0_f64;
+            let mut s_s4 = 0.0_f64;
+            let mut s_y = 0.0_f64;
+            let mut s_sy = 0.0_f64;
+            let mut s_s2y = 0.0_f64;
+            let n_itm = itm.len() as f64;
             for &idx in &itm {
                 let s = paths[idx * stride + ti];
                 let s2 = s * s;
                 let y = values[idx];
-                let row = Vector3::new(1.0, s, s2);
-                for r in 0..3 {
-                    for c in 0..3 {
-                        xtx[(r, c)] += row[r] * row[c];
-                    }
-                    xty[r] += row[r] * y;
-                }
+                s1 += 1.0;
+                s_s += s;
+                s_s2 += s2;
+                s_s3 += s2 * s;
+                s_s4 += s2 * s2;
+                s_y += y;
+                s_sy += s * y;
+                s_s2y += s2 * y;
             }
+            let _ = n_itm;
+            let xtx = Matrix3::new(
+                s1,   s_s,  s_s2,
+                s_s,  s_s2, s_s3,
+                s_s2, s_s3, s_s4,
+            );
+            let xty = Vector3::new(s_y, s_sy, s_s2y);
             let beta = xtx.lu().solve(&xty).unwrap_or(Vector3::zeros());
 
             for idx in itm {
@@ -236,14 +289,35 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
 
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
         let mut pv = Vec::with_capacity(self.num_paths);
+
+        // Reuse a single path buffer instead of allocating per-path.
+        let mut path = vec![0.0_f64; self.num_steps + 1];
+
+        // Pre-allocate normal buffer for batch SIMD inverse CDF.
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        let use_simd = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+        #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+        let use_simd = false;
+
+        let buf_size = (self.num_steps + 3) & !3;
+        let mut normal_buf = vec![0.0_f64; buf_size];
+
         for _ in 0..self.num_paths {
-            let mut path = Vec::with_capacity(self.num_steps + 1);
-            let mut s = market.spot;
-            path.push(s);
-            for _ in 0..self.num_steps {
-                let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-                s *= step_vol.mul_add(z, drift).exp();
-                path.push(s);
+            path[0] = market.spot;
+
+            if use_simd {
+                #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+                unsafe {
+                    crate::math::simd_math::fill_normals_simd(&mut rng, &mut normal_buf[..self.num_steps]);
+                }
+                for ti in 0..self.num_steps {
+                    path[ti + 1] = path[ti] * step_vol.mul_add(normal_buf[ti], drift).exp();
+                }
+            } else {
+                for ti in 0..self.num_steps {
+                    let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+                    path[ti + 1] = path[ti] * step_vol.mul_add(z, drift).exp();
+                }
             }
 
             let hit = path_hits_barrier(

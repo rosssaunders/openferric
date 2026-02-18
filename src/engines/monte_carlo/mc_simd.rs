@@ -152,6 +152,7 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     seed: u64,
 ) -> SoaPaths {
     use std::arch::x86_64::*;
+    use crate::math::fast_rng::Xoshiro256PlusPlus;
 
     assert!(num_paths > 0, "num_paths must be > 0");
     assert!(num_steps > 0, "num_steps must be > 0");
@@ -166,33 +167,36 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     let drift_v = unsafe { splat_f64x4(drift) };
     let diffusion_v = unsafe { splat_f64x4(diffusion) };
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+
+    // Pre-allocate a normal buffer for batch SIMD inverse CDF.
+    // Sized to handle one full step's worth of paths (rounded up to multiple of 4).
+    let buf_size = (num_paths + 3) & !3;
+    let mut normal_buf = vec![0.0_f64; buf_size];
 
     for step in 0..num_steps {
         let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
         let prev = &prev_head[step];
         let next = &mut prev_tail[0];
 
+        // Batch-generate all normals for this step via SIMD inverse CDF.
+        unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normal_buf[..num_paths]) };
+
         let mut i = 0usize;
         while i + 4 <= num_paths {
-            // Generate 4 normals inline – no intermediate buffer needed.
-            let z0 = sample_standard_normal(&mut rng);
-            let z1 = sample_standard_normal(&mut rng);
-            let z2 = sample_standard_normal(&mut rng);
-            let z3 = sample_standard_normal(&mut rng);
-            let z_arr = [z0, z1, z2, z3];
-
-            let s = unsafe { load_f64x4(prev, i) };
-            let z_vec = unsafe { _mm256_loadu_pd(z_arr.as_ptr()) };
-            let x = _mm256_fmadd_pd(diffusion_v, z_vec, drift_v);
-            let growth = unsafe { fast_exp_f64x4(x) };
-            let s_next = _mm256_mul_pd(s, growth);
-            unsafe { store_f64x4(next, i, s_next) };
+            unsafe {
+                let s = load_f64x4(prev, i);
+                let z_vec = _mm256_loadu_pd(normal_buf.as_ptr().add(i));
+                let x = _mm256_fmadd_pd(diffusion_v, z_vec, drift_v);
+                let growth = fast_exp_f64x4(x);
+                let s_next = _mm256_mul_pd(s, growth);
+                store_f64x4(next, i, s_next);
+            }
             i += 4;
         }
 
         while i < num_paths {
-            let z = sample_standard_normal(&mut rng);
+            let z = normal_buf[i];
             let growth = diffusion.mul_add(z, drift).exp();
             next[i] = prev[i] * growth;
             i += 1;

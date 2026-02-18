@@ -264,8 +264,12 @@ pub fn mc_european_with_arena(
     }
 }
 
-/// AVX2+FMA inner loop for exact European MC: generates 4 paths per iteration
-/// using vectorized exp, avoiding 4 separate scalar exp calls.
+/// AVX2+FMA inner loop for exact European MC with batch SIMD inverse CDF.
+///
+/// Pre-generates a block of uniform random numbers, batch-converts them to
+/// normal variates via vectorized Acklam approximation, then consumes the
+/// block with vectorized exp + payoff computation. This eliminates the
+/// scalar inverse-CDF bottleneck that dominated the previous implementation.
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 #[allow(clippy::too_many_arguments)]
@@ -281,36 +285,63 @@ unsafe fn mc_exact_avx2_inner(
     i: &mut usize,
 ) {
     use std::arch::x86_64::*;
-    use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4, store_f64x4};
+    use crate::math::simd_math::{fast_exp_f64x4, fill_normals_simd, splat_f64x4, store_f64x4};
 
     let spot_v = unsafe { splat_f64x4(spot) };
     let drift_v = unsafe { splat_f64x4(total_drift) };
     let diff_v = unsafe { splat_f64x4(total_diffusion) };
     let strike_v = unsafe { splat_f64x4(strike) };
-    let zero_v = unsafe { _mm256_setzero_pd() };
+    let zero_v = _mm256_setzero_pd();
 
-    while *i + 4 <= n_paths {
-        // Generate 4 normal variates (scalar — RNG is sequential).
-        let z0 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-        let z1 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-        let z2 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-        let z3 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-        let z_arr = [z0, z1, z2, z3];
-        let z_vec = unsafe { _mm256_loadu_pd(z_arr.as_ptr()) };
+    // Block size for batch normal generation. 256 is ~2KB which fits in L1 cache.
+    const BLOCK: usize = 256;
+    let mut normals = [0.0_f64; BLOCK];
 
-        // S_T = spot * exp(drift + diffusion * z) — 4 paths at once.
-        let exponent = unsafe { _mm256_fmadd_pd(diff_v, z_vec, drift_v) };
-        let growth = unsafe { fast_exp_f64x4(exponent) };
-        let s_terminal = unsafe { _mm256_mul_pd(spot_v, growth) };
+    while *i + BLOCK <= n_paths {
+        // Batch generate BLOCK normal variates using SIMD inverse CDF.
+        unsafe { fill_normals_simd(rng, &mut normals) };
 
-        // Compute payoffs: max(S_T - K, 0) for call, max(K - S_T, 0) for put.
-        let payoff_v = match option_type {
-            crate::core::OptionType::Call => unsafe { _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v) },
-            crate::core::OptionType::Put => unsafe { _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v) },
-        };
+        // Consume the block 4 at a time with vectorized exp + payoff.
+        let mut j = 0usize;
+        while j + 4 <= BLOCK {
+            let z_vec = unsafe { _mm256_loadu_pd(normals.as_ptr().add(j)) };
+            let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
+            let growth = unsafe { fast_exp_f64x4(exponent) };
+            let s_terminal = _mm256_mul_pd(spot_v, growth);
 
-        unsafe { store_f64x4(payoff_buffer, *i, payoff_v) };
-        *i += 4;
+            let payoff_v = match option_type {
+                crate::core::OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
+                crate::core::OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+            };
+
+            unsafe { store_f64x4(payoff_buffer, *i + j, payoff_v) };
+            j += 4;
+        }
+        *i += BLOCK;
+    }
+
+    // Handle remaining paths (< BLOCK) with the same batch approach.
+    let remaining = n_paths - *i;
+    if remaining >= 4 {
+        let batch = remaining & !3; // round down to multiple of 4
+        unsafe { fill_normals_simd(rng, &mut normals[..batch]) };
+
+        let mut j = 0usize;
+        while j + 4 <= batch {
+            let z_vec = unsafe { _mm256_loadu_pd(normals.as_ptr().add(j)) };
+            let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
+            let growth = unsafe { fast_exp_f64x4(exponent) };
+            let s_terminal = _mm256_mul_pd(spot_v, growth);
+
+            let payoff_v = match option_type {
+                crate::core::OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
+                crate::core::OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+            };
+
+            unsafe { store_f64x4(payoff_buffer, *i + j, payoff_v) };
+            j += 4;
+        }
+        *i += batch;
     }
 }
 
