@@ -3,7 +3,7 @@
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-use crate::math::simd_math::{exp_f64x4, load_f64x4, splat_f64x4, store_f64x4};
+use crate::math::simd_math::{fast_exp_f64x4, load_f64x4, splat_f64x4, store_f64x4};
 
 /// Structure-of-arrays path storage:
 /// `levels[step][path] = S(step, path)`.
@@ -185,7 +185,7 @@ unsafe fn simulate_gbm_paths_soa_avx2(
             let s = unsafe { load_f64x4(prev, i) };
             let z_vec = unsafe { _mm256_loadu_pd(z_arr.as_ptr()) };
             let x = _mm256_fmadd_pd(diffusion_v, z_vec, drift_v);
-            let growth = unsafe { exp_f64x4(x) };
+            let growth = unsafe { fast_exp_f64x4(x) };
             let s_next = _mm256_mul_pd(s, growth);
             unsafe { store_f64x4(next, i, s_next) };
             i += 4;

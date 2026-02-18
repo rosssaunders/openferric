@@ -16,6 +16,13 @@ pub trait PathGenerator: Send + Sync {
         let path = self.generate_from_normals(normals_1, normals_2);
         out[..path.len()].copy_from_slice(&path);
     }
+
+    /// Number of independent normal streams required per time step.
+    /// GBM needs 1 (asset diffusion only), Heston needs 2 (asset + variance).
+    /// The MC engine skips generating unused streams for a ~2× speedup on RNG.
+    fn num_normal_streams(&self) -> usize {
+        2
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +57,11 @@ impl PathGenerator for GbmPathGenerator {
             s *= diffusion.mul_add(z, drift).exp();
             out[j + 1] = s;
         }
+    }
+
+    /// GBM only uses one normal stream (no variance process).
+    fn num_normal_streams(&self) -> usize {
+        1
     }
 }
 
@@ -166,6 +178,7 @@ impl MonteCarloEngine {
         };
 
         let steps = generator.steps();
+        let num_streams = generator.num_normal_streams();
         let control = self.control_variate.clone();
         let rng_kind = self.rng_kind;
         let reproducible = self.reproducible;
@@ -187,9 +200,13 @@ impl MonteCarloEngine {
             let seed = resolve_stream_seed(base_seed, i, reproducible);
             let mut rng = FastRng::from_seed(rng_kind, seed);
 
+            // Only generate as many normal streams as the model needs.
+            // GBM needs 1 stream (skipping z2 halves RNG + inverse-CDF work).
             for j in 0..steps {
                 z1[j] = sample_standard_normal(&mut rng);
-                z2[j] = sample_standard_normal(&mut rng);
+                if num_streams >= 2 {
+                    z2[j] = sample_standard_normal(&mut rng);
+                }
             }
 
             generator.generate_into(z1, z2, path);

@@ -8,7 +8,7 @@ use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::Market;
 use crate::math::arena::PricingArena;
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
-use crate::math::fast_rng::{FastRngKind, Xoshiro256PlusPlus, stream_seed, uniform_open01};
+use crate::math::fast_rng::{FastRngKind, Xoshiro256PlusPlus, uniform_open01};
 use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
@@ -110,14 +110,19 @@ fn average_for_observations(
 const ARENA_MC_SEED: u64 = 42;
 
 /// Sequential European vanilla Monte Carlo pricer reusing a pre-allocated arena.
+///
+/// Uses exact single-step GBM simulation: S_T = S_0 * exp((μ - σ²/2)*T + σ*√T*Z).
+/// For European options the payoff depends only on the terminal spot, so the
+/// per-step path simulation is unnecessary. This reduces exp() calls from
+/// O(paths * steps) to O(paths) — typically a 100–250× reduction.
 pub fn mc_european_with_arena(
     instrument: &VanillaOption,
     market: &Market,
     n_paths: usize,
-    n_steps: usize,
+    _n_steps: usize,
     arena: &mut PricingArena,
 ) -> PricingResult {
-    if n_paths == 0 || n_steps == 0 {
+    if n_paths == 0 {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -154,16 +159,14 @@ pub fn mc_european_with_arena(
         };
     }
 
-    let dt = instrument.expiry / n_steps as f64;
-    let sqrt_dt = dt.sqrt();
+    let t = instrument.expiry;
     let mu = market.rate - market.dividend_yield;
-    let discount = (-market.rate * instrument.expiry).exp();
-    // Exact log-Euler GBM step: always positive, no clamp needed.
-    let drift = (mu - 0.5 * vol * vol) * dt;
-    let diffusion = vol * sqrt_dt;
+    let discount = (-market.rate * t).exp();
+    // Exact GBM terminal value: S_T = S_0 * exp((μ - σ²/2)*T + σ*√T*Z)
+    // One exp() per path instead of one per step — the key optimization.
+    let total_drift = (mu - 0.5 * vol * vol) * t;
+    let total_diffusion = vol * t.sqrt();
 
-    // Only the payoff buffer is needed; path buffer is not used since European
-    // vanilla payoff depends only on the terminal spot price.
     let _ = arena.payoff_slice(n_paths);
     let payoff_buffer = &mut arena.payoff_buffer;
 
@@ -171,38 +174,42 @@ pub fn mc_european_with_arena(
     let strike = instrument.strike;
     let spot = market.spot;
 
-    // Process paths in chunks of 4 for better instruction-level parallelism.
-    // The four independent exp() computations can overlap in the CPU pipeline.
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(ARENA_MC_SEED);
     let mut i = 0;
-    while i + 4 <= n_paths {
-        let mut xrng0 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i));
-        let mut xrng1 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i + 1));
-        let mut xrng2 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i + 2));
-        let mut xrng3 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i + 3));
 
-        let mut s0 = spot;
-        let mut s1 = spot;
-        let mut s2 = spot;
-        let mut s3 = spot;
-
-        for _ in 0..n_steps {
-            let u0 = xrng0.next_f64();
-            xrng0.next_u64();
-            let u1 = xrng1.next_f64();
-            xrng1.next_u64();
-            let u2 = xrng2.next_f64();
-            xrng2.next_u64();
-            let u3 = xrng3.next_f64();
-            xrng3.next_u64();
-            let z0 = beasley_springer_moro_inv_cdf(uniform_open01(u0));
-            let z1 = beasley_springer_moro_inv_cdf(uniform_open01(u1));
-            let z2 = beasley_springer_moro_inv_cdf(uniform_open01(u2));
-            let z3 = beasley_springer_moro_inv_cdf(uniform_open01(u3));
-            s0 *= diffusion.mul_add(z0, drift).exp();
-            s1 *= diffusion.mul_add(z1, drift).exp();
-            s2 *= diffusion.mul_add(z2, drift).exp();
-            s3 *= diffusion.mul_add(z3, drift).exp();
+    // SIMD fast path: process 4 paths at a time with AVX2 fast_exp_f64x4.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: Guarded by runtime CPU feature detection.
+            unsafe {
+                mc_exact_avx2_inner(
+                    &mut rng,
+                    payoff_buffer,
+                    n_paths,
+                    spot,
+                    total_drift,
+                    total_diffusion,
+                    option_type,
+                    strike,
+                    &mut i,
+                );
+            }
         }
+    }
+
+    // Scalar remainder (or full scalar path on non-SIMD builds).
+    // Process 4 at a time for ILP.
+    while i + 4 <= n_paths {
+        let z0 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z1 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z2 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z3 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+
+        let s0 = spot * total_diffusion.mul_add(z0, total_drift).exp();
+        let s1 = spot * total_diffusion.mul_add(z1, total_drift).exp();
+        let s2 = spot * total_diffusion.mul_add(z2, total_drift).exp();
+        let s3 = spot * total_diffusion.mul_add(z3, total_drift).exp();
 
         payoff_buffer[i] = vanilla_payoff(option_type, s0, strike);
         payoff_buffer[i + 1] = vanilla_payoff(option_type, s1, strike);
@@ -210,17 +217,10 @@ pub fn mc_european_with_arena(
         payoff_buffer[i + 3] = vanilla_payoff(option_type, s3, strike);
         i += 4;
     }
-    // Remainder paths (when n_paths is not a multiple of 4).
     while i < n_paths {
-        let mut xrng = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i));
-        let mut s = spot;
-        for _ in 0..n_steps {
-            let u = xrng.next_f64();
-            xrng.next_u64();
-            let z = beasley_springer_moro_inv_cdf(uniform_open01(u));
-            s *= diffusion.mul_add(z, drift).exp();
-        }
-        payoff_buffer[i] = vanilla_payoff(option_type, s, strike);
+        let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let s_t = spot * total_diffusion.mul_add(z, total_drift).exp();
+        payoff_buffer[i] = vanilla_payoff(option_type, s_t, strike);
         i += 1;
     }
 
@@ -253,7 +253,7 @@ pub fn mc_european_with_arena(
 
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert_key(crate::core::DiagKey::NumPaths, n_paths as f64);
-    diagnostics.insert_key(crate::core::DiagKey::NumSteps, n_steps as f64);
+    diagnostics.insert_key(crate::core::DiagKey::NumSteps, 1.0);
     diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
     PricingResult {
@@ -261,6 +261,56 @@ pub fn mc_european_with_arena(
         stderr: Some(discount * (variance / n).sqrt()),
         greeks: None,
         diagnostics,
+    }
+}
+
+/// AVX2+FMA inner loop for exact European MC: generates 4 paths per iteration
+/// using vectorized exp, avoiding 4 separate scalar exp calls.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn mc_exact_avx2_inner(
+    rng: &mut Xoshiro256PlusPlus,
+    payoff_buffer: &mut [f64],
+    n_paths: usize,
+    spot: f64,
+    total_drift: f64,
+    total_diffusion: f64,
+    option_type: crate::core::OptionType,
+    strike: f64,
+    i: &mut usize,
+) {
+    use std::arch::x86_64::*;
+    use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4, store_f64x4};
+
+    let spot_v = unsafe { splat_f64x4(spot) };
+    let drift_v = unsafe { splat_f64x4(total_drift) };
+    let diff_v = unsafe { splat_f64x4(total_diffusion) };
+    let strike_v = unsafe { splat_f64x4(strike) };
+    let zero_v = unsafe { _mm256_setzero_pd() };
+
+    while *i + 4 <= n_paths {
+        // Generate 4 normal variates (scalar — RNG is sequential).
+        let z0 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z1 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z2 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z3 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+        let z_arr = [z0, z1, z2, z3];
+        let z_vec = unsafe { _mm256_loadu_pd(z_arr.as_ptr()) };
+
+        // S_T = spot * exp(drift + diffusion * z) — 4 paths at once.
+        let exponent = unsafe { _mm256_fmadd_pd(diff_v, z_vec, drift_v) };
+        let growth = unsafe { fast_exp_f64x4(exponent) };
+        let s_terminal = unsafe { _mm256_mul_pd(spot_v, growth) };
+
+        // Compute payoffs: max(S_T - K, 0) for call, max(K - S_T, 0) for put.
+        let payoff_v = match option_type {
+            crate::core::OptionType::Call => unsafe { _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v) },
+            crate::core::OptionType::Put => unsafe { _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v) },
+        };
+
+        unsafe { store_f64x4(payoff_buffer, *i, payoff_v) };
+        *i += 4;
     }
 }
 
@@ -912,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn mc_european_with_arena_matches_non_arena_engine() {
+    fn mc_european_with_arena_converges_to_black_scholes() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -921,19 +971,20 @@ mod tests {
             .build()
             .expect("valid market");
         let option = VanillaOption::european_call(100.0, 1.0);
-        let n_paths = 8_000;
-        let n_steps = 64;
-
-        let baseline = MonteCarloPricingEngine::new(n_paths, n_steps, ARENA_MC_SEED)
-            .price(&option, &market)
-            .expect("baseline MC succeeds");
+        let n_paths = 200_000;
+        let n_steps = 1; // n_steps is unused by exact simulation but kept for API compat
 
         let mut arena = PricingArena::with_capacity(n_paths, n_steps);
         let arena_result = mc_european_with_arena(&option, &market, n_paths, n_steps, &mut arena);
 
-        assert!((arena_result.price - baseline.price).abs() <= 1e-12);
+        let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
+        let rel_err = ((arena_result.price - bs) / bs).abs();
         assert!(
-            (arena_result.stderr.unwrap_or(0.0) - baseline.stderr.unwrap_or(0.0)).abs() <= 1e-12
+            rel_err <= 0.01,
+            "arena MC/BS relative error too high: mc={} bs={} rel_err={}",
+            arena_result.price,
+            bs,
+            rel_err
         );
     }
 
