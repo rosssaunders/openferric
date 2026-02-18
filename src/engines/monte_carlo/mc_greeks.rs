@@ -273,7 +273,7 @@ fn single_path_contribution(
     drift: f64,
     sig_sqrt_t: f64,
 ) -> MonteCarloGreekEstimate {
-    let growth = (drift + sig_sqrt_t * z).exp();
+    let growth = sig_sqrt_t.mul_add(z, drift).exp();
     let st = spot * growth;
     let payoff = payoff(option_type, st, strike);
 
@@ -282,10 +282,16 @@ fn single_path_contribution(
     let delta_dn = pathwise_delta(option_type, spot_dn * growth, strike, growth);
     let gamma_pw = (delta_up - delta_dn) / spot_span;
 
-    let w_delta = z / (spot * vol * maturity.sqrt());
-    let w_gamma = (z * z - 1.0) / (spot * spot * vol * vol * maturity)
-        - z / (spot * spot * vol * maturity.sqrt());
-    let w_vega = (z * z - 1.0 - vol * maturity.sqrt() * z) / vol;
+    // Pre-compute shared denominators to avoid redundant divisions.
+    let sqrt_t = maturity.sqrt();
+    let inv_spot_vol_sqrt_t = 1.0 / (spot * vol * sqrt_t);
+    let z2 = z * z;
+    let z2m1 = z2 - 1.0;
+
+    let w_delta = z * inv_spot_vol_sqrt_t;
+    let inv_spot2_vol2_t = inv_spot_vol_sqrt_t * inv_spot_vol_sqrt_t;
+    let w_gamma = z2m1 * inv_spot2_vol2_t - z * inv_spot_vol_sqrt_t / spot;
+    let w_vega = (z2m1 - vol * sqrt_t * z) / vol;
 
     MonteCarloGreekEstimate {
         pathwise_delta: delta_pw,
@@ -296,6 +302,7 @@ fn single_path_contribution(
     }
 }
 
+#[inline(always)]
 fn payoff(option_type: OptionType, st: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (st - strike).max(0.0),
@@ -303,6 +310,7 @@ fn payoff(option_type: OptionType, st: f64, strike: f64) -> f64 {
     }
 }
 
+#[inline(always)]
 fn pathwise_delta(option_type: OptionType, st: f64, strike: f64, growth: f64) -> f64 {
     match option_type {
         OptionType::Call => {

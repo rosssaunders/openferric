@@ -16,8 +16,10 @@ impl RainbowAnalyticEngine {
     }
 }
 
+#[inline]
 fn effective_volatility(vol1: f64, vol2: f64, rho: f64) -> Result<f64, PricingError> {
-    let variance = vol1 * vol1 - 2.0 * rho * vol1 * vol2 + vol2 * vol2;
+    // variance = vol1^2 - 2*rho*vol1*vol2 + vol2^2  via FMA
+    let variance = vol1.mul_add(vol1, (-2.0 * rho * vol1).mul_add(vol2, vol2 * vol2));
     if variance < -1.0e-14 {
         return Err(PricingError::InvalidInput(
             "rainbow effective variance is negative".to_string(),
@@ -26,6 +28,7 @@ fn effective_volatility(vol1: f64, vol2: f64, rho: f64) -> Result<f64, PricingEr
     Ok(variance.max(0.0).sqrt())
 }
 
+#[inline]
 fn black_scholes_call_with_dividend(
     spot: f64,
     strike: f64,
@@ -45,14 +48,17 @@ fn black_scholes_call_with_dividend(
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * t) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * t) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
-    spot * (-dividend_yield * t).exp() * normal_cdf(d1)
-        - strike * (-rate * t).exp() * normal_cdf(d2)
+    spot.mul_add(
+        (-dividend_yield * t).exp() * normal_cdf(d1),
+        -(strike * (-rate * t).exp() * normal_cdf(d2)),
+    )
 }
 
 /// Stulz (1982) best-of-two call price.
+#[inline]
 pub fn best_of_two_call_price(option: &BestOfTwoCallOption) -> Result<f64, PricingError> {
     option.validate()?;
 
@@ -73,24 +79,24 @@ pub fn best_of_two_call_price(option: &BestOfTwoCallOption) -> Result<f64, Prici
     let sig = sigma * sqrt_t;
 
     let d1 = ((option.s1 / option.k).ln()
-        + (option.r - option.q1 + 0.5 * option.vol1 * option.vol1) * option.t)
+        + (0.5 * option.vol1).mul_add(option.vol1, option.r - option.q1) * option.t)
         / sig1;
     let d2 = ((option.s2 / option.k).ln()
-        + (option.r - option.q2 + 0.5 * option.vol2 * option.vol2) * option.t)
+        + (0.5 * option.vol2).mul_add(option.vol2, option.r - option.q2) * option.t)
         / sig2;
 
     let d1m = d1 - sig1;
     let d2m = d2 - sig2;
 
     let y1 = ((option.s1 / option.s2).ln()
-        + (option.q2 - option.q1 + 0.5 * sigma * sigma) * option.t)
+        + (0.5 * sigma).mul_add(sigma, option.q2 - option.q1) * option.t)
         / sig;
     let y2 = ((option.s2 / option.s1).ln()
-        + (option.q1 - option.q2 + 0.5 * sigma * sigma) * option.t)
+        + (0.5 * sigma).mul_add(sigma, option.q1 - option.q2) * option.t)
         / sig;
 
-    let rho1 = ((option.vol1 - option.rho * option.vol2) / sigma).clamp(-1.0, 1.0);
-    let rho2 = ((option.vol2 - option.rho * option.vol1) / sigma).clamp(-1.0, 1.0);
+    let rho1 = ((-option.rho).mul_add(option.vol2, option.vol1) / sigma).clamp(-1.0, 1.0);
+    let rho2 = ((-option.rho).mul_add(option.vol1, option.vol2) / sigma).clamp(-1.0, 1.0);
 
     let df1 = (-option.q1 * option.t).exp();
     let df2 = (-option.q2 * option.t).exp();
@@ -98,13 +104,14 @@ pub fn best_of_two_call_price(option: &BestOfTwoCallOption) -> Result<f64, Prici
 
     let prob_union = (1.0 - bivariate_normal_cdf(-d1m, -d2m, option.rho)).clamp(0.0, 1.0);
 
-    Ok(option.s1 * df1 * bivariate_normal_cdf(d1, y1, rho1)
-        + option.s2 * df2 * bivariate_normal_cdf(d2, y2, rho2)
-        - option.k * dfr * prob_union)
+    let term1 = option.s1 * df1 * bivariate_normal_cdf(d1, y1, rho1);
+    let term2 = option.s2 * df2 * bivariate_normal_cdf(d2, y2, rho2);
+    Ok(term1 + term2 - option.k * dfr * prob_union)
 }
 
 /// Worst-of-two call value from rainbow parity:
 /// `(best-of call) + (worst-of call) = call(S1) + call(S2)`.
+#[inline]
 pub fn worst_of_two_call_price(option: &WorstOfTwoCallOption) -> Result<f64, PricingError> {
     option.validate()?;
 
@@ -149,6 +156,7 @@ pub fn worst_of_two_call_price(option: &WorstOfTwoCallOption) -> Result<f64, Pri
 ///
 /// Call payoff: `1_{S2_T > K2} * max(S1_T - K1, 0)`
 /// Put payoff:  `1_{S2_T < K2} * max(K1 - S1_T, 0)`
+#[inline]
 pub fn two_asset_correlation_price(
     option: &TwoAssetCorrelationOption,
 ) -> Result<f64, PricingError> {
@@ -167,26 +175,30 @@ pub fn two_asset_correlation_price(
     let sig2 = option.vol2 * sqrt_t;
 
     let d1 = ((option.s1 / option.k1).ln()
-        + (option.r - option.q1 + 0.5 * option.vol1 * option.vol1) * option.t)
+        + (0.5 * option.vol1).mul_add(option.vol1, option.r - option.q1) * option.t)
         / sig1;
     let d2 = d1 - sig1;
 
     let e2 = ((option.s2 / option.k2).ln()
-        + (option.r - option.q2 - 0.5 * option.vol2 * option.vol2) * option.t)
+        + (-0.5 * option.vol2).mul_add(option.vol2, option.r - option.q2) * option.t)
         / sig2;
-    let e1_tilted = e2 + option.rho * option.vol1 * sqrt_t;
+    let e1_tilted = option.rho.mul_add(option.vol1 * sqrt_t, e2);
 
     let df_q1 = (-option.q1 * option.t).exp();
     let df_r = (-option.r * option.t).exp();
 
     let price = match option.option_type {
         OptionType::Call => {
-            option.s1 * df_q1 * bivariate_normal_cdf(d1, e1_tilted, option.rho)
-                - option.k1 * df_r * bivariate_normal_cdf(d2, e2, option.rho)
+            option.s1.mul_add(
+                df_q1 * bivariate_normal_cdf(d1, e1_tilted, option.rho),
+                -(option.k1 * df_r * bivariate_normal_cdf(d2, e2, option.rho)),
+            )
         }
         OptionType::Put => {
-            option.k1 * df_r * bivariate_normal_cdf(-d2, -e2, option.rho)
-                - option.s1 * df_q1 * bivariate_normal_cdf(-d1, -e1_tilted, option.rho)
+            option.k1.mul_add(
+                df_r * bivariate_normal_cdf(-d2, -e2, option.rho),
+                -(option.s1 * df_q1 * bivariate_normal_cdf(-d1, -e1_tilted, option.rho)),
+            )
         }
     };
 

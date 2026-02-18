@@ -31,6 +31,7 @@ impl DoubleBarrierAnalyticEngine {
     }
 }
 
+#[inline]
 fn vanilla_payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -38,6 +39,7 @@ fn vanilla_payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     }
 }
 
+#[inline]
 fn bs_price_with_dividend(
     option_type: OptionType,
     spot: f64,
@@ -54,18 +56,24 @@ fn bs_price_with_dividend(
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 =
-        ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+            / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-rate * expiry).exp();
     let df_q = (-dividend_yield * expiry).exp();
 
+    // Compute call, derive put via put-call parity to halve CDF evaluations.
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let call = spot.mul_add(df_q * nd1, -(strike * df_r * nd2));
     match option_type {
-        OptionType::Call => spot * df_q * normal_cdf(d1) - strike * df_r * normal_cdf(d2),
-        OptionType::Put => strike * df_r * normal_cdf(-d2) - spot * df_q * normal_cdf(-d1),
+        OptionType::Call => call,
+        OptionType::Put => call - spot * df_q + strike * df_r,
     }
 }
 
+#[inline]
 fn exp_sin_integral(m: f64, w: f64, y0: f64, y1: f64) -> f64 {
     if y1 <= y0 {
         return 0.0;
@@ -76,6 +84,7 @@ fn exp_sin_integral(m: f64, w: f64, y0: f64, y1: f64) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn double_knock_out_zero_rebate(
     option_type: OptionType,
     spot: f64,
@@ -88,27 +97,30 @@ fn double_knock_out_zero_rebate(
     expiry: f64,
     series_terms: usize,
 ) -> f64 {
+    let vol_sq = vol * vol;
     let std = vol * expiry.sqrt();
     let b = rate - dividend_yield;
-    let mu1 = 2.0 * b / (vol * vol) + 1.0;
-    let bsigma = (b + 0.5 * vol * vol) * expiry / std;
+    let mu1 = 2.0 * b / vol_sq + 1.0;
+    let bsigma = (0.5 * vol).mul_add(vol, b) * expiry / std;
     let df_r = (-rate * expiry).exp();
     let df_q = (-dividend_yield * expiry).exp();
     let n_max = series_terms as i32;
+    let ln_u_over_l = (upper / lower).ln();
 
     let mut acc1 = 0.0;
     let mut acc2 = 0.0;
 
     for n in -n_max..=n_max {
         let nf = n as f64;
-        let u_over_l_n = (upper / lower).powf(nf);
-        let l_over_u_n = (lower / upper).powf(nf);
-        let u_over_l_2n = (upper / lower).powf(2.0 * nf);
-        let l_over_u_2n = (lower / upper).powf(2.0 * nf);
+        // Compute powers via exp(n * ln(u/l)) instead of repeated powf.
+        let u_over_l_n = (nf * ln_u_over_l).exp();
+        let l_over_u_n = (-nf * ln_u_over_l).exp();
+        let u_over_l_2n = (2.0 * nf * ln_u_over_l).exp();
+        let l_over_u_2n = (-2.0 * nf * ln_u_over_l).exp();
 
         let mirror_base = (lower / spot) * l_over_u_n;
-        let m1 = u_over_l_n.powf(mu1);
-        let m2 = u_over_l_n.powf(mu1 - 2.0);
+        let m1 = (mu1 * nf * ln_u_over_l).exp();
+        let m2 = ((mu1 - 2.0) * nf * ln_u_over_l).exp();
         let m3 = mirror_base.powf(mu1);
         let m4 = mirror_base.powf(mu1 - 2.0);
 
@@ -145,6 +157,7 @@ fn double_knock_out_zero_rebate(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn double_no_touch_digital_price(
     spot: f64,
     lower: f64,
@@ -155,13 +168,14 @@ fn double_no_touch_digital_price(
     expiry: f64,
     series_terms: usize,
 ) -> f64 {
+    let vol_sq = vol * vol;
     let width = (upper / lower).ln();
     let x = (spot / lower).ln();
 
-    let carry = rate - dividend_yield - 0.5 * vol * vol;
-    let alpha = -carry / (vol * vol);
-    let c = -0.5 * carry * carry / (vol * vol) - rate;
-    let prefactor = (alpha * x + c * expiry).exp();
+    let carry = (-0.5 * vol).mul_add(vol, rate - dividend_yield);
+    let alpha = -carry / vol_sq;
+    let c = (-0.5 * carry).mul_add(carry / vol_sq, -rate);
+    let prefactor = alpha.mul_add(x, c * expiry).exp();
 
     let mut sum = 0.0;
     for n in 1..=series_terms {

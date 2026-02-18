@@ -14,6 +14,7 @@ impl PowerOptionEngine {
     }
 }
 
+#[inline]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64, alpha: f64) -> f64 {
     let transformed_spot = spot.powf(alpha);
     match option_type {
@@ -24,6 +25,7 @@ fn intrinsic(option_type: OptionType, spot: f64, strike: f64, alpha: f64) -> f64
 
 /// Power option price for payoff `max(S^alpha - K, 0)` / `max(K - S^alpha, 0)`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn power_option_price(
     option_type: OptionType,
     spot: f64,
@@ -70,8 +72,10 @@ pub fn power_option_price(
     }
 
     // Haug-style transformed Black representation.
+    // Exponent = ((alpha-1)*(r + 0.5*alpha*vol^2) - alpha*q) * T, using FMA for inner term.
     let pv_forward = spot.powf(alpha)
-        * (((alpha - 1.0) * (rate + 0.5 * alpha * vol * vol) - alpha * dividend_yield) * expiry)
+        * (((alpha - 1.0) * (0.5 * alpha * vol).mul_add(vol, rate) - alpha * dividend_yield)
+            * expiry)
             .exp();
     let discount = (-rate * expiry).exp();
     let discounted_strike = strike * discount;
@@ -85,13 +89,18 @@ pub fn power_option_price(
     }
 
     let sig_sqrt_t = vol_adj * expiry.sqrt();
-    let d1 =
-        ((pv_forward / discounted_strike).ln() + 0.5 * vol_adj * vol_adj * expiry) / sig_sqrt_t;
+    let d1 = ((pv_forward / discounted_strike).ln()
+        + 0.5 * vol_adj * vol_adj * expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
+    // Compute call, derive put via put-call parity to halve CDF evaluations.
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let call = pv_forward.mul_add(nd1, -(discounted_strike * nd2));
     Ok(match option_type {
-        OptionType::Call => pv_forward * normal_cdf(d1) - discounted_strike * normal_cdf(d2),
-        OptionType::Put => discounted_strike * normal_cdf(-d2) - pv_forward * normal_cdf(-d1),
+        OptionType::Call => call,
+        OptionType::Put => call - pv_forward + discounted_strike,
     })
 }
 
@@ -123,7 +132,8 @@ impl PricingEngine<PowerOption> for PowerOptionEngine {
         )?;
 
         let pv_forward = market.spot.powf(instrument.alpha)
-            * (((instrument.alpha - 1.0) * (market.rate + 0.5 * instrument.alpha * vol * vol)
+            * (((instrument.alpha - 1.0)
+                * (0.5 * instrument.alpha * vol).mul_add(vol, market.rate)
                 - instrument.alpha * market.dividend_yield)
                 * instrument.expiry)
                 .exp();

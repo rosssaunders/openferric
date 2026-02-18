@@ -16,6 +16,7 @@ impl BinomialTreeEngine {
     }
 }
 
+#[inline(always)]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -87,10 +88,18 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
             _ => None,
         };
 
+        // Fast path: for European / American we avoid the Vec lookup entirely.
+        let is_american = matches!(instrument.exercise, ExerciseStyle::American);
+        let is_bermudan = bermudan_flags.is_some();
+
         // Multiplicative recurrence replaces O(steps^2) powf() calls with multiplications.
         // spot * u^j * d^(steps-j) = spot * d^steps * (u/d)^j
         let ratio = u / d;
         let one_minus_p = 1.0 - p;
+
+        // Pre-compute discounted probabilities to avoid repeated multiplications.
+        let disc_p = disc * p;
+        let disc_1mp = disc * one_minus_p;
 
         let mut values = vec![0.0_f64; self.steps + 1];
         {
@@ -103,26 +112,34 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
 
         let mut base = market.spot * d.powi((self.steps - 1) as i32);
         for i in (0..self.steps).rev() {
-            let can_exercise = match &instrument.exercise {
-                ExerciseStyle::European => false,
-                ExerciseStyle::American => true,
-                ExerciseStyle::Bermudan { .. } => {
-                    bermudan_flags.as_ref().is_some_and(|flags| flags[i])
-                }
+            let can_exercise = if is_bermudan {
+                // SAFETY: bermudan_flags is Some when is_bermudan is true.
+                unsafe { bermudan_flags.as_ref().unwrap_unchecked()[i] }
+            } else {
+                is_american
             };
 
             if can_exercise {
                 let mut st = base;
                 for j in 0..=i {
-                    // disc * (p * values[j+1] + (1-p) * values[j])  →  FMA
-                    let continuation = disc * p.mul_add(values[j + 1], one_minus_p * values[j]);
+                    let continuation = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[j] = continuation.max(exercise);
                     st *= ratio;
                 }
             } else {
-                for j in 0..=i {
-                    values[j] = disc * p.mul_add(values[j + 1], one_minus_p * values[j]);
+                // Unroll by 4 for the simple non-exercise weighted-average path.
+                let mut j = 0;
+                while j + 4 <= i + 1 {
+                    values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
+                    values[j + 1] = disc_p.mul_add(values[j + 2], disc_1mp * values[j + 1]);
+                    values[j + 2] = disc_p.mul_add(values[j + 3], disc_1mp * values[j + 2]);
+                    values[j + 3] = disc_p.mul_add(values[j + 4], disc_1mp * values[j + 3]);
+                    j += 4;
+                }
+                while j <= i {
+                    values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
+                    j += 1;
                 }
             }
             base *= u;

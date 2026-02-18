@@ -84,9 +84,15 @@ pub fn bs_price(
     }
 
     let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
+    // Compute call, derive put via put-call parity to halve CDF evaluations.
+    let nd1 = norm_cdf(d1);
+    let nd2 = norm_cdf(d2);
+    let s_df_q = spot * df_q;
+    let k_df_r = strike * df_r;
+    let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
     match option_type {
-        OptionType::Call => spot * df_q * norm_cdf(d1) - strike * df_r * norm_cdf(d2),
-        OptionType::Put => strike * df_r * norm_cdf(-d2) - spot * df_q * norm_cdf(-d1),
+        OptionType::Call => call,
+        OptionType::Put => call - s_df_q + k_df_r,
     }
 }
 
@@ -162,16 +168,19 @@ pub fn bs_theta(
     let sqrt_t = expiry.sqrt();
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
+    let nd1 = norm_cdf(d1);
+    let nd2 = norm_cdf(d2);
+    let theta_common = -spot * df_q * norm_pdf(d1) * vol / (2.0 * sqrt_t);
     match option_type {
         OptionType::Call => {
-            -spot * df_q * norm_pdf(d1) * vol / (2.0 * sqrt_t)
-                + dividend_yield * spot * df_q * norm_cdf(d1)
-                - rate * strike * df_r * norm_cdf(d2)
+            theta_common
+                + dividend_yield * spot * df_q * nd1
+                - rate * strike * df_r * nd2
         }
         OptionType::Put => {
-            -spot * df_q * norm_pdf(d1) * vol / (2.0 * sqrt_t)
-                - dividend_yield * spot * df_q * norm_cdf(-d1)
-                + rate * strike * df_r * norm_cdf(-d2)
+            theta_common
+                - dividend_yield * spot * df_q * (1.0 - nd1)
+                + rate * strike * df_r * (1.0 - nd2)
         }
     }
 }
@@ -216,8 +225,9 @@ fn bs_price_greeks_with_dividend(
     // Shared intermediates — computed exactly once.
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 =
-        ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln()
+        + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-rate * expiry).exp();
@@ -227,24 +237,28 @@ fn bs_price_greeks_with_dividend(
     let nd2 = norm_cdf(d2);
     let pdf_d1 = norm_pdf(d1);
 
-    // Price.
+    // Price: compute call, derive put via put-call parity.
+    let s_df_q = spot * df_q;
+    let k_df_r = strike * df_r;
+    let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
+    let theta_common = -s_df_q * pdf_d1 * vol / (2.0 * sqrt_t);
+
     let (price, delta, theta) = match option_type {
         OptionType::Call => {
-            let p = spot * df_q * nd1 - strike * df_r * nd2;
             let d = df_q * nd1;
-            let th = -spot * df_q * pdf_d1 * vol / (2.0 * sqrt_t)
-                + dividend_yield * spot * df_q * nd1
-                - rate * strike * df_r * nd2;
-            (p, d, th)
+            let th = theta_common
+                + dividend_yield * s_df_q * nd1
+                - rate * k_df_r * nd2;
+            (call, d, th)
         }
         OptionType::Put => {
             let nmd1 = 1.0 - nd1;
             let nmd2 = 1.0 - nd2;
-            let p = strike * df_r * nmd2 - spot * df_q * nmd1;
+            let p = call - s_df_q + k_df_r;
             let d = df_q * (nd1 - 1.0);
-            let th = -spot * df_q * pdf_d1 * vol / (2.0 * sqrt_t)
-                - dividend_yield * spot * df_q * nmd1
-                + rate * strike * df_r * nmd2;
+            let th = theta_common
+                - dividend_yield * s_df_q * nmd1
+                + rate * k_df_r * nmd2;
             (p, d, th)
         }
     };

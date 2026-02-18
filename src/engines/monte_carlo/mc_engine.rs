@@ -171,34 +171,78 @@ pub fn mc_european_with_arena(
     let strike = instrument.strike;
     let spot = market.spot;
 
-    for (i, payoff_slot) in payoff_buffer.iter_mut().enumerate().take(n_paths) {
-        // Use raw Xoshiro directly — eliminates FastRng enum dispatch on every
-        // random draw. Produces identical values as FastRng::Xoshiro256PlusPlus.
-        let mut xrng = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i));
+    // Process paths in chunks of 4 for better instruction-level parallelism.
+    // The four independent exp() computations can overlap in the CPU pipeline.
+    let mut i = 0;
+    while i + 4 <= n_paths {
+        let mut xrng0 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i));
+        let mut xrng1 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i + 1));
+        let mut xrng2 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i + 2));
+        let mut xrng3 = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i + 3));
 
-        // Track only terminal spot — no intermediate path writes needed for
-        // European vanilla (eliminates n_steps cache-dirtying writes per path).
+        let mut s0 = spot;
+        let mut s1 = spot;
+        let mut s2 = spot;
+        let mut s3 = spot;
+
+        for _ in 0..n_steps {
+            let u0 = xrng0.next_f64();
+            xrng0.next_u64();
+            let u1 = xrng1.next_f64();
+            xrng1.next_u64();
+            let u2 = xrng2.next_f64();
+            xrng2.next_u64();
+            let u3 = xrng3.next_f64();
+            xrng3.next_u64();
+            let z0 = beasley_springer_moro_inv_cdf(uniform_open01(u0));
+            let z1 = beasley_springer_moro_inv_cdf(uniform_open01(u1));
+            let z2 = beasley_springer_moro_inv_cdf(uniform_open01(u2));
+            let z3 = beasley_springer_moro_inv_cdf(uniform_open01(u3));
+            s0 *= diffusion.mul_add(z0, drift).exp();
+            s1 *= diffusion.mul_add(z1, drift).exp();
+            s2 *= diffusion.mul_add(z2, drift).exp();
+            s3 *= diffusion.mul_add(z3, drift).exp();
+        }
+
+        payoff_buffer[i] = vanilla_payoff(option_type, s0, strike);
+        payoff_buffer[i + 1] = vanilla_payoff(option_type, s1, strike);
+        payoff_buffer[i + 2] = vanilla_payoff(option_type, s2, strike);
+        payoff_buffer[i + 3] = vanilla_payoff(option_type, s3, strike);
+        i += 4;
+    }
+    // Remainder paths (when n_paths is not a multiple of 4).
+    while i < n_paths {
+        let mut xrng = Xoshiro256PlusPlus::seed_from_u64(stream_seed(ARENA_MC_SEED, i));
         let mut s = spot;
         for _ in 0..n_steps {
             let u = xrng.next_f64();
-            // Advance RNG state by one draw to match the 2-draws-per-step
-            // protocol used by MonteCarloEngine::run (Heston needs both).
             xrng.next_u64();
             let z = beasley_springer_moro_inv_cdf(uniform_open01(u));
             s *= diffusion.mul_add(z, drift).exp();
         }
-
-        *payoff_slot = vanilla_payoff(option_type, s, strike);
+        payoff_buffer[i] = vanilla_payoff(option_type, s, strike);
+        i += 1;
     }
 
     let n = n_paths as f64;
     let payoffs = &payoff_buffer[..n_paths];
-    // Single-pass mean and variance (avoids iterating the buffer twice).
+    // Kahan summation for improved numerical accuracy (the FMA is free).
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
+    let mut comp = 0.0_f64;
+    let mut comp_sq = 0.0_f64;
     for &v in payoffs {
-        sum += v;
-        sum_sq += v * v;
+        // Kahan summation for sum
+        let y = v - comp;
+        let t = sum + y;
+        comp = (t - sum) - y;
+        sum = t;
+        // Kahan summation for sum_sq
+        let v2 = v * v;
+        let y2 = v2 - comp_sq;
+        let t2 = sum_sq + y2;
+        comp_sq = (t2 - sum_sq) - y2;
+        sum_sq = t2;
     }
     let mean = sum / n;
     let variance = if n_paths > 1 {

@@ -139,9 +139,16 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
         let payoffs = (0..samples).map(simulate_sample).collect::<Vec<_>>();
 
         let n = payoffs.len() as f64;
-        let mean = payoffs.iter().sum::<f64>() / n;
+        // Single-pass statistics: avoid second iteration over payoffs.
+        let mut sum = 0.0_f64;
+        let mut sum_sq = 0.0_f64;
+        for &x in &payoffs {
+            sum += x;
+            sum_sq += x * x;
+        }
+        let mean = sum / n;
         let variance = if payoffs.len() > 1 {
-            payoffs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)
+            (sum_sq - sum * sum / n) / (n - 1.0)
         } else {
             0.0
         };
@@ -171,10 +178,10 @@ fn terminal_spread_payoff(
     vol_term2: f64,
 ) -> f64 {
     let w1 = z1;
-    let w2 = option.rho * z1 + corr_tail * z2;
+    let w2 = option.rho.mul_add(z1, corr_tail * z2);
 
-    let s1_t = option.s1 * (drift1 + vol_term1 * w1).exp();
-    let s2_t = option.s2 * (drift2 + vol_term2 * w2).exp();
+    let s1_t = option.s1 * vol_term1.mul_add(w1, drift1).exp();
+    let s2_t = option.s2 * vol_term2.mul_add(w2, drift2).exp();
 
     (s1_t - s2_t - option.k).max(0.0)
 }

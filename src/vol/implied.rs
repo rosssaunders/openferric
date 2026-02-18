@@ -120,6 +120,9 @@ pub fn implied_vol_newton(
 
     let mut sigma = lets_be_rational_initial_guess(option_type, s, k, r, t, market_price);
 
+    // Pre-compute loop-invariant values.
+    let sqrt_t = t.sqrt();
+    let ln_sk = (s / k).ln();
     for _ in 0..max_iter {
         let price = black_scholes_price(option_type, s, k, r, sigma, t);
         let diff = price - market_price;
@@ -127,8 +130,9 @@ pub fn implied_vol_newton(
             return Ok(sigma);
         }
 
-        let d1 = ((s / k).ln() + (r + 0.5 * sigma * sigma) * t) / (sigma * t.sqrt());
-        let vega = s * normal_pdf(d1) * t.sqrt();
+        let sig_sqrt_t = sigma * sqrt_t;
+        let d1 = (ln_sk + (0.5 * sigma).mul_add(sigma, r) * t) / sig_sqrt_t;
+        let vega = s * normal_pdf(d1) * sqrt_t;
 
         if vega.abs() < 1e-10 {
             break;

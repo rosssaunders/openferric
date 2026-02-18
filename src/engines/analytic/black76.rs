@@ -14,6 +14,7 @@ impl Black76Engine {
     }
 }
 
+#[inline]
 fn intrinsic(option_type: OptionType, forward: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (forward - strike).max(0.0),
@@ -21,6 +22,7 @@ fn intrinsic(option_type: OptionType, forward: f64, strike: f64) -> f64 {
     }
 }
 
+#[inline]
 fn black76_price_greeks(option: &FuturesOption) -> (f64, Greeks, f64, f64) {
     let sqrt_t = option.t.sqrt();
     let sig_sqrt_t = option.vol * sqrt_t;
@@ -29,21 +31,25 @@ fn black76_price_greeks(option: &FuturesOption) -> (f64, Greeks, f64, f64) {
     let d2 = d1 - sig_sqrt_t;
 
     let df = (-option.r * option.t).exp();
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let pdf_d1 = normal_pdf(d1);
+
+    // Compute call price, derive put via put-call parity.
+    let call = df * option.forward.mul_add(nd1, -(option.strike * nd2));
     let price = match option.option_type {
-        OptionType::Call => df * (option.forward * normal_cdf(d1) - option.strike * normal_cdf(d2)),
-        OptionType::Put => {
-            df * (option.strike * normal_cdf(-d2) - option.forward * normal_cdf(-d1))
-        }
+        OptionType::Call => call,
+        OptionType::Put => call - df * (option.forward - option.strike),
     };
 
     let delta = match option.option_type {
-        OptionType::Call => df * normal_cdf(d1),
-        OptionType::Put => df * (normal_cdf(d1) - 1.0),
+        OptionType::Call => df * nd1,
+        OptionType::Put => df * (nd1 - 1.0),
     };
-    let gamma = df * normal_pdf(d1) / (option.forward * option.vol * sqrt_t);
-    let vega = df * option.forward * normal_pdf(d1) * sqrt_t;
+    let gamma = df * pdf_d1 / (option.forward * option.vol * sqrt_t);
+    let vega = df * option.forward * pdf_d1 * sqrt_t;
     let theta =
-        option.r * price - df * option.forward * normal_pdf(d1) * option.vol / (2.0 * sqrt_t);
+        option.r.mul_add(price, -(df * option.forward * pdf_d1 * option.vol / (2.0 * sqrt_t)));
 
     // Sensitivity to r for fixed forward input.
     let rho = -option.t * price;

@@ -2,6 +2,8 @@
 
 pub mod analytic;
 pub mod fft;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod lsm;
 pub mod monte_carlo;
 pub mod numerical;

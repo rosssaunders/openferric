@@ -76,6 +76,7 @@ impl HestonEngine {
         let one = Complex64::new(1.0, 0.0);
 
         let sigma2 = self.sigma_v * self.sigma_v;
+        let inv_sigma2 = 1.0 / sigma2;
         let iu = i * u;
         let beta = Complex64::new(self.kappa, 0.0) - self.rho * self.sigma_v * iu;
 
@@ -88,10 +89,10 @@ impl HestonEngine {
         let exp_neg_dt = (-d * t).exp();
         let log_term = ((one - g * exp_neg_dt) / (one - g)).ln();
 
-        let a_over_sigma2 = self.kappa * self.theta / sigma2;
+        let a_term = Complex64::new(self.kappa * self.theta * inv_sigma2, 0.0);
         let c = iu * (ln_spot + (rate - dividend_yield) * t)
-            + Complex64::new(a_over_sigma2, 0.0) * ((beta - d) * t - 2.0 * log_term);
-        let d_term = ((beta - d) / sigma2) * ((one - exp_neg_dt) / (one - g * exp_neg_dt));
+            + a_term * ((beta - d) * t - 2.0 * log_term);
+        let d_term = ((beta - d) * inv_sigma2) * ((one - exp_neg_dt) / (one - g * exp_neg_dt));
 
         (c + d_term * self.v0).exp()
     }
@@ -119,19 +120,33 @@ impl HestonEngine {
         let adjusted_weights = &*GL32_ADJUSTED_WEIGHTS;
         let mut integral = 0.0;
 
-        for idx in 0..32 {
-            let x = nodes[idx];
+        // Closure that computes a single integrand value for quadrature node j.
+        // Uses real arithmetic for the denominator (u is real, so u*u is x*x).
+        let compute_integrand = |j: usize| {
+            let x = nodes[j];
             let u = Complex64::new(x, 0.0);
             let shifted = u - half_i;
-
             let phi = self.characteristic_fn(shifted, ln_spot, t, rate, dividend_yield);
             let psi = phi / (i * shifted * ln_forward).exp();
             let numerator = (i * u * log_moneyness).exp() * psi;
-            let denominator = u * u + 0.25;
-            let integrand = (numerator / denominator).re;
+            // Avoid complex multiplication: u is real so u*u = x*x (real scalar).
+            let denom_re = x * x + 0.25;
+            (numerator / Complex64::new(denom_re, 0.0)).re
+        };
 
-            // Use precomputed w * exp(x) to avoid 32 exp() calls per pricing invocation.
-            integral += adjusted_weights[idx] * integrand;
+        // Unrolled loop: process 4 nodes at a time for better instruction-level parallelism.
+        let mut idx = 0;
+        while idx + 4 <= 32 {
+            integral += adjusted_weights[idx] * compute_integrand(idx);
+            integral += adjusted_weights[idx + 1] * compute_integrand(idx + 1);
+            integral += adjusted_weights[idx + 2] * compute_integrand(idx + 2);
+            integral += adjusted_weights[idx + 3] * compute_integrand(idx + 3);
+            idx += 4;
+        }
+        // Handle any remainder (32 is divisible by 4, but this guards future changes).
+        while idx < 32 {
+            integral += adjusted_weights[idx] * compute_integrand(idx);
+            idx += 1;
         }
 
         let call = df_r * (forward - (forward * strike).sqrt() * integral / PI);

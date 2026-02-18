@@ -65,6 +65,23 @@ impl Xoshiro256PlusPlus {
         let x = self.next_u64() >> 11;
         x as f64 * (1.0 / ((1_u64 << 53) as f64))
     }
+
+    #[inline]
+    pub fn next_f64_pair(&mut self) -> (f64, f64) {
+        let a = self.next_f64();
+        let b = self.next_f64();
+        (a, b)
+    }
+}
+
+/// Generate `n` standard normal samples directly into `out` buffer.
+/// Eliminates per-sample function call overhead and improves branch prediction.
+#[inline]
+pub fn fill_normals(rng: &mut Xoshiro256PlusPlus, out: &mut [f64]) {
+    for v in out.iter_mut() {
+        let u = rng.next_f64();
+        *v = beasley_springer_moro_inv_cdf(uniform_open01(u));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +217,24 @@ pub fn uniform_open01(u: f64) -> f64 {
 #[inline(always)]
 pub fn sample_standard_normal(rng: &mut FastRng) -> f64 {
     beasley_springer_moro_inv_cdf(uniform_open01(rng.random_f64()))
+}
+
+/// Bulk fill a slice with standard normal samples, avoiding per-element function call overhead.
+#[inline]
+pub fn fill_standard_normals(rng: &mut FastRng, out: &mut [f64]) {
+    match rng {
+        FastRng::Xoshiro256PlusPlus(xrng) => {
+            for v in out.iter_mut() {
+                let u = xrng.next_f64();
+                *v = beasley_springer_moro_inv_cdf(uniform_open01(u));
+            }
+        }
+        _ => {
+            for v in out.iter_mut() {
+                *v = sample_standard_normal(rng);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

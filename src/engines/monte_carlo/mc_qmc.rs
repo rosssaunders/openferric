@@ -85,10 +85,24 @@ pub fn mc_european_qmc_with_seed(
             break;
         }
         let mut spot = market.spot;
-        for &u in &uniforms {
-            let z = normal_inv_cdf(uniform_open01(u));
+        // Log-Euler GBM step: exp() is always positive, no clamp needed.
+        // Unroll by 4 for instruction-level parallelism.
+        let mut step = 0;
+        while step + 4 <= n_steps {
+            let z0 = normal_inv_cdf(uniform_open01(uniforms[step]));
+            let z1 = normal_inv_cdf(uniform_open01(uniforms[step + 1]));
+            let z2 = normal_inv_cdf(uniform_open01(uniforms[step + 2]));
+            let z3 = normal_inv_cdf(uniform_open01(uniforms[step + 3]));
+            spot *= dt_vol.mul_add(z0, dt_drift).exp();
+            spot *= dt_vol.mul_add(z1, dt_drift).exp();
+            spot *= dt_vol.mul_add(z2, dt_drift).exp();
+            spot *= dt_vol.mul_add(z3, dt_drift).exp();
+            step += 4;
+        }
+        while step < n_steps {
+            let z = normal_inv_cdf(uniform_open01(uniforms[step]));
             spot *= dt_vol.mul_add(z, dt_drift).exp();
-            spot = spot.max(1.0e-12);
+            step += 1;
         }
 
         let px = payoff(instrument.option_type, spot, instrument.strike);

@@ -37,6 +37,7 @@ impl GeneralizedBinomialEngine {
     }
 }
 
+#[inline(always)]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -101,12 +102,16 @@ impl PricingEngine<VanillaOption> for GeneralizedBinomialEngine {
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
 
+        // Pre-compute disc*p and disc*(1-p) to eliminate per-node multiplications.
+        let disc_p = disc * p;
+        let disc_1mp = disc * one_minus_p;
+
         if is_american {
             let mut base = market.spot * d.powi((self.steps - 1) as i32);
             for i in (0..self.steps).rev() {
                 let mut st = base;
                 for j in 0..=i {
-                    let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
+                    let continuation = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[j] = continuation.max(exercise);
                     st *= ratio;
@@ -116,7 +121,7 @@ impl PricingEngine<VanillaOption> for GeneralizedBinomialEngine {
         } else {
             for i in (0..self.steps).rev() {
                 for j in 0..=i {
-                    values[j] = disc * (p * values[j + 1] + one_minus_p * values[j]);
+                    values[j] = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
                 }
             }
         }

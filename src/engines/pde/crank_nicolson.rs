@@ -40,6 +40,7 @@ impl CrankNicolsonEngine {
     }
 }
 
+#[inline(always)]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -96,7 +97,7 @@ fn boundary_values(
 
 /// In-place tridiagonal solve using pre-allocated scratch buffers.
 /// Writes solution into `x`. `c_star` and `d_star` are scratch space.
-#[inline]
+#[inline(always)]
 fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
@@ -181,6 +182,10 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         let ds = s_max / n_s as f64;
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
+        // Pre-compute exercise parameters outside the time loop so the inner
+        // exercise loop is branchless (compiles to maxsd instructions).
+        let is_call = matches!(instrument.option_type, OptionType::Call);
+        let strike = instrument.strike;
         let bermudan_flags = match &instrument.exercise {
             ExerciseStyle::Bermudan { dates } => {
                 Some(bermudan_exercise_steps(dates, instrument.expiry, n_t))
@@ -202,23 +207,30 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         let mut rhs_diag = vec![0.0_f64; interior_n];
         let mut rhs_upper = vec![0.0_f64; interior_n];
 
+        // Pre-compute reciprocals to replace per-iteration divisions with multiplications.
+        let inv_ds2 = 1.0 / (ds * ds);
+        let inv_2ds = 1.0 / (2.0 * ds);
+        let half_vol2 = 0.5 * vol * vol;
+        let drift = market.rate - market.dividend_yield;
+        let half_dt = 0.5 * dt;
+
         for k in 0..interior_n {
             let i = k + 1;
             let s = i as f64 * ds;
-            let alpha = 0.5 * vol * vol * s * s / (ds * ds);
-            let beta = (market.rate - market.dividend_yield) * s / (2.0 * ds);
+            let alpha = half_vol2 * s * s * inv_ds2;
+            let beta = drift * s * inv_2ds;
 
             let a = alpha - beta;
             let b = -2.0 * alpha - market.rate;
             let c = alpha + beta;
 
-            lhs_lower[k] = -0.5 * dt * a;
-            lhs_diag[k] = 1.0 - 0.5 * dt * b;
-            lhs_upper[k] = -0.5 * dt * c;
+            lhs_lower[k] = -half_dt * a;
+            lhs_diag[k] = 1.0 - half_dt * b;
+            lhs_upper[k] = -half_dt * c;
 
-            rhs_lower[k] = 0.5 * dt * a;
-            rhs_diag[k] = 1.0 + 0.5 * dt * b;
-            rhs_upper[k] = 0.5 * dt * c;
+            rhs_lower[k] = half_dt * a;
+            rhs_diag[k] = 1.0 + half_dt * b;
+            rhs_upper[k] = half_dt * c;
         }
 
         // Pre-allocate all scratch buffers once to eliminate per-timestep allocations.
@@ -229,7 +241,8 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         let mut solve_upper = vec![0.0_f64; interior_n];
         let mut c_star = vec![0.0_f64; interior_n];
         let mut d_star = vec![0.0_f64; interior_n];
-        let mut interior = vec![0.0_f64; interior_n];
+        // Eliminated separate `interior` buffer: tridiagonal solver writes directly
+        // into next_values[1..n_s], saving one allocation and one copy_from_slice.
         let mut next_values = vec![0.0_f64; n_s + 1];
 
         // Pre-copy the LHS bands with zeroed boundary entries (they never change).
@@ -250,18 +263,24 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 tau_new,
             );
 
-            // RHS = B * values; use FMA for the tridiagonal multiply.
+            // RHS = B * values; use FMA chains for the tridiagonal multiply.
+            // Ordering: outer FMA on diagonal (largest term) for best precision.
             for k in 0..interior_n {
                 let i = k + 1;
-                rhs_buf[k] = rhs_lower[k].mul_add(
-                    values[i - 1],
-                    rhs_diag[k].mul_add(values[i], rhs_upper[k] * values[i + 1]),
+                rhs_buf[k] = rhs_diag[k].mul_add(
+                    values[i],
+                    rhs_lower[k].mul_add(values[i - 1], rhs_upper[k] * values[i + 1]),
                 );
             }
 
             rhs_buf[0] -= lhs_lower[0] * lower_new;
             rhs_buf[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_new;
 
+            next_values[0] = lower_new;
+            next_values[n_s] = upper_new;
+
+            // Solve directly into next_values[1..n_s], eliminating a separate
+            // interior buffer and the copy_from_slice that followed.
             solve_tridiagonal_inplace(
                 &solve_lower,
                 &lhs_diag,
@@ -269,12 +288,8 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 &rhs_buf,
                 &mut c_star,
                 &mut d_star,
-                &mut interior,
+                &mut next_values[1..n_s],
             )?;
-
-            next_values[0] = lower_new;
-            next_values[n_s] = upper_new;
-            next_values[1..n_s].copy_from_slice(&interior);
 
             let can_exercise = match &instrument.exercise {
                 ExerciseStyle::European => false,
@@ -284,9 +299,16 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 }
             };
             if can_exercise {
+                // Branchless early-exercise: the match on is_call is hoisted
+                // out of the loop by the compiler; inner body is just maxsd ops.
                 for (i, v) in next_values.iter_mut().enumerate() {
                     let s = i as f64 * ds;
-                    *v = v.max(intrinsic(instrument.option_type, s, instrument.strike));
+                    let exercise_value = if is_call {
+                        (s - strike).max(0.0)
+                    } else {
+                        (strike - s).max(0.0)
+                    };
+                    *v = v.max(exercise_value);
                 }
             }
 

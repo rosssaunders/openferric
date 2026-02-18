@@ -12,9 +12,10 @@ struct BlackEval {
     third: f64,
 }
 
-#[inline]
+#[inline(always)]
 fn normalized_intrinsic(x: f64, is_call: bool) -> f64 {
-    let parity = (0.5 * x).exp() - (-0.5 * x).exp();
+    let exph = (0.5 * x).exp();
+    let parity = exph - 1.0 / exph; // single exp() instead of two
     if is_call {
         parity.max(0.0)
     } else {
@@ -36,12 +37,13 @@ fn normalized_black_call(x: f64, s: f64) -> f64 {
     if s <= 0.0 {
         return normalized_intrinsic(x, true);
     }
+    // Compute exp(x/2) and exp(-x/2) from a single exp() call.
     let exph = (0.5 * x).exp();
-    let expmh = (-0.5 * x).exp();
+    let expmh = 1.0 / exph; // exp(-x/2) = 1/exp(x/2) — saves one exp() call
     let inv_s = 1.0 / s;
-    let d1 = x * inv_s + 0.5 * s;
+    let d1 = x.mul_add(inv_s, 0.5 * s);
     let d2 = d1 - s;
-    exph * normal_cdf(d1) - expmh * normal_cdf(d2)
+    exph.mul_add(normal_cdf(d1), -expmh * normal_cdf(d2))
 }
 
 #[inline]
@@ -57,9 +59,9 @@ pub fn normalized_black(x: f64, s: f64, is_call: bool) -> f64 {
 #[inline]
 fn normalized_black_call_with_derivatives(x: f64, s: f64) -> BlackEval {
     let exph = (0.5 * x).exp();
-    let expmh = (-0.5 * x).exp();
+    let expmh = 1.0 / exph; // exp(-x/2) = 1/exp(x/2) — one exp() instead of two
     let inv_s = 1.0 / s;
-    let d1 = x * inv_s + 0.5 * s;
+    let d1 = x.mul_add(inv_s, 0.5 * s);
     let d2 = d1 - s;
 
     let nd1 = normal_cdf(d1);

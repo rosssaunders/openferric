@@ -10,6 +10,7 @@ pub enum BinaryBarrierType {
     UpOut,
 }
 
+#[inline]
 fn map_barrier(kind: BinaryBarrierType) -> (BarrierStyle, BarrierDirection) {
     match kind {
         BinaryBarrierType::DownIn => (BarrierStyle::In, BarrierDirection::Down),
@@ -19,6 +20,7 @@ fn map_barrier(kind: BinaryBarrierType) -> (BarrierStyle, BarrierDirection) {
     }
 }
 
+#[inline]
 fn barrier_breached_at_start(spot: f64, barrier: f64, kind: BinaryBarrierType) -> bool {
     match kind {
         BinaryBarrierType::DownIn | BinaryBarrierType::DownOut => spot <= barrier,
@@ -26,6 +28,7 @@ fn barrier_breached_at_start(spot: f64, barrier: f64, kind: BinaryBarrierType) -
     }
 }
 
+#[inline]
 fn payoff_in_the_money(option_type: OptionType, spot: f64, strike: f64) -> bool {
     match option_type {
         OptionType::Call => spot > strike,
@@ -34,6 +37,7 @@ fn payoff_in_the_money(option_type: OptionType, spot: f64, strike: f64) -> bool 
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn barrier_vanilla_price(
     option_type: OptionType,
     kind: BinaryBarrierType,
@@ -62,6 +66,7 @@ fn barrier_vanilla_price(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn strike_derivative_of_barrier_vanilla(
     option_type: OptionType,
     kind: BinaryBarrierType,
@@ -121,7 +126,8 @@ fn strike_derivative_of_barrier_vanilla(
             expiry,
         );
 
-        (-f_p2 + 8.0 * f_p1 - 8.0 * f_m1 + f_m2) / (12.0 * h)
+        // Central 4th-order finite difference via FMA chain.
+        8.0_f64.mul_add(f_p1 - f_m1, f_m2 - f_p2) / (12.0 * h)
     } else {
         let k_lo = (strike - h).max(1.0e-8);
         let k_hi = strike + h;
@@ -153,6 +159,7 @@ fn strike_derivative_of_barrier_vanilla(
 
 /// Cash-or-nothing barrier option price.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn cash_or_nothing_barrier_price(
     option_type: OptionType,
     kind: BinaryBarrierType,

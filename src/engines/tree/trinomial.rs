@@ -16,6 +16,7 @@ impl TrinomialTreeEngine {
     }
 }
 
+#[inline(always)]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -123,6 +124,11 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
             }
         }
 
+        // Pre-compute disc * probability products to eliminate per-node multiplications.
+        let disc_pu = disc * pu;
+        let disc_pm = disc * pm; // m == 1.0, so disc * pm * m == disc * pm
+        let disc_pd = disc * pd;
+
         // Rollback using single buffer (values shrinks logically but buffer is reused).
         // At step i, we need 2*i+1 nodes centered around 0.
         // The previous step (i+1) has 2*(i+1)+1 nodes, stored in values[0..2*(i+1)+1].
@@ -138,26 +144,23 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
             let cur_width = 2 * i + 1;
 
             if can_exercise {
-                // spot * u^j for j = -i..=i: start at spot * d^i, multiply by u.
                 let mut st = market.spot * d.powi(i as i32);
                 for k in 0..cur_width {
-                    // Map: k corresponds to j = k - i, indices in previous layer offset by 1.
-                    let up_idx = k + 2;
-                    let mid_idx = k + 1;
-                    let down_idx = k;
-                    let continuation =
-                        disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
+                    // FMA chain: disc_pu * up + disc_pm * mid + disc_pd * down
+                    let continuation = disc_pu.mul_add(
+                        values[k + 2],
+                        disc_pm.mul_add(values[k + 1], disc_pd * values[k]),
+                    );
                     let exercise = intrinsic(instrument.option_type, st, instrument.strike);
                     values[k] = continuation.max(exercise);
                     st *= u;
                 }
             } else {
                 for k in 0..cur_width {
-                    let up_idx = k + 2;
-                    let mid_idx = k + 1;
-                    let down_idx = k;
-                    values[k] =
-                        disc * (pu * values[up_idx] + pm * m * values[mid_idx] + pd * values[down_idx]);
+                    values[k] = disc_pu.mul_add(
+                        values[k + 2],
+                        disc_pm.mul_add(values[k + 1], disc_pd * values[k]),
+                    );
                 }
             }
         }
