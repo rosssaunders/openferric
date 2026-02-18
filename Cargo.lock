@@ -1627,6 +1627,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "getrandom 0.4.1",
+ "js-sys",
  "nalgebra",
  "num-complex",
  "pollster",
@@ -1643,6 +1644,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower-http",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wgpu",
 ]
 

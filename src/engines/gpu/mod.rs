@@ -7,5 +7,11 @@
 #[cfg(feature = "gpu")]
 mod gpu_mc;
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 pub use gpu_mc::mc_european_gpu;
+
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+pub use gpu_mc::mc_european_gpu_async;
+
+#[cfg(feature = "gpu")]
+pub use gpu_mc::GpuMcResult;

@@ -66,7 +66,6 @@
     }
     .sparkline-wrap svg { display: block; }
     .status-pill {
-      margin-left: auto;
       font-size: 11px;
       font-family: var(--mono);
       padding: 3px 10px;
@@ -82,7 +81,7 @@
     .grid {
       display: grid;
       grid-template-columns: 1.6fr 1fr;
-      grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
       gap: 6px;
       padding: 6px;
       height: calc(100vh - 44px);
@@ -173,6 +172,41 @@
     }
     th { color: var(--muted); font-weight: 500; }
 
+    /* ---- Mispricing Scanner ---- */
+    .scanner-wrap {
+      display: flex;
+      gap: 6px;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .scanner-heatmap {
+      flex: 1.2;
+      min-height: 0;
+    }
+    .scanner-table-wrap {
+      flex: 1;
+      overflow: auto;
+      min-height: 0;
+    }
+    .scanner-table-wrap table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+    }
+    .scanner-table-wrap th {
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      z-index: 1;
+    }
+    .scanner-table-wrap td { white-space: nowrap; }
+    .edge-buy { color: var(--accent2); }
+    .edge-sell { color: var(--danger); }
+    .edge-strong { font-weight: 700; }
+    .edge-actionable { background: rgba(25,216,168,0.08); }
+    .edge-actionable.sell { background: rgba(255,122,122,0.08); }
+
     @media (max-width: 1060px) {
       .grid {
         grid-template-columns: 1fr;
@@ -196,6 +230,15 @@
       ATM vol
       <svg id="spark-vol" width="80" height="22" viewBox="0 0 80 22"></svg>
     </div>
+    <div class="toolbar" style="margin-left: auto;">
+      <label for="model-select">model</label>
+      <select id="model-select">
+        <option value="svi" selected>SVI</option>
+        <option value="sabr">SABR</option>
+        <option value="vv">Vanna-Volga</option>
+      </select>
+      <span id="calib-time" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></span>
+    </div>
     <div class="status-pill connecting" id="status-pill">connecting...</div>
   </div>
 
@@ -205,15 +248,6 @@
     <div class="panel" style="grid-row: 1;">
       <div class="panel-head">
         <div class="panel-title" id="surface-title">3D Vol Surface (SVI fit + market)</div>
-        <div class="toolbar">
-          <label for="model-select">model</label>
-          <select id="model-select">
-            <option value="svi" selected>SVI</option>
-            <option value="sabr">SABR</option>
-            <option value="vv">Vanna-Volga</option>
-          </select>
-          <span id="calib-time" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></span>
-        </div>
       </div>
       <div class="chart-area" id="chart-surface"></div>
     </div>
@@ -280,6 +314,44 @@
           </thead>
           <tbody></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Row 4: Mispricing Scanner (full width) -->
+    <div class="panel" style="grid-row: 4; grid-column: 1 / -1;">
+      <div class="panel-head">
+        <div class="panel-title">Mispricing Scanner</div>
+        <div class="toolbar">
+          <label for="edge-threshold">min edge</label>
+          <select id="edge-threshold">
+            <option value="0.5">0.5 vol</option>
+            <option value="1.0" selected>1.0 vol</option>
+            <option value="2.0">2.0 vol</option>
+            <option value="5.0">5.0 vol</option>
+          </select>
+          <label for="edge-side">side</label>
+          <select id="edge-side">
+            <option value="all" selected>all</option>
+            <option value="buy">buy only</option>
+            <option value="sell">sell only</option>
+          </select>
+        </div>
+      </div>
+      <div class="scanner-wrap">
+        <div class="scanner-heatmap" id="chart-edge"></div>
+        <div class="scanner-table-wrap">
+          <table id="edge-table">
+            <thead>
+              <tr>
+                <th>expiry</th><th>strike</th><th>C/P</th>
+                <th>mkt IV</th><th>mdl IV</th><th>IV edge</th>
+                <th>bid</th><th>ask</th><th>mid</th><th>theo</th>
+                <th>$ edge</th><th>signal</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -1007,6 +1079,7 @@
       renderGreeks();
       renderTerm();
       renderMetrics();
+      renderScanner();
     }
 
     function renderHeader() {
@@ -1229,6 +1302,7 @@
         zmin: -2, zmax: 2,
       }], {
         ...darkLayout,
+        uirevision: 'stable',
         margin: { l: 60, r: 50, b: 40, t: 6 },
         xaxis: { title: 'Strike', ...axisStyle, tickangle: -45 },
         yaxis: { title: '', ...axisStyle },
@@ -1280,6 +1354,7 @@
 
       Plotly.react(div, traces, {
         ...darkLayout,
+        uirevision: 'stable',
         margin: { l: 40, r: 8, b: 30, t: 6 },
         xaxis: { title: 'ln(K/F)', ...axisStyle },
         yaxis: { title: 'IV (%)', ...axisStyle },
@@ -1368,6 +1443,7 @@
         colorbar: { title: activeGreek, titleside: 'right', thickness: 10, len: 0.6 },
       }], {
         ...darkLayout,
+        uirevision: 'stable',
         margin: { l: 60, r: 50, b: 40, t: 6 },
         xaxis: { title: 'Strike', ...axisStyle, tickangle: -45 },
         yaxis: { title: '', ...axisStyle },
@@ -1448,6 +1524,7 @@
 
       Plotly.react(div, traces, {
         ...darkLayout,
+        uirevision: 'stable',
         margin: { l: 40, r: 50, b: 30, t: 6 },
         xaxis: { title: '', ...axisStyle },
         yaxis: { title: 'ATM IV (%)', ...axisStyle },
@@ -1485,6 +1562,206 @@
           + `<td>${isFinite(rr25) ? pFmt1.format(rr25) : '-'}</td>`
           + `<td>${isFinite(bf25) ? pFmt1.format(bf25) : '-'}</td>`
           + `<td>${sl.n}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // =====================================================================
+    //  Mispricing Scanner
+    // =====================================================================
+    let edgeThreshold = 1.0;
+    let edgeSideFilter = 'all';
+
+    document.getElementById('edge-threshold').addEventListener('change', (e) => {
+      edgeThreshold = parseFloat(e.target.value);
+      renderScanner();
+    });
+    document.getElementById('edge-side').addEventListener('change', (e) => {
+      edgeSideFilter = e.target.value;
+      renderScanner();
+    });
+
+    // Simple BS call/put price for edge calculation
+    function bsPrice(S, K, r, sigma, T, isCall) {
+      if (sigma <= 0 || T <= 0 || S <= 0 || K <= 0) return 0;
+      const sqrtT = Math.sqrt(T);
+      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+      const d2 = d1 - sigma * sqrtT;
+      const nd1 = 0.5 * (1 + erf(d1 / Math.SQRT2));
+      const nd2 = 0.5 * (1 + erf(d2 / Math.SQRT2));
+      const df = Math.exp(-r * T);
+      if (isCall) return S * nd1 - K * df * nd2;
+      return K * df * (1 - nd2) - S * (1 - nd1);
+    }
+
+    function renderScanner() {
+      if (calibratedSlices.length === 0 || spotPrice <= 0) return;
+
+      // Build edge data for every option in the chain
+      const edges = [];
+
+      for (const sl of calibratedSlices) {
+        for (const [name, q] of chain) {
+          if (q.expiryCode !== sl.expiryCode) continue;
+          if (!q.mark_iv || q.mark_iv <= 0 || q.strike <= 0) continue;
+
+          const k = Math.log(q.strike / sl.forward);
+          const modelIvPct = sliceIvPct(sl, k);
+          if (!isFinite(modelIvPct) || modelIvPct <= 0) continue;
+
+          const marketIvPct = q.mark_iv * 100;
+          const ivEdge = modelIvPct - marketIvPct; // positive = market is cheap
+
+          // Compute theoretical price from model IV
+          const modelSigma = modelIvPct / 100;
+          const marketSigma = q.mark_iv;
+          const theoPrice = bsPrice(spotPrice, q.strike, 0.05, modelSigma, sl.T, q.isCall);
+
+          // Market prices (Deribit quotes in BTC, mark_price is in BTC)
+          const marketMid = q.mark_price * spotPrice; // convert BTC -> USD
+          const bidPrice = q.bid_iv > 0 ? bsPrice(spotPrice, q.strike, 0.05, q.bid_iv, sl.T, q.isCall) : NaN;
+          const askPrice = q.ask_iv > 0 ? bsPrice(spotPrice, q.strike, 0.05, q.ask_iv, sl.T, q.isCall) : NaN;
+
+          const dollarEdge = theoPrice - marketMid;
+
+          edges.push({
+            name,
+            expiryCode: sl.expiryCode,
+            T: sl.T,
+            strike: q.strike,
+            isCall: q.isCall,
+            marketIvPct,
+            modelIvPct,
+            ivEdge,
+            bidPrice,
+            askPrice,
+            marketMid,
+            theoPrice,
+            dollarEdge,
+            absIvEdge: Math.abs(ivEdge),
+            // Is the edge actionable? (theo > ask = buy signal, theo < bid = sell signal)
+            buySignal: isFinite(askPrice) && theoPrice > askPrice,
+            sellSignal: isFinite(bidPrice) && theoPrice < bidPrice,
+          });
+        }
+      }
+
+      // --- Heatmap: IV edge by strike x expiry ---
+      const expLabels = calibratedSlices.map(s => s.expiryLabel);
+      const strikeSet = new Set();
+      for (const e of edges) strikeSet.add(e.strike);
+      const strikes = [...strikeSet].sort((a, b) => a - b);
+      const maxStrikes = 35;
+      const step = strikes.length > maxStrikes ? Math.ceil(strikes.length / maxStrikes) : 1;
+      const sampledStrikes = strikes.filter((_, i) => i % step === 0);
+
+      // Build lookup: "expiryCode|strike" -> best ivEdge (prefer call for dedup)
+      const edgeLookup = new Map();
+      for (const e of edges) {
+        const key = e.expiryCode + '|' + e.strike;
+        const existing = edgeLookup.get(key);
+        if (!existing || e.absIvEdge > Math.abs(existing.ivEdge)) {
+          edgeLookup.set(key, e);
+        }
+      }
+
+      const heatZ = [];
+      const heatText = [];
+      for (const sl of calibratedSlices) {
+        const row = [];
+        const textRow = [];
+        for (const strike of sampledStrikes) {
+          const e = edgeLookup.get(sl.expiryCode + '|' + strike);
+          if (e) {
+            row.push(e.ivEdge);
+            textRow.push(
+              `${e.isCall ? 'C' : 'P'} ${sl.expiryCode} $${pFmt.format(strike)}`
+              + `<br>Mkt IV: ${e.marketIvPct.toFixed(1)}%`
+              + `<br>Mdl IV: ${e.modelIvPct.toFixed(1)}%`
+              + `<br>Edge: ${e.ivEdge > 0 ? '+' : ''}${e.ivEdge.toFixed(2)} vol`
+              + `<br>Theo: $${pFmt.format(e.theoPrice)}`
+              + `<br>Mid: $${pFmt.format(e.marketMid)}`
+              + (e.buySignal ? '<br><b>BUY (theo > ask)</b>' : '')
+              + (e.sellSignal ? '<br><b>SELL (theo < bid)</b>' : '')
+            );
+          } else {
+            row.push(0);
+            textRow.push('');
+          }
+        }
+        heatZ.push(row);
+        heatText.push(textRow);
+      }
+
+      const maxEdge = Math.max(3, ...edges.map(e => e.absIvEdge));
+      const heatDiv = document.getElementById('chart-edge');
+      Plotly.react(heatDiv, [{
+        type: 'heatmap',
+        x: sampledStrikes.map(s => pFmt.format(s)),
+        y: expLabels,
+        z: heatZ,
+        text: heatText,
+        hovertemplate: '%{text}<extra></extra>',
+        colorscale: [
+          [0, '#ff4444'],
+          [0.35, '#cc2222'],
+          [0.5, '#1a1a2e'],
+          [0.65, '#118855'],
+          [1, '#19d8a8'],
+        ],
+        zmin: -maxEdge, zmax: maxEdge,
+        showscale: true,
+        colorbar: {
+          title: 'IV edge (vol pts)',
+          titleside: 'right',
+          thickness: 10,
+          len: 0.8,
+        },
+      }], {
+        ...darkLayout,
+        uirevision: 'stable',
+        margin: { l: 60, r: 50, b: 40, t: 6 },
+        xaxis: { title: 'Strike', ...axisStyle, tickangle: -45 },
+        yaxis: { title: '', ...axisStyle },
+      }, { responsive: true, displayModeBar: false });
+
+      // --- Table: top opportunities sorted by |edge| ---
+      const filtered = edges
+        .filter(e => e.absIvEdge >= edgeThreshold)
+        .filter(e => {
+          if (edgeSideFilter === 'buy') return e.ivEdge > 0;
+          if (edgeSideFilter === 'sell') return e.ivEdge < 0;
+          return true;
+        })
+        .sort((a, b) => b.absIvEdge - a.absIvEdge)
+        .slice(0, 40);
+
+      const tbody = document.querySelector('#edge-table tbody');
+      tbody.innerHTML = '';
+      for (const e of filtered) {
+        const isBuy = e.ivEdge > 0;
+        const edgeCls = isBuy ? 'edge-buy' : 'edge-sell';
+        const strongCls = e.absIvEdge >= edgeThreshold * 2 ? ' edge-strong' : '';
+        const actionable = (isBuy && e.buySignal) || (!isBuy && e.sellSignal);
+        const rowCls = actionable ? (isBuy ? 'edge-actionable' : 'edge-actionable sell') : '';
+        const signal = e.buySignal ? 'BUY' : (e.sellSignal ? 'SELL' : '-');
+        const signalCls = e.buySignal ? 'edge-buy edge-strong' : (e.sellSignal ? 'edge-sell edge-strong' : '');
+
+        const tr = document.createElement('tr');
+        if (rowCls) tr.className = rowCls;
+        tr.innerHTML =
+          `<td>${e.expiryCode}</td>`
+          + `<td style="text-align:right">${pFmt.format(e.strike)}</td>`
+          + `<td>${e.isCall ? 'C' : 'P'}</td>`
+          + `<td style="text-align:right">${e.marketIvPct.toFixed(1)}</td>`
+          + `<td style="text-align:right">${e.modelIvPct.toFixed(1)}</td>`
+          + `<td style="text-align:right" class="${edgeCls}${strongCls}">${e.ivEdge > 0 ? '+' : ''}${e.ivEdge.toFixed(2)}</td>`
+          + `<td style="text-align:right">${isFinite(e.bidPrice) ? pFmt.format(e.bidPrice) : '-'}</td>`
+          + `<td style="text-align:right">${isFinite(e.askPrice) ? pFmt.format(e.askPrice) : '-'}</td>`
+          + `<td style="text-align:right">${pFmt.format(e.marketMid)}</td>`
+          + `<td style="text-align:right">${pFmt.format(e.theoPrice)}</td>`
+          + `<td style="text-align:right" class="${edgeCls}">${e.dollarEdge > 0 ? '+' : ''}${pFmt.format(e.dollarEdge)}</td>`
+          + `<td class="${signalCls}">${signal}</td>`;
         tbody.appendChild(tr);
       }
     }
@@ -1649,6 +1926,22 @@
     (async () => {
       await seedFromRest();
       connectWs();
+
+      // Deferred GPU MC test — runs after page is live and data is flowing.
+      setTimeout(async () => {
+        if (!wasmReady || !navigator.gpu || typeof wasm.gpu_mc_price_european !== 'function') {
+          if (!navigator.gpu) console.log('[gpu-mc] WebGPU not available in this browser');
+          return;
+        }
+        try {
+          const mc = await wasm.gpu_mc_price_european(
+            100, 100, 0.05, 0.2, 1.0, 65536, 252, 42, true
+          );
+          console.log('[gpu-mc] price:', mc.price, 'stderr:', mc.stderr);
+        } catch (gpuErr) {
+          console.warn('[gpu-mc] WebGPU MC failed:', gpuErr.message || gpuErr);
+        }
+      }, 2000);
     })();
   </script>
 </body>
