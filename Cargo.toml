@@ -22,6 +22,7 @@ deribit = [
     "dep:tower-http",
 ]
 wasm = ["dep:wasm-bindgen", "dep:getrandom"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -43,6 +44,9 @@ futures-util = { version = "0.3", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 getrandom = { version = "0.4", features = ["wasm_js"], optional = true }
+wgpu = { version = "24", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
@@ -70,11 +74,14 @@ lto = "fat"
 codegen-units = 1
 opt-level = 3
 strip = "symbols"
+panic = "abort"
+overflow-checks = false
 
 [profile.bench]
 lto = "thin"
 codegen-units = 1
 opt-level = 3
+overflow-checks = false
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

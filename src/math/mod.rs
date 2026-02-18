@@ -100,12 +100,37 @@ pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
     let y2 = y * y;
     let xy2 = 2.0 * x * y;
 
-    let mut sum = 0.0;
-    for i in 0..96 {
-        let r = c1 * nodes[i] + c2;
-        let one_minus_r2 = 1.0 - r * r;
-        let exponent = -(x2 - r * xy2 + y2) / (2.0 * one_minus_r2);
+    // Unroll the 96-point quadrature by 4 for instruction-level parallelism.
+    let mut sum = 0.0_f64;
+    let mut i = 0;
+    while i + 4 <= 96 {
+        let r0 = c1.mul_add(nodes[i], c2);
+        let r1 = c1.mul_add(nodes[i + 1], c2);
+        let r2_val = c1.mul_add(nodes[i + 2], c2);
+        let r3 = c1.mul_add(nodes[i + 3], c2);
+
+        let omr2_0 = (-r0).mul_add(r0, 1.0);
+        let omr2_1 = (-r1).mul_add(r1, 1.0);
+        let omr2_2 = (-r2_val).mul_add(r2_val, 1.0);
+        let omr2_3 = (-r3).mul_add(r3, 1.0);
+
+        let e0 = -(x2 + r0.mul_add(-xy2, y2)) / (2.0 * omr2_0);
+        let e1 = -(x2 + r1.mul_add(-xy2, y2)) / (2.0 * omr2_1);
+        let e2 = -(x2 + r2_val.mul_add(-xy2, y2)) / (2.0 * omr2_2);
+        let e3 = -(x2 + r3.mul_add(-xy2, y2)) / (2.0 * omr2_3);
+
+        sum += weights[i] * e0.exp() / omr2_0.sqrt();
+        sum += weights[i + 1] * e1.exp() / omr2_1.sqrt();
+        sum += weights[i + 2] * e2.exp() / omr2_2.sqrt();
+        sum += weights[i + 3] * e3.exp() / omr2_3.sqrt();
+        i += 4;
+    }
+    while i < 96 {
+        let r = c1.mul_add(nodes[i], c2);
+        let one_minus_r2 = (-r).mul_add(r, 1.0);
+        let exponent = -(x2 + r.mul_add(-xy2, y2)) / (2.0 * one_minus_r2);
         sum += weights[i] * exponent.exp() / one_minus_r2.sqrt();
+        i += 1;
     }
     let integral = c1 * sum * inv_2pi;
 

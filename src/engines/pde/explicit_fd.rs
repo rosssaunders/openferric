@@ -35,6 +35,7 @@ impl ExplicitFdEngine {
     }
 }
 
+#[inline(always)]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -188,11 +189,14 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
             next_values[0] = lower_bv;
             next_values[n_s] = upper_bv;
 
+            // FMA chain for the explicit timestep update:
+            // next[i] = values[i] + dt * (a[i]*v[i-1] + b[i]*v[i] + c[i]*v[i+1])
             for i in 1..n_s {
-                next_values[i] = values[i]
-                    + dt * (coeff_a[i] * values[i - 1]
-                        + coeff_b[i] * values[i]
-                        + coeff_c[i] * values[i + 1]);
+                let rhs = coeff_a[i].mul_add(
+                    values[i - 1],
+                    coeff_b[i].mul_add(values[i], coeff_c[i] * values[i + 1]),
+                );
+                next_values[i] = dt.mul_add(rhs, values[i]);
             }
 
             let can_exercise = match &instrument.exercise {
@@ -209,7 +213,8 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 }
             }
 
-            values.copy_from_slice(&next_values);
+            // Swap instead of copy — eliminates full memcpy per timestep.
+            std::mem::swap(&mut values, &mut next_values);
         }
 
         let price = if market.spot <= 0.0 {

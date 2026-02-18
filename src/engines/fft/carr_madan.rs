@@ -91,51 +91,12 @@ fn modified_cf<C: CharacteristicFunction>(
 }
 
 #[inline]
-fn modified_cf_dlog_spot<C: CharacteristicFunction>(
-    cf: &C,
-    u: Complex<f64>,
-    rate: f64,
-    maturity: f64,
-    alpha: f64,
-) -> Option<Complex<f64>> {
-    let discount = (-rate * maturity).exp();
-    let v = u.re;
-    let denom = Complex::new(alpha * alpha + alpha - v * v, (2.0 * alpha + 1.0) * v);
-    cf.dcf_dlog_spot(u).map(|dphi| discount * dphi / denom)
-}
-
-#[inline]
-fn modified_cf_d2log_spot<C: CharacteristicFunction>(
-    cf: &C,
-    u: Complex<f64>,
-    rate: f64,
-    maturity: f64,
-    alpha: f64,
-) -> Option<Complex<f64>> {
-    let discount = (-rate * maturity).exp();
-    let v = u.re;
-    let denom = Complex::new(alpha * alpha + alpha - v * v, (2.0 * alpha + 1.0) * v);
-    cf.d2cf_dlog_spot2(u).map(|d2phi| discount * d2phi / denom)
-}
-
-#[inline]
-fn modified_cf_dvol<C: CharacteristicFunction>(
-    cf: &C,
-    u: Complex<f64>,
-    rate: f64,
-    maturity: f64,
-    alpha: f64,
-) -> Option<Complex<f64>> {
-    let discount = (-rate * maturity).exp();
-    let v = u.re;
-    let denom = Complex::new(alpha * alpha + alpha - v * v, (2.0 * alpha + 1.0) * v);
-    cf.dcf_dvol(u).map(|dphi| discount * dphi / denom)
-}
-
-#[inline]
 fn quadrature_weight(index: usize, eta: f64) -> f64 {
     if index == 0 { 0.5 * eta } else { eta }
 }
+
+/// Re-sync interval for accumulated phase rotation to bound floating-point drift.
+const PHASE_RESYNC_INTERVAL: usize = 128;
 
 fn build_fft_input<C: CharacteristicFunction>(
     cf: &C,
@@ -144,15 +105,27 @@ fn build_fft_input<C: CharacteristicFunction>(
     params: CarrMadanParams,
     k0: f64,
 ) -> Vec<Complex<f64>> {
-    let i = Complex::new(0.0, 1.0);
     let mut out = vec![Complex::new(0.0, 0.0); params.n];
 
+    // Pre-compute the per-step phase rotation instead of calling exp() each iteration.
+    // phase(j) = exp(-i * j * eta * k0), accumulated via multiplication with periodic re-sync.
+    let angle_per_step = -params.eta * k0;
+    let phase_step = Complex::new(angle_per_step.cos(), angle_per_step.sin());
+    let mut phase = Complex::new(1.0, 0.0); // j=0: angle is 0
+
     for (j, out_j) in out.iter_mut().enumerate() {
+        // Re-sync every PHASE_RESYNC_INTERVAL steps to avoid accumulated phase drift.
+        if j > 0 && j % PHASE_RESYNC_INTERVAL == 0 {
+            let angle = -(j as f64) * params.eta * k0;
+            phase = Complex::new(angle.cos(), angle.sin());
+        }
+
         let vj = j as f64 * params.eta;
         let uj = Complex::new(vj, -(params.alpha + 1.0));
         let psi = modified_cf(cf, uj, rate, maturity, params.alpha);
-        let phase = (-i * vj * k0).exp();
         *out_j = phase * psi * quadrature_weight(j, params.eta);
+
+        phase *= phase_step;
     }
 
     out
@@ -201,12 +174,19 @@ fn carr_madan_fft_impl<C: CharacteristicFunction>(
     let fft_input = build_fft_input(cf, rate, maturity, params, k0);
     let transformed = transform_fft_input(fft_input, allow_real_fft);
 
+    // Pre-compute the exponential decay exp(-alpha * k) via accumulation.
+    // k = k0 + m * lambda, so exp(-alpha * k) = exp(-alpha * k0) * exp(-alpha * lambda)^m.
+    let alpha_lambda = -params.alpha * lambda;
+    let exp_step = alpha_lambda.exp();
+    let mut exp_alpha_k = (-params.alpha * k0).exp();
+    let inv_pi = 1.0 / PI;
+
     let mut out = Vec::with_capacity(params.n);
     for (m, z) in transformed.into_iter().enumerate() {
-        let k = k0 + m as f64 * lambda;
-        let strike = k.exp();
-        let call = ((-params.alpha * k).exp() * z.re / PI).max(0.0);
+        let strike = (k0 + m as f64 * lambda).exp();
+        let call = (exp_alpha_k * z.re * inv_pi).max(0.0);
         out.push((strike, call));
+        exp_alpha_k *= exp_step;
     }
 
     Ok(out)
@@ -301,16 +281,16 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
     let lambda = params.lambda();
     let b = 0.5 * params.n as f64 * lambda;
     let k0 = spot.ln() - b;
-    let i = Complex::new(0.0, 1.0);
+    let alpha = params.alpha;
 
     let supports_d1 = cf
-        .dcf_dlog_spot(Complex::new(0.0, -(params.alpha + 1.0)))
+        .dcf_dlog_spot(Complex::new(0.0, -(alpha + 1.0)))
         .is_some();
     let supports_d2 = cf
-        .d2cf_dlog_spot2(Complex::new(0.0, -(params.alpha + 1.0)))
+        .d2cf_dlog_spot2(Complex::new(0.0, -(alpha + 1.0)))
         .is_some();
     let supports_dvol = cf
-        .dcf_dvol(Complex::new(0.0, -(params.alpha + 1.0)))
+        .dcf_dvol(Complex::new(0.0, -(alpha + 1.0)))
         .is_some();
 
     let mut x_price = vec![Complex::new(0.0, 0.0); params.n];
@@ -318,31 +298,53 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
     let mut x_d2 = vec![Complex::new(0.0, 0.0); params.n];
     let mut x_dvol = vec![Complex::new(0.0, 0.0); params.n];
 
+    // Pre-compute discount factor once (was recomputed in each modified_cf_* call).
+    let discount = (-rate * maturity).exp();
+    let two_alpha_plus_one = 2.0 * alpha + 1.0;
+    let alpha_sq_plus_alpha = alpha * alpha + alpha;
+
+    // Pre-compute phase rotation for accumulation (same technique as build_fft_input).
+    let angle_per_step = -params.eta * k0;
+    let phase_step = Complex::new(angle_per_step.cos(), angle_per_step.sin());
+    let mut phase = Complex::new(1.0, 0.0);
+
     for j in 0..params.n {
+        // Re-sync phase periodically to bound floating-point drift.
+        if j > 0 && j % PHASE_RESYNC_INTERVAL == 0 {
+            let angle = -(j as f64) * params.eta * k0;
+            phase = Complex::new(angle.cos(), angle.sin());
+        }
+
         let vj = j as f64 * params.eta;
-        let uj = Complex::new(vj, -(params.alpha + 1.0));
-        let phase = (-i * vj * k0).exp();
+        let uj = Complex::new(vj, -(alpha + 1.0));
         let w = quadrature_weight(j, params.eta);
 
-        x_price[j] = phase * modified_cf(cf, uj, rate, maturity, params.alpha) * w;
+        // Compute shared discount / denom once for all Greeks at this frequency point.
+        let v = vj; // uj.re
+        let denom = Complex::new(alpha_sq_plus_alpha - v * v, two_alpha_plus_one * v);
+        let common = phase * w * discount / denom;
+
+        x_price[j] = common * cf.cf(uj);
 
         if supports_d1 {
-            let val = modified_cf_dlog_spot(cf, uj, rate, maturity, params.alpha)
-                .expect("dcf_dlog_spot should be available");
-            x_d1[j] = phase * val * w;
+            x_d1[j] = common
+                * cf.dcf_dlog_spot(uj)
+                    .expect("dcf_dlog_spot should be available");
         }
 
         if supports_d2 {
-            let val = modified_cf_d2log_spot(cf, uj, rate, maturity, params.alpha)
-                .expect("d2cf_dlog_spot2 should be available");
-            x_d2[j] = phase * val * w;
+            x_d2[j] = common
+                * cf.d2cf_dlog_spot2(uj)
+                    .expect("d2cf_dlog_spot2 should be available");
         }
 
         if supports_dvol {
-            let val = modified_cf_dvol(cf, uj, rate, maturity, params.alpha)
-                .expect("dcf_dvol should be available");
-            x_dvol[j] = phase * val * w;
+            x_dvol[j] = common
+                * cf.dcf_dvol(uj)
+                    .expect("dcf_dvol should be available");
         }
+
+        phase *= phase_step;
     }
 
     fft_forward_inplace(&mut x_price);
@@ -356,11 +358,16 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
         fft_forward_inplace(&mut x_dvol);
     }
 
+    // Pre-compute the exponential decay via accumulation (same technique as carr_madan_fft_impl).
+    let alpha_lambda = -alpha * lambda;
+    let exp_step = alpha_lambda.exp();
+    let mut exp_alpha_k = (-alpha * k0).exp();
+    let inv_pi = 1.0 / PI;
+
     let mut out = Vec::with_capacity(params.n);
     for m in 0..params.n {
-        let k = k0 + m as f64 * lambda;
-        let strike = k.exp();
-        let pref = (-params.alpha * k).exp() / PI;
+        let strike = (k0 + m as f64 * lambda).exp();
+        let pref = exp_alpha_k * inv_pi;
 
         let call = (pref * x_price[m].re).max(0.0);
 
@@ -395,6 +402,8 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
             gamma,
             vega,
         });
+
+        exp_alpha_k *= exp_step;
     }
 
     Ok(out)

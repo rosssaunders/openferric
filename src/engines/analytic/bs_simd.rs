@@ -176,7 +176,7 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (r - q + 0.5 * vol * vol) * t) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, r - q) * t) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-r * t).exp();
@@ -211,7 +211,7 @@ fn bs_greeks_scalar(
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (r - q + 0.5 * vol * vol) * t) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, r - q) * t) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-r * t).exp();
@@ -296,7 +296,7 @@ mod neon_impl {
         let sqrt_t = t.sqrt();
         let sig_sqrt_t = vol * sqrt_t;
         let inv_sig_sqrt_t = 1.0 / sig_sqrt_t;
-        let drift = (r - q + 0.5 * vol * vol) * t;
+        let drift = (0.5 * vol).mul_add(vol, r - q) * t;
         let df_r = (-r * t).exp();
         let df_q = (-q * t).exp();
         let denom_gamma = vol * sqrt_t;
@@ -438,7 +438,7 @@ mod avx2_impl {
         let sqrt_t = t.sqrt();
         let sig_sqrt_t = vol * sqrt_t;
         let inv_sig_sqrt_t = 1.0 / sig_sqrt_t;
-        let drift = (r - q + 0.5 * vol * vol) * t;
+        let drift = (0.5 * vol).mul_add(vol, r - q) * t;
         let df_r = (-r * t).exp();
         let df_q = (-q * t).exp();
 
@@ -520,7 +520,7 @@ mod avx2_impl {
         let sqrt_t = t.sqrt();
         let sig_sqrt_t = vol * sqrt_t;
         let inv_sig_sqrt_t = 1.0 / sig_sqrt_t;
-        let drift = (r - q + 0.5 * vol * vol) * t;
+        let drift = (0.5 * vol).mul_add(vol, r - q) * t;
         let df_r = (-r * t).exp();
         let df_q = (-q * t).exp();
         let denom_gamma = vol * sqrt_t;

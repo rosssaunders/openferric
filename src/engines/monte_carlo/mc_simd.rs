@@ -42,19 +42,15 @@ pub fn simulate_gbm_paths_soa_scalar(
     let drift = (r - q - 0.5 * vol * vol) * dt;
     let diffusion = vol * dt.sqrt();
     let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
-    let mut z = vec![0.0_f64; num_paths];
 
     for step in 0..num_steps {
-        for zi in &mut z {
-            *zi = sample_standard_normal(&mut rng);
-        }
-
         let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
         let prev = &prev_head[step];
         let next = &mut prev_tail[0];
 
         for i in 0..num_paths {
-            let growth = diffusion.mul_add(z[i], drift).exp();
+            let z = sample_standard_normal(&mut rng);
+            let growth = diffusion.mul_add(z, drift).exp();
             next[i] = prev[i] * growth;
         }
     }
@@ -104,11 +100,20 @@ pub fn mc_european_call_soa_scalar(
 ) -> f64 {
     let paths = simulate_gbm_paths_soa_scalar(s0, r, q, vol, t, num_paths, num_steps, seed);
     let terminal = paths.terminal();
-    let mean_payoff = terminal
-        .iter()
-        .map(|&st| (st - strike).max(0.0))
-        .sum::<f64>()
-        / num_paths as f64;
+    let mut sum = 0.0_f64;
+    let mut i = 0;
+    while i + 4 <= num_paths {
+        sum += (terminal[i] - strike).max(0.0);
+        sum += (terminal[i + 1] - strike).max(0.0);
+        sum += (terminal[i + 2] - strike).max(0.0);
+        sum += (terminal[i + 3] - strike).max(0.0);
+        i += 4;
+    }
+    while i < num_paths {
+        sum += (terminal[i] - strike).max(0.0);
+        i += 1;
+    }
+    let mean_payoff = sum / num_paths as f64;
     (-r * t).exp() * mean_payoff
 }
 
@@ -162,33 +167,33 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     let diffusion_v = unsafe { splat_f64x4(diffusion) };
 
     let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
-    let mut z = vec![0.0_f64; num_paths];
 
     for step in 0..num_steps {
-        for zi in &mut z {
-            *zi = sample_standard_normal(&mut rng);
-        }
-
         let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
         let prev = &prev_head[step];
         let next = &mut prev_tail[0];
 
         let mut i = 0usize;
         while i + 4 <= num_paths {
-            // SAFETY: bounds checked by loop condition.
+            // Generate 4 normals inline – no intermediate buffer needed.
+            let z0 = sample_standard_normal(&mut rng);
+            let z1 = sample_standard_normal(&mut rng);
+            let z2 = sample_standard_normal(&mut rng);
+            let z3 = sample_standard_normal(&mut rng);
+            let z_arr = [z0, z1, z2, z3];
+
             let s = unsafe { load_f64x4(prev, i) };
-            // SAFETY: bounds checked by loop condition.
-            let z_vec = unsafe { load_f64x4(&z, i) };
+            let z_vec = unsafe { _mm256_loadu_pd(z_arr.as_ptr()) };
             let x = _mm256_fmadd_pd(diffusion_v, z_vec, drift_v);
             let growth = unsafe { exp_f64x4(x) };
             let s_next = _mm256_mul_pd(s, growth);
-            // SAFETY: bounds checked by loop condition.
             unsafe { store_f64x4(next, i, s_next) };
             i += 4;
         }
 
         while i < num_paths {
-            let growth = diffusion.mul_add(z[i], drift).exp();
+            let z = sample_standard_normal(&mut rng);
+            let growth = diffusion.mul_add(z, drift).exp();
             next[i] = prev[i] * growth;
             i += 1;
         }

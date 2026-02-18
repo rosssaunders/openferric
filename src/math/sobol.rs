@@ -1,4 +1,5 @@
 const INV_U64_RANGE: f64 = 1.0 / 18_446_744_073_709_551_616.0;
+const HALF_INV_U64: f64 = 0.5 * INV_U64_RANGE;
 pub const SOBOL_MAX_DIMENSIONS: usize = 21_201;
 
 #[derive(Debug, Clone)]
@@ -50,19 +51,33 @@ impl SobolSequence {
             return false;
         }
         let c = next_index.trailing_zeros() as usize;
-
-        for dim in 0..self.dimensions {
-            self.x[dim] ^= self.directions[dim][c];
-        }
-
         self.index = next_index;
 
         for dim in 0..self.dimensions {
+            self.x[dim] ^= self.directions[dim][c];
             let scrambled = self.x[dim] ^ self.scramblers[dim];
-            out[dim] = (scrambled as f64 + 0.5) * INV_U64_RANGE;
+            out[dim] = (scrambled as f64).mul_add(INV_U64_RANGE, HALF_INV_U64);
         }
 
         true
+    }
+
+    /// Generate `n` points in bulk, writing sequentially into a flat buffer.
+    /// `out` must have length >= `n * self.dimensions`.
+    /// Returns the number of points actually written.
+    #[inline]
+    pub fn fill_points(&mut self, out: &mut [f64], n: usize) -> usize {
+        let dims = self.dimensions;
+        let mut count = 0;
+        let mut offset = 0;
+        while count < n && offset + dims <= out.len() {
+            if !self.next_into(&mut out[offset..offset + dims]) {
+                break;
+            }
+            offset += dims;
+            count += 1;
+        }
+        count
     }
 }
 

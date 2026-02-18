@@ -35,6 +35,7 @@ impl ImplicitFdEngine {
     }
 }
 
+#[inline(always)]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -90,7 +91,7 @@ fn boundary_values(
 }
 
 /// In-place tridiagonal solve using pre-allocated scratch buffers.
-#[inline]
+#[inline(always)]
 fn solve_tridiagonal_inplace(
     lower: &[f64],
     diag: &[f64],
@@ -191,18 +192,23 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
         let mut lhs_diag = vec![0.0_f64; interior_n];
         let mut lhs_upper = vec![0.0_f64; interior_n];
 
+        // Pre-compute reciprocals to avoid repeated divisions in coefficient loop.
+        let inv_ds2 = 1.0 / (ds * ds);
+        let half_vol_sq = 0.5 * vol * vol;
+        let inv_2ds = 1.0 / (2.0 * ds);
+        let drift = market.rate - market.dividend_yield;
         for k in 0..interior_n {
             let i = k + 1;
             let s = i as f64 * ds;
-            let alpha = 0.5 * vol * vol * s * s / (ds * ds);
-            let beta = (market.rate - market.dividend_yield) * s / (2.0 * ds);
+            let alpha = half_vol_sq * s * s * inv_ds2;
+            let beta = drift * s * inv_2ds;
 
             let a = alpha - beta;
             let b = -2.0 * alpha - market.rate;
             let c = alpha + beta;
 
             lhs_lower[k] = -dt * a;
-            lhs_diag[k] = 1.0 - dt * b;
+            lhs_diag[k] = (-dt).mul_add(b, 1.0);
             lhs_upper[k] = -dt * c;
         }
 

@@ -25,6 +25,7 @@ fn quote_sort_cmp(lhs: &VarianceOptionQuote, rhs: &VarianceOptionQuote) -> Order
 ///
 /// Uses
 /// `K_var = (2 * exp(rT) / T) * sum_i delta_k_i * Q_otm(K_i) / K_i^2`.
+#[inline]
 pub fn fair_variance_strike_from_quotes(
     expiry: f64,
     rate: f64,
@@ -87,7 +88,8 @@ pub fn fair_variance_strike_from_quotes(
         }
         .max(0.0);
 
-        replicated_sum += delta_k * otm_price / (quote.strike * quote.strike);
+        let k_sq = quote.strike * quote.strike;
+        replicated_sum = (delta_k * otm_price / k_sq).mul_add(1.0, replicated_sum);
     }
 
     let fair_variance = (2.0 * (rate * expiry).exp() / expiry) * replicated_sum;
@@ -103,6 +105,7 @@ pub fn fair_variance_strike_from_quotes(
 /// Fair volatility strike with first-order convexity adjustment.
 ///
 /// `K_vol ≈ sqrt(K_var) - var_of_var / (8 * K_var^(3/2))`
+#[inline]
 pub fn fair_volatility_strike_from_variance(
     fair_variance: f64,
     var_of_var: f64,
@@ -119,11 +122,13 @@ pub fn fair_volatility_strike_from_variance(
     }
 
     let sqrt_k_var = fair_variance.sqrt();
-    let adjustment = var_of_var / (8.0 * fair_variance.powf(1.5));
+    // Replace powf(1.5) with sqrt * self for integer-reducible power.
+    let adjustment = var_of_var / (8.0 * sqrt_k_var * fair_variance);
     Ok((sqrt_k_var - adjustment).max(0.0))
 }
 
 /// Mark-to-market for a variance swap using vega-notional convention.
+#[inline]
 pub fn variance_swap_mtm(
     instrument: &VarianceSwap,
     fair_variance: f64,
@@ -143,12 +148,13 @@ pub fn variance_swap_mtm(
 
     let expected_realized_var = instrument.observed_realized_var.unwrap_or(fair_variance);
     let variance_notional = instrument.notional_vega / (2.0 * instrument.strike_vol);
-    let payoff = variance_notional * (expected_realized_var - instrument.strike_vol.powi(2));
+    let payoff = variance_notional * (expected_realized_var - instrument.strike_vol * instrument.strike_vol);
 
     Ok((-rate * instrument.expiry).exp() * payoff)
 }
 
 /// Mark-to-market for a volatility swap.
+#[inline]
 pub fn volatility_swap_mtm(
     instrument: &VolatilitySwap,
     fair_variance: f64,

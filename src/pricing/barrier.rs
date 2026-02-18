@@ -5,6 +5,7 @@ use crate::models::Gbm;
 
 pub use crate::core::types::{BarrierDirection, BarrierStyle};
 
+#[inline]
 fn breached_at_start(s0: f64, barrier: f64, direction: BarrierDirection) -> bool {
     match direction {
         BarrierDirection::Up => s0 >= barrier,
@@ -19,6 +20,7 @@ fn path_hits_barrier(path: &[f64], barrier: f64, direction: BarrierDirection) ->
     }
 }
 
+#[inline]
 fn vanilla_payoff(option_type: OptionType, s_t: f64, k: f64) -> f64 {
     match option_type {
         OptionType::Call => (s_t - k).max(0.0),
@@ -27,6 +29,7 @@ fn vanilla_payoff(option_type: OptionType, s_t: f64, k: f64) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn bs_price_with_dividend(
     option_type: OptionType,
     s: f64,
@@ -41,18 +44,23 @@ fn bs_price_with_dividend(
     }
 
     let st = sigma * t.sqrt();
-    let d1 = ((s / k).ln() + (r - q + 0.5 * sigma * sigma) * t) / st;
+    let d1 = ((s / k).ln() + (0.5 * sigma).mul_add(sigma, r - q) * t) / st;
     let d2 = d1 - st;
     let df_r = (-r * t).exp();
     let df_q = (-q * t).exp();
 
+    // Compute call, derive put via put-call parity to halve CDF evaluations.
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let call = s.mul_add(df_q * nd1, -(k * df_r * nd2));
     match option_type {
-        OptionType::Call => s * df_q * normal_cdf(d1) - k * df_r * normal_cdf(d2),
-        OptionType::Put => k * df_r * normal_cdf(-d2) - s * df_q * normal_cdf(-d1),
+        OptionType::Call => call,
+        OptionType::Put => call - s * df_q + k * df_r,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn barrier_price_closed_form_with_carry_and_rebate(
     option_type: OptionType,
     style: BarrierStyle,
@@ -89,22 +97,26 @@ pub fn barrier_price_closed_form_with_carry_and_rebate(
     let phi = option_type.sign();
     let b = r - q;
 
+    let sigma_sq = sigma * sigma;
     let st = sigma * t.sqrt();
-    let mu = (b - 0.5 * sigma * sigma) / (sigma * sigma);
-    let lambda = (mu * mu + 2.0 * r / (sigma * sigma)).sqrt();
+    let mu = (b - 0.5 * sigma_sq) / sigma_sq;
+    let lambda = mu.mul_add(mu, 2.0 * r / sigma_sq).sqrt();
     let df_r = (-r * t).exp();
     let df_q = (-q * t).exp();
 
-    let x1 = (s / k).ln() / st + (1.0 + mu) * st;
-    let x2 = (s / h).ln() / st + (1.0 + mu) * st;
-    let y1 = ((h * h) / (s * k)).ln() / st + (1.0 + mu) * st;
-    let y2 = (h / s).ln() / st + (1.0 + mu) * st;
+    let one_plus_mu_st = (1.0 + mu) * st;
+    let x1 = (s / k).ln() / st + one_plus_mu_st;
+    let x2 = (s / h).ln() / st + one_plus_mu_st;
+    let y1 = ((h * h) / (s * k)).ln() / st + one_plus_mu_st;
+    let y2 = (h / s).ln() / st + one_plus_mu_st;
     let z = (h / s).ln() / st + lambda * st;
 
-    let hs_mu = (h / s).powf(2.0 * mu);
-    let hs_mu1 = (h / s).powf(2.0 * (mu + 1.0));
-    let hs_mu_lambda_plus = (h / s).powf(mu + lambda);
-    let hs_mu_lambda_minus = (h / s).powf(mu - lambda);
+    // Compute (h/s)^exp via exp(exp * ln(h/s)) - one ln, multiple exp.
+    let ln_hs = (h / s).ln();
+    let hs_mu = (2.0 * mu * ln_hs).exp();
+    let hs_mu1 = (2.0 * (mu + 1.0) * ln_hs).exp();
+    let hs_mu_lambda_plus = ((mu + lambda) * ln_hs).exp();
+    let hs_mu_lambda_minus = ((mu - lambda) * ln_hs).exp();
 
     let a = phi * s * df_q * normal_cdf(phi * x1) - phi * k * df_r * normal_cdf(phi * (x1 - st));
     let b_term =

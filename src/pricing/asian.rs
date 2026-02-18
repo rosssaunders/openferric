@@ -37,6 +37,7 @@ fn vanilla_payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     }
 }
 
+#[inline]
 pub fn geometric_asian_fixed_closed_form(
     option_type: OptionType,
     s0: f64,
@@ -53,8 +54,9 @@ pub fn geometric_asian_fixed_closed_form(
     }
 
     // Continuous-time geometric average under GBM.
-    let m = s0.ln() + (r - 0.5 * sigma * sigma) * t / 2.0;
-    let v = sigma * sigma * t / 3.0;
+    let sigma_sq = sigma * sigma;
+    let m = s0.ln() + (-0.5 * sigma).mul_add(sigma, r) * t / 2.0;
+    let v = sigma_sq * t / 3.0;
     let sqrt_v = v.sqrt();
 
     let d1 = (m - k.ln() + v) / sqrt_v;
@@ -69,6 +71,7 @@ pub fn geometric_asian_fixed_closed_form(
     }
 }
 
+#[inline]
 pub fn geometric_asian_discrete_fixed_closed_form(
     option_type: OptionType,
     s0: f64,
@@ -100,8 +103,9 @@ pub fn geometric_asian_discrete_fixed_closed_form(
             cov_sum += ti.min(tj);
         }
     }
-    let var = sigma * sigma * cov_sum / (n * n);
-    let m = s0.ln() + (r - q - 0.5 * sigma * sigma) * mean_t;
+    let sigma_sq = sigma * sigma;
+    let var = sigma_sq * cov_sum / (n * n);
+    let m = s0.ln() + (-0.5 * sigma).mul_add(sigma, r - q) * mean_t;
     let df = (-r * maturity).exp();
 
     if var <= 0.0 {

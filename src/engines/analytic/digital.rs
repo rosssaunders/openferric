@@ -14,6 +14,7 @@ impl DigitalAnalyticEngine {
     }
 }
 
+#[inline]
 fn d1_d2(
     spot: f64,
     strike: f64,
@@ -25,11 +26,12 @@ fn d1_d2(
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 =
-        ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
     (d1, d2)
 }
 
+#[inline]
 fn cash_or_nothing_expiry(option_type: OptionType, spot: f64, strike: f64, cash: f64) -> f64 {
     match option_type {
         OptionType::Call if spot > strike => cash,
@@ -38,6 +40,7 @@ fn cash_or_nothing_expiry(option_type: OptionType, spot: f64, strike: f64, cash:
     }
 }
 
+#[inline]
 fn asset_or_nothing_expiry(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call if spot > strike => spot,
@@ -46,6 +49,7 @@ fn asset_or_nothing_expiry(option_type: OptionType, spot: f64, strike: f64) -> f
     }
 }
 
+#[inline]
 fn gap_expiry(option_type: OptionType, spot: f64, payoff_strike: f64, trigger_strike: f64) -> f64 {
     match option_type {
         OptionType::Call if spot > trigger_strike => spot - payoff_strike,
@@ -93,9 +97,11 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
         );
         let df_r = (-market.rate * instrument.expiry).exp();
 
+        // Compute N(d2) once; derive put price via N(-d2) = 1 - N(d2).
+        let nd2 = normal_cdf(d2);
         let price = match instrument.option_type {
-            OptionType::Call => instrument.cash * df_r * normal_cdf(d2),
-            OptionType::Put => instrument.cash * df_r * normal_cdf(-d2),
+            OptionType::Call => instrument.cash * df_r * nd2,
+            OptionType::Put => instrument.cash * df_r * (1.0 - nd2),
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();
@@ -149,9 +155,11 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
         );
         let df_q = (-market.dividend_yield * instrument.expiry).exp();
 
+        // Compute N(d1) once; derive put price via N(-d1) = 1 - N(d1).
+        let nd1 = normal_cdf(d1);
         let price = match instrument.option_type {
-            OptionType::Call => market.spot * df_q * normal_cdf(d1),
-            OptionType::Put => market.spot * df_q * normal_cdf(-d1),
+            OptionType::Call => market.spot * df_q * nd1,
+            OptionType::Put => market.spot * df_q * (1.0 - nd1),
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();
@@ -207,15 +215,13 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
         let df_r = (-market.rate * instrument.expiry).exp();
         let df_q = (-market.dividend_yield * instrument.expiry).exp();
 
+        // Compute N(d1), N(d2) once; derive put via N(-d) = 1 - N(d).
+        let nd1 = normal_cdf(d1);
+        let nd2 = normal_cdf(d2);
+        let call = market.spot.mul_add(df_q * nd1, -(instrument.payoff_strike * df_r * nd2));
         let price = match instrument.option_type {
-            OptionType::Call => {
-                market.spot * df_q * normal_cdf(d1)
-                    - instrument.payoff_strike * df_r * normal_cdf(d2)
-            }
-            OptionType::Put => {
-                instrument.payoff_strike * df_r * normal_cdf(-d2)
-                    - market.spot * df_q * normal_cdf(-d1)
-            }
+            OptionType::Call => call,
+            OptionType::Put => call - market.spot * df_q + instrument.payoff_strike * df_r,
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();

@@ -54,6 +54,7 @@ impl PricingEngine<SpreadOption> for SpreadAnalyticEngine {
 }
 
 /// Margrabe exchange option value for `max(S1 - S2, 0)`.
+#[inline]
 pub fn margrabe_exchange_price(option: &SpreadOption) -> Result<f64, PricingError> {
     option.validate()?;
 
@@ -78,14 +79,15 @@ pub fn margrabe_exchange_price(option: &SpreadOption) -> Result<f64, PricingErro
     let sqrt_t = option.t.sqrt();
     let sig_sqrt_t = sigma * sqrt_t;
     let d1 = ((option.s1 / option.s2).ln()
-        + (option.q2 - option.q1 + 0.5 * sigma * sigma) * option.t)
+        + (0.5 * sigma).mul_add(sigma, option.q2 - option.q1) * option.t)
         / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
-    Ok(s1_df * normal_cdf(d1) - s2_df * normal_cdf(d2))
+    Ok(s1_df.mul_add(normal_cdf(d1), -(s2_df * normal_cdf(d2))))
 }
 
 /// Kirk approximation for spread call `max(S1 - S2 - K, 0)`.
+#[inline]
 pub fn kirk_spread_price(option: &SpreadOption) -> Result<f64, PricingError> {
     option.validate()?;
 
@@ -104,8 +106,11 @@ pub fn kirk_spread_price(option: &SpreadOption) -> Result<f64, PricingError> {
     }
 
     let beta = f2 / denominator;
-    let sigma_k2 = option.vol1 * option.vol1 - 2.0 * beta * option.rho * option.vol1 * option.vol2
-        + beta * beta * option.vol2 * option.vol2;
+    // sigma_k^2 = vol1^2 - 2*beta*rho*vol1*vol2 + beta^2*vol2^2 via FMA
+    let sigma_k2 = option.vol1.mul_add(
+        option.vol1,
+        (-2.0 * beta * option.rho * option.vol1).mul_add(option.vol2, beta * beta * option.vol2 * option.vol2),
+    );
 
     if sigma_k2 < -1.0e-14 {
         return Err(PricingError::InvalidInput(

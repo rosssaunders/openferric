@@ -1,7 +1,4 @@
-use nalgebra::{DMatrix, DVector};
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
+use nalgebra::{Matrix3, Vector3};
 
 use crate::core::{
     BarrierDirection, BarrierStyle, ExerciseStyle, OptionType, PricingEngine, PricingError,
@@ -9,6 +6,8 @@ use crate::core::{
 };
 use crate::instruments::{BarrierOption, VanillaOption};
 use crate::market::Market;
+use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
+use crate::math::fast_rng::{uniform_open01, Xoshiro256PlusPlus};
 
 /// Longstaff-Schwartz least-squares Monte Carlo engine.
 #[derive(Debug, Clone)]
@@ -48,9 +47,15 @@ fn path_hits_barrier(path: &[f64], level: f64, direction: BarrierDirection) -> b
 
 fn mean_and_stderr(values: &[f64]) -> (f64, f64) {
     let n = values.len() as f64;
-    let mean = values.iter().sum::<f64>() / n;
+    let mut sum = 0.0_f64;
+    let mut sum_sq = 0.0_f64;
+    for &v in values {
+        sum += v;
+        sum_sq += v * v;
+    }
+    let mean = sum / n;
     let var = if values.len() > 1 {
-        values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0)
+        (sum_sq - sum * sum / n) / (n - 1.0)
     } else {
         0.0
     };
@@ -97,19 +102,22 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         let step_vol = vol * dt.sqrt();
         let disc = (-market.rate * dt).exp();
 
-        let mut rng = StdRng::seed_from_u64(self.seed);
-        let mut paths = vec![vec![0.0_f64; self.num_steps + 1]; self.num_paths];
-        for path in &mut paths {
-            path[0] = market.spot;
+        // Flat 2D array for paths: paths[path_idx * stride + step]
+        let stride = self.num_steps + 1;
+        let mut paths = vec![0.0_f64; self.num_paths * stride];
+
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
+        for pi in 0..self.num_paths {
+            let base = pi * stride;
+            paths[base] = market.spot;
             for ti in 1..=self.num_steps {
-                let z: f64 = StandardNormal.sample(&mut rng);
-                path[ti] = path[ti - 1] * (drift + step_vol * z).exp();
+                let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+                paths[base + ti] = paths[base + ti - 1] * step_vol.mul_add(z, drift).exp();
             }
         }
 
-        let mut values: Vec<f64> = paths
-            .iter()
-            .map(|p| intrinsic(instrument.option_type, p[self.num_steps], instrument.strike))
+        let mut values: Vec<f64> = (0..self.num_paths)
+            .map(|pi| intrinsic(instrument.option_type, paths[pi * stride + self.num_steps], instrument.strike))
             .collect();
 
         let mut can_exercise = vec![false; self.num_steps + 1];
@@ -141,12 +149,9 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 continue;
             }
 
-            let itm: Vec<usize> = paths
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, path)| {
-                    (intrinsic(instrument.option_type, path[ti], instrument.strike) > 0.0)
-                        .then_some(idx)
+            let itm: Vec<usize> = (0..self.num_paths)
+                .filter(|&idx| {
+                    intrinsic(instrument.option_type, paths[idx * stride + ti], instrument.strike) > 0.0
                 })
                 .collect();
 
@@ -154,25 +159,25 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 continue;
             }
 
-            let mut x = DMatrix::<f64>::zeros(itm.len(), 3);
-            let mut y = DVector::<f64>::zeros(itm.len());
-            for (row, idx) in itm.iter().copied().enumerate() {
-                let s = paths[idx][ti];
-                x[(row, 0)] = 1.0;
-                x[(row, 1)] = s;
-                x[(row, 2)] = s * s;
-                y[row] = values[idx];
+            // Fixed-size 3x3 regression using nalgebra Matrix3/Vector3 (no heap allocation)
+            let mut xtx = Matrix3::<f64>::zeros();
+            let mut xty = Vector3::<f64>::zeros();
+            for &idx in &itm {
+                let s = paths[idx * stride + ti];
+                let s2 = s * s;
+                let y = values[idx];
+                let row = Vector3::new(1.0, s, s2);
+                for r in 0..3 {
+                    for c in 0..3 {
+                        xtx[(r, c)] += row[r] * row[c];
+                    }
+                    xty[r] += row[r] * y;
+                }
             }
-
-            let xtx = x.transpose() * &x;
-            let xty = x.transpose() * &y;
-            let beta = xtx
-                .lu()
-                .solve(&xty)
-                .unwrap_or_else(|| DVector::<f64>::zeros(3));
+            let beta = xtx.lu().solve(&xty).unwrap_or(Vector3::zeros());
 
             for idx in itm {
-                let s = paths[idx][ti];
+                let s = paths[idx * stride + ti];
                 let continuation = beta[0] + beta[1] * s + beta[2] * s * s;
                 let exercise = intrinsic(instrument.option_type, s, instrument.strike);
                 if exercise > continuation {
@@ -229,15 +234,15 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
         let step_vol = vol * dt.sqrt();
         let discount = (-market.rate * instrument.expiry).exp();
 
-        let mut rng = StdRng::seed_from_u64(self.seed);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
         let mut pv = Vec::with_capacity(self.num_paths);
         for _ in 0..self.num_paths {
             let mut path = Vec::with_capacity(self.num_steps + 1);
             let mut s = market.spot;
             path.push(s);
             for _ in 0..self.num_steps {
-                let z: f64 = StandardNormal.sample(&mut rng);
-                s *= (drift + step_vol * z).exp();
+                let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
+                s *= step_vol.mul_add(z, drift).exp();
                 path.push(s);
             }
 

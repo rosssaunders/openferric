@@ -90,6 +90,7 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
     }
 }
 
+#[inline]
 fn bs_price_with_dividend(
     option_type: OptionType,
     spot: f64,
@@ -109,18 +110,23 @@ fn bs_price_with_dividend(
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 =
-        ((spot / strike).ln() + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-rate * expiry).exp();
     let df_q = (-dividend_yield * expiry).exp();
 
+    // Compute call price, derive put via put-call parity to halve CDF evaluations.
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let call = spot.mul_add(df_q * nd1, -(strike * df_r * nd2));
     match option_type {
-        OptionType::Call => spot * df_q * normal_cdf(d1) - strike * df_r * normal_cdf(d2),
-        OptionType::Put => strike * df_r * normal_cdf(-d2) - spot * df_q * normal_cdf(-d1),
+        OptionType::Call => call,
+        OptionType::Put => call - spot * df_q + strike * df_r,
     }
 }
 
+#[inline]
 fn floating_lookback_price(spec: &LookbackFloatingOption, market: &Market, vol: f64) -> f64 {
     if spec.expiry <= 0.0 {
         let extreme = spec.observed_extreme.unwrap_or(market.spot);
@@ -165,6 +171,7 @@ fn floating_lookback_price(spec: &LookbackFloatingOption, market: &Market, vol: 
     }
 }
 
+#[inline]
 fn floating_lookback_call_formula(
     spot: f64,
     s_min: f64,
@@ -183,20 +190,23 @@ fn floating_lookback_call_formula(
         return 0.5 * (hi + lo);
     }
 
+    let vol_sq = vol * vol;
     let sqrt_t = expiry.sqrt();
-    let a1 = ((spot / s_min).ln() + (carry + 0.5 * vol * vol) * expiry) / (vol * sqrt_t);
+    let a1 = ((spot / s_min).ln() + (0.5 * vol).mul_add(vol, carry) * expiry) / (vol * sqrt_t);
     let a2 = a1 - vol * sqrt_t;
     let a3 = a1 - 2.0 * carry * sqrt_t / vol;
-    let y = (-2.0 * carry / (vol * vol)) * (spot / s_min).ln();
+    let ln_ratio = (spot / s_min).ln();
+    let y = (-2.0 * carry / vol_sq) * ln_ratio;
 
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
-    let phi = (vol * vol) / (2.0 * carry);
+    let phi = vol_sq / (2.0 * carry);
 
-    spot * df_q * normal_cdf(a1) - s_min * df_r * normal_cdf(a2)
-        + spot * df_r * phi * (y.exp() * normal_cdf(-a3) - (carry * expiry).exp() * normal_cdf(-a1))
+    spot.mul_add(df_q * normal_cdf(a1), -(s_min * df_r * normal_cdf(a2)))
+        + spot * df_r * phi * y.exp().mul_add(normal_cdf(-a3), -((carry * expiry).exp() * normal_cdf(-a1)))
 }
 
+#[inline]
 fn floating_lookback_put_formula(
     spot: f64,
     s_max: f64,
@@ -215,23 +225,26 @@ fn floating_lookback_put_formula(
         return 0.5 * (hi + lo);
     }
 
+    let vol_sq = vol * vol;
     let sqrt_t = expiry.sqrt();
-    let b1 = ((spot / s_max).ln() + (carry + 0.5 * vol * vol) * expiry) / (vol * sqrt_t);
+    let b1 = ((spot / s_max).ln() + (0.5 * vol).mul_add(vol, carry) * expiry) / (vol * sqrt_t);
     let b2 = b1 - vol * sqrt_t;
     let b3 = b1 - 2.0 * carry * sqrt_t / vol;
-    let y = (-2.0 * carry / (vol * vol)) * (spot / s_max).ln();
+    let ln_ratio = (spot / s_max).ln();
+    let y = (-2.0 * carry / vol_sq) * ln_ratio;
 
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
-    let phi = (vol * vol) / (2.0 * carry);
+    let phi = vol_sq / (2.0 * carry);
 
-    s_max * df_r * normal_cdf(-b2) - spot * df_q * normal_cdf(-b1)
+    s_max.mul_add(df_r * normal_cdf(-b2), -(spot * df_q * normal_cdf(-b1)))
         + spot
             * df_r
             * phi
-            * (-(y.exp() * normal_cdf(b3)) + (carry * expiry).exp() * normal_cdf(b1))
+            * (carry * expiry).exp().mul_add(normal_cdf(b1), -(y.exp() * normal_cdf(b3)))
 }
 
+#[inline]
 fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -> f64 {
     if spec.expiry <= 0.0 {
         return match spec.option_type {
@@ -290,6 +303,7 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn fixed_lookback_call_formula(
     spot: f64,
     strike: f64,
@@ -309,34 +323,37 @@ fn fixed_lookback_call_formula(
         return 0.5 * (hi + lo);
     }
 
+    let vol_sq = vol * vol;
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
-    let correction_scale = spot * df_r * (vol * vol / (2.0 * carry));
+    let correction_scale = spot * df_r * (vol_sq / (2.0 * carry));
     let carry_term = (carry * expiry).exp();
     let shift = 2.0 * carry * sqrt_t / vol;
+    let power_exp = -2.0 * carry / vol_sq;
 
     if strike > s_max {
-        let d1 = ((spot / strike).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, carry) * expiry) / sig_sqrt_t;
         let d2 = d1 - sig_sqrt_t;
         let d3 = d1 - shift;
-        let power = (spot / strike).powf(-2.0 * carry / (vol * vol));
+        let power = (spot / strike).powf(power_exp);
 
-        spot * df_q * normal_cdf(d1) - strike * df_r * normal_cdf(d2)
-            + correction_scale * (-power * normal_cdf(d3) + carry_term * normal_cdf(d1))
+        spot.mul_add(df_q * normal_cdf(d1), -(strike * df_r * normal_cdf(d2)))
+            + correction_scale * carry_term.mul_add(normal_cdf(d1), -(power * normal_cdf(d3)))
     } else {
-        let e1 = ((spot / s_max).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let e1 = ((spot / s_max).ln() + (0.5 * vol).mul_add(vol, carry) * expiry) / sig_sqrt_t;
         let e2 = e1 - sig_sqrt_t;
         let e3 = e1 - shift;
-        let power = (spot / s_max).powf(-2.0 * carry / (vol * vol));
+        let power = (spot / s_max).powf(power_exp);
 
-        df_r * (s_max - strike) + spot * df_q * normal_cdf(e1) - s_max * df_r * normal_cdf(e2)
-            + correction_scale * (-power * normal_cdf(e3) + carry_term * normal_cdf(e1))
+        df_r * (s_max - strike) + spot.mul_add(df_q * normal_cdf(e1), -(s_max * df_r * normal_cdf(e2)))
+            + correction_scale * carry_term.mul_add(normal_cdf(e1), -(power * normal_cdf(e3)))
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn fixed_lookback_put_formula(
     spot: f64,
     strike: f64,
@@ -356,34 +373,36 @@ fn fixed_lookback_put_formula(
         return 0.5 * (hi + lo);
     }
 
+    let vol_sq = vol * vol;
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let df_q = (-dividend_yield * expiry).exp();
     let df_r = (-rate * expiry).exp();
-    let correction_scale = spot * df_r * (vol * vol / (2.0 * carry));
+    let correction_scale = spot * df_r * (vol_sq / (2.0 * carry));
     let carry_term = (carry * expiry).exp();
     let shift = 2.0 * carry * sqrt_t / vol;
+    let power_exp = -2.0 * carry / vol_sq;
 
     if strike < s_min {
-        let d1 = ((spot / strike).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, carry) * expiry) / sig_sqrt_t;
         let d2 = d1 - sig_sqrt_t;
         let d3 = -d1 + shift;
-        let power = (spot / strike).powf(-2.0 * carry / (vol * vol));
+        let power = (spot / strike).powf(power_exp);
 
-        strike * df_r * normal_cdf(-d2) - spot * df_q * normal_cdf(-d1)
-            + correction_scale * (power * normal_cdf(d3) - carry_term * normal_cdf(-d1))
+        strike.mul_add(df_r * normal_cdf(-d2), -(spot * df_q * normal_cdf(-d1)))
+            + correction_scale * power.mul_add(normal_cdf(d3), -(carry_term * normal_cdf(-d1)))
     } else {
-        let f1 = ((spot / s_min).ln() + (carry + 0.5 * vol * vol) * expiry) / sig_sqrt_t;
+        let f1 = ((spot / s_min).ln() + (0.5 * vol).mul_add(vol, carry) * expiry) / sig_sqrt_t;
         let f2 = f1 - sig_sqrt_t;
         let f3 = -f1 + shift;
-        let power = (spot / s_min).powf(-2.0 * carry / (vol * vol));
+        let power = (spot / s_min).powf(power_exp);
 
-        df_r * (strike - s_min) - spot * df_q * normal_cdf(-f1)
-            + s_min * df_r * normal_cdf(-f2)
-            + correction_scale * (power * normal_cdf(f3) - carry_term * normal_cdf(-f1))
+        df_r * (strike - s_min) + s_min.mul_add(df_r * normal_cdf(-f2), -(spot * df_q * normal_cdf(-f1)))
+            + correction_scale * power.mul_add(normal_cdf(f3), -(carry_term * normal_cdf(-f1)))
     }
 }
 
+#[inline]
 fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
     let call = bs_price_with_dividend(
         OptionType::Call,
@@ -410,12 +429,13 @@ fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
 
     let tau = (spec.expiry - spec.choose_time).max(0.0);
     let d1_choose = ((market.spot / spec.strike).ln()
-        + (market.rate - market.dividend_yield + 0.5 * vol * vol) * spec.choose_time)
+        + (0.5 * vol).mul_add(vol, market.rate - market.dividend_yield) * spec.choose_time)
         / (vol * spec.choose_time.sqrt());
 
-    call + put * (-market.dividend_yield * tau).exp() * normal_cdf(-d1_choose)
+    put.mul_add((-market.dividend_yield * tau).exp() * normal_cdf(-d1_choose), call)
 }
 
+#[inline]
 fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
     if spec.expiry <= 0.0 {
         let intrinsic = match spec.option_type {
@@ -425,30 +445,30 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
         return spec.fx_rate * intrinsic;
     }
 
-    // Quanto drift adjustment under domestic measure.
-    let mu_adj = spec.foreign_rate - market.dividend_yield - spec.asset_fx_corr * vol * spec.fx_vol;
+    // Quanto drift adjustment under domestic measure: mu_adj = rf - q - rho * vol * fx_vol
+    let mu_adj = (-spec.asset_fx_corr * spec.fx_vol).mul_add(vol, spec.foreign_rate - market.dividend_yield);
     let sqrt_t = spec.expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 =
-        ((market.spot / spec.strike).ln() + (mu_adj + 0.5 * vol * vol) * spec.expiry) / sig_sqrt_t;
+        ((market.spot / spec.strike).ln() + (0.5 * vol).mul_add(vol, mu_adj) * spec.expiry) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_dom = (-market.rate * spec.expiry).exp();
     let carry_discounted = ((mu_adj - market.rate) * spec.expiry).exp();
 
+    // Compute call, derive put via put-call parity to halve CDF evaluations.
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let call = market.spot.mul_add(carry_discounted * nd1, -(spec.strike * df_dom * nd2));
     let foreign_price = match spec.option_type {
-        OptionType::Call => {
-            market.spot * carry_discounted * normal_cdf(d1) - spec.strike * df_dom * normal_cdf(d2)
-        }
-        OptionType::Put => {
-            spec.strike * df_dom * normal_cdf(-d2)
-                - market.spot * carry_discounted * normal_cdf(-d1)
-        }
+        OptionType::Call => call,
+        OptionType::Put => call - market.spot * carry_discounted + spec.strike * df_dom,
     };
 
     spec.fx_rate * foreign_price
 }
 
+#[inline]
 fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f64, PricingError> {
     if spec.compound_expiry <= 0.0 {
         let inner = bs_price_with_dividend(
@@ -469,7 +489,8 @@ fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f6
     let t1 = spec.compound_expiry;
     let t2 = spec.underlying_expiry;
     let tau = (t2 - t1).max(0.0);
-    let drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * t1;
+    // drift = (r - q - 0.5 * vol^2) * t1 via FMA
+    let drift = (-0.5 * vol).mul_add(vol, market.rate - market.dividend_yield) * t1;
     let vol_t1 = vol * t1.sqrt();
 
     // Numerical quadrature approximation to the Geske expectation.

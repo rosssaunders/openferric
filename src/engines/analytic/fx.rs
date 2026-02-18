@@ -31,6 +31,7 @@ impl GarmanKohlhagenEngine {
     }
 }
 
+#[inline]
 fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -38,11 +39,12 @@ fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     }
 }
 
+#[inline]
 fn garman_kohlhagen_price_greeks(option: &FxOption) -> (f64, FxGreeks, f64, f64) {
     let sqrt_t = option.maturity.sqrt();
     let sig_sqrt_t = option.vol * sqrt_t;
     let d1 = ((option.spot_fx / option.strike_fx).ln()
-        + (option.domestic_rate - option.foreign_rate + 0.5 * option.vol * option.vol)
+        + (0.5 * option.vol).mul_add(option.vol, option.domestic_rate - option.foreign_rate)
             * option.maturity)
         / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
@@ -50,42 +52,46 @@ fn garman_kohlhagen_price_greeks(option: &FxOption) -> (f64, FxGreeks, f64, f64)
     let df_d = (-option.domestic_rate * option.maturity).exp();
     let df_f = (-option.foreign_rate * option.maturity).exp();
 
+    // Compute CDF and PDF once; derive put quantities via N(-x) = 1 - N(x).
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let pdf_d1 = normal_pdf(d1);
+
+    // Compute call price, derive put via put-call parity.
+    let call = option.spot_fx.mul_add(df_f * nd1, -(option.strike_fx * df_d * nd2));
     let price = match option.option_type {
-        OptionType::Call => {
-            option.spot_fx * df_f * normal_cdf(d1) - option.strike_fx * df_d * normal_cdf(d2)
-        }
-        OptionType::Put => {
-            option.strike_fx * df_d * normal_cdf(-d2) - option.spot_fx * df_f * normal_cdf(-d1)
-        }
+        OptionType::Call => call,
+        OptionType::Put => call - option.spot_fx * df_f + option.strike_fx * df_d,
     };
 
     let delta = match option.option_type {
-        OptionType::Call => df_f * normal_cdf(d1),
-        OptionType::Put => df_f * (normal_cdf(d1) - 1.0),
+        OptionType::Call => df_f * nd1,
+        OptionType::Put => df_f * (nd1 - 1.0),
     };
-    let gamma = df_f * normal_pdf(d1) / (option.spot_fx * option.vol * sqrt_t);
-    let vega = option.spot_fx * df_f * normal_pdf(d1) * sqrt_t;
+    let gamma = df_f * pdf_d1 / (option.spot_fx * option.vol * sqrt_t);
+    let vega = option.spot_fx * df_f * pdf_d1 * sqrt_t;
 
+    let theta_common = -option.spot_fx * df_f * pdf_d1 * option.vol / (2.0 * sqrt_t);
     let theta = match option.option_type {
         OptionType::Call => {
-            -option.spot_fx * df_f * normal_pdf(d1) * option.vol / (2.0 * sqrt_t)
-                + option.foreign_rate * option.spot_fx * df_f * normal_cdf(d1)
-                - option.domestic_rate * option.strike_fx * df_d * normal_cdf(d2)
+            theta_common
+                + option.foreign_rate * option.spot_fx * df_f * nd1
+                - option.domestic_rate * option.strike_fx * df_d * nd2
         }
         OptionType::Put => {
-            -option.spot_fx * df_f * normal_pdf(d1) * option.vol / (2.0 * sqrt_t)
-                - option.foreign_rate * option.spot_fx * df_f * normal_cdf(-d1)
-                + option.domestic_rate * option.strike_fx * df_d * normal_cdf(-d2)
+            theta_common
+                - option.foreign_rate * option.spot_fx * df_f * (1.0 - nd1)
+                + option.domestic_rate * option.strike_fx * df_d * (1.0 - nd2)
         }
     };
 
     let rho_domestic = match option.option_type {
-        OptionType::Call => option.strike_fx * option.maturity * df_d * normal_cdf(d2),
-        OptionType::Put => -option.strike_fx * option.maturity * df_d * normal_cdf(-d2),
+        OptionType::Call => option.strike_fx * option.maturity * df_d * nd2,
+        OptionType::Put => -option.strike_fx * option.maturity * df_d * (1.0 - nd2),
     };
     let rho_foreign = match option.option_type {
-        OptionType::Call => -option.spot_fx * option.maturity * df_f * normal_cdf(d1),
-        OptionType::Put => option.spot_fx * option.maturity * df_f * normal_cdf(-d1),
+        OptionType::Call => -option.spot_fx * option.maturity * df_f * nd1,
+        OptionType::Put => option.spot_fx * option.maturity * df_f * (1.0 - nd1),
     };
 
     (

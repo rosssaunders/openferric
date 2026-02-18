@@ -171,82 +171,131 @@ impl MonteCarloEngine {
         let reproducible = self.reproducible;
         let base_seed = self.seed;
         let path_len = steps + 1;
+        let antithetic = self.antithetic;
+        let has_cv = control.is_some();
 
-        let simulate_sample = |i: usize| {
+        // Accumulator: (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count)
+        // Using a tuple-struct alias for clarity.
+        type Acc = (f64, f64, f64, f64, f64, u64);
+        let identity: Acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0);
+
+        // Per-thread fold function: owns pre-allocated buffers, accumulates
+        // statistics inline without collecting into a Vec.
+        let fold_fn = |mut acc: (Acc, Vec<f64>, Vec<f64>, Vec<f64>), i: usize| {
+            let (ref mut stats, ref mut z1, ref mut z2, ref mut path) = acc;
+
             let seed = resolve_stream_seed(base_seed, i, reproducible);
             let mut rng = FastRng::from_seed(rng_kind, seed);
-
-            // Pre-allocate z1, z2, path once per thread via closure capture.
-            // These are stack-local and reused for antithetic paths.
-            let mut z1 = vec![0.0_f64; steps];
-            let mut z2 = vec![0.0_f64; steps];
-            let mut path = vec![0.0_f64; path_len];
 
             for j in 0..steps {
                 z1[j] = sample_standard_normal(&mut rng);
                 z2[j] = sample_standard_normal(&mut rng);
             }
 
-            generator.generate_into(&z1, &z2, &mut path);
-            let x = payoff(&path);
-            let y = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
+            generator.generate_into(z1, z2, path);
+            let x = payoff(path);
+            let y = if has_cv {
+                (control.as_ref().unwrap().evaluator)(path)
+            } else {
+                0.0
+            };
 
-            if self.antithetic {
+            let (x, y) = if antithetic {
                 for v in z1.iter_mut() {
                     *v = -*v;
                 }
                 for v in z2.iter_mut() {
                     *v = -*v;
                 }
-                generator.generate_into(&z1, &z2, &mut path);
-                let xa = payoff(&path);
-                let ya = control.as_ref().map_or(0.0, |c| (c.evaluator)(&path));
+                generator.generate_into(z1, z2, path);
+                let xa = payoff(path);
+                let ya = if has_cv {
+                    (control.as_ref().unwrap().evaluator)(path)
+                } else {
+                    0.0
+                };
                 (0.5 * (x + xa), 0.5 * (y + ya))
             } else {
                 (x, y)
-            }
+            };
+
+            stats.0 += x;
+            stats.1 += x * x;
+            stats.2 += y;
+            stats.3 += x * y;
+            stats.4 += y * y;
+            stats.5 += 1;
+
+            acc
         };
 
         #[cfg(feature = "parallel")]
-        let values = (0..samples)
-            .into_par_iter()
-            .map(simulate_sample)
-            .collect::<Vec<_>>();
+        let (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count) = {
+            let reduce_fn = |a: Acc, b: Acc| -> Acc {
+                (
+                    a.0 + b.0,
+                    a.1 + b.1,
+                    a.2 + b.2,
+                    a.3 + b.3,
+                    a.4 + b.4,
+                    a.5 + b.5,
+                )
+            };
+            (0..samples)
+                .into_par_iter()
+                .fold(
+                    || {
+                        (
+                            identity,
+                            vec![0.0_f64; steps],
+                            vec![0.0_f64; steps],
+                            vec![0.0_f64; path_len],
+                        )
+                    },
+                    &fold_fn,
+                )
+                .map(|(stats, _, _, _)| stats)
+                .reduce(|| identity, reduce_fn)
+        };
+
         #[cfg(not(feature = "parallel"))]
-        let values = (0..samples).map(simulate_sample).collect::<Vec<_>>();
-        let n = values.len() as f64;
+        let (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count) = {
+            let init = (
+                identity,
+                vec![0.0_f64; steps],
+                vec![0.0_f64; steps],
+                vec![0.0_f64; path_len],
+            );
+            let (stats, _, _, _) = (0..samples).fold(init, &fold_fn);
+            stats
+        };
 
-        // Single-pass statistics: avoid allocating an entire `adjusted` Vec.
+        let n = count as f64;
+
         if let Some(cv) = &control {
-            let mean_x = values.iter().map(|(x, _)| *x).sum::<f64>() / n;
-            let mean_y = values.iter().map(|(_, y)| *y).sum::<f64>() / n;
-
-            let mut cov_xy = 0.0_f64;
-            let mut var_y = 0.0_f64;
-            for &(x, y) in &values {
-                let dx = x - mean_x;
-                let dy = y - mean_y;
-                cov_xy += dx * dy;
-                var_y += dy * dy;
-            }
+            // Derive control-variate adjusted statistics from accumulated sums.
+            // cov(X,Y) = (sum_xy - sum_x * sum_y / n) / (n - 1)
+            // var(Y)    = (sum_y2 - sum_y^2 / n)       / (n - 1)
             let denom = (n - 1.0).max(1.0);
-            cov_xy /= denom;
-            var_y /= denom;
+            let cov_xy = (sum_xy - sum_x * sum_y / n) / denom;
+            let var_y = (sum_y2 - sum_y * sum_y / n) / denom;
 
             let beta = if var_y > 1e-16 { cov_xy / var_y } else { 0.0 };
             let cv_expected = cv.expected;
 
-            // Compute mean and variance of adjusted values in a single pass.
-            let mut sum = 0.0_f64;
-            let mut sum_sq = 0.0_f64;
-            for &(x, y) in &values {
-                let adj = x + beta * (cv_expected - y);
-                sum += adj;
-                sum_sq += adj * adj;
-            }
-            let mean = sum / n;
+            // Adjusted value: adj_i = x_i + beta * (cv_expected - y_i)
+            // sum_adj   = sum_x + beta * (n * cv_expected - sum_y)
+            // sum_adj^2 = sum_x2 + 2*beta*cv_expected*sum_x - 2*beta*sum_xy
+            //           + beta^2 * (n*cv_expected^2 - 2*cv_expected*sum_y + sum_y2)
+            let sum_adj = sum_x + beta * (n * cv_expected - sum_y);
+            let sum_adj_sq = sum_x2
+                + 2.0 * beta * cv_expected * sum_x
+                - 2.0 * beta * sum_xy
+                + beta * beta * (n * cv_expected * cv_expected - 2.0 * cv_expected * sum_y + sum_y2);
+
+            let mean = sum_adj / n;
             let var = if n > 1.0 {
-                (sum_sq - sum * sum / n) / (n - 1.0)
+                (sum_adj_sq - sum_adj * sum_adj / n) / (n - 1.0)
             } else {
                 0.0
             };
@@ -254,15 +303,9 @@ impl MonteCarloEngine {
             let stderr = discount_factor * (var / n).sqrt();
             (price, stderr)
         } else {
-            let mut sum = 0.0_f64;
-            let mut sum_sq = 0.0_f64;
-            for &(x, _) in &values {
-                sum += x;
-                sum_sq += x * x;
-            }
-            let mean = sum / n;
+            let mean = sum_x / n;
             let var = if n > 1.0 {
-                (sum_sq - sum * sum / n) / (n - 1.0)
+                (sum_x2 - sum_x * sum_x / n) / (n - 1.0)
             } else {
                 0.0
             };

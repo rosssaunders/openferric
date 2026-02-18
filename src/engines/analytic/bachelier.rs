@@ -1,6 +1,7 @@
 use crate::core::{Greeks, OptionType, PricingError};
 use crate::math::{normal_cdf, normal_pdf};
 
+#[inline]
 fn intrinsic(option_type: OptionType, forward: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (forward - strike).max(0.0),
@@ -10,6 +11,7 @@ fn intrinsic(option_type: OptionType, forward: f64, strike: f64) -> f64 {
 
 /// Bachelier (normal) model price for European options on forwards.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn bachelier_price(
     option_type: OptionType,
     forward: f64,
@@ -52,9 +54,13 @@ pub fn bachelier_price(
     let denom = sigma_n * sqrt_t;
     let d = (forward - strike) / denom;
 
+    // Compute call price; derive put via put-call parity: P = C - df*(F-K).
+    let nd = normal_cdf(d);
+    let pdf_d = normal_pdf(d);
+    let call = df * ((forward - strike).mul_add(nd, denom * pdf_d));
     let price = match option_type {
-        OptionType::Call => df * ((forward - strike) * normal_cdf(d) + denom * normal_pdf(d)),
-        OptionType::Put => df * ((strike - forward) * normal_cdf(-d) + denom * normal_pdf(d)),
+        OptionType::Call => call,
+        OptionType::Put => call - df * (forward - strike),
     };
 
     Ok(price)
@@ -62,6 +68,7 @@ pub fn bachelier_price(
 
 /// Bachelier (normal) model Greeks for European options on forwards.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn bachelier_greeks(
     option_type: OptionType,
     forward: f64,
@@ -86,13 +93,16 @@ pub fn bachelier_greeks(
     let denom = sigma_n * sqrt_t;
     let d = (forward - strike) / denom;
 
+    // Compute CDF and PDF once, derive put delta via N(d) - 1.
+    let nd = normal_cdf(d);
+    let pdf_d = normal_pdf(d);
     let delta = match option_type {
-        OptionType::Call => df * normal_cdf(d),
-        OptionType::Put => df * (normal_cdf(d) - 1.0),
+        OptionType::Call => df * nd,
+        OptionType::Put => df * (nd - 1.0),
     };
-    let gamma = df * normal_pdf(d) / denom;
-    let vega = df * sqrt_t * normal_pdf(d);
-    let theta = r * price - df * sigma_n * normal_pdf(d) / (2.0 * sqrt_t);
+    let gamma = df * pdf_d / denom;
+    let vega = df * sqrt_t * pdf_d;
+    let theta = r.mul_add(price, -(df * sigma_n * pdf_d / (2.0 * sqrt_t)));
 
     // Sensitivity to r for fixed forward input.
     let rho = -t * price;

@@ -21,7 +21,7 @@ fn uniform_open01(u: f64) -> f64 {
     u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
 }
 
-#[inline]
+#[inline(always)]
 fn payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
@@ -50,19 +50,31 @@ fn simulate_chunk(
     dt_vol: f64,
     n_steps: usize,
     n_paths: usize,
+    chunk_seed: u64,
 ) -> (f64, f64, usize) {
-    // Use thread-id-based seed for reproducibility per chunk
-    let chunk_seed = std::thread::current().id().as_u64().get();
     let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, chunk_seed);
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
     for _ in 0..n_paths {
         let mut spot = spot0;
-        for _ in 0..n_steps {
+        // Unrolled inner loop: process 4 steps at a time
+        let mut step = 0;
+        while step + 4 <= n_steps {
+            let z0 = sample_standard_normal(&mut rng);
+            let z1 = sample_standard_normal(&mut rng);
+            let z2 = sample_standard_normal(&mut rng);
+            let z3 = sample_standard_normal(&mut rng);
+            spot *= dt_vol.mul_add(z0, dt_drift).exp();
+            spot *= dt_vol.mul_add(z1, dt_drift).exp();
+            spot *= dt_vol.mul_add(z2, dt_drift).exp();
+            spot *= dt_vol.mul_add(z3, dt_drift).exp();
+            step += 4;
+        }
+        while step < n_steps {
             let z = sample_standard_normal(&mut rng);
             spot *= dt_vol.mul_add(z, dt_drift).exp();
-            spot = spot.max(1.0e-12);
+            step += 1;
         }
         let px = payoff(option_type, spot, strike);
         sum += px;
@@ -124,9 +136,12 @@ pub fn mc_european_parallel(
     let discount = (-market.rate * instrument.expiry).exp();
 
     let chunks = split_paths(n_paths, rayon::current_num_threads());
+    let base_seed: u64 = 0xDEAD_BEEF_CAFE_BABE;
     let (sum, sum_sq, total_paths) = chunks
         .par_iter()
-        .map(|&chunk| {
+        .enumerate()
+        .map(|(i, &chunk)| {
+            let chunk_seed = base_seed.wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
             simulate_chunk(
                 instrument.option_type,
                 instrument.strike,
@@ -135,6 +150,7 @@ pub fn mc_european_parallel(
                 dt_vol,
                 n_steps,
                 chunk,
+                chunk_seed,
             )
         })
         .reduce(
@@ -218,6 +234,7 @@ pub fn mc_european_sequential(
         dt_vol,
         n_steps,
         n_paths,
+        0xDEAD_BEEF_CAFE_BABE,
     );
     let n = total_paths as f64;
     let mean = sum / n;
