@@ -43,7 +43,7 @@ fn d1_d2(
 ) -> (f64, f64) {
     let sig_sqrt_t = vol * expiry.sqrt();
     let d1 = ((spot / strike).ln()
-        + (rate - dividend_yield).mul_add(expiry, 0.5 * vol * vol * expiry))
+        + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
         / sig_sqrt_t;
     (d1, d1 - sig_sqrt_t)
 }
@@ -200,9 +200,10 @@ pub fn bs_rho(
     }
     let (_, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
     let df_r = (-rate * expiry).exp();
+    let nd2 = norm_cdf(d2);
     match option_type {
-        OptionType::Call => strike * expiry * df_r * norm_cdf(d2),
-        OptionType::Put => -strike * expiry * df_r * norm_cdf(-d2),
+        OptionType::Call => strike * expiry * df_r * nd2,
+        OptionType::Put => -strike * expiry * df_r * (1.0 - nd2),
     }
 }
 

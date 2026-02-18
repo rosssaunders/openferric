@@ -70,6 +70,7 @@ fn black76_price_greeks(option: &FuturesOption) -> (f64, Greeks, f64, f64) {
 
 /// Closed-form Black-76 price for European options on forwards/futures.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn black76_price(
     option_type: OptionType,
     forward: f64,
@@ -95,6 +96,7 @@ pub fn black76_price(
 
 /// Closed-form Black-76 Greeks for European options on forwards/futures.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn black76_greeks(
     option_type: OptionType,
     forward: f64,

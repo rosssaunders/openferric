@@ -215,15 +215,13 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
         let df_r = (-market.rate * instrument.expiry).exp();
         let df_q = (-market.dividend_yield * instrument.expiry).exp();
 
+        // Compute N(d1), N(d2) once; derive put via N(-d) = 1 - N(d).
+        let nd1 = normal_cdf(d1);
+        let nd2 = normal_cdf(d2);
+        let call = market.spot.mul_add(df_q * nd1, -(instrument.payoff_strike * df_r * nd2));
         let price = match instrument.option_type {
-            OptionType::Call => {
-                market.spot * df_q * normal_cdf(d1)
-                    - instrument.payoff_strike * df_r * normal_cdf(d2)
-            }
-            OptionType::Put => {
-                instrument.payoff_strike * df_r * normal_cdf(-d2)
-                    - market.spot * df_q * normal_cdf(-d1)
-            }
+            OptionType::Call => call,
+            OptionType::Put => call - market.spot * df_q + instrument.payoff_strike * df_r,
         };
 
         let mut diagnostics = crate::core::Diagnostics::new();
