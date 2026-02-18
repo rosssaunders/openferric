@@ -203,7 +203,7 @@ impl LmmModel {
             }
             correlate_normals(chol, &indep, &mut z);
 
-            for i in active..n {
+            for (i, drift_i) in drifts.iter_mut().enumerate().take(n).skip(active) {
                 let mut drift = 0.0;
                 for k in active..=i {
                     let denom = 1.0 + taus[k] * forwards[k];
@@ -216,7 +216,7 @@ impl LmmModel {
                             / denom;
                     }
                 }
-                drifts[i] = drift;
+                *drift_i = drift;
             }
 
             for i in active..n {

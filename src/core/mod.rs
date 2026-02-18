@@ -121,48 +121,52 @@ impl DiagKey {
         }
     }
 
-    #[inline]
-    pub fn from_str(key: &str) -> Option<Self> {
+}
+
+impl std::str::FromStr for DiagKey {
+    type Err = ();
+
+    fn from_str(key: &str) -> Result<Self, Self::Err> {
         match key {
-            "barrier_level" => Some(Self::BarrierLevel),
-            "conversion_value" => Some(Self::ConversionValue),
-            "credit_spread" => Some(Self::CreditSpread),
-            "d" => Some(Self::D),
-            "d1" => Some(Self::D1),
-            "d2" => Some(Self::D2),
-            "delta" => Some(Self::Delta),
-            "discount_factor" => Some(Self::DiscountFactor),
-            "double_knockout_base" => Some(Self::DoubleKnockoutBase),
-            "effective_vol" => Some(Self::EffectiveVol),
-            "exercise_dates" => Some(Self::ExerciseDates),
-            "fair_variance" => Some(Self::FairVariance),
-            "fair_volatility" => Some(Self::FairVolatility),
-            "inside_barriers" => Some(Self::InsideBarriers),
-            "integral" => Some(Self::Integral),
-            "max_exercises" => Some(Self::MaxExercises),
-            "min_exercises" => Some(Self::MinExercises),
-            "npv" => Some(Self::Npv),
-            "num_paths" => Some(Self::NumPaths),
-            "num_threads" => Some(Self::NumThreads),
-            "observation_count" => Some(Self::ObservationCount),
-            "num_space_steps" => Some(Self::NumSpaceSteps),
-            "num_steps" => Some(Self::NumSteps),
-            "num_time_steps" => Some(Self::NumTimeSteps),
-            "pd" => Some(Self::Pd),
-            "pm" => Some(Self::Pm),
-            "pu" => Some(Self::Pu),
-            "pv_forward" => Some(Self::PvForward),
-            "rho" => Some(Self::Rho),
-            "rho_domestic" => Some(Self::RhoDomestic),
-            "rho_foreign" => Some(Self::RhoForeign),
-            "s_max" => Some(Self::SMax),
-            "series_terms" => Some(Self::SeriesTerms),
-            "survival_digital" => Some(Self::SurvivalDigital),
-            "u" => Some(Self::U),
-            "var_of_var" => Some(Self::VarOfVar),
-            "vol" => Some(Self::Vol),
-            "vol_adj" => Some(Self::VolAdj),
-            _ => None,
+            "barrier_level" => Ok(Self::BarrierLevel),
+            "conversion_value" => Ok(Self::ConversionValue),
+            "credit_spread" => Ok(Self::CreditSpread),
+            "d" => Ok(Self::D),
+            "d1" => Ok(Self::D1),
+            "d2" => Ok(Self::D2),
+            "delta" => Ok(Self::Delta),
+            "discount_factor" => Ok(Self::DiscountFactor),
+            "double_knockout_base" => Ok(Self::DoubleKnockoutBase),
+            "effective_vol" => Ok(Self::EffectiveVol),
+            "exercise_dates" => Ok(Self::ExerciseDates),
+            "fair_variance" => Ok(Self::FairVariance),
+            "fair_volatility" => Ok(Self::FairVolatility),
+            "inside_barriers" => Ok(Self::InsideBarriers),
+            "integral" => Ok(Self::Integral),
+            "max_exercises" => Ok(Self::MaxExercises),
+            "min_exercises" => Ok(Self::MinExercises),
+            "npv" => Ok(Self::Npv),
+            "num_paths" => Ok(Self::NumPaths),
+            "num_threads" => Ok(Self::NumThreads),
+            "observation_count" => Ok(Self::ObservationCount),
+            "num_space_steps" => Ok(Self::NumSpaceSteps),
+            "num_steps" => Ok(Self::NumSteps),
+            "num_time_steps" => Ok(Self::NumTimeSteps),
+            "pd" => Ok(Self::Pd),
+            "pm" => Ok(Self::Pm),
+            "pu" => Ok(Self::Pu),
+            "pv_forward" => Ok(Self::PvForward),
+            "rho" => Ok(Self::Rho),
+            "rho_domestic" => Ok(Self::RhoDomestic),
+            "rho_foreign" => Ok(Self::RhoForeign),
+            "s_max" => Ok(Self::SMax),
+            "series_terms" => Ok(Self::SeriesTerms),
+            "survival_digital" => Ok(Self::SurvivalDigital),
+            "u" => Ok(Self::U),
+            "var_of_var" => Ok(Self::VarOfVar),
+            "vol" => Ok(Self::Vol),
+            "vol_adj" => Ok(Self::VolAdj),
+            _ => Err(()),
         }
     }
 }
@@ -193,7 +197,7 @@ impl Diagnostics {
 
     #[inline]
     pub fn insert(&mut self, key: &'static str, value: f64) -> Option<f64> {
-        let key = DiagKey::from_str(key).unwrap_or_else(|| {
+        let key: DiagKey = key.parse().unwrap_or_else(|()| {
             panic!("unsupported diagnostics key `{key}`; add it to core::DiagKey")
         });
         self.insert_key(key, value)
@@ -203,13 +207,11 @@ impl Diagnostics {
     /// string-to-enum match on the hot path.
     #[inline]
     pub fn insert_key(&mut self, key: DiagKey, value: f64) -> Option<f64> {
-        for entry in &mut self.entries {
-            if let Some((entry_key, existing)) = entry {
-                if *entry_key == key {
-                    let prev = *existing;
-                    *existing = value;
-                    return Some(prev);
-                }
+        for (entry_key, existing) in self.entries.iter_mut().flatten() {
+            if *entry_key == key {
+                let prev = *existing;
+                *existing = value;
+                return Some(prev);
             }
         }
 
@@ -236,14 +238,15 @@ impl Diagnostics {
 
     #[inline]
     pub fn contains_key(&self, key: &str) -> bool {
-        DiagKey::from_str(key)
+        key.parse::<DiagKey>()
+            .ok()
             .and_then(|diag_key| self.find_entry(diag_key))
             .is_some()
     }
 
     #[inline]
     pub fn get(&self, key: &str) -> Option<&f64> {
-        let key = DiagKey::from_str(key)?;
+        let key: DiagKey = key.parse().ok()?;
         self.find_entry(key)
     }
 

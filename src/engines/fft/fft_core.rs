@@ -12,13 +12,16 @@ struct ComplexFftPlan {
     inverse: Arc<dyn Fft<f64>>,
 }
 
-static COMPLEX_FFT_CACHE: OnceLock<Mutex<HashMap<usize, ComplexFftPlan>>> = OnceLock::new();
-static REAL_FFT_CACHE: OnceLock<Mutex<HashMap<usize, Arc<dyn RealToComplex<f64>>>>> =
-    OnceLock::new();
+type ComplexFftCache = OnceLock<Mutex<HashMap<usize, ComplexFftPlan>>>;
+type RealFftCache = OnceLock<Mutex<HashMap<usize, Arc<dyn RealToComplex<f64>>>>>;
+
+static COMPLEX_FFT_CACHE: ComplexFftCache = OnceLock::new();
+static REAL_FFT_CACHE: RealFftCache = OnceLock::new();
+
+type ComplexScratch = RefCell<HashMap<(usize, bool), Vec<Complex<f64>>>>;
 
 thread_local! {
-    static COMPLEX_FFT_SCRATCH: RefCell<HashMap<(usize, bool), Vec<Complex<f64>>>> =
-        RefCell::new(HashMap::new());
+    static COMPLEX_FFT_SCRATCH: ComplexScratch = RefCell::new(HashMap::new());
     static REAL_FFT_SCRATCH: RefCell<HashMap<usize, Vec<Complex<f64>>>> =
         RefCell::new(HashMap::new());
 }

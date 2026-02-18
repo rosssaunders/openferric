@@ -238,9 +238,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 tau_new,
             );
 
-            for k in 0..interior_n {
-                rhs_buf[k] = values[k + 1];
-            }
+            rhs_buf[..interior_n].copy_from_slice(&values[1..interior_n + 1]);
             rhs_buf[0] -= lhs_lower[0] * lower_bv;
             rhs_buf[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_bv;
 

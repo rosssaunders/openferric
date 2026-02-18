@@ -70,7 +70,6 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         let dt = instrument.expiry / self.steps as f64;
         let u = (vol * (2.0 * dt).sqrt()).exp();
         let d = 1.0 / u;
-        let m = 1.0;
 
         let nu = market.rate - market.dividend_yield;
         let a = (nu * dt / 2.0).exp();
@@ -118,8 +117,8 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         let mut values = vec![0.0_f64; 2 * self.steps + 1];
         {
             let mut st = market.spot * d.powi(self.steps as i32);
-            for idx in 0..(2 * self.steps + 1) {
-                values[idx] = intrinsic(instrument.option_type, st, instrument.strike);
+            for value in values.iter_mut().take(2 * self.steps + 1) {
+                *value = intrinsic(instrument.option_type, st, instrument.strike);
                 st *= u;
             }
         }

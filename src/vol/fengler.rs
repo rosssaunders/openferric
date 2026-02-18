@@ -15,8 +15,6 @@ pub struct FenglerSurface {
     forwards: Vec<f64>,
     /// Log-moneyness grid for each expiry slice.
     log_moneyness: Vec<Vec<f64>>,
-    /// Total variance values for each slice.
-    total_variances: Vec<Vec<f64>>,
     /// Spline per expiry slice.
     splines: Vec<CubicSpline>,
 }
@@ -39,7 +37,6 @@ impl FenglerSurface {
 
         let mut forwards = Vec::with_capacity(expiries.len());
         let mut log_moneyness_slices = Vec::with_capacity(expiries.len());
-        let mut total_var_slices = Vec::with_capacity(expiries.len());
         let mut splines = Vec::with_capacity(expiries.len());
 
         for &t in &expiries {
@@ -82,7 +79,6 @@ impl FenglerSurface {
             };
 
             log_moneyness_slices.push(ks);
-            total_var_slices.push(ws);
             splines.push(spline);
         }
 
@@ -90,7 +86,6 @@ impl FenglerSurface {
             expiries,
             forwards,
             log_moneyness: log_moneyness_slices,
-            total_variances: total_var_slices,
             splines,
         }
     }

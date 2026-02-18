@@ -117,7 +117,7 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
         let ratio = u / d;
 
         let mut next = vec![vec![0.0_f64; self.steps + 1]; rights + 1];
-        for rem in 0..=rights {
+        for (rem, next_rem) in next.iter_mut().enumerate().take(rights + 1) {
             let used = rights - rem;
             let feasible_without_exercise = used >= instrument.min_exercises;
 
@@ -131,20 +131,20 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
                 let used_if_exercise = rights - (rem - 1);
                 if used_if_exercise >= instrument.min_exercises {
                     let mut st = market.spot * d.powi(self.steps as i32);
-                    for j in 0..=self.steps {
+                    for value in next_rem.iter_mut().take(self.steps + 1) {
                         let payoff =
                             instrument.payoff_per_exercise * (st - instrument.strike).max(0.0);
-                        next[rem][j] = hold_value.max(payoff);
+                        *value = hold_value.max(payoff);
                         st *= ratio;
                     }
                 } else {
-                    for j in 0..=self.steps {
-                        next[rem][j] = hold_value;
+                    for value in next_rem.iter_mut().take(self.steps + 1) {
+                        *value = hold_value;
                     }
                 }
             } else {
-                for j in 0..=self.steps {
-                    next[rem][j] = hold_value;
+                for value in next_rem.iter_mut().take(self.steps + 1) {
+                    *value = hold_value;
                 }
             }
         }

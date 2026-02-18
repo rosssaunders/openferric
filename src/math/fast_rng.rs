@@ -135,7 +135,7 @@ pub enum FastRng {
     Xoshiro256PlusPlus(Xoshiro256Rng),
     Pcg64(Pcg64Rng),
     ThreadRng(ThreadRng),
-    StdRng(StdRng),
+    StdRng(Box<StdRng>),
 }
 
 impl FastRng {
@@ -146,7 +146,7 @@ impl FastRng {
                 Self::Xoshiro256PlusPlus(Xoshiro256Rng::seed_from_u64(seed))
             }
             FastRngKind::Pcg64 => Self::Pcg64(Pcg64Rng::seed_from_u64(seed)),
-            FastRngKind::StdRng => Self::StdRng(StdRng::seed_from_u64(seed)),
+            FastRngKind::StdRng => Self::StdRng(Box::new(StdRng::seed_from_u64(seed))),
             FastRngKind::ThreadRng => Self::ThreadRng(rand::rng()),
         }
     }
@@ -211,7 +211,7 @@ pub fn resolve_stream_seed(base_seed: u64, stream_index: usize, reproducible: bo
 /// Uses `f64::max/min` which compiles to branchless `maxsd/minsd` on x86.
 #[inline(always)]
 pub fn uniform_open01(u: f64) -> f64 {
-    u.max(f64::EPSILON).min(1.0 - f64::EPSILON)
+    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
 }
 
 #[inline(always)]

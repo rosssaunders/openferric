@@ -104,8 +104,8 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
         let mut values = vec![0.0_f64; self.steps + 1];
         {
             let mut st = market.spot * d.powi(self.steps as i32);
-            for j in 0..=self.steps {
-                values[j] = intrinsic(instrument.option_type, st, instrument.strike);
+            for value in values.iter_mut().take(self.steps + 1) {
+                *value = intrinsic(instrument.option_type, st, instrument.strike);
                 st *= ratio;
             }
         }

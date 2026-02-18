@@ -7,7 +7,6 @@
 /// - Henrard, "Interest Rate Modelling in the Multi-Curve Framework" (2014)
 /// - Ametrano, Bianchetti, "Everything You Always Wanted to Know About
 ///   Multiple Interest Rate Curve Bootstrapping" (2013)
-
 use crate::rates::yield_curve::YieldCurve;
 
 /// Multi-curve environment: one discount curve + multiple forwarding curves.
@@ -104,11 +103,12 @@ pub fn dual_curve_bootstrap(
             annuity += ois_df * dt;
 
             // Use already-bootstrapped forward DFs for intermediate periods
-            if let Some(fwd_df_prev) = interpolate_df(&fwd_points, (i - 1) as f64 * dt) {
-                if let Some(fwd_df_curr) = interpolate_df(&fwd_points, t_i) {
-                    let fwd_rate = (fwd_df_prev / fwd_df_curr - 1.0) / dt;
-                    float_pv += fwd_rate * ois_df * dt;
-                }
+            if let (Some(fwd_df_prev), Some(fwd_df_curr)) = (
+                interpolate_df(&fwd_points, (i - 1) as f64 * dt),
+                interpolate_df(&fwd_points, t_i),
+            ) {
+                let fwd_rate = (fwd_df_prev / fwd_df_curr - 1.0) / dt;
+                float_pv += fwd_rate * ois_df * dt;
             }
         }
 

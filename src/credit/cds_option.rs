@@ -18,14 +18,13 @@ impl CdsOption {
     ///
     /// * `forward_spread` - current fair CDS spread
     /// * `vol` - implied volatility of the CDS spread
-    /// * `risky_annuity` - RPV01 of the underlying CDS
-    /// * `discount_factor` - risk-free discount factor to option expiry
+    /// * `risky_annuity` - spot RPV01 (present-value) of the underlying CDS,
+    ///   i.e. already discounted to today
     pub fn black_price(
         &self,
         forward_spread: f64,
         vol: f64,
         risky_annuity: f64,
-        discount_factor: f64,
     ) -> f64 {
         if self.option_expiry <= 0.0 || vol < 0.0 || risky_annuity <= 0.0 {
             return 0.0;
@@ -167,8 +166,8 @@ mod tests {
             recovery_rate: 0.4,
         };
 
-        let p = payer.black_price(forward, vol, rpv01, 1.0);
-        let r = receiver.black_price(forward, vol, rpv01, 1.0);
+        let p = payer.black_price(forward, vol, rpv01);
+        let r = receiver.black_price(forward, vol, rpv01);
         assert!(
             (p - r).abs() < 1e-8,
             "ATM payer ({p}) != receiver ({r})"
@@ -257,7 +256,7 @@ mod tests {
             recovery_rate: recovery,
         };
 
-        let price = option.black_price(fair, vol, rpv01, (-risk_free_rate * t_expiry).exp());
+        let price = option.black_price(fair, vol, rpv01);
         assert!(
             (price - 270.976348).abs() < 1.0,
             "QuantLib cached value mismatch: got {price}, expected 270.976348"
@@ -279,7 +278,7 @@ mod tests {
             recovery_rate: 0.4,
         };
 
-        let price = payer.black_price(forward, 0.0, rpv01, 1.0);
+        let price = payer.black_price(forward, 0.0, rpv01);
         let expected = 1_000_000.0 * rpv01 * (forward - strike);
         assert!(
             (price - expected).abs() < 1e-6,
@@ -295,7 +294,7 @@ mod tests {
             is_payer: false,
             recovery_rate: 0.4,
         };
-        let price_r = receiver.black_price(forward, 0.0, rpv01, 1.0);
+        let price_r = receiver.black_price(forward, 0.0, rpv01);
         assert!(
             price_r.abs() < 1e-6,
             "Zero vol OTM receiver should be 0, got {price_r}"
@@ -317,7 +316,7 @@ mod tests {
             recovery_rate: 0.4,
         };
         let forward = 0.05;
-        let price = deep_itm.black_price(forward, vol, rpv01, 1.0);
+        let price = deep_itm.black_price(forward, vol, rpv01);
         let intrinsic = 1_000_000.0 * rpv01 * (forward - 0.001);
         assert!(
             price >= intrinsic * 0.99,
@@ -334,7 +333,7 @@ mod tests {
             recovery_rate: 0.4,
         };
         let forward_low = 0.001;
-        let price_otm = deep_otm.black_price(forward_low, vol, rpv01, 1.0);
+        let price_otm = deep_otm.black_price(forward_low, vol, rpv01);
         assert!(
             price_otm < 1_000_000.0 * rpv01 * 0.001,
             "Deep OTM payer should be near zero, got {price_otm}"

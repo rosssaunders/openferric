@@ -7,7 +7,6 @@
 ///   K = 12.5 * RiskWeight * EAD * LGD * MaturityAdjustment
 ///
 /// Reference: Green (2015), Basel III SA-CCR framework
-
 use crate::rates::YieldCurve;
 
 /// SA-CCR asset class for add-on factors.
@@ -45,7 +44,7 @@ pub fn sa_ccr_ead(
 ) -> f64 {
     let alpha = 1.4;
     let sf = asset_class.supervisory_factor();
-    let maturity_factor = (maturity.min(1.0).max(10.0 / 252.0)).sqrt();
+    let maturity_factor = maturity.clamp(10.0 / 252.0, 1.0).sqrt();
     let pfe = sf * notional * maturity_factor;
     let rc = replacement_cost.max(0.0);
     alpha * (rc + pfe)

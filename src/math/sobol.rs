@@ -53,10 +53,10 @@ impl SobolSequence {
         let c = next_index.trailing_zeros() as usize;
         self.index = next_index;
 
-        for dim in 0..self.dimensions {
+        for (dim, out_dim) in out.iter_mut().enumerate().take(self.dimensions) {
             self.x[dim] ^= self.directions[dim][c];
             let scrambled = self.x[dim] ^ self.scramblers[dim];
-            out[dim] = (scrambled as f64).mul_add(INV_U64_RANGE, HALF_INV_U64);
+            *out_dim = (scrambled as f64).mul_add(INV_U64_RANGE, HALF_INV_U64);
         }
 
         true

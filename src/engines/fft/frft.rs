@@ -43,11 +43,11 @@ pub fn frft(input: &[Complex<f64>], beta: f64) -> Vec<Complex<f64>> {
 
     fft_inverse(&mut a);
     let mut out = Vec::with_capacity(n);
-    for m in 0..n {
+    for (m, a_m) in a.iter().enumerate().take(n) {
         let m_f = m as f64;
         let chirp_angle = PI * beta * m_f * m_f / n as f64;
         let chirp_neg = Complex::new(0.0, -chirp_angle).exp();
-        out.push(a[m] * chirp_neg);
+        out.push(a_m * chirp_neg);
     }
 
     out

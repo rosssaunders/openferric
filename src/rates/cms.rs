@@ -3,7 +3,6 @@
 /// References:
 /// - Hagan, "Convexity Conundrums" (2003)
 /// - Pelsser, "Efficient Methods for Valuing Interest Rate Derivatives" (2000)
-
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};

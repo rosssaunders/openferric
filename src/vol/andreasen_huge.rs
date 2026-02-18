@@ -119,8 +119,8 @@ impl AndreasenHugeInterpolation {
 
                     // Spread the bump over nearby grid points for stability.
                     let spread_pts = 3;
-                    for j in idx.saturating_sub(spread_pts)..=(idx + spread_pts).min(n_grid - 1) {
-                        sigma_bumped[j] += bump;
+                    for sb in sigma_bumped.iter_mut().take((idx + spread_pts).min(n_grid - 1) + 1).skip(idx.saturating_sub(spread_pts)) {
+                        *sb += bump;
                     }
 
                     let bumped_calls = step_implicit(
@@ -149,7 +149,7 @@ impl AndreasenHugeInterpolation {
                     let spread_pts = 5;
                     for j in idx.saturating_sub(spread_pts)..=(idx + spread_pts).min(n_grid - 1) {
                         let w = 1.0 / (1.0 + ((grid[j] - grid[idx]) / dk).powi(2));
-                        sigma_loc[j] = (sigma_loc[j] - damped * w).max(0.005).min(5.0);
+                        sigma_loc[j] = (sigma_loc[j] - damped * w).clamp(0.005, 5.0);
                     }
                 }
             }
@@ -295,7 +295,7 @@ fn step_implicit(
     let mut lower = vec![0.0; n];
     let mut diag = vec![1.0; n];
     let mut upper = vec![0.0; n];
-    let mut rhs = prev.to_vec();
+    let rhs = prev.to_vec();
 
     for j in 1..n - 1 {
         let k = grid[j];
@@ -346,8 +346,8 @@ fn step_implicit(
     }
 
     // Enforce non-negativity and intrinsic value bound.
-    for j in 0..n {
-        result[j] = result[j].max(0.0);
+    for value in result.iter_mut().take(n) {
+        *value = value.max(0.0);
     }
 
     result

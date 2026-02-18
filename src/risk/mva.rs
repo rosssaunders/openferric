@@ -9,7 +9,6 @@
 /// - Historical VaR
 ///
 /// Reference: Andersen, Pykhtin, Sokol (2017) "Rethinking Margin Period of Risk"
-
 use crate::rates::YieldCurve;
 
 /// SIMM risk weight buckets (simplified).

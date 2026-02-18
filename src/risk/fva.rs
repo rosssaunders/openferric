@@ -4,7 +4,6 @@
 /// FVA = -∫ FundingSpread(t) * FundingExposure(t) * DF(t) dt
 ///
 /// Reference: Green, "XVA: Credit, Funding and Capital Valuation Adjustments" (2015)
-
 use crate::rates::YieldCurve;
 
 /// Collateral agreement (CSA) terms.

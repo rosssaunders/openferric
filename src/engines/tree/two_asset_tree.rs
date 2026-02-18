@@ -120,10 +120,10 @@ where
     let mut values = vec![vec![0.0_f64; n]; n];
     {
         let mut s1_t = s1 * d1.powi(steps as i32);
-        for i in 0..n {
+        for value_row in values.iter_mut().take(n) {
             let mut s2_t = s2 * d2.powi(steps as i32);
-            for j in 0..n {
-                values[i][j] = payoff_fn(s1_t, s2_t);
+            for value in value_row.iter_mut().take(n) {
+                *value = payoff_fn(s1_t, s2_t);
                 s2_t *= ratio2;
             }
             s1_t *= ratio1;

@@ -85,8 +85,7 @@ pub fn quanto_drift_adjustment(rho: f64, sigma_r: f64, sigma_fx: f64) -> f64 {
     if !rho.is_finite()
         || !sigma_r.is_finite()
         || !sigma_fx.is_finite()
-        || rho < -1.0
-        || rho > 1.0
+        || !(-1.0..=1.0).contains(&rho)
         || sigma_r < 0.0
         || sigma_fx < 0.0
     {

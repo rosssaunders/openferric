@@ -227,9 +227,9 @@ impl HjmModel {
         }
 
         let mut drift = 0.0;
-        for i in 0..n {
-            for j in 0..n {
-                drift += self.correlation[i][j] * sigma[i] * integrated[j];
+        for (i, sigma_i) in sigma.iter().enumerate().take(n) {
+            for (j, integrated_j) in integrated.iter().enumerate().take(n) {
+                drift += self.correlation[i][j] * sigma_i * integrated_j;
             }
         }
         drift

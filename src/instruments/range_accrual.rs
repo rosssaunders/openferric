@@ -2,7 +2,6 @@
 ///
 /// A range accrual pays a coupon that accrues on each day the reference rate
 /// is within a specified range [lower, upper]. Common in rates desks.
-
 /// Single-rate range accrual.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeAccrual {

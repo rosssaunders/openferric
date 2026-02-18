@@ -300,7 +300,7 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
         let use_simd = false;
 
         let buf_size = (self.num_steps + 3) & !3;
-        let mut normal_buf = vec![0.0_f64; buf_size];
+        let normal_buf = vec![0.0_f64; buf_size];
 
         for _ in 0..self.num_paths {
             path[0] = market.spot;

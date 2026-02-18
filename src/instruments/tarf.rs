@@ -6,7 +6,6 @@
 /// downside (spot below strike).
 ///
 /// References: Wystup, "FX Options and Structured Products" (2nd ed.)
-
 /// TARF product type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TarfType {
