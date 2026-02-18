@@ -64,6 +64,7 @@ impl HestonEngine {
     }
 
     // Gatheral log-formulation characteristic function for log spot.
+    #[inline]
     fn characteristic_fn(
         &self,
         u: Complex64,
@@ -97,6 +98,7 @@ impl HestonEngine {
         (c + d_term * self.v0).exp()
     }
 
+    #[inline]
     fn call_price_gatheral(
         &self,
         spot: f64,
