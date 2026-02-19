@@ -238,6 +238,13 @@
       <svg id="spark-vol" width="80" height="22" viewBox="0 0 80 22"></svg>
     </div>
     <div class="toolbar" style="margin-left: auto;">
+      <label for="currency-select">currency</label>
+      <select id="currency-select">
+        <option value="BTC" selected>BTC</option>
+        <option value="ETH">ETH</option>
+        <option value="SOL">SOL</option>
+        <option value="USDC">USDC</option>
+      </select>
       <label for="model-select">model</label>
       <select id="model-select">
         <option value="svi" selected>SVI</option>
@@ -319,6 +326,13 @@
     }
 
     // =====================================================================
+    //  Currency State
+    // =====================================================================
+    let activeCurrency = 'BTC';
+    let activeWs = null;
+    let intentionalClose = false; // suppress auto-reconnect on currency switch
+
+    // =====================================================================
     //  Market State
     // =====================================================================
     const chain = new Map(); // instrument_name -> quote object
@@ -367,6 +381,52 @@
       dirty = true;
       baselineSurface = null; // reset baseline on model switch
       scheduleCalibration();
+    });
+
+    // =====================================================================
+    //  Currency switching
+    // =====================================================================
+    function switchCurrency(newCurrency) {
+      if (newCurrency === activeCurrency) return;
+      activeCurrency = newCurrency;
+
+      // Close existing WebSocket (suppress auto-reconnect)
+      intentionalClose = true;
+      if (activeWs) { activeWs.close(); activeWs = null; }
+
+      // Clear all market state
+      chain.clear();
+      spotPrice = 0;
+      dirty = false;
+      tickCount = 0;
+      calibratedSlices = [];
+      prevIvMap = new Map();
+      baselineSurface = null;
+      spotHistory.length = 0;
+      atmVolHistory.length = 0;
+      spotLogReturns.length = 0;
+      activeExpiry = '';
+      surfaceInitialized = false;
+
+      // Purge all Plotly charts so they reinitialize cleanly
+      for (const key of Object.keys(panels)) {
+        const p = panels[key];
+        if (p && p.chartDiv) Plotly.purge(p.chartDiv);
+        if (p && p.heatDiv) Plotly.purge(p.heatDiv);
+      }
+
+      // Update page title and header
+      document.title = activeCurrency + ' Options Vol Terminal';
+      document.querySelector('.header-title').textContent = activeCurrency + ' Options Vol Terminal';
+      document.getElementById('hdr-spot').textContent = '--';
+
+      // Re-seed and reconnect
+      seedFromRest();
+      connectWs();
+    }
+
+    document.getElementById('currency-select').addEventListener('change', (e) => {
+      switchCurrency(e.target.value);
     });
 
     // =====================================================================
@@ -1697,8 +1757,8 @@
         setStatus('connecting', 'seeding...');
 
         const [bookResp, indexResp] = await Promise.all([
-          fetch(`${DERIBIT_REST}/get_book_summary_by_currency?currency=BTC&kind=option`),
-          fetch(`${DERIBIT_REST}/get_index_price?index_name=btc_usd`),
+          fetch(`${DERIBIT_REST}/get_book_summary_by_currency?currency=${activeCurrency}&kind=option`),
+          fetch(`${DERIBIT_REST}/get_index_price?index_name=${activeCurrency.toLowerCase()}_usd`),
         ]);
 
         const bookData = await bookResp.json();
@@ -1743,14 +1803,17 @@
 
     function connectWs() {
       setStatus('connecting', 'connecting...');
+      intentionalClose = false;
+      const activeChannel = `markprice.options.${activeCurrency.toLowerCase()}_usd`;
       const ws = new WebSocket(DERIBIT_WS);
+      activeWs = ws;
 
       ws.onopen = () => {
         setStatus('connected', 'live');
         ws.send(JSON.stringify({
           jsonrpc: '2.0', id: 1,
           method: 'public/subscribe',
-          params: { channels: ['markprice.options.btc_usd'] },
+          params: { channels: [activeChannel] },
         }));
       };
 
@@ -1759,7 +1822,7 @@
           const msg = JSON.parse(event.data);
           if (!msg.params || !msg.params.data) return;
           const channel = msg.params.channel;
-          if (channel !== 'markprice.options.btc_usd') return;
+          if (channel !== activeChannel) return;
 
           const data = msg.params.data;
           const nodes = Array.isArray(data) ? data : [data];
@@ -1829,6 +1892,7 @@
       };
 
       ws.onclose = () => {
+        if (intentionalClose) return; // currency switch — don't auto-reconnect
         setStatus('disconnected', 'reconnecting...');
         setTimeout(connectWs, 2000);
       };
