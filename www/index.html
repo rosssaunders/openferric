@@ -257,11 +257,11 @@
     import { DockviewComponent } from 'dockview-core';
 
     // =====================================================================
-    //  WASM loader
+    //  WASM loader (required — no JS fallback)
     // =====================================================================
     let wasmReady = false;
     let wasm = null;
-    async function loadWasm() {
+    const wasmPromise = (async () => {
       try {
         const mod = await import('./pkg/openferric.js');
         await mod.default();
@@ -269,10 +269,11 @@
         wasmReady = true;
         console.log('[wasm] loaded');
       } catch (e) {
-        console.warn('[wasm] load failed, running JS-only fallback:', e.message);
+        console.error('[wasm] FATAL: load failed:', e.message);
+        document.body.innerHTML = '<div style="color:#ff7a7a;padding:40px;font-size:18px">'
+          + 'WASM module failed to load. Run: <code>wasm-pack build --target web --features wasm</code></div>';
       }
-    }
-    loadWasm();
+    })();
 
     // =====================================================================
     //  Plotly common layout helpers
@@ -369,99 +370,40 @@
     });
 
     // =====================================================================
-    //  SVI (JS fallback when WASM unavailable)
+    //  WASM batch helpers — all math runs in Rust
     // =====================================================================
-    function sviTotalVariance(p, k) {
-      const x = k - p.m;
-      return p.a + p.b * (p.rho * x + Math.sqrt(x * x + p.sigma * p.sigma));
+    const MODEL_SVI = 0, MODEL_SABR = 1, MODEL_VV = 2;
+
+    function modelTypeCode(mt) {
+      if (mt === 'svi') return MODEL_SVI;
+      if (mt === 'sabr') return MODEL_SABR;
+      if (mt === 'vv') return MODEL_VV;
+      return 255;
     }
 
-    function sviDwDk(p, k) {
-      const x = k - p.m;
-      return p.b * (p.rho + x / Math.sqrt(x * x + p.sigma * p.sigma));
+    function modelParamArray(sl) {
+      const mt = sl.modelType, p = sl.params;
+      if (mt === 'svi') return [p.a, p.b, p.rho, p.m, p.sigma];
+      if (mt === 'sabr') return [p.alpha, p.beta, p.rho, p.nu];
+      if (mt === 'vv') return [p.atmVol, p.rr25, p.bf25];
+      return [];
     }
 
-    function sviIvPct(p, k, t) {
-      if (!p || !isFinite(t) || t <= 0) return NaN;
-      const w = sviTotalVariance(p, k);
-      return Math.sqrt(Math.max(w, 1e-12) / t) * 100;
-    }
-
-    // =====================================================================
-    //  SABR (Hagan's closed-form approximation — JS fallback)
-    // =====================================================================
-    function sabrImpliedVol(p, f, k, t) {
-      if (t <= 0 || f <= 0 || k <= 0) return 0;
-      const alpha = Math.max(p.alpha, 1e-12);
-      const beta = Math.max(0, Math.min(1, p.beta));
-      const rho = Math.max(-0.999, Math.min(0.999, p.rho));
-      const nu = Math.max(0, p.nu);
-      const omb = 1 - beta;
-
-      function timeFactor(fkPow) {
-        return 1 + ((omb*omb/24)*alpha*alpha/fkPow
-          + (rho*beta*nu*alpha)/(4*Math.sqrt(fkPow))
-          + ((2-3*rho*rho)/24)*nu*nu) * t;
+    // Pack calibratedSlices into flat arrays for WASM batch functions.
+    // Returns { headers: Float64Array, params: Float64Array }.
+    function packSliceArrays(slices) {
+      const headerArr = [];
+      const paramArr = [];
+      for (const sl of slices) {
+        const code = modelTypeCode(sl.modelType);
+        const offset = paramArr.length;
+        headerArr.push(code, sl.T, sl.forward, offset);
+        paramArr.push(...modelParamArray(sl));
       }
-
-      if (Math.abs(f - k) <= 1e-14) {
-        const fPow = Math.pow(f, omb);
-        return (alpha / fPow) * timeFactor(Math.pow(f, 2*omb));
-      }
-
-      const fk = f * k;
-      const fkPowHalf = Math.pow(fk, 0.5*omb);
-      const fkPow = Math.pow(fk, omb);
-      const logFk = Math.log(f/k);
-      const logFk2 = logFk*logFk;
-
-      const z = alpha > 1e-14 ? (nu/alpha)*fkPowHalf*logFk : 0;
-      let zOverXz;
-      if (Math.abs(z) < 1e-8) {
-        zOverXz = 1 - 0.5*rho*z + ((2-3*rho*rho)/12)*z*z;
-      } else {
-        const num = Math.sqrt(1 - 2*rho*z + z*z) + z - rho;
-        const xz = Math.log(num / (1 - rho));
-        zOverXz = Math.abs(xz) > 1e-14 ? z/xz : 1;
-      }
-
-      const denom = fkPowHalf*(1 + (omb*omb/24)*logFk2 + (Math.pow(omb,4)/1920)*logFk2*logFk2);
-      const vol = (alpha/denom) * zOverXz * timeFactor(fkPow);
-      return isFinite(vol) ? Math.max(vol, 0) : 0;
-    }
-
-    function sabrIvPct(p, k, t, forward) {
-      if (!p || !isFinite(t) || t <= 0 || !isFinite(forward) || forward <= 0) return NaN;
-      const strike = forward * Math.exp(k);
-      return sabrImpliedVol(p, forward, strike, t) * 100;
-    }
-
-    // =====================================================================
-    //  Vanna-Volga smile construction
-    // =====================================================================
-    function vvIvPct(p, k, t) {
-      // p = { atmVol, rr25, bf25 } — all in decimal (not pct)
-      if (!p || !isFinite(t) || t <= 0) return NaN;
-      const atmVol = p.atmVol;
-      const scale = Math.max(atmVol * Math.sqrt(t), 1e-8);
-      // Vanna-volga adjustment: linear in k for skew, quadratic for convexity
-      const vannaW = k / scale;
-      const volgaW = (k * k) / (scale * scale);
-      // vol_25c = atm + bf + 0.5*rr, vol_25p = atm + bf - 0.5*rr
-      const rr = p.rr25;
-      const bf = p.bf25;
-      const vol = atmVol + vannaW * rr * 0.5 + volgaW * bf;
-      return Math.max(vol, 1e-8) * 100;
-    }
-
-    // =====================================================================
-    //  Generic model IV evaluation (dispatches on activeModel)
-    // =====================================================================
-    function sliceIvPct(sl, k) {
-      if (sl.modelType === 'svi') return sviIvPct(sl.params, k, sl.T);
-      if (sl.modelType === 'sabr') return sabrIvPct(sl.params, k, sl.T, sl.forward);
-      if (sl.modelType === 'vv') return vvIvPct(sl.params, k, sl.T);
-      return NaN;
+      return {
+        headers: new Float64Array(headerArr),
+        params: new Float64Array(paramArr),
+      };
     }
 
     // =====================================================================
@@ -477,12 +419,13 @@
     function scheduleCalibration() {
       if (calibrationScheduled) return;
       calibrationScheduled = true;
-      setTimeout(runCalibration, 200);
+      setTimeout(runCalibration, 1000);
     }
 
     function runCalibration() {
       calibrationScheduled = false;
       if (!dirty) return;
+      if (!wasmReady) { dirty = true; setTimeout(runCalibration, 100); return; }
       dirty = false;
 
       const now = Date.now();
@@ -563,14 +506,10 @@
           const strikes = qByK.map(({ q }) => q.strike);
           const vols = qByK.map(({ q }) => q.mark_iv);
 
-          if (wasmReady) {
-            const strikesArr = new Float64Array(strikes);
-            const volsArr = new Float64Array(vols);
-            const wp = wasm.fit_sabr_wasm(forward, strikesArr, volsArr, T, 0.5);
-            params = { alpha: wp.alpha, beta: wp.beta, rho: wp.rho, nu: wp.nu };
-          } else {
-            params = fitSabrFallback(forward, strikes, vols, T, 0.5);
-          }
+          const strikesArr = new Float64Array(strikes);
+          const volsArr = new Float64Array(vols);
+          const wp = wasm.fit_sabr_wasm(forward, strikesArr, volsArr, T, 0.5);
+          params = { alpha: wp.alpha, beta: wp.beta, rho: wp.rho, nu: wp.nu };
         } else if (model === 'vv') {
           // Vanna-Volga: derive from ATM + 25d RR/BF
           modelType = 'vv';
@@ -603,52 +542,36 @@
           }
           const atmIv2 = Math.max(atmVol * atmVol, 1e-4);
 
-          if (wasmReady) {
-            const flat = new Float64Array(points);
-            const wp = wasm.calibrate_svi_wasm(flat, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
-            // Convert back: SVI was fit to sigma^2, so params.a etc are in sigma^2 space
-            // To get total variance: w(k) = T * svi(k), so just scale a by T
-            params = { a: wp.a * T, b: wp.b * T, rho: wp.rho, m: wp.m, sigma: wp.sigma };
-          } else {
-            const fp = calibrateSviFallback(points, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
-            params = { a: fp.a * T, b: fp.b * T, rho: fp.rho, m: fp.m, sigma: fp.sigma };
-          }
+          const flat = new Float64Array(points);
+          const wp = wasm.calibrate_svi_wasm(flat, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
+          // Convert back: SVI was fit to sigma^2, so params.a etc are in sigma^2 space
+          // To get total variance: w(k) = T * svi(k), so just scale a by T
+          params = { a: wp.a * T, b: wp.b * T, rho: wp.rho, m: wp.m, sigma: wp.sigma };
         }
 
-        // Compute fitted IV and RMSE for all models
-        let errSq = 0;
+        // Compute fitted IV, RMSE, skew, kurtosis via WASM
+        const diagKs = new Float64Array(qByK.map(({ k }) => k));
+        const diagIvs = new Float64Array(qByK.map(({ q }) => q.mark_iv * 100));
+        const diagStrikes = new Float64Array(qByK.map(({ q }) => q.strike));
+        const diagParams = new Float64Array(modelParamArray({ modelType, params }));
+        const diag = wasm.slice_fit_diagnostics(
+          modelTypeCode(modelType), diagParams, T, forward, diagKs, diagIvs, diagStrikes
+        );
+        const rmse = diag[0];
+        const skew = diag[1];
+        const kurtProxy = diag[2];
         const slicePoints = [];
-        for (const { k, q } of qByK) {
-          let fittedIvPct;
-          if (modelType === 'svi') {
-            fittedIvPct = Math.sqrt(Math.max(sviTotalVariance(params, k), 1e-12) / T) * 100;
-          } else if (modelType === 'sabr') {
-            fittedIvPct = sabrImpliedVol(params, forward, q.strike, T) * 100;
-          } else {
-            fittedIvPct = vvIvPct(params, k, T);
-          }
-          const err = fittedIvPct - q.mark_iv * 100;
-          errSq += err * err;
+        for (let j = 0; j < qByK.length; j++) {
+          const { q } = qByK[j];
           slicePoints.push({
             strike: q.strike,
             market_iv: q.mark_iv * 100,
-            fitted_iv: fittedIvPct,
+            fitted_iv: diag[3 + j],
             bid_iv: (q.bid_iv || 0) * 100,
             ask_iv: (q.ask_iv || 0) * 100,
           });
         }
         slicePoints.sort((a, b) => a.strike - b.strike);
-        const rmse = Math.sqrt(errSq / qByK.length);
-
-        // Skew / kurtosis proxy (use model-specific IV)
-        const tmpSl = { modelType, params, T, forward };
-        const ivAt0 = sliceIvPct(tmpSl, 0);
-        const eps = 0.001;
-        const ivPlus = sliceIvPct(tmpSl, eps);
-        const ivMinus = sliceIvPct(tmpSl, -eps);
-        const skew = isFinite(ivPlus) && isFinite(ivMinus) ? (ivPlus - ivMinus) / (2 * eps) : 0;
-        const kurtProxy = isFinite(ivPlus) && isFinite(ivMinus) && isFinite(ivAt0)
-          ? (ivPlus - 2*ivAt0 + ivMinus) / (eps * eps) : 0;
 
         slices.push({
           expiryCode,
@@ -723,215 +646,7 @@
       });
     }
 
-    // =====================================================================
-    //  SABR calibration JS fallback (simple grid + gradient descent)
-    // =====================================================================
-    function fitSabrFallback(forward, strikes, marketVols, t, beta) {
-      beta = Math.max(0, Math.min(1, beta));
-      if (forward <= 0 || t <= 0 || strikes.length === 0) {
-        return { alpha: 0.2, beta, rho: 0, nu: 0.5 };
-      }
-
-      // Find ATM vol
-      let bestIdx = 0, bestDist = Infinity;
-      for (let i = 0; i < strikes.length; i++) {
-        const d = Math.abs(strikes[i] - forward);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
-      }
-      const atmVol = Math.max(marketVols[bestIdx], 1e-4);
-      const alphaGuess = atmVol * Math.pow(forward, 1 - beta);
-
-      function obj(p) {
-        let mse = 0;
-        for (let i = 0; i < strikes.length; i++) {
-          const mv = sabrImpliedVol(p, forward, strikes[i], t);
-          if (!isFinite(mv)) return Infinity;
-          const e = mv - marketVols[i];
-          mse += e * e;
-        }
-        return mse / strikes.length;
-      }
-
-      function project(p) {
-        return {
-          alpha: Math.max(p.alpha, 1e-8),
-          beta,
-          rho: Math.max(-0.999, Math.min(0.999, p.rho)),
-          nu: Math.max(p.nu, 1e-8),
-        };
-      }
-
-      // Grid search
-      let best = project({ alpha: alphaGuess, beta, rho: -0.3, nu: 0.5 });
-      let bestObj = obj(best);
-      for (const am of [0.6, 0.8, 1.0, 1.2, 1.5]) {
-        for (const rho of [-0.7, -0.4, -0.2, 0, 0.2]) {
-          for (const nu of [0.2, 0.4, 0.7, 1.0]) {
-            const cand = project({ alpha: alphaGuess * am, beta, rho, nu });
-            const co = obj(cand);
-            if (co < bestObj) { best = cand; bestObj = co; }
-          }
-        }
-      }
-
-      // Gradient refinement
-      const fields = ['alpha', 'rho', 'nu'];
-      let p = best, pObj = bestObj, lr = 1e-4;
-      for (let iter = 0; iter < 200; iter++) {
-        const g = [];
-        const eps = 1e-5;
-        for (const f of fields) {
-          const pp = { ...p }; pp[f] += eps;
-          const pm = { ...p }; pm[f] -= eps;
-          g.push((obj(project(pp)) - obj(project(pm))) / (2 * eps));
-        }
-        const gn = Math.sqrt(g.reduce((s, v) => s + v*v, 0));
-        if (gn < 1e-12) break;
-        const cand = project({
-          alpha: p.alpha - lr * g[0],
-          beta,
-          rho: p.rho - lr * g[1],
-          nu: p.nu - lr * g[2],
-        });
-        const co = obj(cand);
-        if (co < pObj) { p = cand; pObj = co; lr *= 1.1; }
-        else { lr *= 0.5; if (lr < 1e-10) break; }
-      }
-      return p;
-    }
-
-    // JS fallback calibration (simple gradient descent — same multi-start as Rust)
-    function calibrateSviFallback(flatPoints, initA, initB, initRho, initM, initSigma, maxIter, lr) {
-      const n = flatPoints.length / 2;
-      const pts = [];
-      for (let i = 0; i < n; i++) {
-        pts.push([flatPoints[i*2], flatPoints[i*2+1]]);
-      }
-
-      function project(p) {
-        return {
-          a: Math.max(p.a, 1e-8),
-          b: Math.max(p.b, 1e-8),
-          rho: Math.max(-0.999, Math.min(0.999, p.rho)),
-          m: p.m,
-          sigma: Math.max(p.sigma, 1e-6),
-        };
-      }
-
-      function obj(p) {
-        let s = 0;
-        for (const [k, w] of pts) {
-          const err = sviTotalVariance(p, k) - w;
-          s += err * err;
-        }
-        return s;
-      }
-
-      const init = project({ a: initA, b: initB, rho: initRho, m: initM, sigma: initSigma });
-      const starts = [
-        init,
-        project({ a: initA*0.7, b: initB*1.2, rho: initRho*0.5, m: initM-0.1, sigma: initSigma*0.8 }),
-        project({ a: initA*1.3, b: initB*0.8, rho: Math.max(-0.9,Math.min(0.9,initRho+0.2)), m: initM+0.1, sigma: initSigma*1.2 }),
-      ];
-
-      let best = init;
-      let bestObj = obj(best);
-      const eps = 1e-5;
-      const fields = ['a','b','rho','m','sigma'];
-
-      for (const start of starts) {
-        let p = project(start);
-        let pObj = obj(p);
-        let curLr = Math.max(lr, 1e-6);
-
-        for (let iter = 0; iter < maxIter; iter++) {
-          const g = [];
-          for (const f of fields) {
-            const pp = { ...p }; pp[f] += eps;
-            const pm = { ...p }; pm[f] -= eps;
-            g.push((obj(project(pp)) - obj(project(pm))) / (2 * eps));
-          }
-
-          const gNorm = Math.sqrt(g.reduce((s, v) => s + v*v, 0));
-          if (gNorm < 1e-12) break;
-
-          let improved = false;
-          let trialLr = curLr;
-          for (let j = 0; j < 12; j++) {
-            const cand = project({
-              a: p.a - trialLr * g[0],
-              b: p.b - trialLr * g[1],
-              rho: p.rho - trialLr * g[2],
-              m: p.m - trialLr * g[3],
-              sigma: p.sigma - trialLr * g[4],
-            });
-            const candObj = obj(cand);
-            if (candObj < pObj) {
-              p = cand;
-              pObj = candObj;
-              curLr = trialLr * 1.1;
-              improved = true;
-              break;
-            }
-            trialLr *= 0.5;
-          }
-          if (!improved) {
-            curLr *= 0.5;
-            if (curLr < 1e-10) break;
-          }
-        }
-
-        if (pObj < bestObj) {
-          best = p;
-          bestObj = pObj;
-        }
-      }
-      return best;
-    }
-
-    // =====================================================================
-    //  25-delta strike finder (Newton's method)
-    // =====================================================================
-    function find25DeltaStrikes(sl) {
-      // Find strikes where |BSM delta| = 0.25 using model-generic IV
-      if (sl.T <= 0 || sl.forward <= 0) return { call25Iv: NaN, put25Iv: NaN };
-
-      const T = sl.T;
-      const sqrtT = Math.sqrt(T);
-      const d1Call = -0.6745;
-      const d1Put = 0.6745;
-
-      function solveK(targetD1) {
-        let k = 0;
-        for (let i = 0; i < 20; i++) {
-          const ivPct = sliceIvPct(sl, k);
-          if (!isFinite(ivPct) || ivPct <= 0) return NaN;
-          const sigma = ivPct / 100;
-          const d1 = (-k + 0.5 * sigma * sigma * T) / (sigma * sqrtT);
-          const err = d1 - targetD1;
-          const dk = 0.001;
-          const ivPctP = sliceIvPct(sl, k + dk);
-          if (!isFinite(ivPctP) || ivPctP <= 0) return NaN;
-          const sigmaP = ivPctP / 100;
-          const d1p = (-(k + dk) + 0.5 * sigmaP * sigmaP * T) / (sigmaP * sqrtT);
-          const deriv = (d1p - d1) / dk;
-          if (Math.abs(deriv) < 1e-12) break;
-          k -= err / deriv;
-          if (Math.abs(err) < 1e-6) break;
-        }
-        return k;
-      }
-
-      const kCall = solveK(d1Call);
-      const kPut = solveK(d1Put);
-
-      return {
-        call25K: kCall,
-        put25K: kPut,
-        call25Iv: sliceIvPct(sl, kCall),
-        put25Iv: sliceIvPct(sl, kPut),
-      };
-    }
+    // (All math functions removed — running in Rust/WASM via batch calls)
 
     // =====================================================================
     //  Sparkline SVG renderer
@@ -954,17 +669,13 @@
     }
 
     // =====================================================================
-    //  Realized Vol
+    //  Realized Vol (WASM)
     // =====================================================================
     function computeRealizedVol() {
-      if (spotLogReturns.length < 2) return NaN;
-      const n = spotLogReturns.length;
-      const mean = spotLogReturns.reduce((s, v) => s + v, 0) / n;
-      const variance = spotLogReturns.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1);
-      // Annualize: assume each observation is ~200ms apart (calibration interval)
-      // ~5 per second, ~432000 per day, ~365.25 days
-      const obsPerYear = 5 * 86400 * 365.25;
-      return Math.sqrt(variance * obsPerYear) * 100;
+      if (spotLogReturns.length < 2 || !wasmReady) return NaN;
+      // ~1 observation per second (1s calibration interval), ~86400 sec/day, ~365.25 days
+      const obsPerYear = 1 * 86400 * 365.25;
+      return wasm.realized_vol(new Float64Array(spotLogReturns), obsPerYear);
     }
 
     // =====================================================================
@@ -1226,19 +937,50 @@
     }
 
     // =====================================================================
-    //  Renderers
+    //  Per-frame WASM cache (computed once, shared across renderers)
     // =====================================================================
+    let frameCache = null;
+
+    function computeFrameCache() {
+      if (calibratedSlices.length === 0 || !wasmReady) {
+        frameCache = null;
+        return;
+      }
+      const packed = packSliceArrays(calibratedSlices);
+      const d25 = wasm.find_25d_strikes_batch(packed.headers, packed.params);
+      const atmIv = wasm.iv_grid(packed.headers, packed.params, new Float64Array([0]));
+      frameCache = { packed, d25, atmIv };
+    }
+
+    // =====================================================================
+    //  Tiered rendering — expensive panels update less often
+    // =====================================================================
+    let renderCycle = 0;
 
     function renderAll() {
+      renderCycle++;
       refreshTps();
+      computeFrameCache();
+
+      // Every cycle: cheap DOM-only updates
       renderHeader();
-      renderSurface();
-      renderVolChange();
-      renderSmile();
-      renderGreeks();
-      renderTerm();
       renderMetrics();
-      renderScanner();
+
+      // Every cycle: lightweight 2D charts
+      renderSmile();
+      renderTerm();
+
+      // Every 2nd cycle: medium-cost panels
+      if (renderCycle % 2 === 0) {
+        renderVolChange();
+        renderGreeks();
+      }
+
+      // Every 3rd cycle: expensive panels
+      if (renderCycle % 3 === 0) {
+        renderSurface();
+        renderScanner();
+      }
     }
 
     function renderHeader() {
@@ -1322,21 +1064,34 @@
         if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
       }
 
-      const gridN = 40;
+      const gridN = 25;
       const kGrid = [];
       for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
       const tGrid = calibratedSlices.map(s => s.T);
-      const zGrid = calibratedSlices.map(s => kGrid.map(k => sliceIvPct(s, k)));
+      const kGridF64 = new Float64Array(kGrid);
+      const { headers: slH, params: slP } = frameCache ? frameCache.packed : packSliceArrays(calibratedSlices);
+      const flatZ = wasm.iv_grid(slH, slP, kGridF64);
+      const zGrid = [];
+      for (let i = 0; i < calibratedSlices.length; i++) {
+        zGrid.push(Array.from(flatZ.subarray(i * gridN, (i + 1) * gridN)));
+      }
 
       // Diff surface data (zeros if no baseline yet)
       let diffZ;
       if (baselineSurface && baselineSurface.length > 0) {
-        diffZ = calibratedSlices.map((sl) => {
-          const base = baselineSurface.find(b => b.expiryCode === sl.expiryCode);
-          if (!base) return kGrid.map(() => 0);
-          const baseSl = { modelType: base.modelType, params: base.params, T: base.T, forward: base.forward };
-          return kGrid.map(k => sliceIvPct(sl, k) - sliceIvPct(baseSl, k));
-        });
+        const { headers: baseH, params: baseP } = packSliceArrays(baselineSurface);
+        const baseFlatZ = wasm.iv_grid(baseH, baseP, kGridF64);
+        diffZ = [];
+        for (let i = 0; i < calibratedSlices.length; i++) {
+          const base = baselineSurface.find(b => b.expiryCode === calibratedSlices[i].expiryCode);
+          if (!base) { diffZ.push(kGrid.map(() => 0)); continue; }
+          const baseIdx = baselineSurface.indexOf(base);
+          const row = [];
+          for (let j = 0; j < gridN; j++) {
+            row.push(flatZ[i * gridN + j] - baseFlatZ[baseIdx * gridN + j]);
+          }
+          diffZ.push(row);
+        }
       } else {
         diffZ = calibratedSlices.map(() => kGrid.map(() => 0));
       }
@@ -1544,7 +1299,7 @@
     // --- Greeks Heatmap ---
     function renderGreeks() {
       const div = panels.greeks ? panels.greeks.chartDiv : null;
-      if (!div) return;
+      if (!div || !wasmReady) return;
       if (calibratedSlices.length === 0 || spotPrice <= 0) return;
 
       // Pick a subset of strikes and expiries
@@ -1560,28 +1315,27 @@
 
       const greekIdx = { delta: 0, gamma: 1, vega: 2, theta: 3 }[activeGreek] ?? 0;
 
+      // Batch IV lookup for all (slice, strike) pairs
+      const { headers: gH, params: gP } = frameCache ? frameCache.packed : packSliceArrays(calibratedSlices);
+      const gKVals = [], gSliceIdx = [];
+      for (let si = 0; si < calibratedSlices.length; si++) {
+        const sl = calibratedSlices[si];
+        for (const strike of sampledStrikes) {
+          gKVals.push(Math.log(strike / sl.forward));
+          gSliceIdx.push(si);
+        }
+      }
+      const gIvs = wasm.batch_slice_iv(gH, gP, new Float64Array(gKVals), new Uint32Array(gSliceIdx));
+
       const z = [];
+      let gIdx = 0;
       for (const sl of calibratedSlices) {
         const row = [];
         for (const strike of sampledStrikes) {
-          const iv = sliceIvPct(sl, Math.log(strike / sl.forward));
+          const iv = gIvs[gIdx++];
           if (!isFinite(iv) || iv <= 0 || sl.T <= 0) { row.push(0); continue; }
-
-          if (wasmReady) {
-            const greeks = wasm.bsm_greeks_wasm(spotPrice, strike, 0.05, 0.0, iv / 100, sl.T, true);
-            row.push(greeks[greekIdx]);
-          } else {
-            // Simple BSM delta fallback
-            const sigma = iv / 100;
-            const sqrtT = Math.sqrt(sl.T);
-            const d1 = (Math.log(spotPrice / strike) + (0.05 + 0.5*sigma*sigma)*sl.T) / (sigma*sqrtT);
-            const nd1 = 0.5 * (1 + erf(d1 / Math.sqrt(2)));
-            const npdf = Math.exp(-d1*d1/2) / Math.sqrt(2*Math.PI);
-            if (activeGreek === 'delta') row.push(nd1);
-            else if (activeGreek === 'gamma') row.push(npdf / (spotPrice * sigma * sqrtT));
-            else if (activeGreek === 'vega') row.push(spotPrice * npdf * sqrtT);
-            else row.push(-spotPrice * npdf * sigma / (2*sqrtT));
-          }
+          const greeks = wasm.bsm_greeks_wasm(spotPrice, strike, 0.05, 0.0, iv / 100, sl.T, true);
+          row.push(greeks[greekIdx]);
         }
         z.push(row);
       }
@@ -1609,17 +1363,6 @@
       }, { responsive: true, displayModeBar: false });
     }
 
-    // erf approximation for JS fallback
-    function erf(x) {
-      const a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429;
-      const p=0.3275911;
-      const sign = x < 0 ? -1 : 1;
-      x = Math.abs(x);
-      const t = 1.0 / (1.0 + p * x);
-      const y = 1.0 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
-      return sign * y;
-    }
-
     // --- Term Structure ---
     function renderTerm() {
       const div = panels.term ? panels.term.chartDiv : null;
@@ -1636,13 +1379,19 @@
         marker: { color: '#2fb2ff', size: 5 },
       }];
 
-      // 25-delta RR and BF
+      // 25-delta RR and BF (from per-frame cache)
+      const d25 = frameCache ? frameCache.d25 : wasm.find_25d_strikes_batch(
+        ...Object.values(packSliceArrays(calibratedSlices)));
+      const atmIvFlat = frameCache ? frameCache.atmIv : wasm.iv_grid(
+        ...Object.values(packSliceArrays(calibratedSlices)), new Float64Array([0]));
       const rr25 = [], bf25 = [];
-      for (const sl of calibratedSlices) {
-        const d = find25DeltaStrikes(sl);
-        if (isFinite(d.call25Iv) && isFinite(d.put25Iv)) {
-          rr25.push(d.call25Iv - d.put25Iv);
-          bf25.push(0.5 * (d.call25Iv + d.put25Iv) - sliceIvPct(sl, 0));
+      for (let i = 0; i < calibratedSlices.length; i++) {
+        const ivCall = d25[i * 4 + 2];
+        const ivPut = d25[i * 4 + 3];
+        const atmIv = atmIvFlat[i];
+        if (isFinite(ivCall) && isFinite(ivPut)) {
+          rr25.push(ivCall - ivPut);
+          bf25.push(0.5 * (ivCall + ivPut) - atmIv);
         } else {
           rr25.push(NaN);
           bf25.push(NaN);
@@ -1702,10 +1451,20 @@
       const tbody = p.skewTbody;
       if (!tbody) return;
       tbody.innerHTML = '';
-      for (const sl of calibratedSlices) {
-        const d = find25DeltaStrikes(sl);
-        const rr25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (d.call25Iv - d.put25Iv) : NaN;
-        const bf25 = isFinite(d.call25Iv) && isFinite(d.put25Iv) ? (0.5*(d.call25Iv+d.put25Iv) - sliceIvPct(sl, 0)) : NaN;
+
+      // Batch 25-delta (from per-frame cache)
+      const mD25 = frameCache ? frameCache.d25 : wasm.find_25d_strikes_batch(
+        ...Object.values(packSliceArrays(calibratedSlices)));
+      const mAtmIv = frameCache ? frameCache.atmIv : wasm.iv_grid(
+        ...Object.values(packSliceArrays(calibratedSlices)), new Float64Array([0]));
+
+      for (let i = 0; i < calibratedSlices.length; i++) {
+        const sl = calibratedSlices[i];
+        const ivCall = mD25[i * 4 + 2];
+        const ivPut = mD25[i * 4 + 3];
+        const atmIv = mAtmIv[i];
+        const rr25 = isFinite(ivCall) && isFinite(ivPut) ? (ivCall - ivPut) : NaN;
+        const bf25 = isFinite(ivCall) && isFinite(ivPut) ? (0.5*(ivCall+ivPut) - atmIv) : NaN;
 
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${sl.expiryLabel}</td>`
@@ -1726,73 +1485,110 @@
     let edgeThreshold = 1.0;
     let edgeSideFilter = 'all';
 
-    // Simple BS call/put price for edge calculation
-    function bsPrice(S, K, r, sigma, T, isCall) {
-      if (sigma <= 0 || T <= 0 || S <= 0 || K <= 0) return 0;
-      const sqrtT = Math.sqrt(T);
-      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
-      const d2 = d1 - sigma * sqrtT;
-      const nd1 = 0.5 * (1 + erf(d1 / Math.SQRT2));
-      const nd2 = 0.5 * (1 + erf(d2 / Math.SQRT2));
-      const df = Math.exp(-r * T);
-      if (isCall) return S * nd1 - K * df * nd2;
-      return K * df * (1 - nd2) - S * (1 - nd1);
-    }
-
     function renderScanner() {
-      if (calibratedSlices.length === 0 || spotPrice <= 0) return;
+      if (!wasmReady || calibratedSlices.length === 0 || spotPrice <= 0) return;
 
       const heatDiv = panels.scanner ? panels.scanner.heatmapDiv : null;
       const edgeTbody = panels.scanner ? panels.scanner.edgeTbody : null;
       if (!heatDiv || !edgeTbody) return;
 
-      // Build edge data for every option in the chain
-      const edges = [];
+      // --- Phase 0: batch model-IV lookup via WASM ---
+      const { headers: scH, params: scP } = frameCache ? frameCache.packed : packSliceArrays(calibratedSlices);
+      // Build slice index map for fast lookup
+      const sliceIdxMap = new Map();
+      calibratedSlices.forEach((sl, i) => sliceIdxMap.set(sl.expiryCode, i));
 
+      // Collect k-values and slice indices for all options
+      const preKVals = [], preSliceIdx = [], preItems = [];
       for (const sl of calibratedSlices) {
         for (const [name, q] of chain) {
           if (q.expiryCode !== sl.expiryCode) continue;
           if (!q.mark_iv || q.mark_iv <= 0 || q.strike <= 0) continue;
-
           const k = Math.log(q.strike / sl.forward);
-          const modelIvPct = sliceIvPct(sl, k);
-          if (!isFinite(modelIvPct) || modelIvPct <= 0) continue;
-
-          const marketIvPct = q.mark_iv * 100;
-          const ivEdge = modelIvPct - marketIvPct; // positive = market is cheap
-
-          // Compute theoretical price from model IV
-          const modelSigma = modelIvPct / 100;
-          const marketSigma = q.mark_iv;
-          const theoPrice = bsPrice(spotPrice, q.strike, 0.05, modelSigma, sl.T, q.isCall);
-
-          // Market prices (Deribit quotes in BTC, mark_price is in BTC)
-          const marketMid = q.mark_price * spotPrice; // convert BTC -> USD
-          const bidPrice = q.bid_iv > 0 ? bsPrice(spotPrice, q.strike, 0.05, q.bid_iv, sl.T, q.isCall) : NaN;
-          const askPrice = q.ask_iv > 0 ? bsPrice(spotPrice, q.strike, 0.05, q.ask_iv, sl.T, q.isCall) : NaN;
-
-          const dollarEdge = theoPrice - marketMid;
-
-          edges.push({
-            name,
-            expiryCode: sl.expiryCode,
-            T: sl.T,
-            strike: q.strike,
-            isCall: q.isCall,
-            marketIvPct,
-            modelIvPct,
-            ivEdge,
-            bidPrice,
-            askPrice,
-            marketMid,
-            theoPrice,
-            dollarEdge,
-            absIvEdge: Math.abs(ivEdge),
-            // Is the edge actionable? (theo > ask = buy signal, theo < bid = sell signal)
-            buySignal: isFinite(askPrice) && theoPrice > askPrice,
-            sellSignal: isFinite(bidPrice) && theoPrice < bidPrice,
-          });
+          preKVals.push(k);
+          preSliceIdx.push(sliceIdxMap.get(sl.expiryCode));
+          preItems.push({ name, q, sl, k });
         }
+      }
+
+      const scIvs = preKVals.length > 0
+        ? wasm.batch_slice_iv(scH, scP, new Float64Array(preKVals), new Uint32Array(preSliceIdx))
+        : [];
+
+      // --- Phase 1: collect all pricing requests into flat arrays ---
+      const pricingRequests = [];
+      const bSpots = [], bStrikes = [], bRates = [], bDivs = [], bVols = [], bMats = [], bCalls = [];
+
+      for (let pi = 0; pi < preItems.length; pi++) {
+        const { name, q, sl } = preItems[pi];
+        const modelIvPct = scIvs[pi];
+        if (!isFinite(modelIvPct) || modelIvPct <= 0) continue;
+
+        const marketIvPct = q.mark_iv * 100;
+        const ivEdge = modelIvPct - marketIvPct;
+        const modelSigma = modelIvPct / 100;
+        const marketMid = q.mark_price * spotPrice;
+        const callFlag = q.isCall ? 1 : 0;
+
+        // Theo price (always needed)
+        const theoIdx = bSpots.length;
+        bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
+        bDivs.push(0.0); bVols.push(modelSigma); bMats.push(sl.T); bCalls.push(callFlag);
+
+        // Bid price (conditional)
+        const bidIdx = q.bid_iv > 0 ? bSpots.length : -1;
+        if (bidIdx >= 0) {
+          bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
+          bDivs.push(0.0); bVols.push(q.bid_iv); bMats.push(sl.T); bCalls.push(callFlag);
+        }
+
+        // Ask price (conditional)
+        const askIdx = q.ask_iv > 0 ? bSpots.length : -1;
+        if (askIdx >= 0) {
+          bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
+          bDivs.push(0.0); bVols.push(q.ask_iv); bMats.push(sl.T); bCalls.push(callFlag);
+        }
+
+        pricingRequests.push({ name, expiryCode: sl.expiryCode, T: sl.T,
+          strike: q.strike, isCall: q.isCall, marketIvPct, modelIvPct, ivEdge,
+          marketMid, theoIdx, bidIdx, askIdx });
+      }
+
+      // --- Phase 2: single WASM batch call for all BS prices ---
+      const prices = bSpots.length > 0
+        ? wasm.bs_price_batch_wasm(
+            new Float64Array(bSpots), new Float64Array(bStrikes),
+            new Float64Array(bRates), new Float64Array(bDivs),
+            new Float64Array(bVols), new Float64Array(bMats),
+            new Uint8Array(bCalls))
+        : [];
+
+      // --- Phase 3: unpack into edge objects ---
+      const edges = [];
+      for (const req of pricingRequests) {
+        const theoPrice = prices[req.theoIdx];
+        const bidPrice = req.bidIdx >= 0 ? prices[req.bidIdx] : NaN;
+        const askPrice = req.askIdx >= 0 ? prices[req.askIdx] : NaN;
+        const dollarEdge = theoPrice - req.marketMid;
+
+        edges.push({
+          name: req.name,
+          expiryCode: req.expiryCode,
+          T: req.T,
+          strike: req.strike,
+          isCall: req.isCall,
+          marketIvPct: req.marketIvPct,
+          modelIvPct: req.modelIvPct,
+          ivEdge: req.ivEdge,
+          bidPrice,
+          askPrice,
+          marketMid: req.marketMid,
+          theoPrice,
+          dollarEdge,
+          absIvEdge: Math.abs(req.ivEdge),
+          buySignal: isFinite(askPrice) && theoPrice > askPrice,
+          sellSignal: isFinite(bidPrice) && theoPrice < bidPrice,
+        });
       }
 
       // --- Heatmap: IV edge by strike x expiry ---
@@ -2146,6 +1942,8 @@
     //  Bootstrap
     // =====================================================================
     (async () => {
+      await wasmPromise;
+      if (!wasmReady) return; // fatal: WASM failed to load
       await seedFromRest();
       connectWs();
 
