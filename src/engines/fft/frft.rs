@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use num_complex::Complex;
 
-use super::carr_madan::CarrMadanParams;
+use super::carr_madan::{CarrMadanParams, build_weighted_frequency_samples};
 use super::char_fn::CharacteristicFunction;
 use super::fft_core::{fft_forward, fft_inverse};
 
@@ -53,46 +53,26 @@ pub fn frft(input: &[Complex<f64>], beta: f64) -> Vec<Complex<f64>> {
     out
 }
 
-#[inline]
-fn modified_cf<C: CharacteristicFunction>(
-    cf: &C,
-    u: Complex<f64>,
-    rate: f64,
-    maturity: f64,
-    alpha: f64,
-) -> Complex<f64> {
-    let discount = (-rate * maturity).exp();
-    let v = u.re;
-    let denom = Complex::new(alpha * alpha + alpha - v * v, (2.0 * alpha + 1.0) * v);
-    discount * cf.cf(u) / denom
-}
-
-#[inline]
-fn quadrature_weight(index: usize, eta: f64) -> f64 {
-    if index == 0 { 0.5 * eta } else { eta }
-}
-
-fn build_weighted_frequency_samples<C: CharacteristicFunction>(
-    cf: &C,
-    rate: f64,
-    maturity: f64,
-    params: CarrMadanParams,
-) -> Vec<Complex<f64>> {
-    let mut out = vec![Complex::new(0.0, 0.0); params.n];
-    for (j, slot) in out.iter_mut().enumerate() {
-        let vj = j as f64 * params.eta;
-        let uj = Complex::new(vj, -(params.alpha + 1.0));
-        let psi = modified_cf(cf, uj, rate, maturity, params.alpha);
-        *slot = psi * quadrature_weight(j, params.eta);
-    }
-    out
-}
-
 /// Carr-Madan with FRFT on a uniform log-strike grid.
 pub fn carr_madan_frft_grid<C: CharacteristicFunction>(
     cf: &C,
     rate: f64,
     maturity: f64,
+    log_strike_start: f64,
+    log_strike_spacing: f64,
+    params: CarrMadanParams,
+) -> Result<Vec<(f64, f64)>, String> {
+    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
+    carr_madan_frft_grid_from_weighted_samples(
+        &weighted_samples,
+        log_strike_start,
+        log_strike_spacing,
+        params,
+    )
+}
+
+fn carr_madan_frft_grid_from_weighted_samples(
+    weighted_samples: &[Complex<f64>],
     log_strike_start: f64,
     log_strike_spacing: f64,
     params: CarrMadanParams,
@@ -113,9 +93,12 @@ pub fn carr_madan_frft_grid<C: CharacteristicFunction>(
                 .to_string(),
         );
     }
+    if weighted_samples.len() != params.n {
+        return Err("weighted sample length must equal params.n".to_string());
+    }
 
     let i = Complex::new(0.0, 1.0);
-    let mut input = build_weighted_frequency_samples(cf, rate, maturity, params);
+    let mut input = weighted_samples.to_vec();
 
     for (j, xj) in input.iter_mut().enumerate() {
         let vj = j as f64 * params.eta;
@@ -186,11 +169,24 @@ pub fn carr_madan_price_at_strikes<C: CharacteristicFunction>(
     strikes: &[f64],
     params: CarrMadanParams,
 ) -> Result<Vec<(f64, f64)>, String> {
+    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
+    carr_madan_price_at_strikes_with_samples(&weighted_samples, strikes, params)
+}
+
+/// Prices at exact user strikes using pre-computed weighted frequency samples.
+pub fn carr_madan_price_at_strikes_with_samples(
+    weighted_samples: &[Complex<f64>],
+    strikes: &[f64],
+    params: CarrMadanParams,
+) -> Result<Vec<(f64, f64)>, String> {
     if strikes.is_empty() {
         return Ok(Vec::new());
     }
     if params.n < 2 || !params.n.is_power_of_two() {
         return Err("carr-madan strike pricing requires n to be a power of two >= 2".to_string());
+    }
+    if weighted_samples.len() != params.n {
+        return Err("weighted sample length must equal params.n".to_string());
     }
 
     let mut indexed = Vec::with_capacity(strikes.len());
@@ -212,7 +208,8 @@ pub fn carr_madan_price_at_strikes<C: CharacteristicFunction>(
         && indexed.len() <= params.n
     {
         let k0 = log_strikes_sorted[0];
-        let frft_slice = carr_madan_frft_grid(cf, rate, maturity, k0, dk, params)?;
+        let frft_slice =
+            carr_madan_frft_grid_from_weighted_samples(weighted_samples, k0, dk, params)?;
 
         for (orig_idx, strike, log_k) in indexed {
             let m = ((log_k - k0) / dk).round() as usize;
@@ -223,10 +220,9 @@ pub fn carr_madan_price_at_strikes<C: CharacteristicFunction>(
         return Ok(out);
     }
 
-    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
     for (orig_idx, strike, log_k) in indexed {
         let price =
-            direct_carr_madan_at_log_strike(&weighted_samples, params.eta, params.alpha, log_k);
+            direct_carr_madan_at_log_strike(weighted_samples, params.eta, params.alpha, log_k);
         out[orig_idx] = (strike, price);
     }
 

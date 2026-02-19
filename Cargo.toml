@@ -16,10 +16,6 @@ deribit = [
     "dep:tokio",
     "dep:serde",
     "dep:serde_json",
-    "dep:axum",
-    "dep:tokio-tungstenite",
-    "dep:futures-util",
-    "dep:tower-http",
 ]
 wasm = ["dep:wasm-bindgen", "dep:getrandom", "dep:wasm-bindgen-futures", "dep:js-sys"]
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
@@ -35,13 +31,9 @@ rustfft = "6"
 realfft = "3"
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 reqwest = { version = "0.13", features = ["json", "query"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-axum = { version = "0.8", features = ["ws"], optional = true }
-tokio-tungstenite = { version = "0.28", features = ["native-tls"], optional = true }
-futures-util = { version = "0.3", optional = true }
-tower-http = { version = "0.6", features = ["cors"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }

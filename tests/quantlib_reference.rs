@@ -8,7 +8,8 @@
 //! All test vectors extracted directly from QuantLib C++ test-suite source files.
 
 use openferric::core::{BarrierDirection, BarrierStyle, OptionType, PricingEngine};
-use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine, HestonEngine};
+use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine};
+use openferric::engines::fft::heston_price_fft;
 use openferric::instruments::{BarrierOption, VanillaOption};
 use openferric::market::Market;
 
@@ -278,6 +279,41 @@ fn heston_cached_cases() -> Vec<HestonCachedCase> {
     ]
 }
 
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn heston_fft_option_price(
+    option_type: OptionType,
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend: f64,
+    expiry: f64,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+) -> f64 {
+    let call = heston_price_fft(
+        spot,
+        &[strike],
+        rate,
+        dividend,
+        v0,
+        kappa,
+        theta,
+        sigma_v,
+        rho,
+        expiry,
+    )[0]
+        .1;
+
+    match option_type {
+        OptionType::Call => call,
+        OptionType::Put => call - spot * (-dividend * expiry).exp() + strike * (-rate * expiry).exp(),
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -372,28 +408,26 @@ fn test_heston_alan_lewis_reference_values() {
     let (spot, v0, rho, sigma_v, kappa, theta, r, q, t, cases) = heston_alan_lewis_cases();
     let tolerance = 1e-2;
 
-    let engine = HestonEngine::new(v0, kappa, theta, sigma_v, rho);
-    let market = Market::builder()
-        .spot(spot)
-        .rate(r)
-        .dividend_yield(q)
-        .flat_vol(0.2) // placeholder; Heston overrides
-        .build()
-        .unwrap();
-
     for (i, c) in cases.iter().enumerate() {
-        let option = match c.option_type {
-            OptionType::Call => VanillaOption::european_call(c.strike, t),
-            OptionType::Put => VanillaOption::european_put(c.strike, t),
-        };
-
-        let result = engine.price(&option, &market).unwrap();
-        let error = (result.price - c.expected).abs();
+        let price = heston_fft_option_price(
+            c.option_type,
+            spot,
+            c.strike,
+            r,
+            q,
+            t,
+            v0,
+            kappa,
+            theta,
+            sigma_v,
+            rho,
+        );
+        let error = (price - c.expected).abs();
 
         assert!(
             error <= tolerance,
             "Heston Lewis case {i}: {:?} K={} expected={:.12} got={:.6} err={:.2e}",
-            c.option_type, c.strike, c.expected, result.price, error
+            c.option_type, c.strike, c.expected, price, error
         );
     }
 
@@ -408,28 +442,25 @@ fn test_heston_cached_regression_values() {
     let tolerance = 2e-2;
 
     for (i, c) in cases.iter().enumerate() {
-        let engine = HestonEngine::new(c.v0, c.kappa, c.theta, c.sigma_v, c.rho);
-
-        let market = Market::builder()
-            .spot(c.spot)
-            .rate(c.rate)
-            .dividend_yield(c.dividend)
-            .flat_vol(0.2) // placeholder
-            .build()
-            .unwrap();
-
-        let option = match c.option_type {
-            OptionType::Call => VanillaOption::european_call(c.strike, c.expiry),
-            OptionType::Put => VanillaOption::european_put(c.strike, c.expiry),
-        };
-
-        let result = engine.price(&option, &market).unwrap();
-        let error = (result.price - c.expected).abs();
+        let price = heston_fft_option_price(
+            c.option_type,
+            c.spot,
+            c.strike,
+            c.rate,
+            c.dividend,
+            c.expiry,
+            c.v0,
+            c.kappa,
+            c.theta,
+            c.sigma_v,
+            c.rho,
+        );
+        let error = (price - c.expected).abs();
 
         assert!(
             error <= tolerance,
             "Heston cached case {i}: S={} K={} expected={:.10} got={:.6} err={:.2e}",
-            c.spot, c.strike, c.expected, result.price, error
+            c.spot, c.strike, c.expected, price, error
         );
     }
 

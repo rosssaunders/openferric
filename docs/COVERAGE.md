@@ -30,7 +30,7 @@ Detailed module-by-module coverage of OpenFerric's pricing and analytics library
 
 | Model | Module |
 |---|---|
-| Heston stochastic vol | `engines::analytic::heston` |
+| Heston stochastic vol | `engines::fft::carr_madan`, `engines::fft::char_fn` |
 | SABR (Hagan 2002) | `vol::sabr` |
 | Local vol (Dupire) | `vol::local_vol` |
 | SVI parameterization | `vol::surface` |
@@ -174,4 +174,3 @@ Detailed module-by-module coverage of OpenFerric's pricing and analytics library
 | Tool | Binary | Description |
 |---|---|---|
 | Deribit vol surface snapshot | `deribit_vol_surface` | REST fetch → SVI calibration → 3D Plotly HTML |
-| Live vol surface dashboard | `vol_dashboard` | WebSocket stream → real-time recalibration → browser dashboard |

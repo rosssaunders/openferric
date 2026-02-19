@@ -1,9 +1,6 @@
 use std::fs;
 
-use openferric::core::PricingEngine;
-use openferric::engines::analytic::HestonEngine;
-use openferric::instruments::VanillaOption;
-use openferric::market::Market;
+use openferric::engines::fft::heston_price_fft;
 
 #[derive(Debug, Clone)]
 struct HestonFixture {
@@ -126,26 +123,20 @@ fn heston_quantlib_cached_reference_values() {
     // Reference: QuantLib hestonmodel.cpp cached values (Lewis FT dataset).
     let fixture = parse_heston_fixture();
 
-    let engine = HestonEngine::new(
-        fixture.v0,
-        fixture.kappa,
-        fixture.theta,
-        fixture.sigma_v,
-        fixture.rho,
-    );
-
-    let market = Market::builder()
-        .spot(fixture.spot)
-        .rate(fixture.risk_free_rate)
-        .dividend_yield(fixture.dividend_rate)
-        // Flat vol is required by Market even though HestonEngine does not use it.
-        .flat_vol(0.20)
-        .build()
-        .expect("valid market");
-
     for (idx, strike) in fixture.strikes.iter().copied().enumerate().take(3) {
-        let call = VanillaOption::european_call(strike, fixture.maturity);
-        let call_price = engine.price(&call, &market).expect("call pricing").price;
+        let call_price = heston_price_fft(
+            fixture.spot,
+            &[strike],
+            fixture.risk_free_rate,
+            fixture.dividend_rate,
+            fixture.v0,
+            fixture.kappa,
+            fixture.theta,
+            fixture.sigma_v,
+            fixture.rho,
+            fixture.maturity,
+        )[0]
+            .1;
         let expected_call = fixture.expected_put_call[idx].1;
         // QuantLib cached entries are from a broader model-validation table;
         // keep tolerance loose enough for 32-point quadrature and rounded fixtures.

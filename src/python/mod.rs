@@ -1,17 +1,18 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use pyo3::prelude::*;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::core::{BarrierDirection, BarrierStyle, ExerciseStyle, OptionType, PricingEngine};
+use crate::core::{BarrierDirection, BarrierStyle, OptionType, PricingEngine};
 use crate::credit::{Cds, SurvivalCurve};
 use crate::engines::analytic::{
-    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, HestonEngine,
-    kirk_spread_price, margrabe_exchange_price,
+    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, kirk_spread_price,
+    margrabe_exchange_price,
 };
 use crate::greeks::black_scholes_merton_greeks;
 use crate::instruments::{
     AssetOrNothingOption, CashOrNothingOption, ExoticOption, FxOption, LookbackFixedOption,
-    LookbackFloatingOption, SpreadOption, VanillaOption,
+    LookbackFloatingOption, SpreadOption,
 };
 use crate::market::Market;
 use crate::pricing::american::crr_binomial_american;
@@ -98,6 +99,105 @@ fn tenor_grid(maturity: f64, payment_freq: usize) -> Vec<f64> {
     }
     times.push(maturity);
     times
+}
+
+type HestonFftCache =
+    OnceLock<Mutex<Option<([u64; 12], Arc<crate::engines::fft::CarrMadanContext>)>>>;
+
+static HESTON_FFT_CACHE: HestonFftCache = OnceLock::new();
+
+#[inline]
+fn heston_fft_cache_key(
+    spot: f64,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+    params: crate::engines::fft::CarrMadanParams,
+) -> [u64; 12] {
+    [
+        spot.to_bits(),
+        expiry.to_bits(),
+        rate.to_bits(),
+        div_yield.to_bits(),
+        v0.to_bits(),
+        kappa.to_bits(),
+        theta.to_bits(),
+        sigma_v.to_bits(),
+        rho.to_bits(),
+        params.n as u64,
+        params.eta.to_bits(),
+        params.alpha.to_bits(),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn heston_fft_prices_cached(
+    spot: f64,
+    strikes: &[f64],
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+) -> Option<Vec<(f64, f64)>> {
+    use crate::engines::fft::{CarrMadanContext, CarrMadanParams, HestonCharFn};
+
+    let params = CarrMadanParams::default();
+    let key = heston_fft_cache_key(
+        spot, expiry, rate, div_yield, v0, kappa, theta, sigma_v, rho, params,
+    );
+    let cache = HESTON_FFT_CACHE.get_or_init(|| Mutex::new(None));
+    if let Some(cached_ctx) = {
+        let guard = cache.lock().ok()?;
+        match guard.as_ref() {
+            Some((cached_key, cached_ctx)) if *cached_key == key => Some(Arc::clone(cached_ctx)),
+            _ => None,
+        }
+    } {
+        return cached_ctx.price_strikes(strikes).ok();
+    }
+
+    let cf = HestonCharFn::new(
+        spot, rate, div_yield, expiry, v0, kappa, theta, sigma_v, rho,
+    );
+    let ctx = Arc::new(CarrMadanContext::new(&cf, rate, expiry, spot, params).ok()?);
+    let out = ctx.price_strikes(strikes).ok()?;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((key, Arc::clone(&ctx)));
+    }
+    Some(out)
+}
+
+#[inline]
+fn intrinsic_from_option_type(option_type: OptionType, spot: f64, strike: f64) -> f64 {
+    match option_type {
+        OptionType::Call => (spot - strike).max(0.0),
+        OptionType::Put => (strike - spot).max(0.0),
+    }
+}
+
+#[inline]
+fn option_price_from_call(
+    option_type: OptionType,
+    call_price: f64,
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    div_yield: f64,
+    expiry: f64,
+) -> f64 {
+    match option_type {
+        OptionType::Call => call_price,
+        OptionType::Put => call_price - spot * (-div_yield * expiry).exp() + strike * (-rate * expiry).exp(),
+    }
 }
 
 #[pyfunction]
@@ -222,22 +322,30 @@ pub fn py_heston_price(
     let Some(option_type) = parse_option_type(option_type) else {
         return f64::NAN;
     };
+    if expiry <= 0.0 {
+        return intrinsic_from_option_type(option_type, spot, strike);
+    }
 
-    let instrument = VanillaOption {
-        option_type,
-        strike,
+    let call_price = heston_fft_prices_cached(
+        spot,
+        &[strike],
         expiry,
-        exercise: ExerciseStyle::European,
-    };
+        rate,
+        div_yield,
+        v0,
+        kappa,
+        theta,
+        sigma_v,
+        rho,
+    )
+    .and_then(|pairs| pairs.first().map(|(_, p)| *p))
+    .unwrap_or(f64::NAN);
 
-    let Some(market) = build_market(spot, rate, div_yield, v0.abs().sqrt()) else {
+    if !call_price.is_finite() {
         return f64::NAN;
-    };
+    }
 
-    HestonEngine::new(v0, kappa, theta, sigma_v, rho)
-        .price(&instrument, &market)
-        .map(|x| x.price)
-        .unwrap_or(f64::NAN)
+    option_price_from_call(option_type, call_price, spot, strike, rate, div_yield, expiry)
 }
 
 #[pyfunction]
@@ -543,12 +651,44 @@ pub fn py_heston_fft_price(
     sigma_v: f64,
     rho: f64,
 ) -> f64 {
-    use crate::engines::fft::{CarrMadanParams, HestonCharFn, carr_madan_price_at_strikes};
-    let cf = HestonCharFn::new(spot, rate, div_yield, expiry, v0, kappa, theta, sigma_v, rho);
-    carr_madan_price_at_strikes(&cf, rate, expiry, spot, &[strike], CarrMadanParams::default())
-        .ok()
-        .and_then(|v| v.first().map(|(_, p)| *p))
-        .unwrap_or(f64::NAN)
+    heston_fft_prices_cached(
+        spot,
+        &[strike],
+        expiry,
+        rate,
+        div_yield,
+        v0,
+        kappa,
+        theta,
+        sigma_v,
+        rho,
+    )
+    .and_then(|v| v.first().map(|(_, p)| *p))
+    .unwrap_or(f64::NAN)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn py_heston_fft_prices(
+    spot: f64,
+    strikes: Vec<f64>,
+    expiry: f64,
+    rate: f64,
+    div_yield: f64,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+) -> Vec<f64> {
+    if strikes.is_empty() {
+        return Vec::new();
+    }
+    heston_fft_prices_cached(
+        spot, &strikes, expiry, rate, div_yield, v0, kappa, theta, sigma_v, rho,
+    )
+    .map(|pairs| pairs.into_iter().map(|(_, p)| p).collect())
+    .unwrap_or_else(|| vec![f64::NAN; strikes.len()])
 }
 
 #[pyfunction]
@@ -564,11 +704,22 @@ pub fn py_vg_fft_price(
 ) -> f64 {
     use crate::engines::fft::CarrMadanParams;
     use crate::models::VarianceGamma;
-    let vg = VarianceGamma { sigma, theta: theta_vg, nu };
-    vg.european_calls_fft(spot, &[strike], rate, div_yield, expiry, CarrMadanParams::default())
-        .ok()
-        .and_then(|v| v.first().map(|(_, p)| *p))
-        .unwrap_or(f64::NAN)
+    let vg = VarianceGamma {
+        sigma,
+        theta: theta_vg,
+        nu,
+    };
+    vg.european_calls_fft(
+        spot,
+        &[strike],
+        rate,
+        div_yield,
+        expiry,
+        CarrMadanParams::default(),
+    )
+    .ok()
+    .and_then(|v| v.first().map(|(_, p)| *p))
+    .unwrap_or(f64::NAN)
 }
 
 #[pyfunction]
@@ -587,10 +738,17 @@ pub fn py_cgmy_fft_price(
     use crate::engines::fft::CarrMadanParams;
     use crate::models::Cgmy;
     let cgmy = Cgmy { c, g, m, y };
-    cgmy.european_calls_fft(spot, &[strike], rate, div_yield, expiry, CarrMadanParams::default())
-        .ok()
-        .and_then(|v| v.first().map(|(_, p)| *p))
-        .unwrap_or(f64::NAN)
+    cgmy.european_calls_fft(
+        spot,
+        &[strike],
+        rate,
+        div_yield,
+        expiry,
+        CarrMadanParams::default(),
+    )
+    .ok()
+    .and_then(|v| v.first().map(|(_, p)| *p))
+    .unwrap_or(f64::NAN)
 }
 
 #[pyfunction]
@@ -607,10 +765,17 @@ pub fn py_nig_fft_price(
     use crate::engines::fft::CarrMadanParams;
     use crate::models::Nig;
     let nig = Nig { alpha, beta, delta };
-    nig.european_calls_fft(spot, &[strike], rate, div_yield, expiry, CarrMadanParams::default())
-        .ok()
-        .and_then(|v| v.first().map(|(_, p)| *p))
-        .unwrap_or(f64::NAN)
+    nig.european_calls_fft(
+        spot,
+        &[strike],
+        rate,
+        div_yield,
+        expiry,
+        CarrMadanParams::default(),
+    )
+    .ok()
+    .and_then(|v| v.first().map(|(_, p)| *p))
+    .unwrap_or(f64::NAN)
 }
 
 // ── Rates ───────────────────────────────────────────────────────────────
@@ -661,7 +826,10 @@ pub fn py_cva(
 ) -> f64 {
     use crate::risk::XvaCalculator;
     let discount_curve = YieldCurve::new(
-        times.iter().map(|t| (*t, (-discount_rate * *t).exp())).collect(),
+        times
+            .iter()
+            .map(|t| (*t, (-discount_rate * *t).exp()))
+            .collect(),
     );
     let hazards = vec![hazard_rate; times.len()];
     let survival = SurvivalCurve::from_piecewise_hazard(&times, &hazards);
@@ -706,18 +874,14 @@ pub fn py_historical_es(returns: Vec<f64>, confidence: f64) -> f64 {
 // ── Vol surface ─────────────────────────────────────────────────────────
 
 #[pyfunction]
-pub fn py_svi_vol(
-    strike: f64,
-    forward: f64,
-    a: f64,
-    b: f64,
-    rho: f64,
-    m: f64,
-    sigma: f64,
-) -> f64 {
+pub fn py_svi_vol(strike: f64, forward: f64, a: f64, b: f64, rho: f64, m: f64, sigma: f64) -> f64 {
     let k = (strike / forward).ln();
     let total_var = a + b * (rho * (k - m) + ((k - m).powi(2) + sigma * sigma).sqrt());
-    if total_var > 0.0 { total_var.sqrt() } else { f64::NAN }
+    if total_var > 0.0 {
+        total_var.sqrt()
+    } else {
+        f64::NAN
+    }
 }
 
 #[pymodule]
@@ -738,6 +902,7 @@ pub fn openferric(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_survival_prob, module)?)?;
     // FFT / Lévy
     module.add_function(wrap_pyfunction!(py_heston_fft_price, module)?)?;
+    module.add_function(wrap_pyfunction!(py_heston_fft_prices, module)?)?;
     module.add_function(wrap_pyfunction!(py_vg_fft_price, module)?)?;
     module.add_function(wrap_pyfunction!(py_cgmy_fft_price, module)?)?;
     module.add_function(wrap_pyfunction!(py_nig_fft_price, module)?)?;

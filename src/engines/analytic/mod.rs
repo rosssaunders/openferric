@@ -12,7 +12,6 @@ pub mod digital;
 pub mod double_barrier;
 pub mod exotic;
 pub mod fx;
-pub mod heston;
 pub mod power;
 pub mod rainbow;
 pub mod spread;
@@ -30,7 +29,6 @@ pub use digital::DigitalAnalyticEngine;
 pub use double_barrier::DoubleBarrierAnalyticEngine;
 pub use exotic::ExoticAnalyticEngine;
 pub use fx::{FxGreeks, GarmanKohlhagenEngine};
-pub use heston::HestonEngine;
 pub use power::{PowerOptionEngine, power_option_price};
 pub use rainbow::{
     RainbowAnalyticEngine, best_of_two_call_price, two_asset_correlation_price,

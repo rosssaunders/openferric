@@ -1,12 +1,8 @@
-use openferric::core::PricingEngine;
-use openferric::engines::analytic::HestonEngine;
 use openferric::engines::fft::{
     BlackScholesCharFn, CarrMadanParams, HestonCharFn, carr_madan_fft, carr_madan_fft_complex,
     carr_madan_fft_greeks, carr_madan_fft_strikes, carr_madan_price_at_strikes,
-    interpolate_strike_prices,
+    heston_price_fft, interpolate_strike_prices,
 };
-use openferric::instruments::VanillaOption;
-use openferric::market::Market;
 use openferric::models::VarianceGamma;
 use openferric::pricing::OptionType;
 use openferric::pricing::european::black_scholes_price;
@@ -35,7 +31,7 @@ fn carr_madan_bs_matches_analytic_within_1e4_for_ten_strikes() {
 }
 
 #[test]
-fn carr_madan_heston_matches_gauss_laguerre_within_1e3() {
+fn carr_madan_heston_exact_matches_grid_interpolation_within_1e2() {
     let spot = 100.0;
     let rate = 0.02;
     let q = 0.0;
@@ -50,29 +46,19 @@ fn carr_madan_heston_matches_gauss_laguerre_within_1e3() {
     let heston_cf = HestonCharFn::new(spot, rate, q, maturity, v0, kappa, theta, sigma_v, rho);
     let fft_prices = carr_madan_fft(&heston_cf, rate, maturity, spot, CarrMadanParams::default())
         .expect("heston fft prices");
-
-    let heston_engine = HestonEngine::new(v0, kappa, theta, sigma_v, rho);
-    let market = Market::builder()
-        .spot(spot)
-        .rate(rate)
-        .dividend_yield(q)
-        .flat_vol(0.2)
-        .build()
-        .expect("valid market");
-
     let center = CarrMadanParams::default().n / 2;
-    for i in 0..10 {
-        let idx = center + i * 6;
-        let (k, fft_call) = fft_prices[idx];
-        let option = VanillaOption::european_call(k, maturity);
-        let gl_call = heston_engine
-            .price(&option, &market)
-            .expect("heston gl price")
-            .price;
+    let strikes: Vec<f64> = (0..10).map(|i| fft_prices[center + i * 6].0).collect();
 
+    let exact = heston_price_fft(
+        spot, &strikes, rate, q, v0, kappa, theta, sigma_v, rho, maturity,
+    );
+    let interp = interpolate_strike_prices(&fft_prices, &strikes);
+
+    for ((k_exact, exact_call), (k_interp, interp_call)) in exact.iter().zip(interp.iter()) {
+        assert!((k_exact - k_interp).abs() < 1e-12);
         assert!(
-            (fft_call - gl_call).abs() < 0.01,
-            "Heston mismatch K={k} fft={fft_call} gauss={gl_call}"
+            (exact_call - interp_call).abs() < 0.01,
+            "Heston mismatch K={k_exact} exact={exact_call} interp={interp_call}"
         );
     }
 }

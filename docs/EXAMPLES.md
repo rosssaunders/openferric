@@ -49,14 +49,17 @@ let cds = Cds {
 let fair = cds.fair_spread(&discount_curve, &survival_curve);
 ```
 
-## Live Vol Surface Dashboard
+## Deribit Vol Surface Tools
 
 ```bash
-# One-shot snapshot
+# One-shot snapshot (writes vol_surface.html)
 cargo run --features deribit --bin deribit_vol_surface --release
 
-# Live dashboard (http://localhost:3000)
-cargo run --features deribit --bin vol_dashboard --release
+# Rich dashboard (same UI as GitHub Pages)
+wasm-pack build --target web --features wasm
+cp -r pkg www/pkg
+python3 -m http.server 3001 --bind 127.0.0.1 --directory www
+# open http://127.0.0.1:3001
 ```
 
 ## Benchmarks

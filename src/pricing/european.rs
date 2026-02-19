@@ -1,4 +1,7 @@
-use crate::math::{normal_cdf, normal_pdf};
+use crate::engines::analytic::black_scholes::{
+    bs_delta, bs_gamma, bs_price, bs_rho, bs_theta, bs_vega,
+};
+use crate::math::normal_cdf;
 use crate::pricing::OptionType;
 
 #[derive(Debug, Clone, Copy)]
@@ -10,13 +13,6 @@ pub struct Greeks {
     pub rho: f64,
 }
 
-fn d1_d2(s: f64, k: f64, r: f64, sigma: f64, t: f64) -> (f64, f64) {
-    let vt = sigma * t.sqrt();
-    let d1 = ((s / k).ln() + (r + 0.5 * sigma * sigma) * t) / vt;
-    let d2 = d1 - vt;
-    (d1, d2)
-}
-
 pub fn black_scholes_price(
     option_type: OptionType,
     s: f64,
@@ -25,19 +21,8 @@ pub fn black_scholes_price(
     sigma: f64,
     t: f64,
 ) -> f64 {
-    if t <= 0.0 || sigma <= 0.0 {
-        return match option_type {
-            OptionType::Call => (s - k).max(0.0),
-            OptionType::Put => (k - s).max(0.0),
-        };
-    }
-
-    let (d1, d2) = d1_d2(s, k, r, sigma, t);
-    let df = (-r * t).exp();
-    match option_type {
-        OptionType::Call => s * normal_cdf(d1) - k * df * normal_cdf(d2),
-        OptionType::Put => k * df * normal_cdf(-d2) - s * normal_cdf(-d1),
-    }
+    // Compatibility path delegates to the optimized engine kernel (q = 0.0).
+    bs_price(option_type, s, k, r, 0.0, sigma, t)
 }
 
 pub fn black_76_price(option_type: OptionType, f: f64, k: f64, r: f64, sigma: f64, t: f64) -> f64 {
@@ -68,42 +53,12 @@ pub fn black_scholes_greeks(
     sigma: f64,
     t: f64,
 ) -> Greeks {
-    if t <= 0.0 || sigma <= 0.0 {
-        return Greeks {
-            delta: 0.0,
-            gamma: 0.0,
-            vega: 0.0,
-            theta: 0.0,
-            rho: 0.0,
-        };
-    }
-
-    let (d1, d2) = d1_d2(s, k, r, sigma, t);
-    let sqrt_t = t.sqrt();
-    let df = (-r * t).exp();
-
-    let delta = match option_type {
-        OptionType::Call => normal_cdf(d1),
-        OptionType::Put => normal_cdf(d1) - 1.0,
-    };
-
-    let gamma = normal_pdf(d1) / (s * sigma * sqrt_t);
-    let vega = s * normal_pdf(d1) * sqrt_t;
-
-    let theta = match option_type {
-        OptionType::Call => {
-            -s * normal_pdf(d1) * sigma / (2.0 * sqrt_t) - r * k * df * normal_cdf(d2)
-        }
-        OptionType::Put => {
-            -s * normal_pdf(d1) * sigma / (2.0 * sqrt_t) + r * k * df * normal_cdf(-d2)
-        }
-    };
-
-    let rho = match option_type {
-        OptionType::Call => k * t * df * normal_cdf(d2),
-        OptionType::Put => -k * t * df * normal_cdf(-d2),
-    };
-
+    // Compatibility path delegates to optimized engine kernels (q = 0.0).
+    let delta = bs_delta(option_type, s, k, r, 0.0, sigma, t);
+    let gamma = bs_gamma(s, k, r, 0.0, sigma, t);
+    let vega = bs_vega(s, k, r, 0.0, sigma, t);
+    let theta = bs_theta(option_type, s, k, r, 0.0, sigma, t);
+    let rho = bs_rho(option_type, s, k, r, 0.0, sigma, t);
     Greeks {
         delta,
         gamma,

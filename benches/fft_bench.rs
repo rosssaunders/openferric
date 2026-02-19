@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use num_complex::Complex;
 use openferric::core::PricingEngine;
-use openferric::engines::analytic::{HestonEngine, BlackScholesEngine};
+use openferric::engines::analytic::BlackScholesEngine;
 use openferric::engines::fft::{
     BlackScholesCharFn, CarrMadanParams, carr_madan_fft, carr_madan_fft_complex,
     carr_madan_fft_strikes, heston_price_fft,
@@ -25,52 +25,57 @@ fn log_spaced_strikes(min_k: f64, max_k: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
-fn bench_heston_gauss_laguerre_vs_fft(c: &mut Criterion) {
+fn bench_heston_fft_single_vs_batch(c: &mut Criterion) {
     let spot = 100.0;
     let rate = 0.02;
     let q = 0.0;
     let maturity = 1.0;
 
-    let market = Market::builder()
-        .spot(spot)
-        .rate(rate)
-        .dividend_yield(q)
-        .flat_vol(0.2)
-        .build()
-        .expect("benchmark market should be valid");
-
-    let heston = HestonEngine::new(0.04, 1.8, 0.04, 0.5, -0.7);
+    let v0 = 0.04;
+    let kappa = 1.8;
+    let theta = 0.04;
+    let sigma_v = 0.5;
+    let rho = -0.7;
     let single_strikes: Vec<f64> = (0..100).map(|i| 60.0 + i as f64 * 0.8).collect();
-    let fft_strikes = log_spaced_strikes(20.0, 500.0, 4096);
+    let batch_strikes = log_spaced_strikes(20.0, 500.0, 4096);
 
-    let mut group = c.benchmark_group("heston_gauss_vs_fft");
+    let mut group = c.benchmark_group("heston_fft_single_vs_batch");
 
-    group.bench_function("gauss_laguerre_100_single_strikes", |b| {
+    group.bench_function("fft_100_single_strike_calls", |b| {
         b.iter(|| {
             let mut sum = 0.0;
             for k in &single_strikes {
-                let option = VanillaOption::european_call(*k, maturity);
-                sum += heston
-                    .price(black_box(&option), black_box(&market))
-                    .expect("heston price")
-                    .price;
+                let strike_array = [*k];
+                let out = heston_price_fft(
+                    spot,
+                    &strike_array,
+                    rate,
+                    q,
+                    v0,
+                    kappa,
+                    theta,
+                    sigma_v,
+                    rho,
+                    maturity,
+                );
+                sum += out[0].1;
             }
             black_box(sum)
         })
     });
 
-    group.bench_function("fft_4096_strikes", |b| {
+    group.bench_function("fft_4096_batch", |b| {
         b.iter(|| {
             let out = heston_price_fft(
                 spot,
-                black_box(&fft_strikes),
+                black_box(&batch_strikes),
                 rate,
                 q,
-                0.04,
-                1.8,
-                0.04,
-                0.5,
-                -0.7,
+                v0,
+                kappa,
+                theta,
+                sigma_v,
+                rho,
                 maturity,
             );
             black_box(out[2048].1)
@@ -391,7 +396,7 @@ fn bench_heston_fft_parameter_regimes(c: &mut Criterion) {
 
 criterion_group!(
     fft_benches,
-    bench_heston_gauss_laguerre_vs_fft,
+    bench_heston_fft_single_vs_batch,
     bench_bs_fft_vs_analytic,
     bench_carr_madan_scaling,
     bench_carr_madan_4096_complex_vs_dispatch,

@@ -1,9 +1,9 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use openferric::core::{PricingEngine, BarrierDirection, BarrierStyle};
-use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine, HestonEngine};
+use openferric::core::{BarrierDirection, BarrierStyle, PricingEngine};
+use openferric::engines::analytic::{BarrierAnalyticEngine, BlackScholesEngine};
+use openferric::engines::fft::heston_price_fft;
 use openferric::engines::monte_carlo::MonteCarloPricingEngine;
 use openferric::engines::numerical::AmericanBinomialEngine;
-use openferric::engines::fft::heston_price_fft;
 use openferric::instruments::{BarrierOption, VanillaOption};
 use openferric::market::Market;
 use std::hint::black_box;
@@ -61,23 +61,22 @@ fn bench_american_binomial_steps(c: &mut Criterion) {
 }
 
 fn bench_heston_european(c: &mut Criterion) {
-    let market = benchmark_market();
-    let option = VanillaOption::european_call(100.0, 1.0);
-    let engine = HestonEngine::new(
-        0.04, // v0
-        2.0,  // kappa
-        0.04, // theta
-        0.5,  // sigma_v
-        -0.7, // rho
-    );
-
-    c.bench_function("heston_european_call", |b| {
+    c.bench_function("heston_fft_single", |b| {
         b.iter(|| {
-            let px = engine
-                .price(black_box(&option), black_box(&market))
-                .expect("pricing should succeed")
-                .price;
-            black_box(px)
+            let strikes = [100.0];
+            let prices = heston_price_fft(
+                100.0,
+                &strikes,
+                0.05,
+                0.0,
+                0.04,
+                2.0,
+                0.04,
+                0.5,
+                -0.7,
+                1.0,
+            );
+            black_box(prices)
         })
     });
 }
@@ -133,15 +132,29 @@ fn bench_barrier_all_types(c: &mut Criterion) {
     let mut group = c.benchmark_group("barrier_all_types");
 
     let barrier_specs = [
-        ("down_and_out", BarrierDirection::Down, BarrierStyle::Out, 90.0),
+        (
+            "down_and_out",
+            BarrierDirection::Down,
+            BarrierStyle::Out,
+            90.0,
+        ),
         ("up_and_out", BarrierDirection::Up, BarrierStyle::Out, 110.0),
-        ("down_and_in", BarrierDirection::Down, BarrierStyle::In, 90.0),
+        (
+            "down_and_in",
+            BarrierDirection::Down,
+            BarrierStyle::In,
+            90.0,
+        ),
         ("up_and_in", BarrierDirection::Up, BarrierStyle::In, 110.0),
     ];
 
     for (name, direction, style, barrier_level) in barrier_specs.iter() {
-        let mut builder = BarrierOption::builder().call().strike(100.0).expiry(1.0).rebate(0.0);
-        
+        let mut builder = BarrierOption::builder()
+            .call()
+            .strike(100.0)
+            .expiry(1.0)
+            .rebate(0.0);
+
         builder = match (direction, style) {
             (BarrierDirection::Down, BarrierStyle::Out) => builder.down_and_out(*barrier_level),
             (BarrierDirection::Up, BarrierStyle::Out) => builder.up_and_out(*barrier_level),
@@ -186,38 +199,42 @@ fn bench_black_scholes_path_counts(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_heston_analytic_vs_fft(c: &mut Criterion) {
-    let market = benchmark_market();
-    let option = VanillaOption::european_call(100.0, 1.0);
-    let mut group = c.benchmark_group("heston_analytic_vs_fft");
+fn bench_heston_fft_batch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heston_fft_batch");
+    let strikes_32: Vec<f64> = (0..32).map(|i| 70.0 + i as f64 * 2.0).collect();
+    let strikes_128: Vec<f64> = (0..128).map(|i| 50.0 + i as f64 * 1.2).collect();
 
-    // Analytic Heston
-    let analytic_engine = HestonEngine::new(0.04, 2.0, 0.04, 0.5, -0.7);
-    group.bench_function("heston_analytic", |b| {
+    group.bench_function("heston_fft_32", |b| {
         b.iter(|| {
-            let px = analytic_engine
-                .price(black_box(&option), black_box(&market))
-                .expect("pricing should succeed")
-                .price;
-            black_box(px)
+            let prices = heston_price_fft(
+                100.0,
+                black_box(&strikes_32),
+                0.05,
+                0.0,
+                0.04,
+                2.0,
+                0.04,
+                0.5,
+                -0.7,
+                1.0,
+            );
+            black_box(prices)
         })
     });
 
-    // FFT Heston (single strike)
-    group.bench_function("heston_fft_single", |b| {
+    group.bench_function("heston_fft_128", |b| {
         b.iter(|| {
-            let strikes = [100.0];
             let prices = heston_price_fft(
-                100.0, // spot
-                &strikes, // strike array
-                0.05,  // rate
-                0.0,   // dividend
-                0.04,  // v0
-                2.0,   // kappa
-                0.04,  // theta
-                0.5,   // sigma_v
-                -0.7,  // rho
-                1.0,   // time
+                100.0,
+                black_box(&strikes_128),
+                0.05,
+                0.0,
+                0.04,
+                2.0,
+                0.04,
+                0.5,
+                -0.7,
+                1.0,
             );
             black_box(prices)
         })
@@ -235,6 +252,6 @@ criterion_group!(
     bench_barrier_analytic,
     bench_barrier_all_types,
     bench_black_scholes_path_counts,
-    bench_heston_analytic_vs_fft
+    bench_heston_fft_batch
 );
 criterion_main!(pricing_benches);

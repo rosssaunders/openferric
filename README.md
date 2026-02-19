@@ -17,7 +17,7 @@
 - **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
 - **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
 - **FFT pricing**: Carr-Madan for entire strike grids in O(N log N)
-- **Live market tools**: Real-time Deribit vol surface dashboard with SVI calibration
+- **Live market tools**: Deribit vol surface snapshot tooling plus rich browser dashboard (WASM/GitHub Pages)
 - **Python bindings**: Optional PyO3 module for research integration
 - **SQL integration**: Designed as extension for [OpenAssay](https://github.com/rosssaunders/openassay)
 
@@ -73,7 +73,7 @@ Full coverage details in [docs/COVERAGE.md](docs/COVERAGE.md). Summary:
 
 **Numerical Engines** — Analytic (15+), binomial/trinomial trees, explicit/implicit/Crank-Nicolson/Hopscotch FD, Longstaff-Schwartz, Monte Carlo (antithetic, control variate, SIMD, parallel), FFT (Carr-Madan, FRFT), generalized & two-asset trees
 
-**Live Market** — Deribit vol surface dashboard (REST + WebSocket, SVI/SABR calibration, 3D Plotly)
+**Live Market** — Deribit vol surface snapshot (REST + SVI calibration + 3D Plotly) and browser dashboard
 
 ## Architecture
 
@@ -97,7 +97,7 @@ Instruments ─→ Engines ─→ Market ─→ PricingResult
 |---|---|
 | `python` | PyO3 bindings for Python integration |
 | `parallel` | Rayon-parallelized Monte Carlo |
-| `deribit` | Live market binaries (reqwest, tokio, axum) |
+| `deribit` | Deribit snapshot binary (`deribit_vol_surface`) using reqwest + tokio |
 
 ## Testing
 
