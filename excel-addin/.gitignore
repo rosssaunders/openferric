@@ -3,3 +3,6 @@ pkg/
 node_modules/
 *.d.ts
 *.js.map
+functions.js
+serve.js
+taskpane.js
