@@ -609,16 +609,8 @@
         }
       }
 
-      // If first calibration, set baseline
-      if (!baselineSurface) {
-        baselineSurface = slices.map(s => ({
-          expiryCode: s.expiryCode,
-          T: s.T,
-          forward: s.forward,
-          modelType: s.modelType,
-          params: { ...s.params },
-        }));
-      }
+      // Baseline snapshot (retained for potential future diff views)
+      if (!baselineSurface) baselineSurface = slices;
 
       // Update sparklines
       if (spotPrice > 0) {
@@ -976,10 +968,14 @@
         renderGreeks();
       }
 
-      // Every 3rd cycle: expensive panels
+      // Every 3rd cycle: scanner
       if (renderCycle % 3 === 0) {
-        renderSurface();
         renderScanner();
+      }
+
+      // Every 5th cycle: 3D surface (most expensive)
+      if (renderCycle % 5 === 0) {
+        renderSurface();
       }
     }
 
@@ -1064,7 +1060,7 @@
         if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
       }
 
-      const gridN = 25;
+      const gridN = 15;
       const kGrid = [];
       for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
       const tGrid = calibratedSlices.map(s => s.T);
@@ -1076,27 +1072,7 @@
         zGrid.push(Array.from(flatZ.subarray(i * gridN, (i + 1) * gridN)));
       }
 
-      // Diff surface data (zeros if no baseline yet)
-      let diffZ;
-      if (baselineSurface && baselineSurface.length > 0) {
-        const { headers: baseH, params: baseP } = packSliceArrays(baselineSurface);
-        const baseFlatZ = wasm.iv_grid(baseH, baseP, kGridF64);
-        diffZ = [];
-        for (let i = 0; i < calibratedSlices.length; i++) {
-          const base = baselineSurface.find(b => b.expiryCode === calibratedSlices[i].expiryCode);
-          if (!base) { diffZ.push(kGrid.map(() => 0)); continue; }
-          const baseIdx = baselineSurface.indexOf(base);
-          const row = [];
-          for (let j = 0; j < gridN; j++) {
-            row.push(flatZ[i * gridN + j] - baseFlatZ[baseIdx * gridN + j]);
-          }
-          diffZ.push(row);
-        }
-      } else {
-        diffZ = calibratedSlices.map(() => kGrid.map(() => 0));
-      }
-
-      // --- First render: create all 3 traces + layout ---
+      // --- First render: 2 traces (fitted surface + market scatter) ---
       if (!surfaceInitialized) {
         const traces = [
           {
@@ -1110,11 +1086,6 @@
             text: marketText,
             hovertemplate: '%{text}<extra></extra>',
             marker: { size: 2.2, color: '#d8e0ea', opacity: 0.85 },
-          },
-          {
-            type: 'surface', name: 'Session diff', x: kGrid, y: tGrid, z: diffZ,
-            opacity: 0.45, showscale: false,
-            colorscale: [[0,'#ff4444'],[0.5,'#333333'],[1,'#44ff44']],
           },
         ];
 
@@ -1166,10 +1137,10 @@
           }
         }, { passive: false });
       } else {
-        // --- Subsequent renders: restyle data only, never touch layout/camera ---
-        Plotly.restyle(div, { x: [kGrid], y: [tGrid], z: [zGrid] }, [0]);
-        Plotly.restyle(div, { x: [marketX], y: [marketY], z: [marketZ], text: [marketText] }, [1]);
-        Plotly.restyle(div, { x: [kGrid], y: [tGrid], z: [diffZ] }, [2]);
+        // --- Subsequent renders: single batched restyle, never touch layout/camera ---
+        Plotly.restyle(div,
+          { x: [kGrid, marketX], y: [tGrid, marketY], z: [zGrid, marketZ], text: [null, marketText] },
+          [0, 1]);
       }
 
       surfaceDirty = false;
