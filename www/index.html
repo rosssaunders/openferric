@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BTC Options Vol Terminal</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dockview-core@4.3.1/dist/styles/dockview.css">
   <style>
     :root {
       --bg: #070a0f;
@@ -77,24 +78,14 @@
     .status-pill.connecting { color: var(--warn); border-color: var(--warn); }
     .status-pill.disconnected { color: var(--danger); border-color: var(--danger); }
 
-    /* ---- Grid ---- */
-    .grid {
-      display: grid;
-      grid-template-columns: 1.6fr 1fr;
-      grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
-      gap: 6px;
-      padding: 6px;
-      height: calc(100vh - 44px);
-    }
-    .panel {
-      background: color-mix(in srgb, var(--panel) 92%, black);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 8px;
+    /* ---- Dockview panel content ---- */
+    .dock-content {
       display: flex;
       flex-direction: column;
+      height: 100%;
       overflow: hidden;
-      min-height: 0;
+      padding: 6px 8px;
+      background: color-mix(in srgb, var(--panel) 92%, black);
     }
     .panel-head {
       display: flex;
@@ -207,15 +198,31 @@
     .edge-actionable { background: rgba(25,216,168,0.08); }
     .edge-actionable.sell { background: rgba(255,122,122,0.08); }
 
-    @media (max-width: 1060px) {
-      .grid {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto;
-        height: auto;
-      }
-      .chart-area { min-height: 260px; }
+    /* ---- Dockview theme overrides ---- */
+    .dockview-theme-abyss {
+      --dv-group-view-background-color: var(--panel);
+      --dv-tabs-and-actions-container-background-color: color-mix(in srgb, var(--panel) 70%, black);
+      --dv-separator-border: var(--border);
+      --dv-activegroup-visiblepanel-tab-background-color: var(--panel);
+      --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+      --dv-inactivegroup-visiblepanel-tab-background-color: color-mix(in srgb, var(--panel) 50%, black);
+      --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+      --dv-activegroup-visiblepanel-tab-color: var(--fg);
+      --dv-activegroup-hiddenpanel-tab-color: var(--muted);
+      --dv-inactivegroup-visiblepanel-tab-color: var(--muted);
+      --dv-inactivegroup-hiddenpanel-tab-color: var(--muted);
+      --dv-tab-divider-color: var(--border);
+      --dv-drag-over-background-color: rgba(47,178,255,0.1);
+      --dv-drag-over-border-color: var(--accent);
     }
   </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "dockview-core": "https://esm.sh/dockview-core@4.3.1"
+    }
+  }
+  </script>
 </head>
 <body>
   <!-- ===== Header ===== -->
@@ -239,124 +246,16 @@
       </select>
       <span id="calib-time" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></span>
     </div>
+    <button id="reset-layout" class="tab-btn" title="Reset panel layout to default">Reset Layout</button>
     <div class="status-pill connecting" id="status-pill">connecting...</div>
   </div>
 
-  <!-- ===== 8-Panel Grid ===== -->
-  <div class="grid">
-    <!-- Row 1, Col 1: 3D Surface -->
-    <div class="panel" style="grid-row: 1;">
-      <div class="panel-head">
-        <div class="panel-title" id="surface-title">3D Vol Surface (SVI fit + market)</div>
-      </div>
-      <div class="chart-area" id="chart-surface"></div>
-    </div>
-
-    <!-- Row 1, Col 2: Vol Change Heatmap -->
-    <div class="panel" style="grid-row: 1;">
-      <div class="panel-head">
-        <div class="panel-title">IV Change Heatmap</div>
-      </div>
-      <div class="chart-area" id="chart-volchange"></div>
-    </div>
-
-    <!-- Row 2, Col 1: Smile Slice -->
-    <div class="panel" style="grid-row: 2;">
-      <div class="panel-head">
-        <div class="panel-title">Smile Slice</div>
-        <div class="toolbar">
-          <label for="expiry-select">expiry</label>
-          <select id="expiry-select"></select>
-        </div>
-      </div>
-      <div class="chart-area" id="chart-smile"></div>
-    </div>
-
-    <!-- Row 2, Col 2: Greeks Heatmap -->
-    <div class="panel" style="grid-row: 2;">
-      <div class="panel-head">
-        <div class="panel-title">Greeks Heatmap</div>
-        <div class="toolbar" id="greeks-tabs">
-          <button class="tab-btn active" data-greek="delta">Delta</button>
-          <button class="tab-btn" data-greek="gamma">Gamma</button>
-          <button class="tab-btn" data-greek="vega">Vega</button>
-          <button class="tab-btn" data-greek="theta">Theta</button>
-        </div>
-      </div>
-      <div class="chart-area" id="chart-greeks"></div>
-    </div>
-
-    <!-- Row 3, Col 1: Term Structure -->
-    <div class="panel" style="grid-row: 3;">
-      <div class="panel-head">
-        <div class="panel-title">Term Structure (ATM + RR25 + BF25)</div>
-      </div>
-      <div class="chart-area" id="chart-term"></div>
-    </div>
-
-    <!-- Row 3, Col 2: Metrics & Skew Table + Surface Diff note -->
-    <div class="panel" style="grid-row: 3;">
-      <div class="panel-head">
-        <div class="panel-title">Metrics &amp; Skew</div>
-      </div>
-      <div class="metrics-grid">
-        <div class="k">spot</div><div class="v" id="m-spot">--</div>
-        <div class="k">options</div><div class="v" id="m-options">--</div>
-        <div class="k">expiries</div><div class="v" id="m-expiries">--</div>
-        <div class="k">ticks/sec</div><div class="v" id="m-tps">--</div>
-        <div class="k">calib (us)</div><div class="v" id="m-calib">--</div>
-        <div class="k">realized vol</div><div class="v" id="m-rvol">--</div>
-      </div>
-      <div class="tbl-wrap">
-        <table id="skew-table">
-          <thead>
-            <tr><th>expiry</th><th>ATM</th><th>RMSE</th><th>skew</th><th>kurt</th><th>RR25</th><th>BF25</th><th>n</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Row 4: Mispricing Scanner (full width) -->
-    <div class="panel" style="grid-row: 4; grid-column: 1 / -1;">
-      <div class="panel-head">
-        <div class="panel-title">Mispricing Scanner</div>
-        <div class="toolbar">
-          <label for="edge-threshold">min edge</label>
-          <select id="edge-threshold">
-            <option value="0.5">0.5 vol</option>
-            <option value="1.0" selected>1.0 vol</option>
-            <option value="2.0">2.0 vol</option>
-            <option value="5.0">5.0 vol</option>
-          </select>
-          <label for="edge-side">side</label>
-          <select id="edge-side">
-            <option value="all" selected>all</option>
-            <option value="buy">buy only</option>
-            <option value="sell">sell only</option>
-          </select>
-        </div>
-      </div>
-      <div class="scanner-wrap">
-        <div class="scanner-heatmap" id="chart-edge"></div>
-        <div class="scanner-table-wrap">
-          <table id="edge-table">
-            <thead>
-              <tr>
-                <th>expiry</th><th>strike</th><th>C/P</th>
-                <th>mkt IV</th><th>mdl IV</th><th>IV edge</th>
-                <th>bid</th><th>ask</th><th>mid</th><th>theo</th>
-                <th>$ edge</th><th>signal</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- ===== Dockview Container ===== -->
+  <div id="dockview" class="dockview-theme-abyss" style="height: calc(100vh - 44px);"></div>
 
   <script type="module">
+    import { DockviewComponent } from 'dockview-core';
+
     // =====================================================================
     //  WASM loader
     // =====================================================================
@@ -687,14 +586,14 @@
           const bf25 = 0.5 * (callVol + putVol) - atmVol;
           params = { atmVol, rr25, bf25 };
         } else {
-          // SVI (default) — fit in implied-variance space (σ²), then convert back
+          // SVI (default) — fit in implied-variance space (sigma^2), then convert back
           // This avoids numerical issues with tiny total variance at short expiries.
           modelType = 'svi';
           const points = [];
           // Weight points by open interest: repeat high-OI points more
           const maxOi = Math.max(1, ...qByK.map(({ q }) => q.open_interest || 0));
           for (const { k, q } of qByK) {
-            // Use implied variance (σ²) NOT total variance (σ²T) for stable numerics
+            // Use implied variance (sigma^2) NOT total variance (sigma^2*T) for stable numerics
             const iv2 = q.mark_iv * q.mark_iv;
             const oi = q.open_interest || 0;
             const reps = 1 + Math.floor((oi / maxOi) * 4);
@@ -707,7 +606,7 @@
           if (wasmReady) {
             const flat = new Float64Array(points);
             const wp = wasm.calibrate_svi_wasm(flat, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
-            // Convert back: SVI was fit to σ², so params.a etc are in σ² space
+            // Convert back: SVI was fit to sigma^2, so params.a etc are in sigma^2 space
             // To get total variance: w(k) = T * svi(k), so just scale a by T
             params = { a: wp.a * T, b: wp.b * T, rho: wp.rho, m: wp.m, sigma: wp.sigma };
           } else {
@@ -774,8 +673,10 @@
 
       // Update surface title
       const modelNames = { svi: 'SVI', sabr: 'SABR', vv: 'Vanna-Volga' };
-      document.getElementById('surface-title').textContent =
-        `3D Vol Surface (${modelNames[model] || model} fit + market)`;
+      if (panels.surface && panels.surface.titleEl) {
+        panels.surface.titleEl.textContent =
+          `3D Vol Surface (${modelNames[model] || model} fit + market)`;
+      }
 
       // Save previous IVs for heatmap diff
       const newIvMap = new Map();
@@ -1067,6 +968,264 @@
     }
 
     // =====================================================================
+    //  Panel Component Classes (Dockview vanilla API)
+    // =====================================================================
+    const panels = {};
+
+    class SurfacePanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">3D Vol Surface (SVI fit + market)</div>'
+          + '</div>'
+          + '<div class="chart-area"></div>';
+        this.titleEl = this._el.querySelector('.panel-title');
+        this.chartDiv = this._el.querySelector('.chart-area');
+        panels.surface = this;
+        surfaceInitialized = false;
+        zoomTarget = null;
+        zoomCurrent = null;
+        if (zoomRafId) { cancelAnimationFrame(zoomRafId); zoomRafId = null; }
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.surface;
+      }
+    }
+
+    class VolChangePanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">IV Change Heatmap</div>'
+          + '</div>'
+          + '<div class="chart-area"></div>';
+        this.chartDiv = this._el.querySelector('.chart-area');
+        panels.volchange = this;
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.volchange;
+      }
+    }
+
+    class SmilePanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">Smile Slice</div>'
+          + '<div class="toolbar">'
+          + '<label>expiry</label>'
+          + '<select class="expiry-select"></select>'
+          + '</div>'
+          + '</div>'
+          + '<div class="chart-area"></div>';
+        this.chartDiv = this._el.querySelector('.chart-area');
+        this.expirySelect = this._el.querySelector('.expiry-select');
+        panels.smile = this;
+        this.expirySelect.addEventListener('change', (e) => {
+          activeExpiry = e.target.value;
+          renderSmile();
+        });
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.smile;
+      }
+    }
+
+    class GreeksPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">Greeks Heatmap</div>'
+          + '<div class="toolbar greeks-tabs">'
+          + '<button class="tab-btn active" data-greek="delta">Delta</button>'
+          + '<button class="tab-btn" data-greek="gamma">Gamma</button>'
+          + '<button class="tab-btn" data-greek="vega">Vega</button>'
+          + '<button class="tab-btn" data-greek="theta">Theta</button>'
+          + '</div>'
+          + '</div>'
+          + '<div class="chart-area"></div>';
+        this.chartDiv = this._el.querySelector('.chart-area');
+        this.tabContainer = this._el.querySelector('.greeks-tabs');
+        panels.greeks = this;
+        this.tabContainer.addEventListener('click', (e) => {
+          const btn = e.target.closest('.tab-btn');
+          if (!btn) return;
+          this.tabContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          activeGreek = btn.dataset.greek;
+          renderGreeks();
+        });
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.greeks;
+      }
+    }
+
+    class TermPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">Term Structure (ATM + RR25 + BF25)</div>'
+          + '</div>'
+          + '<div class="chart-area"></div>';
+        this.chartDiv = this._el.querySelector('.chart-area');
+        panels.term = this;
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.term;
+      }
+    }
+
+    class MetricsPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">Metrics &amp; Skew</div>'
+          + '</div>'
+          + '<div class="metrics-grid">'
+          + '<div class="k">spot</div><div class="v m-spot">--</div>'
+          + '<div class="k">options</div><div class="v m-options">--</div>'
+          + '<div class="k">expiries</div><div class="v m-expiries">--</div>'
+          + '<div class="k">ticks/sec</div><div class="v m-tps">--</div>'
+          + '<div class="k">calib (us)</div><div class="v m-calib">--</div>'
+          + '<div class="k">realized vol</div><div class="v m-rvol">--</div>'
+          + '</div>'
+          + '<div class="tbl-wrap">'
+          + '<table>'
+          + '<thead><tr><th>expiry</th><th>ATM</th><th>RMSE</th><th>skew</th><th>kurt</th><th>RR25</th><th>BF25</th><th>n</th></tr></thead>'
+          + '<tbody></tbody>'
+          + '</table>'
+          + '</div>';
+        this.mSpot = this._el.querySelector('.m-spot');
+        this.mOptions = this._el.querySelector('.m-options');
+        this.mExpiries = this._el.querySelector('.m-expiries');
+        this.mTps = this._el.querySelector('.m-tps');
+        this.mCalib = this._el.querySelector('.m-calib');
+        this.mRvol = this._el.querySelector('.m-rvol');
+        this.skewTbody = this._el.querySelector('tbody');
+        panels.metrics = this;
+      }
+      dispose() { delete panels.metrics; }
+    }
+
+    class ScannerPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">Mispricing Scanner</div>'
+          + '<div class="toolbar">'
+          + '<label>min edge</label>'
+          + '<select class="edge-threshold">'
+          + '<option value="0.5">0.5 vol</option>'
+          + '<option value="1.0" selected>1.0 vol</option>'
+          + '<option value="2.0">2.0 vol</option>'
+          + '<option value="5.0">5.0 vol</option>'
+          + '</select>'
+          + '<label>side</label>'
+          + '<select class="edge-side">'
+          + '<option value="all" selected>all</option>'
+          + '<option value="buy">buy only</option>'
+          + '<option value="sell">sell only</option>'
+          + '</select>'
+          + '</div>'
+          + '</div>'
+          + '<div class="scanner-wrap">'
+          + '<div class="scanner-heatmap"></div>'
+          + '<div class="scanner-table-wrap">'
+          + '<table>'
+          + '<thead><tr>'
+          + '<th>expiry</th><th>strike</th><th>C/P</th>'
+          + '<th>mkt IV</th><th>mdl IV</th><th>IV edge</th>'
+          + '<th>bid</th><th>ask</th><th>mid</th><th>theo</th>'
+          + '<th>$ edge</th><th>signal</th>'
+          + '</tr></thead>'
+          + '<tbody></tbody>'
+          + '</table>'
+          + '</div>'
+          + '</div>';
+        this.heatmapDiv = this._el.querySelector('.scanner-heatmap');
+        this.edgeTbody = this._el.querySelector('.scanner-table-wrap tbody');
+        panels.scanner = this;
+        this._el.querySelector('.edge-threshold').addEventListener('change', (e) => {
+          edgeThreshold = parseFloat(e.target.value);
+          renderScanner();
+        });
+        this._el.querySelector('.edge-side').addEventListener('change', (e) => {
+          edgeSideFilter = e.target.value;
+          renderScanner();
+        });
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.heatmapDiv && this.heatmapDiv.data) Plotly.Plots.resize(this.heatmapDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.scanner;
+      }
+    }
+
+    // =====================================================================
     //  Renderers
     // =====================================================================
 
@@ -1097,7 +1256,7 @@
     let zoomTarget = null;   // {x, y, z} target eye position
     let zoomCurrent = null;  // {x, y, z} current animated eye
     let zoomRafId = null;
-    const ZOOM_LERP = 0.15;  // interpolation factor per frame (0–1, higher = snappier)
+    const ZOOM_LERP = 0.15;  // interpolation factor per frame (0-1, higher = snappier)
     const ZOOM_STEP = 0.08;  // distance factor per wheel tick
 
     function animateZoom(div) {
@@ -1129,7 +1288,8 @@
     }
 
     function renderSurface() {
-      const div = document.getElementById('chart-surface');
+      const div = panels.surface ? panels.surface.chartDiv : null;
+      if (!div) return;
       if (calibratedSlices.length === 0) return;
 
       // Defer updates while user is rotating/zooming
@@ -1263,7 +1423,8 @@
 
     // --- Vol Change Heatmap ---
     function renderVolChange() {
-      const div = document.getElementById('chart-volchange');
+      const div = panels.volchange ? panels.volchange.chartDiv : null;
+      if (!div) return;
       if (calibratedSlices.length === 0) return;
 
       const expLabels = [];
@@ -1311,7 +1472,8 @@
 
     // --- Smile Slice ---
     function renderSmile() {
-      const div = document.getElementById('chart-smile');
+      const div = panels.smile ? panels.smile.chartDiv : null;
+      if (!div) return;
       ensureExpirySelection();
       if (!activeExpiry || calibratedSlices.length === 0) return;
 
@@ -1364,7 +1526,8 @@
     }
 
     function ensureExpirySelection() {
-      const sel = document.getElementById('expiry-select');
+      const sel = panels.smile ? panels.smile.expirySelect : null;
+      if (!sel) return;
       const expiries = calibratedSlices.map(s => s.expiryCode);
       const prev = activeExpiry;
       sel.innerHTML = '';
@@ -1378,14 +1541,10 @@
       sel.value = activeExpiry;
     }
 
-    document.getElementById('expiry-select').addEventListener('change', (e) => {
-      activeExpiry = e.target.value;
-      renderSmile();
-    });
-
     // --- Greeks Heatmap ---
     function renderGreeks() {
-      const div = document.getElementById('chart-greeks');
+      const div = panels.greeks ? panels.greeks.chartDiv : null;
+      if (!div) return;
       if (calibratedSlices.length === 0 || spotPrice <= 0) return;
 
       // Pick a subset of strikes and expiries
@@ -1461,19 +1620,10 @@
       return sign * y;
     }
 
-    // Greeks tab switching
-    document.getElementById('greeks-tabs').addEventListener('click', (e) => {
-      const btn = e.target.closest('.tab-btn');
-      if (!btn) return;
-      document.querySelectorAll('#greeks-tabs .tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      activeGreek = btn.dataset.greek;
-      renderGreeks();
-    });
-
     // --- Term Structure ---
     function renderTerm() {
-      const div = document.getElementById('chart-term');
+      const div = panels.term ? panels.term.chartDiv : null;
+      if (!div) return;
       if (calibratedSlices.length === 0) return;
 
       const expLabels = calibratedSlices.map(s => s.expiryLabel);
@@ -1537,16 +1687,20 @@
 
     // --- Metrics & Skew Table ---
     function renderMetrics() {
-      document.getElementById('m-spot').textContent = spotPrice > 0 ? pFmt.format(spotPrice) : '--';
-      document.getElementById('m-options').textContent = chain.size || '--';
-      document.getElementById('m-expiries').textContent = calibratedSlices.length || '--';
-      document.getElementById('m-tps').textContent = ticksPerSec > 0 ? pFmt1.format(ticksPerSec) : '--';
-      document.getElementById('m-calib').textContent = calibTimeUs > 0 ? calibTimeUs.toString() : '--';
+      const p = panels.metrics;
+      if (!p) return;
+
+      if (p.mSpot) p.mSpot.textContent = spotPrice > 0 ? pFmt.format(spotPrice) : '--';
+      if (p.mOptions) p.mOptions.textContent = chain.size || '--';
+      if (p.mExpiries) p.mExpiries.textContent = calibratedSlices.length || '--';
+      if (p.mTps) p.mTps.textContent = ticksPerSec > 0 ? pFmt1.format(ticksPerSec) : '--';
+      if (p.mCalib) p.mCalib.textContent = calibTimeUs > 0 ? calibTimeUs.toString() : '--';
 
       const rvol = computeRealizedVol();
-      document.getElementById('m-rvol').textContent = isFinite(rvol) ? pFmt1.format(rvol) + '%' : '--';
+      if (p.mRvol) p.mRvol.textContent = isFinite(rvol) ? pFmt1.format(rvol) + '%' : '--';
 
-      const tbody = document.querySelector('#skew-table tbody');
+      const tbody = p.skewTbody;
+      if (!tbody) return;
       tbody.innerHTML = '';
       for (const sl of calibratedSlices) {
         const d = find25DeltaStrikes(sl);
@@ -1572,15 +1726,6 @@
     let edgeThreshold = 1.0;
     let edgeSideFilter = 'all';
 
-    document.getElementById('edge-threshold').addEventListener('change', (e) => {
-      edgeThreshold = parseFloat(e.target.value);
-      renderScanner();
-    });
-    document.getElementById('edge-side').addEventListener('change', (e) => {
-      edgeSideFilter = e.target.value;
-      renderScanner();
-    });
-
     // Simple BS call/put price for edge calculation
     function bsPrice(S, K, r, sigma, T, isCall) {
       if (sigma <= 0 || T <= 0 || S <= 0 || K <= 0) return 0;
@@ -1596,6 +1741,10 @@
 
     function renderScanner() {
       if (calibratedSlices.length === 0 || spotPrice <= 0) return;
+
+      const heatDiv = panels.scanner ? panels.scanner.heatmapDiv : null;
+      const edgeTbody = panels.scanner ? panels.scanner.edgeTbody : null;
+      if (!heatDiv || !edgeTbody) return;
 
       // Build edge data for every option in the chain
       const edges = [];
@@ -1694,7 +1843,6 @@
       }
 
       const maxEdge = Math.max(3, ...edges.map(e => e.absIvEdge));
-      const heatDiv = document.getElementById('chart-edge');
       Plotly.react(heatDiv, [{
         type: 'heatmap',
         x: sampledStrikes.map(s => pFmt.format(s)),
@@ -1736,8 +1884,7 @@
         .sort((a, b) => b.absIvEdge - a.absIvEdge)
         .slice(0, 40);
 
-      const tbody = document.querySelector('#edge-table tbody');
-      tbody.innerHTML = '';
+      edgeTbody.innerHTML = '';
       for (const e of filtered) {
         const isBuy = e.ivEdge > 0;
         const edgeCls = isBuy ? 'edge-buy' : 'edge-sell';
@@ -1762,7 +1909,7 @@
           + `<td style="text-align:right">${pFmt.format(e.theoPrice)}</td>`
           + `<td style="text-align:right" class="${edgeCls}">${e.dollarEdge > 0 ? '+' : ''}${pFmt.format(e.dollarEdge)}</td>`
           + `<td class="${signalCls}">${signal}</td>`;
-        tbody.appendChild(tr);
+        edgeTbody.appendChild(tr);
       }
     }
 
@@ -1919,6 +2066,81 @@
         setTimeout(connectWs, 2000);
       };
     }
+
+    // =====================================================================
+    //  Dockview Initialization
+    // =====================================================================
+    const LAYOUT_KEY = 'vol-terminal-layout';
+
+    function createDefaultLayout(dv) {
+      const surface = dv.addPanel({ id: 'surface', component: 'surface', title: '3D Vol Surface' });
+      dv.addPanel({ id: 'volchange', component: 'volchange', title: 'IV Change Heatmap',
+        position: { referencePanel: 'surface', direction: 'right' } });
+      dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
+        position: { referencePanel: 'surface', direction: 'below' } });
+      dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap',
+        position: { referencePanel: 'volchange', direction: 'below' } });
+      dv.addPanel({ id: 'term', component: 'term', title: 'Term Structure',
+        position: { referencePanel: 'smile', direction: 'below' } });
+      dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
+        position: { referencePanel: 'greeks', direction: 'below' } });
+      dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
+        position: { referencePanel: 'term', direction: 'below' } });
+    }
+
+    const dockviewContainer = document.getElementById('dockview');
+    const dockview = new DockviewComponent(dockviewContainer, {
+      createComponent(options) {
+        switch (options.name) {
+          case 'surface': return new SurfacePanel();
+          case 'volchange': return new VolChangePanel();
+          case 'smile': return new SmilePanel();
+          case 'greeks': return new GreeksPanel();
+          case 'term': return new TermPanel();
+          case 'metrics': return new MetricsPanel();
+          case 'scanner': return new ScannerPanel();
+          default: {
+            const el = document.createElement('div');
+            el.className = 'dock-content';
+            el.textContent = 'Unknown panel: ' + options.name;
+            return { element: el, init() {}, dispose() {} };
+          }
+        }
+      }
+    });
+
+    // Try to restore saved layout, fall back to default
+    const savedLayout = localStorage.getItem(LAYOUT_KEY);
+    if (savedLayout) {
+      try {
+        dockview.fromJSON(JSON.parse(savedLayout));
+        console.log('[dockview] restored layout from localStorage');
+      } catch (e) {
+        console.warn('[dockview] failed to restore layout, using default:', e);
+        createDefaultLayout(dockview);
+      }
+    } else {
+      createDefaultLayout(dockview);
+    }
+
+    // Persist layout changes (debounced)
+    let layoutSaveTimer = null;
+    dockview.onDidLayoutChange(() => {
+      clearTimeout(layoutSaveTimer);
+      layoutSaveTimer = setTimeout(() => {
+        try {
+          localStorage.setItem(LAYOUT_KEY, JSON.stringify(dockview.toJSON()));
+        } catch (e) {
+          // localStorage might be full or unavailable
+        }
+      }, 500);
+    });
+
+    // Reset Layout button
+    document.getElementById('reset-layout').addEventListener('click', () => {
+      localStorage.removeItem(LAYOUT_KEY);
+      window.location.reload();
+    });
 
     // =====================================================================
     //  Bootstrap

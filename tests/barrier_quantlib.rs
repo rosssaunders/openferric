@@ -23,13 +23,15 @@ struct BarrierCase {
     line: usize,
 }
 
-fn quantlib_file(path: &str) -> String {
+fn fixture_file(path: &str) -> String {
     let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
-    fs::read_to_string(full).expect("failed to read QuantLib fixture")
+    fs::read_to_string(full).expect("failed to read fixture")
 }
 
 fn parse_option_type(raw: &str) -> OptionType {
     match raw {
+        "Call" => OptionType::Call,
+        "Put" => OptionType::Put,
         "Option::Call" => OptionType::Call,
         "Option::Put" => OptionType::Put,
         other => panic!("unsupported option type token: {other}"),
@@ -37,71 +39,49 @@ fn parse_option_type(raw: &str) -> OptionType {
 }
 
 fn parse_barrier_haug_values() -> Vec<BarrierCase> {
-    let source = quantlib_file("tests/quantlib_data/barrieroption.cpp");
-
-    let mut in_haug_case = false;
-    let mut in_values_array = false;
+    let source = fixture_file("tests/fixtures/barrier_haug_values.csv");
     let mut out = Vec::new();
 
     for (idx, line) in source.lines().enumerate() {
-        let line_no = idx + 1;
+        let fixture_line = idx + 1;
         let trimmed = line.trim();
 
-        if trimmed.contains("BOOST_AUTO_TEST_CASE(testHaugValues)") {
-            in_haug_case = true;
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if !in_haug_case {
-            continue;
-        }
-
-        if trimmed.starts_with("NewBarrierOptionData values[] = {") {
-            in_values_array = true;
+        if trimmed.starts_with("source_line,") {
             continue;
         }
 
-        if in_values_array && trimmed.starts_with("};") {
-            break;
-        }
-
-        if !in_values_array || !trimmed.starts_with('{') || !trimmed.contains("Barrier::") {
-            continue;
-        }
-
-        let inner = trimmed
-            .trim_start_matches('{')
-            .trim_end_matches(',')
-            .trim_end_matches('}')
-            .trim();
-
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        let parts: Vec<&str> = trimmed.split(',').map(|p| p.trim()).collect();
         assert_eq!(
             parts.len(),
-            13,
-            "unexpected barrier fields at line {line_no}"
+            14,
+            "unexpected barrier fixture fields at line {fixture_line}"
         );
 
         out.push(BarrierCase {
-            barrier_type: parts[0].to_string(),
-            barrier: parts[1].parse().expect("invalid barrier"),
-            rebate: parts[2].parse().expect("invalid rebate"),
-            option_type: parse_option_type(parts[3]),
-            exercise_type: parts[4].to_string(),
-            strike: parts[5].parse().expect("invalid strike"),
-            spot: parts[6].parse().expect("invalid spot"),
-            dividend: parts[7].parse().expect("invalid dividend"),
-            rate: parts[8].parse().expect("invalid rate"),
-            expiry: parts[9].parse().expect("invalid expiry"),
-            vol: parts[10].parse().expect("invalid vol"),
-            expected: parts[11].parse().expect("invalid expected"),
-            tolerance: parts[12].parse().expect("invalid tolerance"),
-            line: line_no,
+            line: parts[0].parse().expect("invalid source line"),
+            barrier_type: parts[1].to_string(),
+            barrier: parts[2].parse().expect("invalid barrier"),
+            rebate: parts[3].parse().expect("invalid rebate"),
+            option_type: parse_option_type(parts[4]),
+            exercise_type: parts[5].to_string(),
+            strike: parts[6].parse().expect("invalid strike"),
+            spot: parts[7].parse().expect("invalid spot"),
+            dividend: parts[8].parse().expect("invalid dividend"),
+            rate: parts[9].parse().expect("invalid rate"),
+            expiry: parts[10].parse().expect("invalid expiry"),
+            vol: parts[11].parse().expect("invalid vol"),
+            expected: parts[12].parse().expect("invalid expected"),
+            tolerance: parts[13].parse().expect("invalid tolerance"),
         });
     }
 
-    assert!(
-        !out.is_empty(),
-        "failed to parse barrieroption.cpp Haug table"
+    assert_eq!(
+        out.len(),
+        96,
+        "expected 96 barrier rows in QuantLib Haug fixture"
     );
     out
 }
@@ -130,7 +110,8 @@ fn build_barrier_option(case: &BarrierCase) -> BarrierOption {
 
 #[test]
 fn barrier_quantlib_haug_reference_values() {
-    // Source: tests/quantlib_data/barrieroption.cpp:333-418
+    // Fixture: tests/fixtures/barrier_haug_values.csv
+    // Original source: vendor/QuantLib/test-suite/barrieroption.cpp:333-449
     // Reference: E.G. Haug, "Option Pricing Formulas" (1998), p. 72.
     let cases = parse_barrier_haug_values();
     let engine = BarrierAnalyticEngine::new();
@@ -184,7 +165,7 @@ fn barrier_quantlib_haug_reference_values() {
 
 #[test]
 fn barrier_quantlib_knock_in_out_parity_equals_vanilla() {
-    // Source: tests/quantlib_data/barrieroption.cpp:159-231 (testParity).
+    // Source: vendor/QuantLib/test-suite/barrieroption.cpp:159-231 (testParity).
     let expiry = 0.5;
     let spot = 100.0;
     let strike = 100.0;

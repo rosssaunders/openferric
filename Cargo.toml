@@ -53,6 +53,7 @@ pollster = { version = "0.4", optional = true }
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.8"
+statrs = "0.18"
 
 [[bench]]
 name = "pricing_bench"
@@ -69,6 +70,10 @@ harness = false
 
 [[bench]]
 name = "fft_bench"
+harness = false
+
+[[bench]]
+name = "mc_bench"
 harness = false
 
 [profile.release]

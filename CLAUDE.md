@@ -22,6 +22,21 @@ cargo bench --bench pricing_bench          # single benchmark suite
 
 **Python wheel:** `pip install .` (requires `python` feature)
 
+### Coverage
+
+Prerequisites: `make install-coverage` (installs `cargo-llvm-cov` + `llvm-tools-preview`)
+
+```bash
+make coverage-test              # test coverage → HTML report
+make coverage-bench             # bench coverage (single pass, fast)
+make coverage-bench-parallel    # bench coverage with parallel feature
+make coverage-all               # merged test + bench coverage
+make coverage-lcov              # lcov output for CI
+make coverage-clean             # clean profraw data
+```
+
+Reports are written to `target/llvm-cov/html/index.html`.
+
 ## Architecture
 
 ### Core Pricing Flow

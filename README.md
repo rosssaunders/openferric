@@ -5,6 +5,7 @@
 [![Rust](https://img.shields.io/badge/Rust-nightly-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-366%20passing-brightgreen)](#testing)
+[![Coverage](https://codecov.io/gh/rosssaunders/openferric/graph/badge.svg)](https://codecov.io/gh/rosssaunders/openferric)
 [![Lines](https://img.shields.io/badge/lines-40K%2B-blue)](#)
 
 ---
@@ -113,6 +114,7 @@ QuantLib's C++ test suite is included as a git submodule at `vendor/QuantLib/` f
 cargo test                              # all 366 tests
 cargo test --test quantlib_reference    # reference suite only
 cargo test --features parallel          # include parallel MC tests
+cargo llvm-cov --workspace --features parallel --summary-only  # local coverage metric
 cargo bench                             # Criterion benchmarks
 ```
 

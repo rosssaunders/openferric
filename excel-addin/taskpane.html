@@ -70,18 +70,6 @@
     All computation runs locally via WebAssembly
   </div>
 
-  <script type="module">
-    import { default as init } from './pkg/openferric.js';
-    const el = document.getElementById('status');
-    try {
-      await init();
-      el.textContent = '✅ WASM engine loaded';
-      el.className = 'status ok';
-    } catch (err) {
-      el.textContent = '⚠️ WASM not available — build with: wasm-pack build --target web --out-dir excel-addin/pkg';
-      el.className = 'status error';
-      console.error(err);
-    }
-  </script>
+  <script type="module" src="./taskpane.js"></script>
 </body>
 </html>

@@ -20,87 +20,64 @@ struct EuropeanCase {
     line: usize,
 }
 
-fn quantlib_file(path: &str) -> String {
+fn fixture_file(path: &str) -> String {
     let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
-    fs::read_to_string(full).expect("failed to read QuantLib fixture")
+    fs::read_to_string(full).expect("failed to read fixture")
 }
 
 fn parse_option_type(raw: &str) -> OptionType {
     match raw {
-        "Option::Call" => OptionType::Call,
-        "Option::Put" => OptionType::Put,
+        "Call" => OptionType::Call,
+        "Put" => OptionType::Put,
         other => panic!("unsupported option type token: {other}"),
     }
 }
 
 fn parse_european_haug_values() -> Vec<EuropeanCase> {
-    let source = quantlib_file("tests/quantlib_data/europeanoption.cpp");
-
-    let mut in_test_values_case = false;
-    let mut in_values_array = false;
+    let source = fixture_file("tests/fixtures/european_haug_values.csv");
     let mut out = Vec::new();
 
     for (idx, line) in source.lines().enumerate() {
-        let line_no = idx + 1;
+        let fixture_line = idx + 1;
         let trimmed = line.trim();
 
-        if trimmed.contains("BOOST_AUTO_TEST_CASE(testValues)") {
-            in_test_values_case = true;
-            continue;
-        }
-        if !in_test_values_case {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        if trimmed.starts_with("EuropeanOptionData values[] = {") {
-            in_values_array = true;
+        if trimmed.starts_with("source_line,") {
             continue;
         }
 
-        if in_values_array && trimmed.starts_with("};") {
-            break;
-        }
-
-        if !in_values_array || !trimmed.starts_with('{') || !trimmed.contains("Option::") {
-            continue;
-        }
-
-        let inner = trimmed
-            .trim_start_matches('{')
-            .trim_end_matches(',')
-            .trim_end_matches('}')
-            .trim();
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        let parts: Vec<&str> = trimmed.split(',').map(|p| p.trim()).collect();
         assert_eq!(
             parts.len(),
-            9,
-            "unexpected european fields at line {line_no}"
+            10,
+            "unexpected european fixture fields at line {fixture_line}"
         );
 
         out.push(EuropeanCase {
-            option_type: parse_option_type(parts[0]),
-            strike: parts[1].parse().expect("invalid strike"),
-            spot: parts[2].parse().expect("invalid spot"),
-            dividend: parts[3].parse().expect("invalid dividend"),
-            rate: parts[4].parse().expect("invalid rate"),
-            expiry: parts[5].parse().expect("invalid expiry"),
-            vol: parts[6].parse().expect("invalid vol"),
-            expected: parts[7].parse().expect("invalid expected value"),
-            tolerance: parts[8].parse().expect("invalid tolerance"),
-            line: line_no,
+            line: parts[0].parse().expect("invalid source line"),
+            option_type: parse_option_type(parts[1]),
+            strike: parts[2].parse().expect("invalid strike"),
+            spot: parts[3].parse().expect("invalid spot"),
+            dividend: parts[4].parse().expect("invalid dividend"),
+            rate: parts[5].parse().expect("invalid rate"),
+            expiry: parts[6].parse().expect("invalid expiry"),
+            vol: parts[7].parse().expect("invalid vol"),
+            expected: parts[8].parse().expect("invalid expected value"),
+            tolerance: parts[9].parse().expect("invalid tolerance"),
         });
     }
 
-    assert!(
-        !out.is_empty(),
-        "failed to parse europeanoption.cpp testValues table"
-    );
+    assert!(!out.is_empty(), "failed to parse european_haug_values.csv");
     out
 }
 
 #[test]
 fn european_quantlib_haug_reference_values() {
-    // Source: tests/quantlib_data/europeanoption.cpp:285-336
+    // Fixture: tests/fixtures/european_haug_values.csv
+    // Original source: vendor/QuantLib/test-suite/europeanoption.cpp:288-336
     // Reference: E.G. Haug, "Option Pricing Formulas" (1998), pp. 2-8, 24, 27.
     let cases = parse_european_haug_values();
     let engine = BlackScholesEngine::new();
@@ -146,7 +123,7 @@ fn european_quantlib_haug_reference_values() {
 
 #[test]
 fn european_quantlib_put_call_parity() {
-    // Source dataset: tests/quantlib_data/europeanoption.cpp:288-336.
+    // Fixture source dataset: tests/fixtures/european_haug_values.csv.
     let cases = parse_european_haug_values();
     let engine = BlackScholesEngine::new();
 

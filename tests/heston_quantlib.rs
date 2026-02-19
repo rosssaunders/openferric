@@ -20,82 +20,81 @@ struct HestonFixture {
     expected_put_call: Vec<(f64, f64)>,
 }
 
-fn quantlib_file(path: &str) -> String {
+fn fixture_file(path: &str) -> String {
     let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
-    fs::read_to_string(full).expect("failed to read QuantLib fixture")
+    fs::read_to_string(full).expect("failed to read fixture")
 }
 
-fn parse_scalar(source: &str, key: &str) -> f64 {
-    let line = source
-        .lines()
-        .find(|l| l.contains(key))
-        .unwrap_or_else(|| panic!("missing key in fixture: {key}"));
-    let rhs = line
-        .split('=')
-        .nth(1)
-        .expect("expected assignment")
-        .trim()
-        .trim_end_matches(';')
-        .trim();
-    rhs.parse()
-        .unwrap_or_else(|_| panic!("invalid numeric value for key {key}: {rhs}"))
-}
+fn parse_heston_params() -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    let source = fixture_file("tests/fixtures/heston_params.csv");
 
-fn parse_inline_array(source: &str, key: &str) -> Vec<f64> {
-    let line = source
-        .lines()
-        .find(|l| l.contains(key))
-        .unwrap_or_else(|| panic!("missing inline array key in fixture: {key}"));
-    let start = line.find('{').expect("missing { in inline array");
-    let end = line.find('}').expect("missing } in inline array");
-    line[start + 1..end]
-        .split(',')
-        .map(|x| x.trim())
-        .filter(|x| !x.is_empty())
-        .map(|x| x.parse().expect("invalid inline array number"))
-        .collect()
-}
-
-fn parse_expected_table(source: &str) -> Vec<(f64, f64)> {
-    let mut in_table = false;
-    let mut out = Vec::new();
-
+    let mut data_line = None;
     for line in source.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("const Real expectedResults[][2]") {
-            in_table = true;
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("spot,") {
             continue;
         }
-        if !in_table {
-            continue;
-        }
-        if trimmed.starts_with("};") {
-            break;
-        }
-        if !trimmed.starts_with('{') {
-            continue;
-        }
-
-        let inner = trimmed
-            .trim_start_matches('{')
-            .trim_end_matches(',')
-            .trim_end_matches('}')
-            .trim();
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        assert_eq!(parts.len(), 2, "unexpected expectedResults row: {trimmed}");
-        let put: f64 = parts[0].parse().expect("invalid put price in table");
-        let call: f64 = parts[1].parse().expect("invalid call price in table");
-        out.push((put, call));
+        data_line = Some(trimmed.to_string());
+        break;
     }
 
-    assert!(!out.is_empty(), "failed to parse expectedResults table");
-    out
+    let line = data_line.expect("missing heston params row");
+    let parts: Vec<&str> = line.split(',').map(|p| p.trim()).collect();
+    assert_eq!(parts.len(), 9, "expected 9 fields in heston_params.csv");
+
+    (
+        parts[0].parse().expect("invalid spot"),
+        parts[1].parse().expect("invalid risk_free_rate"),
+        parts[2].parse().expect("invalid dividend_rate"),
+        parts[3].parse().expect("invalid maturity"),
+        parts[4].parse().expect("invalid v0"),
+        parts[5].parse().expect("invalid kappa"),
+        parts[6].parse().expect("invalid theta"),
+        parts[7].parse().expect("invalid sigma_v"),
+        parts[8].parse().expect("invalid rho"),
+    )
+}
+
+fn parse_expected_table() -> (Vec<f64>, Vec<(f64, f64)>) {
+    let source = fixture_file("tests/fixtures/heston_expected_put_call.csv");
+    let mut strikes = Vec::new();
+    let mut expected_put_call = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with("source_line,") {
+            continue;
+        }
+
+        let parts: Vec<&str> = trimmed.split(',').map(|p| p.trim()).collect();
+        assert_eq!(
+            parts.len(),
+            4,
+            "expected 4 fields in heston_expected_put_call.csv"
+        );
+
+        let strike = parts[1].parse().expect("invalid strike");
+        let put = parts[2].parse().expect("invalid expected put");
+        let call = parts[3].parse().expect("invalid expected call");
+
+        strikes.push(strike);
+        expected_put_call.push((put, call));
+    }
+
+    assert_eq!(
+        strikes.len(),
+        5,
+        "expected 5 rows in heston_expected_put_call.csv"
+    );
+    (strikes, expected_put_call)
 }
 
 fn parse_heston_fixture() -> HestonFixture {
-    let source = quantlib_file("tests/quantlib_data/hestonmodel.cpp");
-    let strikes = parse_inline_array(&source, "const Real strikes[]");
-    let expected_put_call = parse_expected_table(&source);
+    let (spot, risk_free_rate, dividend_rate, maturity, v0, kappa, theta, sigma_v, rho) =
+        parse_heston_params();
+    let (strikes, expected_put_call) = parse_expected_table();
 
     assert_eq!(
         strikes.len(),
@@ -104,15 +103,15 @@ fn parse_heston_fixture() -> HestonFixture {
     );
 
     HestonFixture {
-        spot: parse_scalar(&source, "const Real spot"),
-        risk_free_rate: parse_scalar(&source, "const Rate riskFreeRate"),
-        dividend_rate: parse_scalar(&source, "const Rate dividendRate"),
-        maturity: parse_scalar(&source, "const Time maturity"),
-        v0: parse_scalar(&source, "const Volatility v0"),
-        kappa: parse_scalar(&source, "const Real kappa"),
-        theta: parse_scalar(&source, "const Volatility theta"),
-        sigma_v: parse_scalar(&source, "const Volatility sigma_v"),
-        rho: parse_scalar(&source, "const Real rho"),
+        spot,
+        risk_free_rate,
+        dividend_rate,
+        maturity,
+        v0,
+        kappa,
+        theta,
+        sigma_v,
+        rho,
         strikes,
         expected_put_call,
     }
@@ -120,7 +119,10 @@ fn parse_heston_fixture() -> HestonFixture {
 
 #[test]
 fn heston_quantlib_cached_reference_values() {
-    // Source: tests/quantlib_data/hestonmodel.cpp
+    // Fixtures:
+    // - tests/fixtures/heston_params.csv
+    // - tests/fixtures/heston_expected_put_call.csv
+    // Original source: vendor/QuantLib/test-suite/hestonmodel.cpp
     // Reference: QuantLib hestonmodel.cpp cached values (Lewis FT dataset).
     let fixture = parse_heston_fixture();
 

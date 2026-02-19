@@ -8,7 +8,7 @@ use openferric::engines::fft::{
 };
 use openferric::instruments::VanillaOption;
 use openferric::market::Market;
-use openferric::pricing::OptionType;
+use openferric::core::OptionType;
 use openferric::pricing::european::black_scholes_price;
 use realfft::RealFftPlanner;
 use rustfft::FftPlanner;

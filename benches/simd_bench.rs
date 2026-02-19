@@ -3,7 +3,10 @@ use openferric::engines::analytic::{bs_price_batch, normal_cdf_batch_approx};
 use openferric::engines::monte_carlo::{mc_european_call_soa, mc_european_call_soa_scalar};
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use openferric::math::simd_math::{exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
-use openferric::pricing::{OptionType, european::black_scholes_price};
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+use openferric::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
+use openferric::core::OptionType;
+use openferric::pricing::european::black_scholes_price;
 use statrs::distribution::{ContinuousCDF, Normal};
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use std::arch::x86_64::*;
@@ -157,35 +160,71 @@ unsafe fn exp_batch_avx2(xs: &[f64], out: &mut [f64]) {
     }
 }
 
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+unsafe fn ln_batch_neon(xs: &[f64], out: &mut [f64]) {
+    let mut i = 0usize;
+    while i + 2 <= xs.len() {
+        // SAFETY: loop guarantees in-bounds 2-wide accesses.
+        let x = unsafe { load_f64x2(xs, i) };
+        // SAFETY: NEON is always available on aarch64.
+        let y = unsafe { simd_ln_f64x2(x) };
+        // SAFETY: loop guarantees in-bounds 2-wide accesses.
+        unsafe { store_f64x2(out, i, y) };
+        i += 2;
+    }
+    while i < xs.len() {
+        out[i] = xs[i].ln();
+        i += 1;
+    }
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+unsafe fn exp_batch_neon(xs: &[f64], out: &mut [f64]) {
+    let mut i = 0usize;
+    while i + 2 <= xs.len() {
+        // SAFETY: loop guarantees in-bounds 2-wide accesses.
+        let x = unsafe { load_f64x2(xs, i) };
+        // SAFETY: NEON is always available on aarch64.
+        let y = unsafe { simd_exp_f64x2(x) };
+        // SAFETY: loop guarantees in-bounds 2-wide accesses.
+        unsafe { store_f64x2(out, i, y) };
+        i += 2;
+    }
+    while i < xs.len() {
+        out[i] = xs[i].exp();
+        i += 1;
+    }
+}
+
 fn bench_ln_exp_scalar_vs_simd(c: &mut Criterion) {
+    let n = 100_000usize;
+    let mut xs_ln = Vec::with_capacity(n);
+    let mut xs_exp = Vec::with_capacity(n);
+    for i in 0..n {
+        let p = -300.0 + 600.0 * (i as f64) / ((n - 1) as f64);
+        xs_ln.push(10f64.powf(p));
+        xs_exp.push(-700.0 + 1_400.0 * (i as f64) / ((n - 1) as f64));
+    }
+
+    let mut group = c.benchmark_group("ln_exp_scalar_vs_simd");
+    group.throughput(Throughput::Elements(n as u64));
+
+    group.bench_function("ln_scalar", |b| {
+        b.iter(|| {
+            let out: Vec<f64> = xs_ln.iter().map(|x| x.ln()).collect();
+            black_box(out)
+        })
+    });
+
+    group.bench_function("exp_scalar", |b| {
+        b.iter(|| {
+            let out: Vec<f64> = xs_exp.iter().map(|x| x.exp()).collect();
+            black_box(out)
+        })
+    });
+
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
-        let n = 100_000usize;
-        let mut xs_ln = Vec::with_capacity(n);
-        let mut xs_exp = Vec::with_capacity(n);
-        for i in 0..n {
-            let p = -300.0 + 600.0 * (i as f64) / ((n - 1) as f64);
-            xs_ln.push(10f64.powf(p));
-            xs_exp.push(-700.0 + 1_400.0 * (i as f64) / ((n - 1) as f64));
-        }
-
-        let mut group = c.benchmark_group("ln_exp_scalar_vs_simd");
-        group.throughput(Throughput::Elements(n as u64));
-
-        group.bench_function("ln_scalar", |b| {
-            b.iter(|| {
-                let out: Vec<f64> = xs_ln.iter().map(|x| x.ln()).collect();
-                black_box(out)
-            })
-        });
-
-        group.bench_function("exp_scalar", |b| {
-            b.iter(|| {
-                let out: Vec<f64> = xs_exp.iter().map(|x| x.exp()).collect();
-                black_box(out)
-            })
-        });
-
         group.bench_function("ln_simd_avx2", |b| {
             let mut out = vec![0.0_f64; n];
             b.iter(|| {
@@ -197,7 +236,7 @@ fn bench_ln_exp_scalar_vs_simd(c: &mut Criterion) {
                         *dst = x.ln();
                     }
                 }
-                black_box(&out)
+                black_box(&out);
             })
         });
 
@@ -212,17 +251,33 @@ fn bench_ln_exp_scalar_vs_simd(c: &mut Criterion) {
                         *dst = x.exp();
                     }
                 }
-                black_box(&out)
+                black_box(&out);
+            })
+        });
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    {
+        group.bench_function("ln_simd_neon", |b| {
+            let mut out = vec![0.0_f64; n];
+            b.iter(|| {
+                // SAFETY: NEON is always available on aarch64.
+                unsafe { ln_batch_neon(&xs_ln, &mut out) };
+                black_box(&out);
             })
         });
 
-        group.finish();
+        group.bench_function("exp_simd_neon", |b| {
+            let mut out = vec![0.0_f64; n];
+            b.iter(|| {
+                // SAFETY: NEON is always available on aarch64.
+                unsafe { exp_batch_neon(&xs_exp, &mut out) };
+                black_box(&out);
+            })
+        });
     }
 
-    #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
-    {
-        let _ = c;
-    }
+    group.finish();
 }
 
 criterion_group!(

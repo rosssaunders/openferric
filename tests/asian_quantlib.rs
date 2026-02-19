@@ -22,13 +22,15 @@ struct ArithmeticCase {
     line: usize,
 }
 
-fn quantlib_file(path: &str) -> String {
+fn fixture_file(path: &str) -> String {
     let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
-    fs::read_to_string(full).expect("failed to read QuantLib fixture")
+    fs::read_to_string(full).expect("failed to read fixture")
 }
 
 fn parse_option_type(raw: &str) -> OptionType {
     match raw {
+        "Call" => OptionType::Call,
+        "Put" => OptionType::Put,
         "Option::Call" => OptionType::Call,
         "Option::Put" => OptionType::Put,
         other => panic!("unsupported option type token: {other}"),
@@ -46,90 +48,48 @@ fn parse_f64_expr(raw: &str) -> f64 {
 }
 
 fn parse_arithmetic_cases4() -> Vec<ArithmeticCase> {
-    let source = quantlib_file("tests/quantlib_data/asianoptions.cpp");
-
-    let mut in_mc_arith = false;
-    let mut in_cases4 = false;
+    let source = fixture_file("tests/fixtures/asian_arithmetic_cases4.csv");
     let mut out = Vec::new();
-    let mut pending: Option<(String, usize)> = None;
 
     for (idx, line) in source.lines().enumerate() {
-        let line_no = idx + 1;
+        let fixture_line = idx + 1;
         let trimmed = line.trim();
 
-        if trimmed.contains("BOOST_AUTO_TEST_CASE(testMCDiscreteArithmeticAveragePrice") {
-            in_mc_arith = true;
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if !in_mc_arith {
-            continue;
-        }
-
-        if trimmed.starts_with("DiscreteAverageData cases4[] = {") {
-            in_cases4 = true;
+        if trimmed.starts_with("source_line,") {
             continue;
         }
 
-        if in_cases4 && trimmed.starts_with("};") {
-            break;
-        }
-
-        if !in_cases4 {
-            continue;
-        }
-
-        if pending.is_none() && trimmed.starts_with('{') && trimmed.contains("Option::") {
-            pending = Some((trimmed.to_string(), line_no));
-        } else if let Some((record, _)) = &mut pending {
-            record.push(' ');
-            record.push_str(trimmed);
-        }
-
-        let Some((record, start_line)) = &pending else {
-            continue;
-        };
-
-        if !record.ends_with("},") {
-            continue;
-        }
-
-        let inner = record
-            .trim_start_matches('{')
-            .trim_end_matches(',')
-            .trim_end_matches('}')
-            .trim();
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        let parts: Vec<&str> = trimmed.split(',').map(|p| p.trim()).collect();
         assert_eq!(
             parts.len(),
-            11,
-            "unexpected arithmetic fields at line {start_line}"
+            12,
+            "unexpected arithmetic fixture fields at line {fixture_line}"
         );
 
         out.push(ArithmeticCase {
-            option_type: parse_option_type(parts[0]),
-            underlying: parse_f64_expr(parts[1]),
-            strike: parse_f64_expr(parts[2]),
-            dividend_yield: parse_f64_expr(parts[3]),
-            risk_free_rate: parse_f64_expr(parts[4]),
-            first: parse_f64_expr(parts[5]),
-            length: parse_f64_expr(parts[6]),
-            fixings: parse_f64_expr(parts[7]) as usize,
-            volatility: parse_f64_expr(parts[8]),
-            control_variate: match parts[9] {
+            line: parts[0].parse().expect("invalid source line"),
+            option_type: parse_option_type(parts[1]),
+            underlying: parse_f64_expr(parts[2]),
+            strike: parse_f64_expr(parts[3]),
+            dividend_yield: parse_f64_expr(parts[4]),
+            risk_free_rate: parse_f64_expr(parts[5]),
+            first: parse_f64_expr(parts[6]),
+            length: parse_f64_expr(parts[7]),
+            fixings: parse_f64_expr(parts[8]) as usize,
+            volatility: parse_f64_expr(parts[9]),
+            control_variate: match parts[10] {
                 "true" => true,
                 "false" => false,
                 other => panic!("invalid bool token {other}"),
             },
-            expected: parse_f64_expr(parts[10]),
-            line: *start_line,
+            expected: parse_f64_expr(parts[11]),
         });
-        pending = None;
     }
 
-    assert!(
-        !out.is_empty(),
-        "failed to parse cases4 from asianoptions.cpp"
-    );
+    assert_eq!(out.len(), 30, "expected 30 rows in cases4 fixture");
     out
 }
 
@@ -147,7 +107,7 @@ fn build_observation_times(first: f64, length: f64, fixings: usize) -> Vec<f64> 
 
 #[test]
 fn asian_geometric_quantlib_discrete_reference_value() {
-    // Source: tests/quantlib_data/asianoptions.cpp:376-436.
+    // Source: vendor/QuantLib/test-suite/asianoptions.cpp:376-436.
     // Reference: Clewlow & Strickland, "Implementing Derivatives Models", pp. 118-123.
     let strike = 100.0;
     let expiry = 1.0;
@@ -185,7 +145,7 @@ fn asian_geometric_quantlib_discrete_reference_value() {
 
 #[test]
 fn asian_geometric_quantlib_continuous_haug_value_via_dense_discrete_schedule() {
-    // Source: tests/quantlib_data/asianoptions.cpp:153-229.
+    // Source: vendor/QuantLib/test-suite/asianoptions.cpp:153-229.
     // Reference: E.G. Haug, "Option Pricing Formulas" (1998), pp. 96-97.
     // QuantLib itself checks a dense discrete approximation against the continuous value.
     let strike = 85.0;
@@ -224,7 +184,8 @@ fn asian_geometric_quantlib_continuous_haug_value_via_dense_discrete_schedule() 
 
 #[test]
 fn asian_arithmetic_mc_converges_to_quantlib_reference_within_two_stderr() {
-    // Source: tests/quantlib_data/asianoptions.cpp:685-746 (cases4 table), line 712.
+    // Fixture: tests/fixtures/asian_arithmetic_cases4.csv
+    // Original source: vendor/QuantLib/test-suite/asianoptions.cpp:685-746 (cases4 table).
     // Reference: Levy (1997), in Clewlow & Strickland (eds.), "Exotic Options: The State of the Art".
     let cases = parse_arithmetic_cases4();
 
