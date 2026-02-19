@@ -34,16 +34,25 @@ interface OpenFerricWasmModule {
 }
 
 interface CustomFunctionsRuntime {
-  associate: <TArgs extends Array<unknown>, TResult>(
-    id: string,
-    implementation: (...args: TArgs) => TResult
-  ) => void;
+  associate: (id: string, implementation: (...args: never[]) => unknown) => void;
 }
 
 let wasm: OpenFerricWasmModule | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function isCustomFunctionsRuntime(value: unknown): value is CustomFunctionsRuntime {
+  return isRecord(value) && typeof value["associate"] === "function";
 }
 
 function isWasmModule(value: unknown): value is OpenFerricWasmModule {
@@ -89,19 +98,26 @@ async function ensureWasm(): Promise<OpenFerricWasmModule> {
   return wasm;
 }
 
-function toNumericArray(matrixOrArray: unknown): Array<number> {
+function toNumericArray(matrixOrArray: unknown): number[] {
   if (!Array.isArray(matrixOrArray)) {
     return [];
   }
 
-  const first = matrixOrArray[0];
-  if (Array.isArray(first)) {
-    return matrixOrArray
-      .flatMap((row) => (Array.isArray(row) ? row : []))
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const rows: unknown[] = matrixOrArray;
+  const first = rows[0];
+  if (isUnknownArray(first)) {
+    const flattened: unknown[] = [];
+    for (const row of rows) {
+      if (isUnknownArray(row)) {
+        for (const value of row) {
+          flattened.push(value);
+        }
+      }
+    }
+    return flattened.filter(isFiniteNumber);
   }
 
-  return matrixOrArray.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return rows.filter(isFiniteNumber);
 }
 
 function toFixedLabelList(values: ArrayLike<number>): string {
@@ -223,20 +239,20 @@ async function sabrVol(
 }
 
 function tryRegisterCustomFunctions(): void {
-  const customFunctions = (globalThis as { CustomFunctions?: CustomFunctionsRuntime }).CustomFunctions;
-  if (!customFunctions) {
+  const customFunctionsCandidate: unknown = Reflect.get(globalThis, "CustomFunctions");
+  if (!isCustomFunctionsRuntime(customFunctionsCandidate)) {
     return;
   }
 
-  customFunctions.associate("BS_PRICE", bsPrice);
-  customFunctions.associate("BS_IMPLIED_VOL", bsImpliedVol);
-  customFunctions.associate("BS_GREEKS", bsGreeks);
-  customFunctions.associate("HESTON_PRICE", hestonPrice);
-  customFunctions.associate("BARRIER_PRICE", barrierPrice);
-  customFunctions.associate("BOND_PRICE", bondPrice);
-  customFunctions.associate("CDS_SPREAD", cdsSpread);
-  customFunctions.associate("VAR", varHistorical);
-  customFunctions.associate("SABR_VOL", sabrVol);
+  customFunctionsCandidate.associate("BS_PRICE", bsPrice);
+  customFunctionsCandidate.associate("BS_IMPLIED_VOL", bsImpliedVol);
+  customFunctionsCandidate.associate("BS_GREEKS", bsGreeks);
+  customFunctionsCandidate.associate("HESTON_PRICE", hestonPrice);
+  customFunctionsCandidate.associate("BARRIER_PRICE", barrierPrice);
+  customFunctionsCandidate.associate("BOND_PRICE", bondPrice);
+  customFunctionsCandidate.associate("CDS_SPREAD", cdsSpread);
+  customFunctionsCandidate.associate("VAR", varHistorical);
+  customFunctionsCandidate.associate("SABR_VOL", sabrVol);
 }
 
 tryRegisterCustomFunctions();

@@ -2,6 +2,14 @@ interface WasmInitModule {
   default: () => Promise<unknown>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isWasmInitModule(value: unknown): value is WasmInitModule {
+  return isRecord(value) && typeof value["default"] === "function";
+}
+
 function getStatusElement(): HTMLElement {
   const element = document.getElementById("status");
   if (!element) {
@@ -18,7 +26,11 @@ function setStatus(statusElement: HTMLElement, className: string, message: strin
 
 async function loadWasmIntoTaskpane(statusElement: HTMLElement): Promise<void> {
   const moduleUrl = new URL("./pkg/openferric.js", import.meta.url).href;
-  const module = (await import(moduleUrl)) as WasmInitModule;
+  const moduleCandidate: unknown = await import(moduleUrl);
+  if (!isWasmInitModule(moduleCandidate)) {
+    throw new TypeError("Invalid OpenFerric WASM module shape loaded in taskpane.");
+  }
+  const module = moduleCandidate;
   await module.default();
   setStatus(statusElement, "status ok", "WASM engine loaded");
 }

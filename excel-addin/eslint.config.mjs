@@ -7,8 +7,10 @@ import securityPlugin from "eslint-plugin-security";
 import sonarPlugin from "eslint-plugin-sonarjs";
 import unicornPlugin from "eslint-plugin-unicorn";
 import tseslint from "typescript-eslint";
+import { fileURLToPath } from "node:url";
 
-const tsProject = new URL("./tsconfig.json", import.meta.url).pathname;
+const tsProject = fileURLToPath(new URL("./tsconfig.json", import.meta.url));
+const tsRootDir = fileURLToPath(new URL(".", import.meta.url));
 
 export default tseslint.config(
   {
@@ -29,7 +31,7 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         project: tsProject,
-        tsconfigRootDir: new URL(".", import.meta.url).pathname
+        tsconfigRootDir: tsRootDir
       },
       globals: {
         ...globals.browser,

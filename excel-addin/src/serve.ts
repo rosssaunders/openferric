@@ -1,11 +1,11 @@
 import { execSync } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { createServer } from "node:https";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer } from "node:https";
 
 const PORT = 3000;
-const DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
+const DIRECTORY = fileURLToPath(new URL(".", import.meta.url));
 const certDirectory = join(DIRECTORY, ".certs");
 const keyPath = join(certDirectory, "key.pem");
 const certPath = join(certDirectory, "cert.pem");
@@ -87,7 +87,7 @@ function startServer(): void {
 
   server.listen(PORT, () => {
     console.info("\nOpenFerric Excel Add-in server");
-    console.info(`https://localhost:${PORT}/\n`);
+    console.info(`https://localhost:${String(PORT)}/\n`);
     console.info("Sideload manifest.xml in Excel to get started.");
     console.info("Press Ctrl+C to stop.\n");
   });

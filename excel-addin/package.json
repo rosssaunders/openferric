@@ -7,7 +7,7 @@
     "node": ">=20.11.0"
   },
   "scripts": {
-    "clean": "rm -f functions.js functions.js.map functions.d.ts taskpane.js taskpane.js.map taskpane.d.ts serve.js serve.js.map serve.d.ts",
+    "clean": "rm -f functions.js functions.js.map taskpane.js taskpane.js.map serve.js serve.js.map",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
