@@ -25,6 +25,7 @@ let activeModel = 'svi';
 let activeGreek = 'delta';
 let edgeThreshold = 1.0;
 let edgeSideFilter = 'all';
+let isLinear = false;
 
 // ---------------------------------------------------------------------------
 //  Pure helpers (copied from index.html — no DOM dependency)
@@ -393,7 +394,7 @@ function computeScannerData(slices, packed, chain, spotPrice) {
     const marketIvPct = q.mark_iv * 100;
     const ivEdge = modelIvPct - marketIvPct;
     const modelSigma = modelIvPct / 100;
-    const marketMid = q.mark_price * spotPrice;
+    const marketMid = isLinear ? q.mark_price : q.mark_price * spotPrice;
     const callFlag = q.isCall ? 1 : 0;
 
     const theoIdx = bSpots.length;
@@ -501,8 +502,9 @@ function computeScannerData(slices, packed, chain, spotPrice) {
   }
 
   const maxEdge = Math.max(3, ...edges.map(e => e.absIvEdge));
+  const sliceTValues = slices.map(s => s.T);
 
-  return { heatZ, heatText, sampledStrikes, expLabels, maxEdge, edges };
+  return { heatZ, heatText, sampledStrikes, expLabels, maxEdge, edges, sliceTValues };
 }
 
 function computeRealizedVol(spotLogReturns) {
@@ -539,6 +541,7 @@ self.onmessage = function(e) {
     if (payload.activeGreek !== undefined) activeGreek = payload.activeGreek;
     if (payload.edgeThreshold !== undefined) edgeThreshold = payload.edgeThreshold;
     if (payload.edgeSideFilter !== undefined) edgeSideFilter = payload.edgeSideFilter;
+    if (payload.isLinear !== undefined) isLinear = payload.isLinear;
     return;
   }
 

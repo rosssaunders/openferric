@@ -240,10 +240,16 @@
     <div class="toolbar" style="margin-left: auto;">
       <label for="currency-select">currency</label>
       <select id="currency-select">
-        <option value="BTC" selected>BTC</option>
-        <option value="ETH">ETH</option>
-        <option value="SOL">SOL</option>
-        <option value="USDC">USDC</option>
+        <optgroup label="Inverse">
+          <option value="BTC" selected>BTC</option>
+          <option value="ETH">ETH</option>
+        </optgroup>
+        <optgroup label="Linear (USDC)">
+          <option value="BTC_USDC">BTC-USDC</option>
+          <option value="ETH_USDC">ETH-USDC</option>
+          <option value="SOL_USDC">SOL-USDC</option>
+          <option value="AVAX_USDC">AVAX-USDC</option>
+        </optgroup>
       </select>
       <label for="model-select">model</label>
       <select id="model-select">
@@ -324,7 +330,16 @@
     // =====================================================================
     //  Currency State
     // =====================================================================
+    const CURRENCY_CONFIG = {
+      BTC:       { apiCurrency: 'BTC',  base: 'BTC',  indexName: 'btc_usd',   label: 'BTC',       isLinear: false, prefix: 'BTC-' },
+      ETH:       { apiCurrency: 'ETH',  base: 'ETH',  indexName: 'eth_usd',   label: 'ETH',       isLinear: false, prefix: 'ETH-' },
+      BTC_USDC:  { apiCurrency: 'USDC', base: 'BTC',  indexName: 'btc_usdc',  label: 'BTC-USDC',  isLinear: true,  prefix: 'BTC_USDC-' },
+      ETH_USDC:  { apiCurrency: 'USDC', base: 'ETH',  indexName: 'eth_usdc',  label: 'ETH-USDC',  isLinear: true,  prefix: 'ETH_USDC-' },
+      SOL_USDC:  { apiCurrency: 'USDC', base: 'SOL',  indexName: 'sol_usdc',  label: 'SOL-USDC',  isLinear: true,  prefix: 'SOL_USDC-' },
+      AVAX_USDC: { apiCurrency: 'USDC', base: 'AVAX', indexName: 'avax_usdc', label: 'AVAX-USDC', isLinear: true,  prefix: 'AVAX_USDC-' },
+    };
     let activeCurrency = 'BTC';
+    let currencyConfig = CURRENCY_CONFIG[activeCurrency];
     let activeWs = null;
     let intentionalClose = false; // suppress auto-reconnect on currency switch
 
@@ -376,6 +391,17 @@
       activeModel = e.target.value;
       dirty = true;
       baselineSurface = null; // reset baseline on model switch
+      calibratedSlices = [];
+      lastSurfaceData = null;
+      lastGreeksData = null;
+      lastScannerData = null;
+      surfaceInitialized = false;
+      // Purge all Plotly charts so panels show blank until new model results arrive
+      for (const key of Object.keys(panels)) {
+        const p = panels[key];
+        if (p && p.chartDiv) Plotly.purge(p.chartDiv);
+        if (p && p.heatDiv) Plotly.purge(p.heatDiv);
+      }
       if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel } });
       scheduleCalibration();
     });
@@ -386,6 +412,7 @@
     function switchCurrency(newCurrency) {
       if (newCurrency === activeCurrency) return;
       activeCurrency = newCurrency;
+      currencyConfig = CURRENCY_CONFIG[activeCurrency];
 
       // Close existing WebSocket (suppress auto-reconnect)
       intentionalClose = true;
@@ -413,12 +440,12 @@
       }
 
       // Update page title and header
-      document.title = activeCurrency + ' Options Vol Terminal';
-      document.querySelector('.header-title').textContent = activeCurrency + ' Options Vol Terminal';
+      document.title = currencyConfig.label + ' Options Vol Terminal';
+      document.querySelector('.header-title').textContent = currencyConfig.label + ' Options Vol Terminal';
       document.getElementById('hdr-spot').textContent = '--';
 
       // Notify worker of reset
-      if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel } });
+      if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel, isLinear: currencyConfig.isLinear } });
 
       // Re-seed and reconnect
       seedFromRest();
@@ -713,6 +740,15 @@
           + '<option value="2.0">2.0 vol</option>'
           + '<option value="5.0">5.0 vol</option>'
           + '</select>'
+          + '<label>min maturity</label>'
+          + '<select class="min-maturity">'
+          + '<option value="0" selected>all</option>'
+          + '<option value="7">7d</option>'
+          + '<option value="14">14d</option>'
+          + '<option value="30">30d</option>'
+          + '<option value="60">60d</option>'
+          + '<option value="90">90d</option>'
+          + '</select>'
           + '<label>side</label>'
           + '<select class="edge-side">'
           + '<option value="all" selected>all</option>'
@@ -750,6 +786,10 @@
           if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { edgeSideFilter } });
           if (lastScannerData) renderScanner(lastScannerData);
           else renderScanner();
+        });
+        this._el.querySelector('.min-maturity').addEventListener('change', (e) => {
+          minMaturity = parseFloat(e.target.value);
+          if (lastScannerData) renderScanner(lastScannerData);
         });
         this._resizeObs = new ResizeObserver(() => {
           if (this.heatmapDiv && this.heatmapDiv.data) Plotly.Plots.resize(this.heatmapDiv);
@@ -1215,6 +1255,7 @@
     // =====================================================================
     let edgeThreshold = 1.0;
     let edgeSideFilter = 'all';
+    let minMaturity = 0; // minimum T in days (0 = no filter)
 
     // --- Scanner ---
     function renderScanner(data) {
@@ -1225,12 +1266,22 @@
 
       const { heatZ, heatText, sampledStrikes, expLabels, maxEdge, edges } = data;
 
+      // Apply maturity filter to heatmap rows
+      const minT = minMaturity / 365;
+      let filteredExpLabels = expLabels, filteredHeatZ = heatZ, filteredHeatText = heatText;
+      if (minT > 0 && data.sliceTValues) {
+        const mask = data.sliceTValues.map(t => t >= minT);
+        filteredExpLabels = expLabels.filter((_, i) => mask[i]);
+        filteredHeatZ = heatZ.filter((_, i) => mask[i]);
+        filteredHeatText = heatText.filter((_, i) => mask[i]);
+      }
+
       Plotly.react(heatDiv, [{
         type: 'heatmap',
         x: sampledStrikes.map(s => pFmt.format(s)),
-        y: expLabels,
-        z: heatZ,
-        text: heatText,
+        y: filteredExpLabels,
+        z: filteredHeatZ,
+        text: filteredHeatText,
         hovertemplate: '%{text}<extra></extra>',
         colorscale: [
           [0, '#ff4444'],
@@ -1257,6 +1308,7 @@
 
       // Table
       const filtered = edges
+        .filter(e => e.T >= minT)
         .filter(e => e.absIvEdge >= edgeThreshold)
         .filter(e => {
           if (edgeSideFilter === 'buy') return e.ivEdge > 0;
@@ -1310,11 +1362,15 @@
     async function seedFromRest() {
       try {
         setStatus('connecting', 'seeding...');
+        const seedCurrency = activeCurrency; // capture for stale-check after await
 
         const [bookResp, indexResp] = await Promise.all([
-          fetch(`${DERIBIT_REST}/get_book_summary_by_currency?currency=${activeCurrency}&kind=option`),
-          fetch(`${DERIBIT_REST}/get_index_price?index_name=${activeCurrency.toLowerCase()}_usd`),
+          fetch(`${DERIBIT_REST}/get_book_summary_by_currency?currency=${currencyConfig.apiCurrency}&kind=option`),
+          fetch(`${DERIBIT_REST}/get_index_price?index_name=${currencyConfig.indexName}`),
         ]);
+
+        // Currency changed while we were fetching — discard stale response
+        if (activeCurrency !== seedCurrency) return;
 
         const bookData = await bookResp.json();
         const indexData = await indexResp.json();
@@ -1328,6 +1384,8 @@
         for (const entry of entries) {
           const name = entry.instrument_name;
           if (!name) continue;
+          // For USDC currencies, filter to matching base (e.g. only SOL_USDC-* for SOL_USDC)
+          if (currencyConfig.isLinear && !name.startsWith(currencyConfig.prefix)) continue;
           const parsed = parseInstrumentName(name);
           if (!parsed) continue;
 
@@ -1359,7 +1417,7 @@
     function connectWs() {
       setStatus('connecting', 'connecting...');
       intentionalClose = false;
-      const activeChannel = `markprice.options.${activeCurrency.toLowerCase()}_usd`;
+      const activeChannel = `markprice.options.${currencyConfig.indexName}`;
       const ws = new WebSocket(DERIBIT_WS);
       activeWs = ws;
 
@@ -1374,6 +1432,7 @@
 
       ws.onmessage = (event) => {
         try {
+          if (ws !== activeWs) return; // stale WS from previous currency
           const msg = JSON.parse(event.data);
           if (!msg.params || !msg.params.data) return;
           const channel = msg.params.channel;
@@ -1399,6 +1458,7 @@
           for (const node of quoteNodes) {
             const name = node.instrument_name || node.instrument;
             if (!name) continue;
+            if (currencyConfig.isLinear && !name.startsWith(currencyConfig.prefix)) continue;
             const parsed = parseInstrumentName(name);
             if (!parsed) continue;
 
