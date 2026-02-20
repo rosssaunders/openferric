@@ -112,6 +112,53 @@ pub fn bs_price_batch_wasm(
     out
 }
 
+/// Batch BSM Greeks: one WASM call for N options.
+///
+/// All input slices must have the same length.  `is_calls` uses `1` = call,
+/// `0` = put (wasm-bindgen cannot pass `&[bool]`).
+/// Returns a flat `Vec<f64>` of 7 values per option:
+/// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times.
+#[wasm_bindgen]
+pub fn bsm_greeks_batch_wasm(
+    spots: &[f64],
+    strikes: &[f64],
+    rates: &[f64],
+    div_yields: &[f64],
+    vols: &[f64],
+    expiries: &[f64],
+    is_calls: &[u8],
+) -> Vec<f64> {
+    let n = spots.len();
+    debug_assert!(
+        n == strikes.len()
+            && n == rates.len()
+            && n == div_yields.len()
+            && n == vols.len()
+            && n == expiries.len()
+            && n == is_calls.len()
+    );
+
+    let mut out = Vec::with_capacity(n * 7);
+    for i in 0..n {
+        let ot = if is_calls[i] != 0 {
+            OptionType::Call
+        } else {
+            OptionType::Put
+        };
+        let g = black_scholes_merton_greeks(
+            ot, spots[i], strikes[i], rates[i], div_yields[i], vols[i], expiries[i],
+        );
+        out.push(g.delta);
+        out.push(g.gamma);
+        out.push(g.vega);
+        out.push(g.theta);
+        out.push(g.rho);
+        out.push(g.vanna);
+        out.push(g.volga);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Heston pricing (fast FFT path)
 // ---------------------------------------------------------------------------

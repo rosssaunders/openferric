@@ -264,23 +264,19 @@
     import { DockviewComponent } from 'dockview-core';
 
     // =====================================================================
-    //  WASM loader (required — no JS fallback)
+    //  Web Worker (owns WASM instance, all computation off main thread)
     // =====================================================================
-    let wasmReady = false;
-    let wasm = null;
-    const wasmPromise = (async () => {
-      try {
-        const mod = await import('./pkg/openferric.js');
-        await mod.default();
-        wasm = mod;
-        wasmReady = true;
-        console.log('[wasm] loaded');
-      } catch (e) {
-        console.error('[wasm] FATAL: load failed:', e.message);
-        document.body.innerHTML = '<div style="color:#ff7a7a;padding:40px;font-size:18px">'
-          + 'WASM module failed to load. Run: <code>wasm-pack build --target web --features wasm</code></div>';
-      }
-    })();
+    let workerReady = false;
+    const computeWorker = new Worker('./worker.js', { type: 'module' });
+    computeWorker.onmessage = handleWorkerMessage;
+
+    const workerReadyPromise = new Promise(resolve => {
+      const orig = computeWorker.onmessage;
+      computeWorker.onmessage = (e) => {
+        if (e.data.type === 'ready') { workerReady = true; resolve(); }
+        orig(e);
+      };
+    });
 
     // =====================================================================
     //  Plotly common layout helpers
@@ -380,6 +376,7 @@
       activeModel = e.target.value;
       dirty = true;
       baselineSurface = null; // reset baseline on model switch
+      if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel } });
       scheduleCalibration();
     });
 
@@ -420,6 +417,9 @@
       document.querySelector('.header-title').textContent = activeCurrency + ' Options Vol Terminal';
       document.getElementById('hdr-spot').textContent = '--';
 
+      // Notify worker of reset
+      if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel } });
+
       // Re-seed and reconnect
       seedFromRest();
       connectWs();
@@ -428,43 +428,6 @@
     document.getElementById('currency-select').addEventListener('change', (e) => {
       switchCurrency(e.target.value);
     });
-
-    // =====================================================================
-    //  WASM batch helpers — all math runs in Rust
-    // =====================================================================
-    const MODEL_SVI = 0, MODEL_SABR = 1, MODEL_VV = 2;
-
-    function modelTypeCode(mt) {
-      if (mt === 'svi') return MODEL_SVI;
-      if (mt === 'sabr') return MODEL_SABR;
-      if (mt === 'vv') return MODEL_VV;
-      return 255;
-    }
-
-    function modelParamArray(sl) {
-      const mt = sl.modelType, p = sl.params;
-      if (mt === 'svi') return [p.a, p.b, p.rho, p.m, p.sigma];
-      if (mt === 'sabr') return [p.alpha, p.beta, p.rho, p.nu];
-      if (mt === 'vv') return [p.atmVol, p.rr25, p.bf25];
-      return [];
-    }
-
-    // Pack calibratedSlices into flat arrays for WASM batch functions.
-    // Returns { headers: Float64Array, params: Float64Array }.
-    function packSliceArrays(slices) {
-      const headerArr = [];
-      const paramArr = [];
-      for (const sl of slices) {
-        const code = modelTypeCode(sl.modelType);
-        const offset = paramArr.length;
-        headerArr.push(code, sl.T, sl.forward, offset);
-        paramArr.push(...modelParamArray(sl));
-      }
-      return {
-        headers: new Float64Array(headerArr),
-        params: new Float64Array(paramArr),
-      };
-    }
 
     // =====================================================================
     //  Calibration (per-expiry, model-aware)
@@ -484,195 +447,14 @@
 
     function runCalibration() {
       calibrationScheduled = false;
-      if (!dirty) return;
-      if (!wasmReady) { dirty = true; setTimeout(runCalibration, 100); return; }
+      if (!dirty || !workerReady) {
+        if (dirty && !workerReady) setTimeout(runCalibration, 100);
+        return;
+      }
       dirty = false;
+      renderCycle++;
 
-      const now = Date.now();
-      const nowSec = now / 1000;
-      const t0 = performance.now();
-      const model = activeModel;
-
-      // Group by expiry code
-      const grouped = new Map();
-      for (const [, q] of chain) {
-        if (q.mark_iv <= 0 || q.strike <= 0) continue;
-        const key = q.expiryCode;
-        if (!grouped.has(key)) grouped.set(key, []);
-        grouped.get(key).push(q);
-      }
-
-      const slices = [];
-      for (const [expiryCode, quotes] of grouped) {
-        if (quotes.length < 5) continue;
-
-        const expiryDate = parseDeribitExpiry(expiryCode);
-        if (!expiryDate) continue;
-        const T = (expiryDate.getTime() / 1000 - nowSec) / (365.25 * 24 * 3600);
-        if (T <= 0) continue;
-
-        const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
-        if (!isFinite(forward) || forward <= 0) continue;
-
-        // Build per-quote data, filtering illiquid/suspect points
-        const qByKRaw = [];
-        for (const q of quotes) {
-          const k = Math.log(q.strike / forward);
-          qByKRaw.push({ k, q });
-        }
-
-        // Filter: require positive mark_iv, positive open interest or bid_iv > 0
-        // For short expiries (< 7d), also clip extreme wings where bid-ask is very wide
-        const qByK = qByKRaw.filter(({ k, q }) => {
-          if (!q.mark_iv || q.mark_iv <= 0) return false;
-          // Remove points with zero bid (no real market)
-          if (q.bid_iv !== undefined && q.bid_iv <= 0 && q.open_interest <= 0) return false;
-          // Remove extreme wings with wide bid-ask spread (> 50% of mid)
-          if (q.bid_iv > 0 && q.ask_iv > 0) {
-            const spread = q.ask_iv - q.bid_iv;
-            const mid = (q.ask_iv + q.bid_iv) / 2;
-            if (mid > 0 && spread / mid > 0.5) return false;
-          }
-          // For very short expiries, restrict to near-ATM strikes
-          if (T < 7/365 && Math.abs(k) > 0.15) return false;
-          if (T < 30/365 && Math.abs(k) > 0.5) return false;
-          return true;
-        });
-
-        // If filtering removed too many points, fall back to raw (need at least 3 for SVI)
-        if (qByK.length < 3) {
-          qByK.length = 0;
-          for (const item of qByKRaw) {
-            if (item.q.mark_iv > 0) qByK.push(item);
-          }
-        }
-
-        // ATM vol (closest to k=0)
-        let atmVol = 0;
-        let minAbsK = Infinity;
-        for (const { k, q } of qByK) {
-          if (Math.abs(k) < minAbsK) {
-            minAbsK = Math.abs(k);
-            atmVol = q.mark_iv;
-          }
-        }
-
-        // ---- Model-specific calibration ----
-        let params, modelType;
-
-        if (model === 'sabr') {
-          // SABR: fit in strike/vol space
-          modelType = 'sabr';
-          const strikes = qByK.map(({ q }) => q.strike);
-          const vols = qByK.map(({ q }) => q.mark_iv);
-
-          const strikesArr = new Float64Array(strikes);
-          const volsArr = new Float64Array(vols);
-          const wp = wasm.fit_sabr_wasm(forward, strikesArr, volsArr, T, 0.5);
-          params = { alpha: wp.alpha, beta: wp.beta, rho: wp.rho, nu: wp.nu };
-        } else if (model === 'vv') {
-          // Vanna-Volga: derive from ATM + 25d RR/BF
-          modelType = 'vv';
-          // Sort by moneyness to find 25-delta wing vols
-          const sorted = [...qByK].sort((a, b) => a.k - b.k);
-          // Approximate: put wing ~ 25th percentile, call wing ~ 75th percentile
-          const n = sorted.length;
-          const putIdx = Math.max(0, Math.round(n * 0.15));
-          const callIdx = Math.min(n - 1, Math.round(n * 0.85));
-          const putVol = sorted[putIdx].q.mark_iv;
-          const callVol = sorted[callIdx].q.mark_iv;
-          const rr25 = callVol - putVol;
-          const bf25 = 0.5 * (callVol + putVol) - atmVol;
-          params = { atmVol, rr25, bf25 };
-        } else {
-          // SVI (default) — fit in implied-variance space (sigma^2), then convert back
-          // This avoids numerical issues with tiny total variance at short expiries.
-          modelType = 'svi';
-          const points = [];
-          // Weight points by open interest: repeat high-OI points more
-          const maxOi = Math.max(1, ...qByK.map(({ q }) => q.open_interest || 0));
-          for (const { k, q } of qByK) {
-            // Use implied variance (sigma^2) NOT total variance (sigma^2*T) for stable numerics
-            const iv2 = q.mark_iv * q.mark_iv;
-            const oi = q.open_interest || 0;
-            const reps = 1 + Math.floor((oi / maxOi) * 4);
-            for (let r = 0; r < reps; r++) {
-              points.push(k, iv2);
-            }
-          }
-          const atmIv2 = Math.max(atmVol * atmVol, 1e-4);
-
-          const flat = new Float64Array(points);
-          const wp = wasm.calibrate_svi_wasm(flat, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
-          // Convert back: SVI was fit to sigma^2, so params.a etc are in sigma^2 space
-          // To get total variance: w(k) = T * svi(k), so just scale a by T
-          params = { a: wp.a * T, b: wp.b * T, rho: wp.rho, m: wp.m, sigma: wp.sigma };
-        }
-
-        // Compute fitted IV, RMSE, skew, kurtosis via WASM
-        const diagKs = new Float64Array(qByK.map(({ k }) => k));
-        const diagIvs = new Float64Array(qByK.map(({ q }) => q.mark_iv * 100));
-        const diagStrikes = new Float64Array(qByK.map(({ q }) => q.strike));
-        const diagParams = new Float64Array(modelParamArray({ modelType, params }));
-        const diag = wasm.slice_fit_diagnostics(
-          modelTypeCode(modelType), diagParams, T, forward, diagKs, diagIvs, diagStrikes
-        );
-        const rmse = diag[0];
-        const skew = diag[1];
-        const kurtProxy = diag[2];
-        const slicePoints = [];
-        for (let j = 0; j < qByK.length; j++) {
-          const { q } = qByK[j];
-          slicePoints.push({
-            strike: q.strike,
-            market_iv: q.mark_iv * 100,
-            fitted_iv: diag[3 + j],
-            bid_iv: (q.bid_iv || 0) * 100,
-            ask_iv: (q.ask_iv || 0) * 100,
-          });
-        }
-        slicePoints.sort((a, b) => a.strike - b.strike);
-
-        slices.push({
-          expiryCode,
-          expiryLabel: expiryCode,
-          T,
-          params,
-          modelType,
-          rmse,
-          n: qByK.length,
-          atmVol: atmVol * 100,
-          points: slicePoints,
-          forward,
-          skew,
-          kurtProxy,
-        });
-      }
-
-      slices.sort((a, b) => a.T - b.T);
-      calibratedSlices = slices;
-
-      calibTimeUs = Math.round((performance.now() - t0) * 1000);
-
-      // Update surface title
-      const modelNames = { svi: 'SVI', sabr: 'SABR', vv: 'Vanna-Volga' };
-      if (panels.surface && panels.surface.titleEl) {
-        panels.surface.titleEl.textContent =
-          `3D Vol Surface (${modelNames[model] || model} fit + market)`;
-      }
-
-      // Save previous IVs for heatmap diff
-      const newIvMap = new Map();
-      for (const sl of slices) {
-        for (const pt of sl.points) {
-          newIvMap.set(sl.expiryCode + '|' + pt.strike, pt.market_iv);
-        }
-      }
-
-      // Baseline snapshot (retained for potential future diff views)
-      if (!baselineSurface) baselineSurface = slices;
-
-      // Update sparklines
+      // Update sparklines (main thread — needs DOM timing)
       if (spotPrice > 0) {
         if (spotHistory.length > 0) {
           const prevSpot = spotHistory[spotHistory.length - 1];
@@ -684,17 +466,11 @@
         spotHistory.push(spotPrice);
         if (spotHistory.length > SPARK_LEN) spotHistory.shift();
       }
-      const globalAtm = slices.length > 0 ? slices[0].atmVol : NaN;
-      if (isFinite(globalAtm)) {
-        atmVolHistory.push(globalAtm);
-        if (atmVolHistory.length > SPARK_LEN) atmVolHistory.shift();
-      }
 
-      prevIvMap = newIvMap;
-
-      // Render everything
-      requestAnimationFrame(() => {
-        renderAll();
+      const chainEntries = Array.from(chain.entries()).map(([n, q]) => [n, { ...q }]);
+      computeWorker.postMessage({
+        type: 'market-update',
+        payload: { chainEntries, spotPrice, spotLogReturns: [...spotLogReturns], renderCycle },
       });
     }
 
@@ -718,16 +494,6 @@
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(' ');
       svgEl.innerHTML = `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round"/>`;
-    }
-
-    // =====================================================================
-    //  Realized Vol (WASM)
-    // =====================================================================
-    function computeRealizedVol() {
-      if (spotLogReturns.length < 2 || !wasmReady) return NaN;
-      // ~1 observation per second (1s calibration interval), ~86400 sec/day, ~365.25 days
-      const obsPerYear = 1 * 86400 * 365.25;
-      return wasm.realized_vol(new Float64Array(spotLogReturns), obsPerYear);
     }
 
     // =====================================================================
@@ -851,7 +617,10 @@
           this.tabContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           activeGreek = btn.dataset.greek;
-          renderGreeks();
+          if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeGreek } });
+          // Force recompute greeks on next cycle
+          dirty = true;
+          scheduleCalibration();
         });
         this._resizeObs = new ResizeObserver(() => {
           if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
@@ -971,11 +740,16 @@
         panels.scanner = this;
         this._el.querySelector('.edge-threshold').addEventListener('change', (e) => {
           edgeThreshold = parseFloat(e.target.value);
-          renderScanner();
+          if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { edgeThreshold } });
+          // Re-render from cached data or trigger recompute
+          if (lastScannerData) renderScanner(lastScannerData);
+          else renderScanner();
         });
         this._el.querySelector('.edge-side').addEventListener('change', (e) => {
           edgeSideFilter = e.target.value;
-          renderScanner();
+          if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { edgeSideFilter } });
+          if (lastScannerData) renderScanner(lastScannerData);
+          else renderScanner();
         });
         this._resizeObs = new ResizeObserver(() => {
           if (this.heatmapDiv && this.heatmapDiv.data) Plotly.Plots.resize(this.heatmapDiv);
@@ -989,54 +763,79 @@
     }
 
     // =====================================================================
-    //  Per-frame WASM cache (computed once, shared across renderers)
-    // =====================================================================
-    let frameCache = null;
-
-    function computeFrameCache() {
-      if (calibratedSlices.length === 0 || !wasmReady) {
-        frameCache = null;
-        return;
-      }
-      const packed = packSliceArrays(calibratedSlices);
-      const d25 = wasm.find_25d_strikes_batch(packed.headers, packed.params);
-      const atmIv = wasm.iv_grid(packed.headers, packed.params, new Float64Array([0]));
-      frameCache = { packed, d25, atmIv };
-    }
-
-    // =====================================================================
-    //  Tiered rendering — expensive panels update less often
+    //  Render cycle counter (tiering is done in the worker)
     // =====================================================================
     let renderCycle = 0;
+    let frameCache = null; // populated from worker results
 
-    function renderAll() {
-      renderCycle++;
-      refreshTps();
-      computeFrameCache();
+    // =====================================================================
+    //  Worker message handler + result application
+    // =====================================================================
+    let lastSurfaceData = null, lastGreeksData = null, lastScannerData = null;
 
-      // Every cycle: cheap DOM-only updates
-      renderHeader();
-      renderMetrics();
+    function handleWorkerMessage(e) {
+      if (e.data.type === 'ready') {
+        workerReady = true;
+        console.log('[worker] ready');
+        return;
+      }
+      if (e.data.type === 'compute-result') {
+        applyComputeResult(e.data.payload);
+      }
+    }
 
-      // Every cycle: lightweight 2D charts
-      renderSmile();
-      renderTerm();
+    function applyComputeResult(r) {
+      calibratedSlices = r.calibratedSlices;
+      calibTimeUs = r.calibTimeUs;
 
-      // Every 2nd cycle: medium-cost panels
-      if (renderCycle % 2 === 0) {
+      // Update surface title
+      const modelNames = { svi: 'SVI', sabr: 'SABR', vv: 'Vanna-Volga' };
+      if (panels.surface && panels.surface.titleEl) {
+        const mt = calibratedSlices.length > 0 ? calibratedSlices[0].modelType : activeModel;
+        panels.surface.titleEl.textContent =
+          `3D Vol Surface (${modelNames[mt] || mt} fit + market)`;
+      }
+
+      // Save previous IVs for heatmap diff
+      const newIvMap = new Map();
+      for (const sl of calibratedSlices) {
+        for (const pt of sl.points) {
+          newIvMap.set(sl.expiryCode + '|' + pt.strike, pt.market_iv);
+        }
+      }
+      if (!baselineSurface) baselineSurface = calibratedSlices;
+
+      // Update ATM vol sparkline
+      const globalAtm = calibratedSlices.length > 0 ? calibratedSlices[0].atmVol : NaN;
+      if (isFinite(globalAtm)) {
+        atmVolHistory.push(globalAtm);
+        if (atmVolHistory.length > SPARK_LEN) atmVolHistory.shift();
+      }
+      prevIvMap = newIvMap;
+
+      // Cache tiered data
+      if (r.surface) lastSurfaceData = r.surface;
+      if (r.greeks) lastGreeksData = r.greeks;
+      if (r.scanner) lastScannerData = r.scanner;
+
+      // Store frame cache data from worker for metrics/term fallback
+      frameCache = (r.d25 && r.atmIv) ? {
+        packed: null,
+        d25: r.d25,
+        atmIv: r.atmIv,
+      } : null;
+
+      requestAnimationFrame(() => {
+        refreshTps();
+        renderHeader();
+        renderMetrics(r);
+        renderSmile();
+        renderTerm(r);
         renderVolChange();
-        renderGreeks();
-      }
-
-      // Every 3rd cycle: scanner
-      if (renderCycle % 3 === 0) {
-        renderScanner();
-      }
-
-      // Every 5th cycle: 3D surface (most expensive)
-      if (renderCycle % 5 === 0) {
-        renderSurface();
-      }
+        if (lastGreeksData) renderGreeks(lastGreeksData);
+        if (lastScannerData) renderScanner(lastScannerData);
+        if (lastSurfaceData) renderSurface(lastSurfaceData);
+      });
     }
 
     function renderHeader() {
@@ -1081,58 +880,28 @@
         zoomRafId = null;
         // End interaction after animation settles
         surfaceInteracting = false;
-        if (surfaceDirty) { surfaceDirty = false; renderSurface(); }
+        if (surfaceDirty) { surfaceDirty = false; renderSurface(lastSurfaceData); }
       }
     }
 
-    function renderSurface() {
+    // --- 3D Surface ---
+    function renderSurface(data) {
       const div = panels.surface ? panels.surface.chartDiv : null;
-      if (!div) return;
-      if (calibratedSlices.length === 0) return;
+      if (!div || !data) return;
 
-      // Defer updates while user is rotating/zooming
       if (surfaceInteracting && surfaceInitialized) {
         surfaceDirty = true;
         document.getElementById('calib-time').textContent = calibTimeUs > 0 ? calibTimeUs + ' us' : '';
         return;
       }
 
-      // --- Compute data ---
-      const marketX = [], marketY = [], marketZ = [], marketText = [];
-      for (const sl of calibratedSlices) {
-        for (const pt of sl.points) {
-          if (pt.strike <= 0 || sl.forward <= 0) continue;
-          marketX.push(Math.log(pt.strike / sl.forward));
-          marketY.push(sl.T);
-          marketZ.push(pt.market_iv);
-          marketText.push(
-            'Strike: $' + pt.strike.toLocaleString() +
-            '<br>Maturity: ' + (sl.expiryCode || sl.T.toFixed(4) + 'y') +
-            '<br>IV: ' + pt.market_iv.toFixed(2) + '%'
-          );
-        }
-      }
-
-      let kMin = -0.45, kMax = 0.45;
-      if (marketX.length > 0) {
-        kMin = Math.min(...marketX);
-        kMax = Math.max(...marketX);
-        if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
-      }
-
-      const gridN = 15;
-      const kGrid = [];
-      for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
-      const tGrid = calibratedSlices.map(s => s.T);
-      const kGridF64 = new Float64Array(kGrid);
-      const { headers: slH, params: slP } = frameCache ? frameCache.packed : packSliceArrays(calibratedSlices);
-      const flatZ = wasm.iv_grid(slH, slP, kGridF64);
+      const { kGrid, tGrid, flatZ, gridN, marketX, marketY, marketZ, marketText } = data;
       const zGrid = [];
-      for (let i = 0; i < calibratedSlices.length; i++) {
-        zGrid.push(Array.from(flatZ.subarray(i * gridN, (i + 1) * gridN)));
+      const nSlices = tGrid.length;
+      for (let i = 0; i < nSlices; i++) {
+        zGrid.push(flatZ.slice(i * gridN, (i + 1) * gridN));
       }
 
-      // --- First render: 2 traces (fitted surface + market scatter) ---
       if (!surfaceInitialized) {
         const traces = [
           {
@@ -1165,39 +934,30 @@
         Plotly.newPlot(div, traces, layout, { responsive: true, displayModeBar: false, scrollZoom: false });
         surfaceInitialized = true;
 
-        // Pause data updates during user drag (rotation/pan)
         div.addEventListener('mousedown', () => { surfaceInteracting = true; });
         window.addEventListener('mouseup', () => {
           if (surfaceInteracting && !zoomRafId) {
             surfaceInteracting = false;
-            if (surfaceDirty) { surfaceDirty = false; renderSurface(); }
+            if (surfaceDirty) { surfaceDirty = false; renderSurface(lastSurfaceData); }
           }
         });
 
-        // Smooth animated zoom — intercept wheel, animate camera with lerp
         div.addEventListener('wheel', (e) => {
           e.preventDefault();
           surfaceInteracting = true;
-
-          // Read current camera eye
           const scene = div._fullLayout && div._fullLayout.scene;
           const cam = scene && scene._scene ? scene._scene.getCamera() : null;
           const eye = cam ? cam.eye : (zoomCurrent || { x: 1.65, y: 1.25, z: 0.8 });
-
           if (!zoomCurrent) zoomCurrent = { x: eye.x, y: eye.y, z: eye.z };
-          // Use target if animation is in-flight, otherwise start from current eye
           const base = zoomTarget || { x: eye.x, y: eye.y, z: eye.z };
-
-          const direction = e.deltaY > 0 ? 1 : -1; // positive = zoom out
+          const direction = e.deltaY > 0 ? 1 : -1;
           const scale = 1 + direction * ZOOM_STEP;
           zoomTarget = { x: base.x * scale, y: base.y * scale, z: base.z * scale };
-
           if (!zoomRafId) {
             zoomRafId = requestAnimationFrame(() => animateZoom(div));
           }
         }, { passive: false });
       } else {
-        // --- Subsequent renders: single batched restyle, never touch layout/camera ---
         Plotly.restyle(div,
           { x: [kGrid, marketX], y: [tGrid, marketY], z: [zGrid, marketZ], text: [null, marketText] },
           [0, 1]);
@@ -1328,48 +1088,11 @@
     }
 
     // --- Greeks Heatmap ---
-    function renderGreeks() {
+    function renderGreeks(data) {
       const div = panels.greeks ? panels.greeks.chartDiv : null;
-      if (!div || !wasmReady) return;
-      if (calibratedSlices.length === 0 || spotPrice <= 0) return;
+      if (!div || !data) return;
 
-      // Pick a subset of strikes and expiries
-      const expLabels = calibratedSlices.map(s => s.expiryLabel);
-      const allStrikes = new Set();
-      for (const sl of calibratedSlices) {
-        for (const pt of sl.points) allStrikes.add(pt.strike);
-      }
-      const strikes = [...allStrikes].sort((a, b) => a - b);
-      const maxS = 20;
-      const step = strikes.length > maxS ? Math.ceil(strikes.length / maxS) : 1;
-      const sampledStrikes = strikes.filter((_, i) => i % step === 0);
-
-      const greekIdx = { delta: 0, gamma: 1, vega: 2, theta: 3 }[activeGreek] ?? 0;
-
-      // Batch IV lookup for all (slice, strike) pairs
-      const { headers: gH, params: gP } = frameCache ? frameCache.packed : packSliceArrays(calibratedSlices);
-      const gKVals = [], gSliceIdx = [];
-      for (let si = 0; si < calibratedSlices.length; si++) {
-        const sl = calibratedSlices[si];
-        for (const strike of sampledStrikes) {
-          gKVals.push(Math.log(strike / sl.forward));
-          gSliceIdx.push(si);
-        }
-      }
-      const gIvs = wasm.batch_slice_iv(gH, gP, new Float64Array(gKVals), new Uint32Array(gSliceIdx));
-
-      const z = [];
-      let gIdx = 0;
-      for (const sl of calibratedSlices) {
-        const row = [];
-        for (const strike of sampledStrikes) {
-          const iv = gIvs[gIdx++];
-          if (!isFinite(iv) || iv <= 0 || sl.T <= 0) { row.push(0); continue; }
-          const greeks = wasm.bsm_greeks_wasm(spotPrice, strike, 0.05, 0.0, iv / 100, sl.T, true);
-          row.push(greeks[greekIdx]);
-        }
-        z.push(row);
-      }
+      const { z, sampledStrikes, expLabels } = data;
 
       const colorscales = {
         delta: [[0,'#0d2847'],[0.5,'#1a3a5c'],[1,'#2fb2ff']],
@@ -1395,9 +1118,9 @@
     }
 
     // --- Term Structure ---
-    function renderTerm() {
+    function renderTerm(r) {
       const div = panels.term ? panels.term.chartDiv : null;
-      if (!div) return;
+      if (!div || !r) return;
       if (calibratedSlices.length === 0) return;
 
       const expLabels = calibratedSlices.map(s => s.expiryLabel);
@@ -1410,40 +1133,20 @@
         marker: { color: '#2fb2ff', size: 5 },
       }];
 
-      // 25-delta RR and BF (from per-frame cache)
-      const d25 = frameCache ? frameCache.d25 : wasm.find_25d_strikes_batch(
-        ...Object.values(packSliceArrays(calibratedSlices)));
-      const atmIvFlat = frameCache ? frameCache.atmIv : wasm.iv_grid(
-        ...Object.values(packSliceArrays(calibratedSlices)), new Float64Array([0]));
-      const rr25 = [], bf25 = [];
-      for (let i = 0; i < calibratedSlices.length; i++) {
-        const ivCall = d25[i * 4 + 2];
-        const ivPut = d25[i * 4 + 3];
-        const atmIv = atmIvFlat[i];
-        if (isFinite(ivCall) && isFinite(ivPut)) {
-          rr25.push(ivCall - ivPut);
-          bf25.push(0.5 * (ivCall + ivPut) - atmIv);
-        } else {
-          rr25.push(NaN);
-          bf25.push(NaN);
-        }
-      }
-
       traces.push({
         type: 'scatter', mode: 'lines+markers', name: 'RR25',
-        x: expLabels, y: rr25, yaxis: 'y2',
+        x: expLabels, y: r.termRr25, yaxis: 'y2',
         line: { color: '#ff7a7a', width: 1.5, dash: 'dot' },
         marker: { size: 4 },
       });
       traces.push({
         type: 'scatter', mode: 'lines+markers', name: 'BF25',
-        x: expLabels, y: bf25, yaxis: 'y2',
+        x: expLabels, y: r.termBf25, yaxis: 'y2',
         line: { color: '#ffb347', width: 1.5, dash: 'dot' },
         marker: { size: 4 },
       });
 
-      // Realized vol horizontal line
-      const rvol = computeRealizedVol();
+      const rvol = r.realizedVol;
       if (isFinite(rvol) && rvol > 0) {
         traces.push({
           type: 'scatter', mode: 'lines', name: 'Realized',
@@ -1466,7 +1169,7 @@
     }
 
     // --- Metrics & Skew Table ---
-    function renderMetrics() {
+    function renderMetrics(r) {
       const p = panels.metrics;
       if (!p) return;
 
@@ -1476,18 +1179,15 @@
       if (p.mTps) p.mTps.textContent = ticksPerSec > 0 ? pFmt1.format(ticksPerSec) : '--';
       if (p.mCalib) p.mCalib.textContent = calibTimeUs > 0 ? calibTimeUs.toString() : '--';
 
-      const rvol = computeRealizedVol();
+      const rvol = r ? r.realizedVol : NaN;
       if (p.mRvol) p.mRvol.textContent = isFinite(rvol) ? pFmt1.format(rvol) + '%' : '--';
 
       const tbody = p.skewTbody;
-      if (!tbody) return;
+      if (!tbody || !r || !r.d25) return;
       tbody.innerHTML = '';
 
-      // Batch 25-delta (from per-frame cache)
-      const mD25 = frameCache ? frameCache.d25 : wasm.find_25d_strikes_batch(
-        ...Object.values(packSliceArrays(calibratedSlices)));
-      const mAtmIv = frameCache ? frameCache.atmIv : wasm.iv_grid(
-        ...Object.values(packSliceArrays(calibratedSlices)), new Float64Array([0]));
+      const mD25 = r.d25;
+      const mAtmIv = r.atmIv;
 
       for (let i = 0; i < calibratedSlices.length; i++) {
         const sl = calibratedSlices[i];
@@ -1516,160 +1216,15 @@
     let edgeThreshold = 1.0;
     let edgeSideFilter = 'all';
 
-    function renderScanner() {
-      if (!wasmReady || calibratedSlices.length === 0 || spotPrice <= 0) return;
-
+    // --- Scanner ---
+    function renderScanner(data) {
+      if (!data) return;
       const heatDiv = panels.scanner ? panels.scanner.heatmapDiv : null;
       const edgeTbody = panels.scanner ? panels.scanner.edgeTbody : null;
       if (!heatDiv || !edgeTbody) return;
 
-      // --- Phase 0: batch model-IV lookup via WASM ---
-      const { headers: scH, params: scP } = frameCache ? frameCache.packed : packSliceArrays(calibratedSlices);
-      // Build slice index map for fast lookup
-      const sliceIdxMap = new Map();
-      calibratedSlices.forEach((sl, i) => sliceIdxMap.set(sl.expiryCode, i));
+      const { heatZ, heatText, sampledStrikes, expLabels, maxEdge, edges } = data;
 
-      // Collect k-values and slice indices for all options
-      const preKVals = [], preSliceIdx = [], preItems = [];
-      for (const sl of calibratedSlices) {
-        for (const [name, q] of chain) {
-          if (q.expiryCode !== sl.expiryCode) continue;
-          if (!q.mark_iv || q.mark_iv <= 0 || q.strike <= 0) continue;
-          const k = Math.log(q.strike / sl.forward);
-          preKVals.push(k);
-          preSliceIdx.push(sliceIdxMap.get(sl.expiryCode));
-          preItems.push({ name, q, sl, k });
-        }
-      }
-
-      const scIvs = preKVals.length > 0
-        ? wasm.batch_slice_iv(scH, scP, new Float64Array(preKVals), new Uint32Array(preSliceIdx))
-        : [];
-
-      // --- Phase 1: collect all pricing requests into flat arrays ---
-      const pricingRequests = [];
-      const bSpots = [], bStrikes = [], bRates = [], bDivs = [], bVols = [], bMats = [], bCalls = [];
-
-      for (let pi = 0; pi < preItems.length; pi++) {
-        const { name, q, sl } = preItems[pi];
-        const modelIvPct = scIvs[pi];
-        if (!isFinite(modelIvPct) || modelIvPct <= 0) continue;
-
-        const marketIvPct = q.mark_iv * 100;
-        const ivEdge = modelIvPct - marketIvPct;
-        const modelSigma = modelIvPct / 100;
-        const marketMid = q.mark_price * spotPrice;
-        const callFlag = q.isCall ? 1 : 0;
-
-        // Theo price (always needed)
-        const theoIdx = bSpots.length;
-        bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
-        bDivs.push(0.0); bVols.push(modelSigma); bMats.push(sl.T); bCalls.push(callFlag);
-
-        // Bid price (conditional)
-        const bidIdx = q.bid_iv > 0 ? bSpots.length : -1;
-        if (bidIdx >= 0) {
-          bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
-          bDivs.push(0.0); bVols.push(q.bid_iv); bMats.push(sl.T); bCalls.push(callFlag);
-        }
-
-        // Ask price (conditional)
-        const askIdx = q.ask_iv > 0 ? bSpots.length : -1;
-        if (askIdx >= 0) {
-          bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
-          bDivs.push(0.0); bVols.push(q.ask_iv); bMats.push(sl.T); bCalls.push(callFlag);
-        }
-
-        pricingRequests.push({ name, expiryCode: sl.expiryCode, T: sl.T,
-          strike: q.strike, isCall: q.isCall, marketIvPct, modelIvPct, ivEdge,
-          marketMid, theoIdx, bidIdx, askIdx });
-      }
-
-      // --- Phase 2: single WASM batch call for all BS prices ---
-      const prices = bSpots.length > 0
-        ? wasm.bs_price_batch_wasm(
-            new Float64Array(bSpots), new Float64Array(bStrikes),
-            new Float64Array(bRates), new Float64Array(bDivs),
-            new Float64Array(bVols), new Float64Array(bMats),
-            new Uint8Array(bCalls))
-        : [];
-
-      // --- Phase 3: unpack into edge objects ---
-      const edges = [];
-      for (const req of pricingRequests) {
-        const theoPrice = prices[req.theoIdx];
-        const bidPrice = req.bidIdx >= 0 ? prices[req.bidIdx] : NaN;
-        const askPrice = req.askIdx >= 0 ? prices[req.askIdx] : NaN;
-        const dollarEdge = theoPrice - req.marketMid;
-
-        edges.push({
-          name: req.name,
-          expiryCode: req.expiryCode,
-          T: req.T,
-          strike: req.strike,
-          isCall: req.isCall,
-          marketIvPct: req.marketIvPct,
-          modelIvPct: req.modelIvPct,
-          ivEdge: req.ivEdge,
-          bidPrice,
-          askPrice,
-          marketMid: req.marketMid,
-          theoPrice,
-          dollarEdge,
-          absIvEdge: Math.abs(req.ivEdge),
-          buySignal: isFinite(askPrice) && theoPrice > askPrice,
-          sellSignal: isFinite(bidPrice) && theoPrice < bidPrice,
-        });
-      }
-
-      // --- Heatmap: IV edge by strike x expiry ---
-      const expLabels = calibratedSlices.map(s => s.expiryLabel);
-      const strikeSet = new Set();
-      for (const e of edges) strikeSet.add(e.strike);
-      const strikes = [...strikeSet].sort((a, b) => a - b);
-      const maxStrikes = 35;
-      const step = strikes.length > maxStrikes ? Math.ceil(strikes.length / maxStrikes) : 1;
-      const sampledStrikes = strikes.filter((_, i) => i % step === 0);
-
-      // Build lookup: "expiryCode|strike" -> best ivEdge (prefer call for dedup)
-      const edgeLookup = new Map();
-      for (const e of edges) {
-        const key = e.expiryCode + '|' + e.strike;
-        const existing = edgeLookup.get(key);
-        if (!existing || e.absIvEdge > Math.abs(existing.ivEdge)) {
-          edgeLookup.set(key, e);
-        }
-      }
-
-      const heatZ = [];
-      const heatText = [];
-      for (const sl of calibratedSlices) {
-        const row = [];
-        const textRow = [];
-        for (const strike of sampledStrikes) {
-          const e = edgeLookup.get(sl.expiryCode + '|' + strike);
-          if (e) {
-            row.push(e.ivEdge);
-            textRow.push(
-              `${e.isCall ? 'C' : 'P'} ${sl.expiryCode} $${pFmt.format(strike)}`
-              + `<br>Mkt IV: ${e.marketIvPct.toFixed(1)}%`
-              + `<br>Mdl IV: ${e.modelIvPct.toFixed(1)}%`
-              + `<br>Edge: ${e.ivEdge > 0 ? '+' : ''}${e.ivEdge.toFixed(2)} vol`
-              + `<br>Theo: $${pFmt.format(e.theoPrice)}`
-              + `<br>Mid: $${pFmt.format(e.marketMid)}`
-              + (e.buySignal ? '<br><b>BUY (theo > ask)</b>' : '')
-              + (e.sellSignal ? '<br><b>SELL (theo < bid)</b>' : '')
-            );
-          } else {
-            row.push(0);
-            textRow.push('');
-          }
-        }
-        heatZ.push(row);
-        heatText.push(textRow);
-      }
-
-      const maxEdge = Math.max(3, ...edges.map(e => e.absIvEdge));
       Plotly.react(heatDiv, [{
         type: 'heatmap',
         x: sampledStrikes.map(s => pFmt.format(s)),
@@ -1700,7 +1255,7 @@
         yaxis: { title: '', ...axisStyle },
       }, { responsive: true, displayModeBar: false });
 
-      // --- Table: top opportunities sorted by |edge| ---
+      // Table
       const filtered = edges
         .filter(e => e.absIvEdge >= edgeThreshold)
         .filter(e => {
@@ -1977,19 +1532,19 @@
     //  Bootstrap
     // =====================================================================
     (async () => {
-      await wasmPromise;
-      if (!wasmReady) return; // fatal: WASM failed to load
+      await workerReadyPromise;
+      console.log('[boot] worker ready');
       await seedFromRest();
       connectWs();
 
-      // Deferred GPU MC test — runs after page is live and data is flowing.
+      // Deferred GPU MC test — loads WASM on main thread just for WebGPU
       setTimeout(async () => {
-        if (!wasmReady || !navigator.gpu || typeof wasm.gpu_mc_price_european !== 'function') {
-          if (!navigator.gpu) console.log('[gpu-mc] WebGPU not available in this browser');
-          return;
-        }
+        if (!navigator.gpu) { console.log('[gpu-mc] WebGPU not available'); return; }
         try {
-          const mc = await wasm.gpu_mc_price_european(
+          const mod = await import('./pkg/openferric.js');
+          await mod.default();
+          if (typeof mod.gpu_mc_price_european !== 'function') return;
+          const mc = await mod.gpu_mc_price_european(
             100, 100, 0.05, 0.2, 1.0, 65536, 252, 42, true
           );
           console.log('[gpu-mc] price:', mc.price, 'stderr:', mc.stderr);
