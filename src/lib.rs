@@ -7,13 +7,10 @@ pub mod instruments;
 pub mod market;
 pub mod math;
 pub mod models;
-#[cfg(feature = "python")]
-pub mod python;
+pub mod bindings;
 pub mod rates;
 pub mod risk;
 pub mod vol;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 
 // Legacy modules kept for compatibility with existing consumers.
 pub mod greeks;

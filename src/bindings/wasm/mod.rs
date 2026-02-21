@@ -563,121 +563,16 @@ pub fn fit_sabr_wasm(
 }
 
 // ---------------------------------------------------------------------------
-// IV evaluation helpers (Rust replacement for JS sliceIvPct dispatcher)
+// IV slice operations — thin wrappers delegating to vol::slice
 // ---------------------------------------------------------------------------
 
-/// Model type constants for slice headers.
-const MODEL_SVI: u8 = 0;
-const MODEL_SABR: u8 = 1;
-const MODEL_VV: u8 = 2;
-
-/// Evaluate IV% for a single (model, params, k, T, forward) tuple.
-/// This is the Rust replacement for the JS `sliceIvPct` dispatcher.
-#[inline]
-fn eval_iv_pct(model_type: u8, params: &[f64], k: f64, t: f64, forward: f64) -> f64 {
-    match model_type {
-        MODEL_SVI => {
-            // params: [a, b, rho, m, sigma]
-            if params.len() < 5 || t <= 0.0 {
-                return f64::NAN;
-            }
-            let svi = SviParams {
-                a: params[0],
-                b: params[1],
-                rho: params[2],
-                m: params[3],
-                sigma: params[4],
-            };
-            let w = svi.total_variance(k);
-            (w.max(1e-12) / t).sqrt() * 100.0
-        }
-        MODEL_SABR => {
-            // params: [alpha, beta, rho, nu]
-            if params.len() < 4 || t <= 0.0 || forward <= 0.0 {
-                return f64::NAN;
-            }
-            let sabr = SabrParams {
-                alpha: params[0],
-                beta: params[1],
-                rho: params[2],
-                nu: params[3],
-            };
-            let strike = forward * k.exp();
-            sabr.implied_vol(forward, strike, t) * 100.0
-        }
-        MODEL_VV => {
-            // params: [atmVol, rr25, bf25]
-            if params.len() < 3 || t <= 0.0 {
-                return f64::NAN;
-            }
-            let atm_vol = params[0];
-            let rr25 = params[1];
-            let bf25 = params[2];
-            let scale = (atm_vol * t.sqrt()).max(1e-8);
-            let vanna_w = k / scale;
-            let volga_w = (k * k) / (scale * scale);
-            let vol = atm_vol + vanna_w * rr25 * 0.5 + volga_w * bf25;
-            vol.max(1e-8) * 100.0
-        }
-        _ => f64::NAN,
-    }
-}
-
-/// Parse a single slice from the header/params arrays.
-/// Header layout per slice: [model_type, T, forward, param_offset] (4 f64 each).
-/// Returns (model_type, param_slice, T, forward).
-#[inline]
-fn parse_slice<'a>(
-    headers: &[f64],
-    params: &'a [f64],
-    idx: usize,
-    n_slices: usize,
-) -> (u8, &'a [f64], f64, f64) {
-    let base = idx * 4;
-    let model_type = headers[base] as u8;
-    let t = headers[base + 1];
-    let forward = headers[base + 2];
-    let param_offset = headers[base + 3] as usize;
-    let param_len = match model_type {
-        MODEL_SVI => 5,
-        MODEL_SABR => 4,
-        MODEL_VV => 3,
-        _ => 0,
-    };
-    // Determine end of this slice's params
-    let param_end = if idx + 1 < n_slices {
-        (headers[(idx + 1) * 4 + 3] as usize).min(params.len())
-    } else {
-        (param_offset + param_len).min(params.len())
-    };
-    let p = &params[param_offset..param_end];
-    (model_type, p, t, forward)
-}
-
 /// Compute a full IV grid: n_slices rows x n_k columns (row-major).
-///
-/// - `slice_headers`: 4 f64 per slice `[model_type, T, forward, param_offset]`
-/// - `slice_params`: concatenated model params
-/// - `k_grid`: shared k values evaluated for every slice
 #[wasm_bindgen]
 pub fn iv_grid(slice_headers: &[f64], slice_params: &[f64], k_grid: &[f64]) -> Vec<f64> {
-    let n_slices = slice_headers.len() / 4;
-    let n_k = k_grid.len();
-    let mut out = Vec::with_capacity(n_slices * n_k);
-
-    for i in 0..n_slices {
-        let (model_type, params, t, forward) = parse_slice(slice_headers, slice_params, i, n_slices);
-        for &k in k_grid {
-            out.push(eval_iv_pct(model_type, params, k, t, forward));
-        }
-    }
-    out
+    crate::vol::slice::iv_grid(slice_headers, slice_params, k_grid)
 }
 
 /// Batch IV evaluation for irregular (per-option) lookups.
-///
-/// - `k_values[i]` is evaluated against slice `slice_indices[i]`
-/// - Returns IV% array same length as `k_values`
 #[wasm_bindgen]
 pub fn batch_slice_iv(
     slice_headers: &[f64],
@@ -685,25 +580,10 @@ pub fn batch_slice_iv(
     k_values: &[f64],
     slice_indices: &[u32],
 ) -> Vec<f64> {
-    let n = k_values.len();
-    let n_slices = slice_headers.len() / 4;
-    let mut out = Vec::with_capacity(n);
-
-    for i in 0..n {
-        let idx = slice_indices[i] as usize;
-        if idx >= n_slices {
-            out.push(f64::NAN);
-            continue;
-        }
-        let (model_type, params, t, forward) = parse_slice(slice_headers, slice_params, idx, n_slices);
-        out.push(eval_iv_pct(model_type, params, k_values[i], t, forward));
-    }
-    out
+    crate::vol::slice::batch_slice_iv(slice_headers, slice_params, k_values, slice_indices)
 }
 
 /// Compute fit diagnostics for a single slice.
-///
-/// Returns `[rmse, skew, kurtProxy, fitted_iv_0, fitted_iv_1, ...]`
 #[wasm_bindgen]
 pub fn slice_fit_diagnostics(
     model_type: u8,
@@ -714,118 +594,45 @@ pub fn slice_fit_diagnostics(
     market_ivs_pct: &[f64],
     strikes: &[f64],
 ) -> Vec<f64> {
-    let n = market_ks.len().min(market_ivs_pct.len()).min(strikes.len());
-
-    // Compute fitted IVs and RMSE
-    let mut err_sq = 0.0;
-    let mut fitted_ivs = Vec::with_capacity(n);
-    for i in 0..n {
-        let fitted = eval_iv_pct(model_type, params, market_ks[i], t, forward);
-        let err = fitted - market_ivs_pct[i];
-        err_sq += err * err;
-        fitted_ivs.push(fitted);
-    }
-    let rmse = if n > 0 { (err_sq / n as f64).sqrt() } else { 0.0 };
-
-    // Skew / kurtosis proxy
-    let eps = 0.001;
-    let iv_at_0 = eval_iv_pct(model_type, params, 0.0, t, forward);
-    let iv_plus = eval_iv_pct(model_type, params, eps, t, forward);
-    let iv_minus = eval_iv_pct(model_type, params, -eps, t, forward);
-    let skew = if iv_plus.is_finite() && iv_minus.is_finite() {
-        (iv_plus - iv_minus) / (2.0 * eps)
-    } else {
-        0.0
-    };
-    let kurt_proxy = if iv_plus.is_finite() && iv_minus.is_finite() && iv_at_0.is_finite() {
-        (iv_plus - 2.0 * iv_at_0 + iv_minus) / (eps * eps)
-    } else {
-        0.0
-    };
-
-    // Pack result: [rmse, skew, kurtProxy, fitted_iv_0, fitted_iv_1, ...]
-    let mut out = Vec::with_capacity(3 + n);
-    out.push(rmse);
-    out.push(skew);
-    out.push(kurt_proxy);
-    out.extend_from_slice(&fitted_ivs);
-    out
+    crate::vol::slice::slice_fit_diagnostics(model_type, params, t, forward, market_ks, market_ivs_pct, strikes)
 }
 
 /// Find 25-delta strikes for all slices via Newton's method.
-///
-/// Returns flat `[kCall, kPut, ivCall_pct, ivPut_pct]` per slice (4 values each).
 #[wasm_bindgen]
 pub fn find_25d_strikes_batch(slice_headers: &[f64], slice_params: &[f64]) -> Vec<f64> {
-    let n_slices = slice_headers.len() / 4;
-    let mut out = Vec::with_capacity(n_slices * 4);
-
-    let d1_call: f64 = -0.6745;
-    let d1_put: f64 = 0.6745;
-
-    for i in 0..n_slices {
-        let (model_type, params, t, forward) = parse_slice(slice_headers, slice_params, i, n_slices);
-
-        if t <= 0.0 || forward <= 0.0 {
-            out.extend_from_slice(&[f64::NAN; 4]);
-            continue;
-        }
-
-        let sqrt_t = t.sqrt();
-        let k_call = solve_delta_k(model_type, params, t, forward, sqrt_t, d1_call);
-        let k_put = solve_delta_k(model_type, params, t, forward, sqrt_t, d1_put);
-
-        let iv_call = eval_iv_pct(model_type, params, k_call, t, forward);
-        let iv_put = eval_iv_pct(model_type, params, k_put, t, forward);
-
-        out.push(k_call);
-        out.push(k_put);
-        out.push(iv_call);
-        out.push(iv_put);
-    }
-    out
+    crate::vol::slice::find_25d_strikes_batch(slice_headers, slice_params)
 }
 
-/// Newton solver: find k where d1 = target_d1.
-#[inline]
-fn solve_delta_k(
-    model_type: u8,
-    params: &[f64],
-    t: f64,
-    forward: f64,
-    sqrt_t: f64,
-    target_d1: f64,
-) -> f64 {
-    let mut k = 0.0_f64;
-    let dk = 0.001_f64;
+/// Combined term structure computation: 25-delta strikes + ATM IV + RR25/BF25.
+#[wasm_bindgen]
+pub fn term_structure_batch_wasm(slice_headers: &[f64], slice_params: &[f64]) -> Vec<f64> {
+    crate::vol::slice::term_structure_batch(slice_headers, slice_params)
+}
 
-    for _ in 0..20 {
-        let iv_pct = eval_iv_pct(model_type, params, k, t, forward);
-        if !iv_pct.is_finite() || iv_pct <= 0.0 {
-            return f64::NAN;
-        }
-        let sigma = iv_pct / 100.0;
-        let d1 = (-k + 0.5 * sigma * sigma * t) / (sigma * sqrt_t);
-        let err = d1 - target_d1;
+/// Forward vol grid: spot vol, forward vol, and forward skew for adjacent slice pairs.
+#[wasm_bindgen]
+pub fn forward_vol_grid_wasm(
+    slice_headers: &[f64],
+    slice_params: &[f64],
+    k_points: &[f64],
+) -> Vec<f64> {
+    crate::vol::slice::forward_vol_grid(slice_headers, slice_params, k_points)
+}
 
-        if err.abs() < 1e-6 {
-            break;
-        }
+// ---------------------------------------------------------------------------
+// Strategy payoff — thin wrapper delegating to pricing::payoff
+// ---------------------------------------------------------------------------
 
-        let iv_pct_p = eval_iv_pct(model_type, params, k + dk, t, forward);
-        if !iv_pct_p.is_finite() || iv_pct_p <= 0.0 {
-            return f64::NAN;
-        }
-        let sigma_p = iv_pct_p / 100.0;
-        let d1_p = (-(k + dk) + 0.5 * sigma_p * sigma_p * t) / (sigma_p * sqrt_t);
-        let deriv = (d1_p - d1) / dk;
-
-        if deriv.abs() < 1e-12 {
-            break;
-        }
-        k -= err / deriv;
-    }
-    k
+/// Strategy intrinsic PnL at expiry for a set of option legs across a spot axis.
+#[wasm_bindgen]
+pub fn strategy_intrinsic_pnl_wasm(
+    spot_axis: &[f64],
+    strikes: &[f64],
+    quantities: &[f64],
+    is_calls: &[u8],
+    total_cost: f64,
+) -> Vec<f64> {
+    crate::pricing::payoff::strategy_intrinsic_pnl(spot_axis, strikes, quantities, is_calls, total_cost)
 }
 
 /// Annualized realized volatility from log returns, returned as percentage.
