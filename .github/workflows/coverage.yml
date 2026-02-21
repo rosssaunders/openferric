@@ -30,4 +30,5 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: codecov.json
+          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
