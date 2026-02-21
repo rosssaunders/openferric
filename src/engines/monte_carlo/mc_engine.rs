@@ -988,8 +988,15 @@ mod tests {
             .price(&option, &market)
             .expect("second run succeeds");
 
-        assert_eq!(first.price, second.price);
-        assert_eq!(first.stderr, second.stderr);
+        // With parallel feature, rayon's work-stealing causes non-deterministic FP
+        // summation order, so results may differ by a few ULPs between runs.
+        assert!((first.price - second.price).abs() < 1e-12,
+            "price mismatch: {} vs {}", first.price, second.price);
+        match (first.stderr, second.stderr) {
+            (Some(a), Some(b)) => assert!((a - b).abs() < 1e-12, "stderr mismatch: {a} vs {b}"),
+            (None, None) => {}
+            _ => panic!("stderr presence mismatch"),
+        }
     }
 
     #[test]
