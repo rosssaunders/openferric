@@ -158,11 +158,11 @@ unsafe fn simulate_chunk_exact_avx2(
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
-    let spot_v = splat_f64x4(spot0);
-    let drift_v = splat_f64x4(total_drift);
-    let diff_v = splat_f64x4(total_diffusion);
-    let strike_v = splat_f64x4(strike);
-    let zero_v = _mm256_setzero_pd();
+    let spot_v = unsafe { splat_f64x4(spot0) };
+    let drift_v = unsafe { splat_f64x4(total_drift) };
+    let diff_v = unsafe { splat_f64x4(total_diffusion) };
+    let strike_v = unsafe { splat_f64x4(strike) };
+    let zero_v = unsafe { _mm256_setzero_pd() };
 
     // Block size for batch normal generation (fits in L1 cache).
     const BLOCK: usize = 512;
@@ -172,25 +172,27 @@ unsafe fn simulate_chunk_exact_avx2(
 
     // Process full blocks of BLOCK paths.
     while remaining >= BLOCK {
-        crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals);
+        unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals) };
 
         let mut j = 0usize;
         while j + 4 <= BLOCK {
-            let z_vec = _mm256_loadu_pd(normals.as_ptr().add(j));
-            let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
-            let growth = fast_exp_f64x4(exponent);
-            let s_terminal = _mm256_mul_pd(spot_v, growth);
+            unsafe {
+                let z_vec = _mm256_loadu_pd(normals.as_ptr().add(j));
+                let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
+                let growth = fast_exp_f64x4(exponent);
+                let s_terminal = _mm256_mul_pd(spot_v, growth);
 
-            let payoff_v = match option_type {
-                OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
-                OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
-            };
+                let payoff_v = match option_type {
+                    OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
+                    OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+                };
 
-            // Extract and accumulate (horizontal reduction every 4 payoffs).
-            let mut pay = [0.0_f64; 4];
-            _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
-            sum += pay[0] + pay[1] + pay[2] + pay[3];
-            sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+                // Extract and accumulate (horizontal reduction every 4 payoffs).
+                let mut pay = [0.0_f64; 4];
+                _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
+                sum += pay[0] + pay[1] + pay[2] + pay[3];
+                sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+            }
             j += 4;
         }
         remaining -= BLOCK;
@@ -199,24 +201,26 @@ unsafe fn simulate_chunk_exact_avx2(
     // Handle remaining paths with smaller batch.
     if remaining >= 4 {
         let batch = remaining & !3;
-        crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals[..batch]);
+        unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals[..batch]) };
 
         let mut j = 0usize;
         while j + 4 <= batch {
-            let z_vec = _mm256_loadu_pd(normals.as_ptr().add(j));
-            let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
-            let growth = fast_exp_f64x4(exponent);
-            let s_terminal = _mm256_mul_pd(spot_v, growth);
+            unsafe {
+                let z_vec = _mm256_loadu_pd(normals.as_ptr().add(j));
+                let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
+                let growth = fast_exp_f64x4(exponent);
+                let s_terminal = _mm256_mul_pd(spot_v, growth);
 
-            let payoff_v = match option_type {
-                OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
-                OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
-            };
+                let payoff_v = match option_type {
+                    OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
+                    OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+                };
 
-            let mut pay = [0.0_f64; 4];
-            _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
-            sum += pay[0] + pay[1] + pay[2] + pay[3];
-            sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+                let mut pay = [0.0_f64; 4];
+                _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
+                sum += pay[0] + pay[1] + pay[2] + pay[3];
+                sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+            }
             j += 4;
         }
         remaining -= batch;
