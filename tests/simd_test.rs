@@ -216,16 +216,14 @@ mod simd_tests {
         let simd = unsafe { simd_ln_batch(&xs) };
         for (x, y) in xs.iter().zip(simd.iter()) {
             let expected = x.ln();
-            // Use relative error: coverage instrumentation can disable FMA
-            // folding, inflating ULP counts, but relative accuracy stays good.
-            let rel_err = if expected.abs() > 0.0 {
-                ((*y - expected) / expected).abs()
-            } else {
-                (*y - expected).abs()
-            };
+            // Use absolute error: near x=1, ln(x)≈0 so relative error is
+            // meaningless. The SIMD polynomial maintains ~1e-13 absolute
+            // accuracy across the full range, but coverage instrumentation
+            // (no FMA) can degrade to ~1e-10.
+            let abs_err = (*y - expected).abs();
             assert!(
-                rel_err <= 1e-9,
-                "x={x} simd={y} expected={expected} rel_err={rel_err}"
+                abs_err <= 1e-9,
+                "x={x} simd={y} expected={expected} abs_err={abs_err}"
             );
         }
     }
