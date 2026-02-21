@@ -24,7 +24,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --workspace --features parallel --codecov --output-path codecov.json --ignore-filename-regex '/(tests|benches|examples|src/bin)/'
+        run: cargo llvm-cov --workspace --features parallel,simd --codecov --output-path codecov.json --ignore-filename-regex '/(tests|benches|examples|src/bin)/'
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
