@@ -1,4 +1,5 @@
 pub mod american;
+pub mod payoff;
 pub mod asian;
 pub mod autocallable;
 pub mod barrier;

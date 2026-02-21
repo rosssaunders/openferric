@@ -52,9 +52,6 @@ let fair = cds.fair_spread(&discount_curve, &survival_curve);
 ## Deribit Vol Surface Tools
 
 ```bash
-# One-shot snapshot (writes vol_surface.html)
-cargo run --features deribit --bin deribit_vol_surface --release
-
 # Rich dashboard (same UI as GitHub Pages)
 wasm-pack build --target web --features wasm
 cp -r pkg www/pkg

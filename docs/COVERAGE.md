@@ -171,6 +171,4 @@ Detailed module-by-module coverage of OpenFerric's pricing and analytics library
 
 ## Live Market Tools
 
-| Tool | Binary | Description |
-|---|---|---|
-| Deribit vol surface snapshot | `deribit_vol_surface` | REST fetch → SVI calibration → 3D Plotly HTML |
+The WASM-based web dashboard provides live Deribit vol surface visualization.

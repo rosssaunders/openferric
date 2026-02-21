@@ -97,7 +97,7 @@ Instruments ─→ Engines ─→ Market ─→ PricingResult
 |---|---|
 | `python` | PyO3 bindings for Python integration |
 | `parallel` | Rayon-parallelized Monte Carlo |
-| `deribit` | Deribit snapshot binary (`deribit_vol_surface`) using reqwest + tokio |
+| `deribit` | Deribit live market data tools using reqwest + tokio |
 
 ## Testing
 

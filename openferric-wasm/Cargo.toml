@@ -1,0 +1,21 @@
+[package]
+name = "openferric-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+gpu = ["openferric/gpu"]
+
+[dependencies]
+openferric = { path = ".." }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

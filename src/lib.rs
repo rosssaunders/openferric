@@ -7,7 +7,6 @@ pub mod instruments;
 pub mod market;
 pub mod math;
 pub mod models;
-pub mod bindings;
 pub mod rates;
 pub mod risk;
 pub mod vol;

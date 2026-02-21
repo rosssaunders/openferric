@@ -16,11 +16,13 @@ cargo bench                                # Criterion benchmarks (pricing, SIMD
 cargo bench --bench pricing_bench          # single benchmark suite
 ```
 
-**Feature flags:** `parallel` (rayon MC), `simd` (AVX2/NEON), `python` (PyO3 bindings), `wasm` (wasm-bindgen), `gpu` (wgpu WebGPU), `deribit` (live market tools)
+**Feature flags (core):** `parallel` (rayon MC), `simd` (AVX2/NEON), `gpu` (wgpu WebGPU)
 
-**WASM build:** `wasm-pack build --target web --features wasm`
+**WASM build:** `wasm-pack build openferric-wasm --target web --out-dir ../www/pkg`
 
-**Python wheel:** `pip install .` (requires `python` feature)
+**Python wheel:** `cd openferric-python && pip install .`
+
+**Workspace test:** `cargo test --workspace`
 
 ### Coverage
 
@@ -73,9 +75,14 @@ core::PricingResult          →  price + stderr + Greeks + Diagnostics
 | `credit/` | CDS, survival curves, CDO tranches, Gaussian copula, ISDA conventions |
 | `risk/` | VaR/ES, XVA (CVA/DVA/FVA/MVA/KVA), SA-CCR, portfolio aggregation |
 | `math/` | Fast normal CDF/PDF, SIMD math, Sobol QMC, fast RNG (Xoshiro256++, PCG64), bump allocator |
-| `python/` | PyO3 bindings (feature-gated), 55+ exported functions |
-| `wasm/` | wasm-bindgen bindings (feature-gated), 40+ exported functions |
 | `greeks/`, `mc/`, `pricing/` | Legacy modules kept for backward compatibility |
+
+**Workspace crates:**
+
+| Crate | Purpose |
+|---|---|
+| `openferric-wasm/` | wasm-bindgen bindings + Deribit-specific `calibrate_slice` |
+| `openferric-python/` | PyO3 bindings (55+ exported functions) |
 
 ### Key Patterns
 
@@ -97,7 +104,7 @@ Most unit tests are colocated in `#[cfg(test)] mod tests` within each source fil
 
 ## Conventions
 
-- Rust 2024 edition. Crate types: `rlib` + `cdylib`.
+- Rust 2024 edition. Core crate type: `rlib`. Binding crates produce `cdylib`.
 - Release profile: LTO fat, 1 codegen-unit, opt-level 3, panic=abort, stripped symbols.
 - Time is in year fractions (f64). Rates are continuously compounded.
 - `#[inline]` and `#[inline(always)]` are used extensively on hot-path math functions.

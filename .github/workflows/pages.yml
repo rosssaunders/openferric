@@ -29,10 +29,7 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
-        run: wasm-pack build --target web --features wasm
-
-      - name: Copy WASM output to www/pkg
-        run: cp -r pkg www/pkg
+        run: wasm-pack build openferric-wasm --target web --out-dir ../www/pkg
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

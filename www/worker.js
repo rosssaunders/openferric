@@ -1,7 +1,7 @@
 // Web Worker — owns WASM instance, runs all calibration + compute off main thread.
 // Communicates with main thread via postMessage.
 
-import init, * as wasm from './pkg/openferric.js';
+import init, * as wasm from './pkg/openferric_wasm.js';
 
 // ---------------------------------------------------------------------------
 //  WASM initialization
@@ -81,7 +81,72 @@ function packSliceArrays(slices) {
 const pFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 
 // ---------------------------------------------------------------------------
-//  Calibration — runs the full per-expiry model calibration
+//  Unpack calibrate_slice_wasm result into JS slice object
+// ---------------------------------------------------------------------------
+const MODEL_PARAM_COUNT = { 0: 5, 1: 4, 2: 3 }; // SVI:5, SABR:4, VV:3
+const MODEL_NAMES = { 0: 'svi', 1: 'sabr', 2: 'vv' };
+
+function unpackSliceResult(packed, expiryCode) {
+  if (!packed || packed.length < 1 || packed[0] === 0) return null;
+
+  const nPts = packed[0];
+  const mt = packed[1];
+  const T = packed[2];
+  const forward = packed[3];
+  const nParams = MODEL_PARAM_COUNT[mt] || 0;
+  const modelType = MODEL_NAMES[mt] || 'svi';
+
+  // Extract params
+  let params;
+  const p = packed.slice(4, 4 + nParams);
+  if (mt === MODEL_SVI) {
+    params = { a: p[0], b: p[1], rho: p[2], m: p[3], sigma: p[4] };
+  } else if (mt === MODEL_SABR) {
+    params = { alpha: p[0], beta: p[1], rho: p[2], nu: p[3] };
+  } else {
+    params = { atmVol: p[0], rr25: p[1], bf25: p[2] };
+  }
+
+  // Diagnostics
+  const diagOff = 4 + nParams;
+  const rmse = packed[diagOff];
+  const atmVol = packed[diagOff + 1];
+  const skew = packed[diagOff + 2];
+  const kurtProxy = packed[diagOff + 3];
+
+  // Per-point data: 6 values each (strike, market_iv_pct, fitted_iv_pct, bid_iv_pct, ask_iv_pct, k)
+  const dataOff = diagOff + 4;
+  const points = [];
+  for (let i = 0; i < nPts; i++) {
+    const base = dataOff + i * 6;
+    points.push({
+      strike: packed[base],
+      market_iv: packed[base + 1],
+      fitted_iv: packed[base + 2],
+      bid_iv: packed[base + 3],
+      ask_iv: packed[base + 4],
+      k: packed[base + 5],
+    });
+  }
+
+  return {
+    expiryCode,
+    expiryLabel: expiryCode,
+    T,
+    params,
+    modelType,
+    rmse,
+    n: nPts,
+    atmVol,
+    points,
+    forward,
+    skew,
+    kurtProxy,
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  Calibration — all math in WASM via calibrate_slice_wasm
 // ---------------------------------------------------------------------------
 function runCalibration(chainEntries, spotPrice, model) {
   const now = Date.now();
@@ -99,132 +164,32 @@ function runCalibration(chainEntries, spotPrice, model) {
     grouped.get(key).push(q);
   }
 
+  const mtCode = modelTypeCode(model);
   const slices = [];
   for (const [expiryCode, quotes] of grouped) {
     if (quotes.length < 5) continue;
 
     const expiryDate = parseDeribitExpiry(expiryCode);
     if (!expiryDate) continue;
+    // Year fraction (epoch arithmetic — not quant math)
     const T = (expiryDate.getTime() / 1000 - nowSec) / (365.25 * 24 * 3600);
     if (T <= 0) continue;
 
+    // Forward: simple average of underlying_price (aggregation, not formula)
     const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
     if (!isFinite(forward) || forward <= 0) continue;
 
-    const qByKRaw = [];
-    for (const q of quotes) {
-      const k = Math.log(q.strike / forward);
-      qByKRaw.push({ k, q });
-    }
+    // Pack raw arrays (no math — pure data marshalling)
+    const strikes = new Float64Array(quotes.map(q => q.strike));
+    const markIvs = new Float64Array(quotes.map(q => q.mark_iv));
+    const bidIvs = new Float64Array(quotes.map(q => q.bid_iv || 0));
+    const askIvs = new Float64Array(quotes.map(q => q.ask_iv || 0));
+    const ois = new Float64Array(quotes.map(q => q.open_interest || 0));
 
-    const qByK = qByKRaw.filter(({ k, q }) => {
-      if (!q.mark_iv || q.mark_iv <= 0) return false;
-      if (q.bid_iv !== undefined && q.bid_iv <= 0 && q.open_interest <= 0) return false;
-      if (q.bid_iv > 0 && q.ask_iv > 0) {
-        const spread = q.ask_iv - q.bid_iv;
-        const mid = (q.ask_iv + q.bid_iv) / 2;
-        if (mid > 0 && spread / mid > 0.5) return false;
-      }
-      if (T < 7/365 && Math.abs(k) > 0.15) return false;
-      if (T < 30/365 && Math.abs(k) > 0.5) return false;
-      return true;
-    });
-
-    if (qByK.length < 3) {
-      qByK.length = 0;
-      for (const item of qByKRaw) {
-        if (item.q.mark_iv > 0) qByK.push(item);
-      }
-    }
-
-    // ATM vol
-    let atmVol = 0;
-    let minAbsK = Infinity;
-    for (const { k, q } of qByK) {
-      if (Math.abs(k) < minAbsK) {
-        minAbsK = Math.abs(k);
-        atmVol = q.mark_iv;
-      }
-    }
-
-    // Model-specific calibration
-    let params, modelType;
-
-    if (model === 'sabr') {
-      modelType = 'sabr';
-      const strikes = qByK.map(({ q }) => q.strike);
-      const vols = qByK.map(({ q }) => q.mark_iv);
-      const strikesArr = new Float64Array(strikes);
-      const volsArr = new Float64Array(vols);
-      const wp = wasm.fit_sabr_wasm(forward, strikesArr, volsArr, T, 0.5);
-      params = { alpha: wp.alpha, beta: wp.beta, rho: wp.rho, nu: wp.nu };
-    } else if (model === 'vv') {
-      modelType = 'vv';
-      const sorted = [...qByK].sort((a, b) => a.k - b.k);
-      const n = sorted.length;
-      const putIdx = Math.max(0, Math.round(n * 0.15));
-      const callIdx = Math.min(n - 1, Math.round(n * 0.85));
-      const putVol = sorted[putIdx].q.mark_iv;
-      const callVol = sorted[callIdx].q.mark_iv;
-      const rr25 = callVol - putVol;
-      const bf25 = 0.5 * (callVol + putVol) - atmVol;
-      params = { atmVol, rr25, bf25 };
-    } else {
-      modelType = 'svi';
-      const points = [];
-      const maxOi = Math.max(1, ...qByK.map(({ q }) => q.open_interest || 0));
-      for (const { k, q } of qByK) {
-        const iv2 = q.mark_iv * q.mark_iv;
-        const oi = q.open_interest || 0;
-        const reps = 1 + Math.floor((oi / maxOi) * 4);
-        for (let r = 0; r < reps; r++) {
-          points.push(k, iv2);
-        }
-      }
-      const atmIv2 = Math.max(atmVol * atmVol, 1e-4);
-      const flat = new Float64Array(points);
-      const wp = wasm.calibrate_svi_wasm(flat, atmIv2*0.5, atmIv2*1.5, -0.1, 0.0, 0.15, 3000, 0.002);
-      params = { a: wp.a * T, b: wp.b * T, rho: wp.rho, m: wp.m, sigma: wp.sigma };
-    }
-
-    // Fit diagnostics
-    const diagKs = new Float64Array(qByK.map(({ k }) => k));
-    const diagIvs = new Float64Array(qByK.map(({ q }) => q.mark_iv * 100));
-    const diagStrikes = new Float64Array(qByK.map(({ q }) => q.strike));
-    const diagParams = new Float64Array(modelParamArray({ modelType, params }));
-    const diag = wasm.slice_fit_diagnostics(
-      modelTypeCode(modelType), diagParams, T, forward, diagKs, diagIvs, diagStrikes
-    );
-    const rmse = diag[0];
-    const skew = diag[1];
-    const kurtProxy = diag[2];
-    const slicePoints = [];
-    for (let j = 0; j < qByK.length; j++) {
-      const { q } = qByK[j];
-      slicePoints.push({
-        strike: q.strike,
-        market_iv: q.mark_iv * 100,
-        fitted_iv: diag[3 + j],
-        bid_iv: (q.bid_iv || 0) * 100,
-        ask_iv: (q.ask_iv || 0) * 100,
-      });
-    }
-    slicePoints.sort((a, b) => a.strike - b.strike);
-
-    slices.push({
-      expiryCode,
-      expiryLabel: expiryCode,
-      T,
-      params,
-      modelType,
-      rmse,
-      n: qByK.length,
-      atmVol: atmVol * 100,
-      points: slicePoints,
-      forward,
-      skew,
-      kurtProxy,
-    });
+    // Single WASM call — all filtering, log-moneyness, calibration, diagnostics in Rust
+    const packed = wasm.calibrate_slice_wasm(strikes, markIvs, bidIvs, askIvs, ois, forward, T, mtCode);
+    const slice = unpackSliceResult(packed, expiryCode);
+    if (slice) slices.push(slice);
   }
 
   slices.sort((a, b) => a.T - b.T);
@@ -237,9 +202,23 @@ function runCalibration(chainEntries, spotPrice, model) {
 function computeFrameCache(slices) {
   if (slices.length === 0) return null;
   const packed = packSliceArrays(slices);
-  const d25 = wasm.find_25d_strikes_batch(packed.headers, packed.params);
-  const atmIv = wasm.iv_grid(packed.headers, packed.params, new Float64Array([0]));
-  return { packed, d25, atmIv };
+  // Single WASM call: 25-delta strikes + ATM IV + RR25/BF25
+  const termFlat = wasm.term_structure_batch_wasm(packed.headers, packed.params);
+  // Unpack: 7 values per slice [kCall, kPut, ivCall%, ivPut%, atmIv%, rr25, bf25]
+  const d25 = new Float64Array(slices.length * 4);
+  const atmIv = new Float64Array(slices.length);
+  const termRr25 = [], termBf25 = [];
+  for (let i = 0; i < slices.length; i++) {
+    const off = i * 7;
+    d25[i * 4]     = termFlat[off];
+    d25[i * 4 + 1] = termFlat[off + 1];
+    d25[i * 4 + 2] = termFlat[off + 2];
+    d25[i * 4 + 3] = termFlat[off + 3];
+    atmIv[i]       = termFlat[off + 4];
+    termRr25.push(termFlat[off + 5]);
+    termBf25.push(termFlat[off + 6]);
+  }
+  return { packed, d25, atmIv, termRr25, termBf25 };
 }
 
 function computeSurfaceData(slices, packed) {
@@ -249,7 +228,7 @@ function computeSurfaceData(slices, packed) {
   for (const sl of slices) {
     for (const pt of sl.points) {
       if (pt.strike <= 0 || sl.forward <= 0) continue;
-      marketX.push(Math.log(pt.strike / sl.forward));
+      marketX.push(pt.k); // pre-computed in WASM (calibrate_slice_wasm)
       marketY.push(sl.T);
       marketZ.push(pt.market_iv);
       marketText.push(
@@ -292,15 +271,18 @@ function computeGreeksData(slices, packed, spotPrice) {
 
   const greekIdx = { delta: 0, gamma: 1, vega: 2, theta: 3 }[activeGreek] ?? 0;
 
-  // Batch IV lookup
-  const gKVals = [], gSliceIdx = [];
+  // Batch IV lookup — compute log-moneyness in WASM
+  const gStrikesRaw = [], gForwardsRaw = [], gSliceIdx = [];
   for (let si = 0; si < slices.length; si++) {
     const sl = slices[si];
     for (const strike of sampledStrikes) {
-      gKVals.push(Math.log(strike / sl.forward));
+      gStrikesRaw.push(strike);
+      gForwardsRaw.push(sl.forward);
       gSliceIdx.push(si);
     }
   }
+  const gKVals = Array.from(wasm.log_moneyness_batch_wasm(
+    new Float64Array(gStrikesRaw), new Float64Array(gForwardsRaw)));
   const gIvs = wasm.batch_slice_iv(packed.headers, packed.params,
     new Float64Array(gKVals), new Uint32Array(gSliceIdx));
 
@@ -364,18 +346,24 @@ function computeScannerData(slices, packed, chain, spotPrice) {
   const sliceIdxMap = new Map();
   slices.forEach((sl, i) => sliceIdxMap.set(sl.expiryCode, i));
 
-  // Collect k-values and slice indices for all options
-  const preKVals = [], preSliceIdx = [], preItems = [];
+  // Collect strikes/forwards and slice indices for all options — compute k in WASM
+  const scStrikesRaw = [], scForwardsRaw = [], preSliceIdx = [], preItems = [];
   for (const sl of slices) {
     for (const [name, q] of chain) {
       if (q.expiryCode !== sl.expiryCode) continue;
       if (!q.mark_iv || q.mark_iv <= 0 || q.strike <= 0) continue;
-      const k = Math.log(q.strike / sl.forward);
-      preKVals.push(k);
+      scStrikesRaw.push(q.strike);
+      scForwardsRaw.push(sl.forward);
       preSliceIdx.push(sliceIdxMap.get(sl.expiryCode));
-      preItems.push({ name, q, sl, k });
+      preItems.push({ name, q, sl });
     }
   }
+
+  // Batch log-moneyness in WASM
+  const preKVals = scStrikesRaw.length > 0
+    ? Array.from(wasm.log_moneyness_batch_wasm(
+        new Float64Array(scStrikesRaw), new Float64Array(scForwardsRaw)))
+    : [];
 
   const scIvs = preKVals.length > 0
     ? wasm.batch_slice_iv(packed.headers, packed.params,
@@ -507,27 +495,34 @@ function computeScannerData(slices, packed, chain, spotPrice) {
   return { heatZ, heatText, sampledStrikes, expLabels, maxEdge, edges, sliceTValues };
 }
 
-function computeRealizedVol(spotLogReturns) {
-  if (spotLogReturns.length < 2) return NaN;
+function computeRealizedVol(spotHistory) {
+  if (!spotHistory || spotHistory.length < 3) return NaN;
+  // Compute log returns in WASM, then realized vol in WASM
+  const logReturns = wasm.log_returns_batch_wasm(new Float64Array(spotHistory));
+  if (logReturns.length < 2) return NaN;
   const obsPerYear = 1 * 86400 * 365.25;
-  return wasm.realized_vol(new Float64Array(spotLogReturns), obsPerYear);
+  return wasm.realized_vol(logReturns, obsPerYear);
 }
 
-function computeTermData(d25, atmIvFlat, slices) {
-  const rr25 = [], bf25 = [];
-  for (let i = 0; i < slices.length; i++) {
-    const ivCall = d25[i * 4 + 2];
-    const ivPut = d25[i * 4 + 3];
-    const atmIv = atmIvFlat[i];
-    if (isFinite(ivCall) && isFinite(ivPut)) {
-      rr25.push(ivCall - ivPut);
-      bf25.push(0.5 * (ivCall + ivPut) - atmIv);
-    } else {
-      rr25.push(NaN);
-      bf25.push(NaN);
-    }
+function computeForwardVolData(slices, packed) {
+  if (slices.length < 2) return null;
+  const kPoints = [-0.2, -0.1, -0.05, 0, 0.05, 0.1, 0.2];
+  const fvFlat = wasm.forward_vol_grid_wasm(packed.headers, packed.params, new Float64Array(kPoints));
+  const nK = kPoints.length;
+  const stride = 2 + nK;
+  const labels = [], spotVols = [], fwdVols = [], skewTraces = [];
+  for (let i = 0; i < slices.length - 1; i++) {
+    const off = i * stride;
+    const spotV = fvFlat[off], fwdV = fvFlat[off + 1];
+    if (!isFinite(spotV)) continue;
+    labels.push(slices[i].expiryLabel + '\u2192' + slices[i + 1].expiryLabel);
+    spotVols.push(spotV);
+    fwdVols.push(fwdV);
+    const fwdSkew = [];
+    for (let ki = 0; ki < nK; ki++) fwdSkew.push(fvFlat[off + 2 + ki]);
+    skewTraces.push({ label: labels[labels.length - 1], kPoints, fwdSkew });
   }
-  return { termRr25: rr25, termBf25: bf25 };
+  return { labels, spotVols, fwdVols, skewTraces, kPoints };
 }
 
 // ---------------------------------------------------------------------------
@@ -545,10 +540,72 @@ self.onmessage = function(e) {
     return;
   }
 
+  if (type === 'strategy-compute') {
+    if (!wasmReady) return;
+    const { legs, spotPrice, spotShock, volShock, timeShock } = payload;
+    if (!legs || legs.length === 0 || spotPrice <= 0) return;
+    const nSpots = 100;
+    const spotLow = spotPrice * 0.7, spotHigh = spotPrice * 1.3;
+    const spotAxis = [];
+    for (let i = 0; i < nSpots; i++) spotAxis.push(spotLow + (spotHigh - spotLow) * i / (nSpots - 1));
+    const eSp = [], eK = [], eR = [], eD = [], eV = [], eT = [], eC = [];
+    for (const leg of legs) {
+      eSp.push(spotPrice); eK.push(leg.strike); eR.push(0.05); eD.push(0.0);
+      eV.push(leg.iv); eT.push(leg.T); eC.push(leg.isCall ? 1 : 0);
+    }
+    const entryPrices = wasm.bs_price_batch_wasm(
+      new Float64Array(eSp), new Float64Array(eK), new Float64Array(eR),
+      new Float64Array(eD), new Float64Array(eV), new Float64Array(eT), new Uint8Array(eC));
+    let totalCost = 0;
+    for (let i = 0; i < legs.length; i++) totalCost += legs[i].quantity * entryPrices[i];
+    const pnlAtExpiry = Array.from(wasm.strategy_intrinsic_pnl_wasm(
+      new Float64Array(spotAxis),
+      new Float64Array(legs.map(l => l.strike)),
+      new Float64Array(legs.map(l => l.quantity)),
+      new Uint8Array(legs.map(l => l.isCall ? 1 : 0)),
+      totalCost));
+    let pnlBeforeExpiry = null;
+    if (spotShock !== 0 || volShock !== 0 || timeShock !== 0) {
+      const bSp = [], bK = [], bR = [], bD = [], bV = [], bT = [], bC = [];
+      for (const s of spotAxis) {
+        for (const leg of legs) {
+          bSp.push(s); bK.push(leg.strike); bR.push(0.05); bD.push(0.0);
+          bV.push(Math.max(0.01, leg.iv + volShock)); bT.push(Math.max(1/365, leg.T + timeShock));
+          bC.push(leg.isCall ? 1 : 0);
+        }
+      }
+      const bp = wasm.bs_price_batch_wasm(
+        new Float64Array(bSp), new Float64Array(bK), new Float64Array(bR),
+        new Float64Array(bD), new Float64Array(bV), new Float64Array(bT), new Uint8Array(bC));
+      pnlBeforeExpiry = spotAxis.map((_, si) => {
+        let pnl = 0;
+        for (let li = 0; li < legs.length; li++) pnl += legs[li].quantity * bp[si * legs.length + li];
+        return pnl - totalCost;
+      });
+    }
+    const gSp = [], gK = [], gR = [], gD = [], gV = [], gT = [], gC = [];
+    for (const leg of legs) {
+      gSp.push(spotPrice); gK.push(leg.strike); gR.push(0.05); gD.push(0.0);
+      gV.push(leg.iv); gT.push(leg.T); gC.push(leg.isCall ? 1 : 0);
+    }
+    const greeks = wasm.bsm_greeks_batch_wasm(
+      new Float64Array(gSp), new Float64Array(gK), new Float64Array(gR),
+      new Float64Array(gD), new Float64Array(gV), new Float64Array(gT), new Uint8Array(gC));
+    const netGreeks = [0, 0, 0, 0];
+    for (let i = 0; i < legs.length; i++) {
+      netGreeks[0] += legs[i].quantity * greeks[i * 7 + 0];
+      netGreeks[1] += legs[i].quantity * greeks[i * 7 + 1];
+      netGreeks[2] += legs[i].quantity * greeks[i * 7 + 2];
+      netGreeks[3] += legs[i].quantity * greeks[i * 7 + 3];
+    }
+    self.postMessage({ type: 'strategy-result', payload: { spotAxis, pnlAtExpiry, pnlBeforeExpiry, netGreeks, totalCost } });
+    return;
+  }
+
   if (type === 'market-update') {
     if (!wasmReady) return;
 
-    const { chainEntries, spotPrice, spotLogReturns, renderCycle } = payload;
+    const { chainEntries, spotPrice, spotHistory, renderCycle } = payload;
     const t0 = performance.now();
 
     // 1. Calibrate
@@ -571,27 +628,32 @@ self.onmessage = function(e) {
     const d25 = fc ? Array.from(fc.d25) : null;
     const atmIv = fc ? Array.from(fc.atmIv) : null;
 
-    // 3. Realized vol
-    const realizedVol = computeRealizedVol(spotLogReturns);
+    // 3. Realized vol (log returns computed in WASM from raw prices)
+    const realizedVol = computeRealizedVol(spotHistory);
 
-    // 4. Term data (cheap, always computed)
-    const { termRr25, termBf25 } = fc
-      ? computeTermData(fc.d25, fc.atmIv, slices)
-      : { termRr25: [], termBf25: [] };
+    // 4. Term data (computed in frame cache WASM call)
+    const termRr25 = fc ? fc.termRr25 : [];
+    const termBf25 = fc ? fc.termBf25 : [];
 
-    // 5. Tiered computation
+    // 5. Tiered computation (compute everything on first 5 cycles for fast initial load)
     let surface = null, greeks = null, scanner = null;
+    const warmup = renderCycle <= 5;
 
-    if (renderCycle % 5 === 0 && fc) {
+    if ((warmup || renderCycle % 5 === 0) && fc) {
       surface = computeSurfaceData(slices, fc.packed);
     }
 
-    if (renderCycle % 2 === 0 && fc) {
+    if ((warmup || renderCycle % 2 === 0) && fc) {
       greeks = computeGreeksData(slices, fc.packed, spotPrice);
     }
 
-    if (renderCycle % 3 === 0 && fc) {
+    if ((warmup || renderCycle % 3 === 0) && fc) {
       scanner = computeScannerData(slices, fc.packed, chain, spotPrice);
+    }
+
+    let forwardVol = null;
+    if ((warmup || renderCycle % 3 === 0) && fc) {
+      forwardVol = computeForwardVolData(slices, fc.packed);
     }
 
     // 6. Post result
@@ -606,6 +668,7 @@ self.onmessage = function(e) {
       surface,
       greeks,
       scanner,
+      forwardVol,
     }});
   }
 };

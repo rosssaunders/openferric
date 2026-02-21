@@ -496,9 +496,6 @@
     const spotHistory = [];
     const atmVolHistory = [];
 
-    // Spot log returns for realized vol
-    const spotLogReturns = [];
-
     // Trade flow state
     const tradeFlow = {
       tape: [], sessionVolume: new Map(), callVolume: 0, putVolume: 0,
@@ -640,7 +637,6 @@
       baselineSurface = null;
       spotHistory.length = 0;
       atmVolHistory.length = 0;
-      spotLogReturns.length = 0;
       activeExpiry = '';
       surfaceInitialized = false;
       lastForwardVolData = null;
@@ -705,15 +701,8 @@
       dirty = false;
       renderCycle++;
 
-      // Update sparklines (main thread — needs DOM timing)
+      // Update spot history (main thread — needs DOM timing)
       if (spotPrice > 0) {
-        if (spotHistory.length > 0) {
-          const prevSpot = spotHistory[spotHistory.length - 1];
-          if (prevSpot > 0) {
-            spotLogReturns.push(Math.log(spotPrice / prevSpot));
-            if (spotLogReturns.length > 500) spotLogReturns.shift();
-          }
-        }
         spotHistory.push(spotPrice);
         if (spotHistory.length > SPARK_LEN) spotHistory.shift();
       }
@@ -721,7 +710,7 @@
       const chainEntries = Array.from(chain.entries()).map(([n, q]) => [n, { ...q }]);
       computeWorker.postMessage({
         type: 'market-update',
-        payload: { chainEntries, spotPrice, spotLogReturns: [...spotLogReturns], renderCycle },
+        payload: { chainEntries, spotPrice, spotHistory: [...spotHistory], renderCycle },
       });
     }
 
@@ -1534,7 +1523,7 @@
       if (!slice) return;
 
       const pts = slice.points;
-      const x = pts.map(p => Math.log(p.strike / slice.forward));
+      const x = pts.map(p => p.k); // pre-computed in WASM (calibrate_slice_wasm)
       const marketIv = pts.map(p => p.market_iv);
       const fittedIv = pts.map(p => p.fitted_iv);
       const bidIv = pts.map(p => p.bid_iv);
@@ -2010,20 +1999,12 @@
       } catch (e) { console.warn('[volcone] fetch failed:', e); }
     }
 
-    function computeSimpleRvol(logReturns, windowDays) {
-      const n = Math.min(logReturns.length, windowDays);
-      if (n < 2) return NaN;
-      const recent = logReturns.slice(-n);
-      const mean = recent.reduce((s, v) => s + v, 0) / n;
-      const variance = recent.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1);
-      return Math.sqrt(variance * 365) * 100;
-    }
-
     function renderVolCone() {
       const p = panels.volcone; if (!p || !p.chartDiv) return;
       const frontAtm = calibratedSlices.length > 0 ? calibratedSlices[0].atmVol : NaN;
       if (p.vcAtmiv) p.vcAtmiv.textContent = isFinite(frontAtm) ? frontAtm.toFixed(1) + '%' : '--';
-      const rvolPct = spotLogReturns.length > 20 ? computeSimpleRvol(spotLogReturns, 30) : NaN;
+      // Use realizedVol from worker (computed via WASM log_returns_batch + realized_vol)
+      const rvolPct = frameCache ? frameCache.realizedVol : NaN;
       if (p.vcRvol) p.vcRvol.textContent = isFinite(rvolPct) ? rvolPct.toFixed(1) + '%' : '--';
       if (!historicalVolData || historicalVolData.length < 10) return;
       const volSeries = historicalVolData
@@ -2560,7 +2541,7 @@
       setTimeout(async () => {
         if (!navigator.gpu) { console.log('[gpu-mc] WebGPU not available'); return; }
         try {
-          const mod = await import('./pkg/openferric.js');
+          const mod = await import('./pkg/openferric_wasm.js');
           await mod.default();
           if (typeof mod.gpu_mc_price_european !== 'function') return;
           const mc = await mod.gpu_mc_price_european(

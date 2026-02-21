@@ -1,0 +1,12 @@
+[package]
+name = "openferric-python"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "openferric"
+crate-type = ["cdylib"]
+
+[dependencies]
+openferric_core = { path = "..", package = "openferric" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
