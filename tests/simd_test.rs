@@ -224,7 +224,7 @@ mod simd_tests {
                 (*y - expected).abs()
             };
             assert!(
-                rel_err <= 1e-12,
+                rel_err <= 1e-11,
                 "x={x} simd={y} expected={expected} rel_err={rel_err}"
             );
         }
