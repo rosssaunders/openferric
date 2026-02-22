@@ -7,16 +7,16 @@ use openferric::core::{
 use openferric::credit::SurvivalCurve;
 use openferric::instruments::{
     AbandonmentOption, AsianOption, AssetOrNothingOption, Autocallable, BarrierOption,
-    BasketOption, BasketType, BestOfTwoCallOption, CashOrNothingOption, CatastropheBond,
-    ChooserOption, CliquetOption, CommodityForward, CommodityFutures, CommodityOption,
-    CommoditySpreadOption, CompoundOption, ConstantCpr, ConvertibleBond, DeferInvestmentOption,
-    DegreeDayType, DiscreteCashFlow, DoubleBarrierOption, DoubleBarrierType, DualRangeAccrual,
-    EmployeeStockOption, ExoticOption, ExpandOption, ForwardStartOption, FuturesOption, FxOption,
-    GapOption, LookbackFixedOption, LookbackFloatingOption, MbsCashflow, MbsPassThrough,
-    PhoenixAutocallable, Portfolio, PowerOption, PrepaymentModel, PsaModel, QuantoOption,
-    RangeAccrual, RealOptionBinomialSpec, RealOptionInstrument, SpreadOption, SwingOption, Tarf,
-    TarfType, Trade, TradeInstrument, TradeMetadata, TwoAssetCorrelationOption, VanillaOption,
-    VarianceOptionQuote, VarianceSwap, VolatilitySwap, WeatherOption, WeatherSwap,
+    BasketOption, BasketType, BermudanOption, BestOfTwoCallOption, CashOrNothingOption,
+    CatastropheBond, ChooserOption, CliquetOption, CommodityForward, CommodityFutures,
+    CommodityOption, CommoditySpreadOption, CompoundOption, ConstantCpr, ConvertibleBond,
+    DeferInvestmentOption, DegreeDayType, DiscreteCashFlow, DoubleBarrierOption, DoubleBarrierType,
+    DualRangeAccrual, EmployeeStockOption, ExoticOption, ExpandOption, ForwardStartOption,
+    FuturesOption, FxOption, GapOption, LookbackFixedOption, LookbackFloatingOption, MbsCashflow,
+    MbsPassThrough, PhoenixAutocallable, Portfolio, PowerOption, PrepaymentModel, PsaModel,
+    QuantoOption, RangeAccrual, RealOptionBinomialSpec, RealOptionInstrument, SpreadOption,
+    SwingOption, Tarf, TarfType, Trade, TradeInstrument, TradeMetadata, TwoAssetCorrelationOption,
+    VanillaOption, VarianceOptionQuote, VarianceSwap, VolatilitySwap, WeatherOption, WeatherSwap,
     WorstOfTwoCallOption,
 };
 use openferric::market::{
@@ -409,6 +409,12 @@ fn sample_trade_instruments() -> Vec<TradeInstrument> {
                 dates: vec![0.5, 0.75, 1.0],
             },
         }),
+        TradeInstrument::BermudanOption(BermudanOption::new(
+            OptionType::Put,
+            1.0,
+            vec![0.25, 0.5, 0.75, 1.0],
+            vec![105.0, 102.5, 100.0, 97.5],
+        )),
         TradeInstrument::VarianceSwap(VarianceSwap::new(
             100_000.0,
             0.20,

@@ -12,4 +12,6 @@
 
 pub mod longstaff_schwartz;
 
-pub use longstaff_schwartz::LongstaffSchwartzEngine;
+pub use longstaff_schwartz::{
+    BermudanLsmOutput, ExerciseBoundaryPoint, LongstaffSchwartzEngine, LsmDynamics,
+};
