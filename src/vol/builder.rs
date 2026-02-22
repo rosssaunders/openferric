@@ -11,6 +11,10 @@
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::math::CubicSpline;
 use crate::pricing::OptionType;
+use crate::vol::forward::{
+    AtmSkewTermStructure, ForwardVarianceCurve, ForwardVarianceSource, VixSettings, VixStyleIndex,
+    vix_style_index_from_surface,
+};
 use crate::vol::implied::implied_vol;
 use crate::vol::local_vol::{DupireLocalVol, ImpliedVolSurface as LocalVolSurface};
 
@@ -47,6 +51,7 @@ impl ExpirySlice {
 #[derive(Debug, Clone)]
 pub struct BuiltVolSurface {
     spot: f64,
+    rate: f64,
     expiries: Vec<f64>,
     slices: Vec<ExpirySlice>,
 }
@@ -93,11 +98,63 @@ impl BuiltVolSurface {
     pub fn local_vol(&self, spot: f64, expiry: f64) -> f64 {
         DupireLocalVol::new(self.clone(), self.spot).local_vol(spot, expiry)
     }
+
+    /// Spot used when building the surface.
+    pub fn spot(&self) -> f64 {
+        self.spot
+    }
+
+    /// Continuously compounded rate used when building the surface.
+    pub fn rate(&self) -> f64 {
+        self.rate
+    }
+
+    /// Native expiry grid of the built surface.
+    pub fn expiries(&self) -> &[f64] {
+        &self.expiries
+    }
+
+    /// Forward level under a flat carry assumption implied by `spot` and `rate`.
+    pub fn forward_price(&self, expiry: f64) -> f64 {
+        self.spot * (self.rate * expiry.max(0.0)).exp()
+    }
+
+    /// Builds ATM forward-variance curve from this surface.
+    pub fn forward_variance_curve(&self, expiries: &[f64]) -> Result<ForwardVarianceCurve, String> {
+        ForwardVarianceCurve::from_surface(self, expiries)
+    }
+
+    /// Builds ATM skew term structure from this surface.
+    pub fn atm_skew_term_structure(
+        &self,
+        expiries: &[f64],
+    ) -> Result<AtmSkewTermStructure, String> {
+        AtmSkewTermStructure::from_surface(self, expiries)
+    }
+
+    /// Computes a VIX-style index using this surface and its builder rate.
+    pub fn vix_style_index(&self, settings: VixSettings) -> Result<VixStyleIndex, String> {
+        vix_style_index_from_surface(self, self.rate, settings)
+    }
 }
 
 impl LocalVolSurface for BuiltVolSurface {
     fn implied_vol(&self, strike: f64, expiry: f64) -> f64 {
         BuiltVolSurface::implied_vol(self, strike, expiry)
+    }
+}
+
+impl ForwardVarianceSource for BuiltVolSurface {
+    fn implied_vol(&self, strike: f64, expiry: f64) -> f64 {
+        BuiltVolSurface::implied_vol(self, strike, expiry)
+    }
+
+    fn forward_price(&self, expiry: f64) -> f64 {
+        BuiltVolSurface::forward_price(self, expiry)
+    }
+
+    fn expiries(&self) -> &[f64] {
+        &self.expiries
     }
 }
 
@@ -237,9 +294,20 @@ impl VolSurfaceBuilder {
 
         Ok(BuiltVolSurface {
             spot: self.spot,
+            rate: self.rate,
             expiries,
             slices,
         })
+    }
+
+    /// Builds a surface and immediately extracts an ATM forward-variance curve.
+    pub fn build_with_forward_variance_curve(
+        &self,
+        expiries: &[f64],
+    ) -> Result<(BuiltVolSurface, ForwardVarianceCurve), String> {
+        let surface = self.build()?;
+        let curve = surface.forward_variance_curve(expiries)?;
+        Ok((surface, curve))
     }
 }
 
