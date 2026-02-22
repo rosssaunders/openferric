@@ -12,7 +12,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Power option with payoff `max(sign * (S^alpha - K), 0)` where sign is +1 (call), -1 (put).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PowerOption {
     /// Call or put.
     pub option_type: OptionType,

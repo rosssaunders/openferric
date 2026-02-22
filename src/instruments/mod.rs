@@ -11,7 +11,6 @@
 //! When to use: use these contract types as immutable pricing inputs; pair with engine modules for valuation and risk, rather than embedding valuation logic in instruments.
 
 pub mod asian;
-pub mod mbs;
 pub mod autocallable;
 pub mod barrier;
 pub mod basket;
@@ -24,6 +23,7 @@ pub mod double_barrier;
 pub mod employee_stock_option;
 pub mod exotic;
 pub mod fx;
+pub mod mbs;
 pub mod power;
 pub mod rainbow;
 pub mod range_accrual;
@@ -51,9 +51,10 @@ pub use exotic::{
     QuantoOption,
 };
 pub use fx::FxOption;
+pub use mbs::{ConstantCpr, MbsCashflow, MbsPassThrough, PrepaymentModel, PsaModel};
 pub use power::PowerOption;
-pub use range_accrual::{DualRangeAccrual, RangeAccrual};
 pub use rainbow::{BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption};
+pub use range_accrual::{DualRangeAccrual, RangeAccrual};
 pub use real_option::{
     AbandonmentOption, DeferInvestmentOption, DiscreteCashFlow, ExpandOption,
     RealOptionBinomialSpec, RealOptionInstrument,
@@ -67,3 +68,77 @@ pub use weather::{
     CatastropheBond, DegreeDayType, WeatherOption, WeatherSwap, cdd_day, cumulative_cdd,
     cumulative_degree_days, cumulative_hdd, hdd_day,
 };
+
+/// Trade-level metadata for serialization and audit trails.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TradeMetadata {
+    pub trade_id: String,
+    pub version: u64,
+    pub timestamp_unix_ms: i64,
+}
+
+/// Tagged instrument payload for trade serialization.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum TradeInstrument {
+    AsianOption(AsianOption),
+    Autocallable(Autocallable),
+    PhoenixAutocallable(PhoenixAutocallable),
+    BarrierOption(BarrierOption),
+    BasketOption(BasketOption),
+    FuturesOption(FuturesOption),
+    CliquetOption(CliquetOption),
+    ForwardStartOption(ForwardStartOption),
+    CommodityForward(CommodityForward),
+    CommodityFutures(CommodityFutures),
+    CommodityOption(CommodityOption),
+    CommoditySpreadOption(CommoditySpreadOption),
+    ConvertibleBond(ConvertibleBond),
+    CashOrNothingOption(CashOrNothingOption),
+    AssetOrNothingOption(AssetOrNothingOption),
+    GapOption(GapOption),
+    DoubleBarrierOption(DoubleBarrierOption),
+    EmployeeStockOption(EmployeeStockOption),
+    LookbackFloatingOption(LookbackFloatingOption),
+    LookbackFixedOption(LookbackFixedOption),
+    ChooserOption(ChooserOption),
+    QuantoOption(QuantoOption),
+    CompoundOption(CompoundOption),
+    ExoticOption(ExoticOption),
+    FxOption(FxOption),
+    PowerOption(PowerOption),
+    BestOfTwoCallOption(BestOfTwoCallOption),
+    WorstOfTwoCallOption(WorstOfTwoCallOption),
+    TwoAssetCorrelationOption(TwoAssetCorrelationOption),
+    RangeAccrual(RangeAccrual),
+    DualRangeAccrual(DualRangeAccrual),
+    DeferInvestmentOption(DeferInvestmentOption),
+    ExpandOption(ExpandOption),
+    AbandonmentOption(AbandonmentOption),
+    RealOptionInstrument(RealOptionInstrument),
+    SpreadOption(SpreadOption),
+    SwingOption(SwingOption),
+    Tarf(Tarf),
+    VanillaOption(VanillaOption),
+    VarianceSwap(VarianceSwap),
+    VolatilitySwap(VolatilitySwap),
+    WeatherSwap(WeatherSwap),
+    WeatherOption(WeatherOption),
+    CatastropheBond(CatastropheBond),
+    MbsPassThrough(MbsPassThrough),
+}
+
+/// Trade record container.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Trade {
+    pub metadata: TradeMetadata,
+    pub instrument: TradeInstrument,
+}
+
+/// Portfolio container for batch valuation with shared market data references.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Portfolio {
+    pub portfolio_id: String,
+    pub market_snapshot_id: Option<String>,
+    pub trades: Vec<Trade>,
+}

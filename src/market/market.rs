@@ -10,6 +10,8 @@
 //!
 //! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 
+use std::any::Any;
+
 use crate::core::PricingError;
 
 /// Clone support for boxed volatility surface trait objects.
@@ -28,7 +30,7 @@ where
 }
 
 /// Volatility surface abstraction used by pricing engines.
-pub trait VolSurface: std::fmt::Debug + Send + Sync + VolSurfaceClone {
+pub trait VolSurface: std::fmt::Debug + Send + Sync + VolSurfaceClone + Any {
     /// Returns implied volatility for a given strike and expiry.
     fn vol(&self, strike: f64, expiry: f64) -> f64;
 }
@@ -45,13 +47,141 @@ impl VolSurface for crate::vol::surface::VolSurface {
     }
 }
 
+/// Serializable sampled volatility surface using bilinear interpolation.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SampledVolSurface {
+    pub strikes: Vec<f64>,
+    pub expiries: Vec<f64>,
+    pub vols: Vec<Vec<f64>>,
+}
+
+impl SampledVolSurface {
+    /// Creates a sampled surface from explicit grids.
+    pub fn new(strikes: Vec<f64>, expiries: Vec<f64>, vols: Vec<Vec<f64>>) -> Result<Self, String> {
+        if strikes.len() < 2 || expiries.len() < 2 {
+            return Err("sampled surface requires >= 2 strikes and >= 2 expiries".to_string());
+        }
+        if strikes.windows(2).any(|w| w[1] <= w[0]) {
+            return Err("sampled surface strikes must be strictly increasing".to_string());
+        }
+        if expiries.windows(2).any(|w| w[1] <= w[0]) {
+            return Err("sampled surface expiries must be strictly increasing".to_string());
+        }
+        if vols.len() != expiries.len() {
+            return Err("sampled surface row count must match expiries".to_string());
+        }
+        if vols.iter().any(|row| row.len() != strikes.len()) {
+            return Err("sampled surface each row must match strike count".to_string());
+        }
+        if vols
+            .iter()
+            .flat_map(|row| row.iter())
+            .any(|v| !v.is_finite() || *v <= 0.0)
+        {
+            return Err("sampled surface vols must be finite and > 0".to_string());
+        }
+
+        Ok(Self {
+            strikes,
+            expiries,
+            vols,
+        })
+    }
+
+    fn default_strikes(spot: f64) -> Vec<f64> {
+        const M: [f64; 17] = [
+            0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5, 1.7, 1.9, 2.1,
+        ];
+        M.iter().map(|m| (spot * m).max(1.0e-8)).collect()
+    }
+
+    fn default_expiries() -> Vec<f64> {
+        vec![1.0 / 52.0, 1.0 / 12.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+    }
+
+    fn locate_bounds(grid: &[f64], x: f64) -> (usize, usize, f64) {
+        if x <= grid[0] {
+            return (0, 0, 0.0);
+        }
+        let last = grid.len() - 1;
+        if x >= grid[last] {
+            return (last, last, 0.0);
+        }
+
+        let mut lo = 0usize;
+        for i in 0..last {
+            if x >= grid[i] && x <= grid[i + 1] {
+                lo = i;
+                break;
+            }
+        }
+
+        let hi = lo + 1;
+        let w = (x - grid[lo]) / (grid[hi] - grid[lo]);
+        (lo, hi, w)
+    }
+
+    /// Samples a trait-object surface onto a fixed strike/expiry grid.
+    pub fn from_surface(surface: &dyn VolSurface, spot: f64) -> Self {
+        let strikes = Self::default_strikes(spot.max(1.0e-8));
+        let expiries = Self::default_expiries();
+        let mut vols = Vec::with_capacity(expiries.len());
+
+        for &expiry in &expiries {
+            let mut row = Vec::with_capacity(strikes.len());
+            for &strike in &strikes {
+                let v = surface.vol(strike, expiry);
+                row.push(if v.is_finite() { v.max(1.0e-8) } else { 1.0e-8 });
+            }
+            vols.push(row);
+        }
+
+        Self {
+            strikes,
+            expiries,
+            vols,
+        }
+    }
+
+    /// Bilinear volatility lookup.
+    pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
+        let (ei0, ei1, ew) = Self::locate_bounds(&self.expiries, expiry.max(self.expiries[0]));
+        let (si0, si1, sw) = Self::locate_bounds(&self.strikes, strike.max(self.strikes[0]));
+
+        if ei0 == ei1 && si0 == si1 {
+            return self.vols[ei0][si0];
+        }
+        if ei0 == ei1 {
+            let v0 = self.vols[ei0][si0];
+            let v1 = self.vols[ei0][si1];
+            return v0 + (v1 - v0) * sw;
+        }
+        if si0 == si1 {
+            let v0 = self.vols[ei0][si0];
+            let v1 = self.vols[ei1][si0];
+            return v0 + (v1 - v0) * ew;
+        }
+
+        let v00 = self.vols[ei0][si0];
+        let v01 = self.vols[ei0][si1];
+        let v10 = self.vols[ei1][si0];
+        let v11 = self.vols[ei1][si1];
+
+        let v0 = v00 + (v01 - v00) * sw;
+        let v1 = v10 + (v11 - v10) * sw;
+        v0 + (v1 - v0) * ew
+    }
+}
+
 /// Volatility source for a market snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum VolSource {
     /// Constant volatility.
     Flat(f64),
-    /// Dynamic surface lookup.
-    Surface(Box<dyn VolSurface>),
+    /// Parametric SVI surface.
+    Parametric(crate::vol::surface::VolSurface),
+    /// Sampled volatility grid.
+    Sampled(SampledVolSurface),
 }
 
 impl VolSource {
@@ -59,13 +189,14 @@ impl VolSource {
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
         match self {
             Self::Flat(v) => *v,
-            Self::Surface(surface) => surface.vol(strike, expiry),
+            Self::Parametric(surface) => surface.vol(strike, expiry),
+            Self::Sampled(surface) => surface.vol(strike, expiry),
         }
     }
 }
 
 /// Market snapshot used by all pricing engines.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Market {
     /// Spot price.
     pub spot: f64,
@@ -186,7 +317,13 @@ impl MarketBuilder {
         let dividend_yield = self.dividend_yield.unwrap_or(0.0);
 
         let vol = if let Some(surface) = self.surface {
-            VolSource::Surface(surface)
+            let any_surface = surface.as_ref() as &dyn Any;
+            if let Some(parametric) = any_surface.downcast_ref::<crate::vol::surface::VolSurface>()
+            {
+                VolSource::Parametric(parametric.clone())
+            } else {
+                VolSource::Sampled(SampledVolSurface::from_surface(surface.as_ref(), spot))
+            }
         } else {
             let flat = self.flat_vol.ok_or_else(|| {
                 PricingError::InvalidInput(
@@ -208,5 +345,48 @@ impl MarketBuilder {
             vol,
             reference_date: self.reference_date,
         })
+    }
+}
+
+/// Forward curve snapshot for an asset.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ForwardCurveSnapshot {
+    pub asset_id: String,
+    pub points: Vec<(f64, f64)>,
+}
+
+/// Credit curve snapshot with recovery assumption.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreditCurveSnapshot {
+    pub curve_id: String,
+    pub survival_curve: crate::credit::SurvivalCurve,
+    pub recovery_rate: f64,
+}
+
+/// Serializable market snapshot container.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MarketSnapshot {
+    pub snapshot_id: String,
+    pub timestamp_unix_ms: i64,
+    pub markets: Vec<(String, Market)>,
+    pub yield_curves: Vec<(String, crate::rates::YieldCurve)>,
+    pub vol_surfaces: Vec<(String, crate::vol::surface::VolSurface)>,
+    pub credit_curves: Vec<CreditCurveSnapshot>,
+    pub spot_prices: Vec<(String, f64)>,
+    pub forward_curves: Vec<ForwardCurveSnapshot>,
+}
+
+impl MarketSnapshot {
+    pub fn new<S: Into<String>>(snapshot_id: S, timestamp_unix_ms: i64) -> Self {
+        Self {
+            snapshot_id: snapshot_id.into(),
+            timestamp_unix_ms,
+            markets: Vec::new(),
+            yield_curves: Vec::new(),
+            vol_surfaces: Vec::new(),
+            credit_curves: Vec::new(),
+            spot_prices: Vec::new(),
+            forward_curves: Vec::new(),
+        }
     }
 }

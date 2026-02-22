@@ -14,7 +14,7 @@
 use nalgebra::{DMatrix, DVector};
 
 /// Extrapolation behavior outside the calibrated node range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExtrapolationMode {
     /// Keep the endpoint value constant.
     Flat,

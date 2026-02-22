@@ -12,7 +12,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Cash-or-nothing digital option.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CashOrNothingOption {
     /// Call or put.
     pub option_type: OptionType,
@@ -63,7 +63,7 @@ impl Instrument for CashOrNothingOption {
 }
 
 /// Asset-or-nothing digital option.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssetOrNothingOption {
     /// Call or put.
     pub option_type: OptionType,
@@ -106,7 +106,7 @@ impl Instrument for AssetOrNothingOption {
 }
 
 /// Gap option with distinct trigger and payoff strikes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GapOption {
     /// Call or put.
     pub option_type: OptionType,

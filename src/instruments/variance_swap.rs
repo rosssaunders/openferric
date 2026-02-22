@@ -12,7 +12,7 @@
 use crate::core::{Instrument, PricingError};
 
 /// Option quote used for variance/volatility swap replication.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VarianceOptionQuote {
     /// Option strike.
     pub strike: f64,
@@ -54,7 +54,7 @@ impl VarianceOptionQuote {
 }
 
 /// Variance swap instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VarianceSwap {
     /// Vega notional used to derive variance notional via `N_var = N_vega / (2*K_vol)`.
     pub notional_vega: f64,
@@ -135,7 +135,7 @@ impl Instrument for VarianceSwap {
 }
 
 /// Volatility swap instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VolatilitySwap {
     /// Vega notional (linear in realized volatility).
     pub notional_vega: f64,

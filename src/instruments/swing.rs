@@ -12,7 +12,7 @@
 use crate::core::{Instrument, PricingError};
 
 /// Multi-exercise swing option commonly used in energy contracts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SwingOption {
     /// Minimum number of exercise rights that must be used.
     pub min_exercises: usize,

@@ -11,7 +11,7 @@
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::math::CubicSpline;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SviParams {
     pub a: f64,
     pub b: f64,
@@ -175,7 +175,7 @@ pub fn calibrate_svi(
     best
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VolSurface {
     expiries: Vec<f64>,
     slices: Vec<SviParams>,

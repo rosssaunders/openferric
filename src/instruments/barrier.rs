@@ -14,7 +14,7 @@ use crate::core::{
 };
 
 /// Barrier option instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BarrierOption {
     /// Call or put.
     pub option_type: OptionType,
@@ -65,7 +65,7 @@ impl Instrument for BarrierOption {
 }
 
 /// Builder for [`BarrierOption`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BarrierOptionBuilder {
     option_type: Option<OptionType>,
     strike: Option<f64>,
