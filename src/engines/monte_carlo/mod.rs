@@ -10,6 +10,7 @@
 //!
 //! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
 
+pub mod mc_aad;
 pub mod mc_engine;
 pub mod mc_greeks;
 #[cfg(feature = "parallel")]
@@ -18,6 +19,7 @@ pub mod mc_qmc;
 pub mod mc_simd;
 pub mod spread_mc;
 
+pub use mc_aad::{HestonAadConfig, heston_price_delta_aad, mc_european_pathwise_aad};
 pub use mc_engine::{
     ArithmeticAsianMC, MonteCarloInstrument, MonteCarloPricingEngine, VarianceReduction,
     mc_european_with_arena,

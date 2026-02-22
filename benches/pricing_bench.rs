@@ -39,6 +39,21 @@ fn bench_black_scholes_european(c: &mut Criterion) {
     });
 }
 
+fn bench_black_scholes_aad_single(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let engine = BlackScholesEngine::new();
+
+    c.bench_function("black_scholes_aad_single", |b| {
+        b.iter(|| {
+            let result = engine
+                .price_with_greeks_aad(black_box(&option), black_box(&market))
+                .expect("aad pricing should succeed");
+            black_box((result.price, result.greeks))
+        })
+    });
+}
+
 fn bench_american_binomial_steps(c: &mut Criterion) {
     let market = benchmark_market();
     let option = VanillaOption::american_put(100.0, 1.0);
@@ -64,18 +79,8 @@ fn bench_heston_european(c: &mut Criterion) {
     c.bench_function("heston_fft_single", |b| {
         b.iter(|| {
             let strikes = [100.0];
-            let prices = heston_price_fft(
-                100.0,
-                &strikes,
-                0.05,
-                0.0,
-                0.04,
-                2.0,
-                0.04,
-                0.5,
-                -0.7,
-                1.0,
-            );
+            let prices =
+                heston_price_fft(100.0, &strikes, 0.05, 0.0, 0.04, 2.0, 0.04, 0.5, -0.7, 1.0);
             black_box(prices)
         })
     });
@@ -246,6 +251,7 @@ fn bench_heston_fft_batch(c: &mut Criterion) {
 criterion_group!(
     pricing_benches,
     bench_black_scholes_european,
+    bench_black_scholes_aad_single,
     bench_american_binomial_steps,
     bench_heston_european,
     bench_monte_carlo_european,
