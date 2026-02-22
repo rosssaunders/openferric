@@ -27,6 +27,7 @@ rayon = { version = "1.11", optional = true }
 num-complex = "0.4"
 rustfft = "6"
 realfft = "3"
+statrs = "0.18"
 wgpu = { version = "24", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 
@@ -39,7 +40,6 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.8"
-statrs = "0.18"
 
 [[bench]]
 name = "pricing_bench"
