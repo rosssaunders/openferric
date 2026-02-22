@@ -6,7 +6,8 @@
 //! - delta-gamma VaR via normal moment matching of
 //!   `L ~= -Delta r - 0.5 Gamma r^2`,
 //! - closed-form normal ES,
-//! - Cornish-Fisher VaR (direct moments or moments estimated from P&L).
+//! - Cornish-Fisher VaR (direct moments or moments estimated from P&L),
+//! - integration helpers for price-series returns and VaR backtesting.
 //!
 //! The module uses a loss-positive convention (`loss = -pnl`) and returns non-negative
 //! tail metrics.
@@ -19,7 +20,9 @@
 //! - McNeil, Frey, Embrechts, *Quantitative Risk Management* (2005/2015), VaR/ES theory.
 //! - J.P. Morgan/Reuters, *RiskMetrics Technical Document* (1996), delta-normal practice.
 //! - Cornish and Fisher (1937), quantile expansion.
-use crate::math::{normal_inv_cdf, normal_pdf};
+use crate::math::{
+    VarBacktestResult, backtest_var, log_returns, normal_inv_cdf, normal_pdf, simple_returns,
+};
 
 const TRADING_DAYS_PER_YEAR: f64 = 252.0;
 
@@ -176,6 +179,83 @@ pub fn cornish_fisher_var_from_pnl(pnl: &[f64], confidence: f64) -> f64 {
     cornish_fisher_var(mean, std, skew, ex_kurt, confidence).max(0.0)
 }
 
+/// Historical VaR computed directly from a price series.
+///
+/// The series is converted to returns (`simple` or `log`) and treated as one-period P&L.
+pub fn historical_var_from_prices(prices: &[f64], confidence: f64, use_log_returns: bool) -> f64 {
+    let returns = if use_log_returns {
+        log_returns(prices)
+    } else {
+        simple_returns(prices)
+    };
+    historical_var(&returns, confidence)
+}
+
+/// Historical Expected Shortfall computed directly from a price series.
+pub fn historical_expected_shortfall_from_prices(
+    prices: &[f64],
+    confidence: f64,
+    use_log_returns: bool,
+) -> f64 {
+    let returns = if use_log_returns {
+        log_returns(prices)
+    } else {
+        simple_returns(prices)
+    };
+    historical_expected_shortfall(&returns, confidence)
+}
+
+/// Rolling historical-VaR forecast series from prices.
+///
+/// The output has length `returns.len() - window`, where each point is a one-step-ahead
+/// forecast from trailing `window` returns.
+pub fn rolling_historical_var_from_prices(
+    prices: &[f64],
+    window: usize,
+    confidence: f64,
+    use_log_returns: bool,
+) -> Vec<f64> {
+    let returns = if use_log_returns {
+        log_returns(prices)
+    } else {
+        simple_returns(prices)
+    };
+    assert!(window >= 2, "window must be >= 2");
+    assert!(
+        window < returns.len(),
+        "window must be < number of returns for out-of-sample backtest"
+    );
+
+    let mut forecasts = Vec::with_capacity(returns.len() - window);
+    for i in window..returns.len() {
+        forecasts.push(historical_var(&returns[(i - window)..i], confidence));
+    }
+    forecasts
+}
+
+/// Backtests rolling historical VaR forecasts generated from prices.
+pub fn backtest_historical_var_from_prices(
+    prices: &[f64],
+    window: usize,
+    confidence: f64,
+    use_log_returns: bool,
+) -> VarBacktestResult {
+    let returns = if use_log_returns {
+        log_returns(prices)
+    } else {
+        simple_returns(prices)
+    };
+    assert!(window >= 2, "window must be >= 2");
+    assert!(
+        window < returns.len(),
+        "window must be < number of returns for out-of-sample backtest"
+    );
+
+    let forecasts = rolling_historical_var_from_prices(prices, window, confidence, use_log_returns);
+    let losses = returns[window..].iter().map(|r| -r).collect::<Vec<_>>();
+    backtest_var(&losses, &forecasts, confidence)
+}
+
 fn validate_inputs(pnl: &[f64], confidence: f64) {
     assert!(!pnl.is_empty(), "pnl must not be empty");
     assert!(
@@ -285,5 +365,34 @@ mod tests {
     fn cornish_fisher_reduces_to_gaussian_for_zero_higher_moments() {
         let cf_var = cornish_fisher_var(0.0, 1.0, 0.0, 0.0, 0.99);
         assert_relative_eq!(cf_var, 2.326, epsilon = 3.0e-3);
+    }
+
+    #[test]
+    fn price_series_var_wrapper_matches_returns_var() {
+        let prices = vec![100.0, 101.0, 99.0, 100.5, 98.5, 99.2, 101.3, 100.8];
+        let returns = simple_returns(&prices);
+
+        let via_returns = historical_var(&returns, 0.95);
+        let via_prices = historical_var_from_prices(&prices, 0.95, false);
+        assert_relative_eq!(via_prices, via_returns, epsilon = 1.0e-14);
+    }
+
+    #[test]
+    fn backtest_wrapper_runs_and_produces_consistent_dimensions() {
+        let mut prices = vec![100.0];
+        for i in 1..260 {
+            let drift = if i % 37 == 0 { -0.03 } else { 0.001 };
+            prices.push(prices[i - 1] * (1.0 + drift));
+        }
+
+        let window = 60;
+        let confidence = 0.99;
+        let forecasts = rolling_historical_var_from_prices(&prices, window, confidence, true);
+        let bt = backtest_historical_var_from_prices(&prices, window, confidence, true);
+
+        assert_eq!(forecasts.len(), prices.len() - 1 - window);
+        assert!(bt.kupiec.p_value.is_finite());
+        assert!(bt.christoffersen.p_value_independence.is_finite());
+        assert!(bt.christoffersen.p_value_conditional_coverage.is_finite());
     }
 }

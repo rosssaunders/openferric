@@ -22,6 +22,7 @@ pub mod simd_math;
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 pub mod simd_neon;
 pub mod sobol;
+pub mod timeseries;
 
 pub use aad::*;
 pub use arena::PricingArena;
@@ -33,3 +34,4 @@ pub use fast_rng::{FastRng, FastRngKind};
 pub use functions::*;
 pub use interpolation::*;
 pub use sobol::SobolSequence;
+pub use timeseries::*;
