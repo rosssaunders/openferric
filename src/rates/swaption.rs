@@ -2,7 +2,7 @@ use crate::math::normal_cdf;
 use crate::rates::YieldCurve;
 
 /// European swaption on a forward-starting fixed-for-floating swap.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Swaption {
     pub notional: f64,
     pub strike: f64,

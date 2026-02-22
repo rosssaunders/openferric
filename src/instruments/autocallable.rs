@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::core::{Instrument, PricingError};
 
 /// Worst-of autocallable note with knock-in downside at maturity.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Autocallable {
     /// Indices into the global spot/vol vectors.
     pub underlyings: Vec<usize>,
@@ -98,7 +98,7 @@ impl Instrument for Autocallable {
 }
 
 /// Phoenix-style autocallable with coupon barrier and optional memory.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PhoenixAutocallable {
     /// Indices into the global spot/vol vectors.
     pub underlyings: Vec<usize>,

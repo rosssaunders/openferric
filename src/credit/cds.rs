@@ -3,7 +3,7 @@ use crate::rates::YieldCurve;
 use super::survival_curve::SurvivalCurve;
 
 /// Standard running-spread CDS contract.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cds {
     /// Notional amount.
     pub notional: f64,

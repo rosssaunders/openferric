@@ -6,7 +6,7 @@ use crate::rates::YieldCurve;
 use super::{GaussianCopula, SurvivalCurve, cds::Cds};
 
 /// CDS index as a weighted basket of single-name CDS constituents.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CdsIndex {
     pub constituents: Vec<Cds>,
     /// Weights associated with each constituent. They are normalized internally.
@@ -71,7 +71,7 @@ impl CdsIndex {
 }
 
 /// Nth-to-default basket CDS with common maturity and recovery.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NthToDefaultBasket {
     pub n: usize,
     pub notional: f64,

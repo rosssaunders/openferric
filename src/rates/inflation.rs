@@ -1,7 +1,7 @@
 use crate::rates::YieldCurve;
 
 /// Inflation curve represented by CPI growth ratios `CPI(t)/CPI(0)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InflationCurve {
     /// Curve nodes as `(tenor_years, cpi_ratio)`.
     pub nodes: Vec<(f64, f64)>,
@@ -54,6 +54,7 @@ impl InflationCurve {
 }
 
 /// Bootstrap helpers for inflation curves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InflationCurveBuilder;
 
 impl InflationCurveBuilder {
@@ -71,7 +72,7 @@ impl InflationCurveBuilder {
 }
 
 /// Zero-coupon inflation swap (receive/pay realized inflation vs fixed).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ZeroCouponInflationSwap {
     pub notional: f64,
     pub cpi_base: f64,
@@ -143,7 +144,7 @@ impl ZeroCouponInflationSwap {
 }
 
 /// Year-on-year inflation swap with annual settlements.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct YearOnYearInflationSwap {
     pub notional: f64,
     pub fixed_rate: f64,
@@ -216,7 +217,7 @@ impl YearOnYearInflationSwap {
 }
 
 /// Inflation-indexed bond (TIPS-style) with CPI-adjusted principal and coupons.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InflationIndexedBond {
     pub face_value: f64,
     pub coupon_rate: f64,

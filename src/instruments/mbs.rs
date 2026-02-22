@@ -5,7 +5,7 @@
 /// The standard benchmark ramps CPR linearly from 0% to 6% over months 1–30,
 /// then holds at 6%. The `psa_speed` multiplier scales the curve
 /// (1.0 = 100% PSA, 2.0 = 200% PSA, etc.).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PsaModel {
     pub psa_speed: f64,
 }
@@ -29,7 +29,7 @@ impl PsaModel {
 }
 
 /// Constant CPR prepayment model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ConstantCpr {
     pub annual_cpr: f64,
 }
@@ -41,7 +41,7 @@ impl ConstantCpr {
 }
 
 /// Prepayment model selector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PrepaymentModel {
     Psa(PsaModel),
     ConstantCpr(ConstantCpr),
@@ -58,7 +58,7 @@ impl PrepaymentModel {
 }
 
 /// MBS pass-through security.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MbsPassThrough {
     pub original_balance: f64,
     pub coupon_rate: f64,
@@ -69,7 +69,7 @@ pub struct MbsPassThrough {
 }
 
 /// A single month's cashflow from an MBS pass-through.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MbsCashflow {
     pub month: u32,
     pub interest: f64,
@@ -155,7 +155,10 @@ impl MbsPassThrough {
         if total_principal == 0.0 {
             return 0.0;
         }
-        let weighted: f64 = cfs.iter().map(|c| c.total_principal * c.month as f64 / 12.0).sum();
+        let weighted: f64 = cfs
+            .iter()
+            .map(|c| c.total_principal * c.month as f64 / 12.0)
+            .sum();
         weighted / total_principal
     }
 
@@ -163,7 +166,11 @@ impl MbsPassThrough {
     /// `market_price` is the dollar price, `base_yields` is a flat or term-structure
     /// of monthly discount rates. For simplicity we use base_yields[0] as the flat rate.
     pub fn oas(&self, market_price: f64, base_yields: &[f64]) -> f64 {
-        let base_rate = if base_yields.is_empty() { 0.0 } else { base_yields[0] };
+        let base_rate = if base_yields.is_empty() {
+            0.0
+        } else {
+            base_yields[0]
+        };
         // Find spread s such that price(base_rate + s) = market_price
         let mut spread = 0.01; // initial guess
         for _ in 0..200 {
@@ -200,7 +207,11 @@ pub struct IoStrip<'a> {
 
 impl<'a> IoStrip<'a> {
     pub fn cashflows(&self) -> Vec<(u32, f64)> {
-        self.mbs.cashflows().iter().map(|c| (c.month, c.interest)).collect()
+        self.mbs
+            .cashflows()
+            .iter()
+            .map(|c| (c.month, c.interest))
+            .collect()
     }
 
     pub fn price(&self, yield_rate: f64) -> f64 {
@@ -219,7 +230,11 @@ pub struct PoStrip<'a> {
 
 impl<'a> PoStrip<'a> {
     pub fn cashflows(&self) -> Vec<(u32, f64)> {
-        self.mbs.cashflows().iter().map(|c| (c.month, c.total_principal)).collect()
+        self.mbs
+            .cashflows()
+            .iter()
+            .map(|c| (c.month, c.total_principal))
+            .collect()
     }
 
     pub fn price(&self, yield_rate: f64) -> f64 {
@@ -301,7 +316,9 @@ mod tests {
 
     #[test]
     fn test_wal_no_prepayment() {
-        let mbs = make_mbs(PrepaymentModel::ConstantCpr(ConstantCpr { annual_cpr: 0.0 }));
+        let mbs = make_mbs(PrepaymentModel::ConstantCpr(ConstantCpr {
+            annual_cpr: 0.0,
+        }));
         let wal = mbs.wal();
         // 30yr amortizing bond at 6% coupon: WAL ≈ 19.3 years
         // (principal repayment is back-loaded; 15.3yr figure applies at 0% coupon)
@@ -329,7 +346,13 @@ mod tests {
         let whole = mbs.price(yield_rate);
         let io = IoStrip { mbs: &mbs }.price(yield_rate);
         let po = PoStrip { mbs: &mbs }.price(yield_rate);
-        assert!((io + po - whole).abs() < 1e-6, "IO({}) + PO({}) != whole({})", io, po, whole);
+        assert!(
+            (io + po - whole).abs() < 1e-6,
+            "IO({}) + PO({}) != whole({})",
+            io,
+            po,
+            whole
+        );
     }
 
     #[test]
@@ -345,7 +368,12 @@ mod tests {
         let mbs3 = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 3.0 }));
         let d1 = mbs1.effective_duration(0.06);
         let d3 = mbs3.effective_duration(0.06);
-        assert!(d1 > d3, "Higher PSA should have shorter duration: {} vs {}", d1, d3);
+        assert!(
+            d1 > d3,
+            "Higher PSA should have shorter duration: {} vs {}",
+            d1,
+            d3
+        );
     }
 
     #[test]
@@ -355,6 +383,10 @@ mod tests {
         let true_spread = 0.01;
         let market_price = mbs.price(base_rate + true_spread);
         let computed_oas = mbs.oas(market_price, &[base_rate]);
-        assert!((computed_oas - true_spread).abs() < 1e-6, "OAS: {}", computed_oas);
+        assert!(
+            (computed_oas - true_spread).abs() < 1e-6,
+            "OAS: {}",
+            computed_oas
+        );
     }
 }

@@ -4,7 +4,7 @@ use crate::rates::YieldCurve;
 use super::cds::Cds;
 
 /// Survival-probability term structure keyed by maturity tenor in years.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SurvivalCurve {
     /// Curve nodes as `(tenor, survival_probability)`.
     pub tenors: Vec<(f64, f64)>,

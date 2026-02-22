@@ -4,7 +4,7 @@ use crate::rates::schedule::{Frequency, generate_schedule};
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 
 /// Plain-vanilla fixed-for-floating interest-rate swap.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InterestRateSwap {
     pub notional: f64,
     pub fixed_rate: f64,
@@ -130,7 +130,7 @@ fn bump_curve_parallel(curve: &YieldCurve, bump: f64) -> YieldCurve {
 }
 
 /// Builder for [`InterestRateSwap`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SwapBuilder {
     notional: f64,
     fixed_rate: f64,

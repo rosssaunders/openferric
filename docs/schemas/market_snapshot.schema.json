@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openferric.dev/schemas/market_snapshot.schema.json",
+  "title": "OpenFerric Market Snapshot",
+  "type": "object",
+  "required": [
+    "snapshot_id",
+    "as_of",
+    "yield_curves",
+    "credit_curves",
+    "vol_surfaces",
+    "spots",
+    "forwards"
+  ],
+  "properties": {
+    "snapshot_id": { "type": "string" },
+    "as_of": {
+      "type": "string",
+      "description": "RFC3339 UTC timestamp"
+    },
+    "yield_curves": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["pillars", "rates", "interpolation", "value_type"],
+        "properties": {
+          "pillars": { "type": "array", "items": { "type": "number" } },
+          "rates": { "type": "array", "items": { "type": "number" } },
+          "interpolation": {
+            "type": "string",
+            "enum": ["linear", "log_linear", "cubic_spline", "flat_forward"]
+          },
+          "value_type": {
+            "type": "string",
+            "enum": ["zero_rate", "discount_factor", "survival_probability", "forward_price"]
+          }
+        }
+      }
+    },
+    "credit_curves": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["pillars", "survival_probabilities", "recovery_rate", "interpolation"],
+        "properties": {
+          "pillars": { "type": "array", "items": { "type": "number" } },
+          "survival_probabilities": { "type": "array", "items": { "type": "number" } },
+          "recovery_rate": { "type": "number" },
+          "interpolation": {
+            "type": "string",
+            "enum": ["linear", "log_linear", "cubic_spline", "flat_forward"]
+          }
+        }
+      }
+    },
+    "vol_surfaces": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["expiries", "strikes", "vols"],
+        "properties": {
+          "expiries": { "type": "array", "items": { "type": "number" } },
+          "strikes": { "type": "array", "items": { "type": "number" } },
+          "vols": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": { "type": "number" }
+            }
+          },
+          "model": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "spots": {
+      "type": "object",
+      "additionalProperties": { "type": "number" }
+    },
+    "forwards": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["points", "interpolation"],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "number" }
+            }
+          },
+          "interpolation": {
+            "type": "string",
+            "enum": ["linear", "log_linear", "cubic_spline", "flat_forward"]
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

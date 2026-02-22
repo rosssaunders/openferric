@@ -1,6 +1,6 @@
 use nalgebra::{DMatrix, DVector};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SabrParams {
     pub alpha: f64,
     pub beta: f64,

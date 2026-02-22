@@ -1,7 +1,7 @@
 use crate::core::{AsianSpec, Instrument, OptionType, PricingError};
 
 /// Asian option instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AsianOption {
     /// Call or put.
     pub option_type: OptionType,

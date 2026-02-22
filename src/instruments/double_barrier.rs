@@ -1,7 +1,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Double-barrier knock behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DoubleBarrierType {
     /// Option deactivates if either barrier is hit.
     KnockOut,
@@ -10,7 +10,7 @@ pub enum DoubleBarrierType {
 }
 
 /// Double-barrier option with lower/upper barriers.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DoubleBarrierOption {
     /// Call or put.
     pub option_type: OptionType,

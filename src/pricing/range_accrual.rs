@@ -5,7 +5,7 @@ use rand_distr::{Distribution, StandardNormal};
 use crate::instruments::range_accrual::{DualRangeAccrual, RangeAccrual};
 
 /// Result of range accrual MC pricing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RangeAccrualResult {
     /// Present value of the range accrual note.
     pub price: f64,
@@ -189,8 +189,26 @@ pub fn range_accrual_rate_delta(
     seed: u64,
     bump: f64,
 ) -> Result<f64, String> {
-    let p_up = range_accrual_mc_price(ra, r0 + bump, kappa, theta, sigma, discount_rate, num_paths, seed)?;
-    let p_down = range_accrual_mc_price(ra, r0 - bump, kappa, theta, sigma, discount_rate, num_paths, seed)?;
+    let p_up = range_accrual_mc_price(
+        ra,
+        r0 + bump,
+        kappa,
+        theta,
+        sigma,
+        discount_rate,
+        num_paths,
+        seed,
+    )?;
+    let p_down = range_accrual_mc_price(
+        ra,
+        r0 - bump,
+        kappa,
+        theta,
+        sigma,
+        discount_rate,
+        num_paths,
+        seed,
+    )?;
     Ok((p_up.price - p_down.price) / (2.0 * bump))
 }
 
@@ -214,9 +232,7 @@ mod tests {
     #[test]
     fn range_accrual_price_is_positive() {
         let ra = make_range_accrual();
-        let result = range_accrual_mc_price(
-            &ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42,
-        ).unwrap();
+        let result = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42).unwrap();
         assert!(result.price > 0.0);
         assert!(result.price.is_finite());
     }
@@ -224,9 +240,7 @@ mod tests {
     #[test]
     fn range_accrual_fraction_bounded() {
         let ra = make_range_accrual();
-        let result = range_accrual_mc_price(
-            &ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42,
-        ).unwrap();
+        let result = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42).unwrap();
         assert!(result.expected_accrual_fraction >= 0.0);
         assert!(result.expected_accrual_fraction <= 1.0);
     }
@@ -234,15 +248,11 @@ mod tests {
     #[test]
     fn range_accrual_narrow_range_less_valuable() {
         let mut ra = make_range_accrual();
-        let wide = range_accrual_mc_price(
-            &ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42,
-        ).unwrap();
+        let wide = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42).unwrap();
 
         ra.lower_bound = 0.039;
         ra.upper_bound = 0.041;
-        let narrow = range_accrual_mc_price(
-            &ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42,
-        ).unwrap();
+        let narrow = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42).unwrap();
 
         assert!(narrow.price < wide.price);
     }
@@ -259,14 +269,14 @@ mod tests {
             payment_time: 1.0,
         };
         let result = dual_range_accrual_mc_price(
-            &dra,
-            0.05, 0.03,          // r1_0, r2_0 (spread = 0.02)
-            1.0, 0.05, 0.01,     // kappa1, theta1, sigma1
-            1.0, 0.03, 0.01,     // kappa2, theta2, sigma2
-            0.5,                  // rho
-            0.03,                 // discount rate
+            &dra, 0.05, 0.03, // r1_0, r2_0 (spread = 0.02)
+            1.0, 0.05, 0.01, // kappa1, theta1, sigma1
+            1.0, 0.03, 0.01, // kappa2, theta2, sigma2
+            0.5,  // rho
+            0.03, // discount rate
             5000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result.price > 0.0);
         assert!(result.price.is_finite());
     }
@@ -284,10 +294,12 @@ mod tests {
         };
         let high_rho = dual_range_accrual_mc_price(
             &dra, 0.05, 0.03, 1.0, 0.05, 0.01, 1.0, 0.03, 0.01, 0.9, 0.03, 5000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         let low_rho = dual_range_accrual_mc_price(
             &dra, 0.05, 0.03, 1.0, 0.05, 0.01, 1.0, 0.03, 0.01, 0.1, 0.03, 5000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         // Correlation affects spread volatility and hence accrual
         assert!((high_rho.price - low_rho.price).abs() > 0.01);
     }

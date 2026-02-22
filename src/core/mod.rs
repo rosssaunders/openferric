@@ -2,12 +2,14 @@
 
 use crate::market::Market;
 
+pub mod serialization;
 pub mod types;
 
+pub use serialization::*;
 pub use types::*;
 
 /// Standardized Greeks container used by engine results.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Greeks {
     /// First derivative to spot.
     pub delta: f64,
@@ -34,7 +36,7 @@ pub trait PricingEngine<I: Instrument> {
 }
 
 /// Compact key set for engine diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DiagKey {
     BarrierLevel,
     ConversionValue,
@@ -168,7 +170,7 @@ impl DiagKey {
 }
 
 /// Inline diagnostics storage used in [`PricingResult`].
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Diagnostics {
     entries: [Option<(DiagKey, f64)>; 8],
 }
@@ -248,7 +250,7 @@ impl Diagnostics {
 }
 
 /// Unified engine result payload.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PricingResult {
     /// Present value.
     pub price: f64,
@@ -263,7 +265,7 @@ pub struct PricingResult {
 const _: [(); 1] = [(); (std::mem::size_of::<PricingResult>() <= 384) as usize];
 
 /// Engine and model errors surfaced by the API.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PricingError {
     /// Input validation error.
     InvalidInput(String),

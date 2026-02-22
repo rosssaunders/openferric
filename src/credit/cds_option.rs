@@ -3,7 +3,7 @@
 use crate::math::normal_cdf;
 
 /// A CDS option giving the right to enter a CDS at a given spread (strike).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CdsOption {
     pub notional: f64,
     pub strike_spread: f64,
@@ -169,10 +169,7 @@ mod tests {
 
         let p = payer.black_price(forward, vol, rpv01, 1.0);
         let r = receiver.black_price(forward, vol, rpv01, 1.0);
-        assert!(
-            (p - r).abs() < 1e-8,
-            "ATM payer ({p}) != receiver ({r})"
-        );
+        assert!((p - r).abs() < 1e-8, "ATM payer ({p}) != receiver ({r})");
     }
 
     #[test]

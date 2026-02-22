@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 
 /// Forward rate agreement over a single accrual period.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ForwardRateAgreement {
     pub notional: f64,
     pub fixed_rate: f64,

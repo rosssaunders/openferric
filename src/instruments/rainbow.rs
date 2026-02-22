@@ -32,7 +32,7 @@ fn validate_common(
 }
 
 /// Two-asset best-of call: `max(max(S1_T, S2_T) - K, 0)`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BestOfTwoCallOption {
     pub s1: f64,
     pub s2: f64,
@@ -65,7 +65,7 @@ impl Instrument for BestOfTwoCallOption {
 }
 
 /// Two-asset worst-of call: `max(min(S1_T, S2_T) - K, 0)`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorstOfTwoCallOption {
     pub s1: f64,
     pub s2: f64,
@@ -101,7 +101,7 @@ impl Instrument for WorstOfTwoCallOption {
 ///
 /// Call payoff: `1_{S2_T > K2} * max(S1_T - K1, 0)`
 /// Put payoff:  `1_{S2_T < K2} * max(K1 - S1_T, 0)`
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TwoAssetCorrelationOption {
     pub option_type: OptionType,
     pub s1: f64,

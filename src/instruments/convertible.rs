@@ -1,7 +1,7 @@
 use crate::core::{Instrument, PricingError};
 
 /// Convertible bond with optional issuer call and holder put features.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ConvertibleBond {
     /// Notional/face amount.
     pub face_value: f64,

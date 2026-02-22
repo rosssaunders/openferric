@@ -1,7 +1,7 @@
 use chrono::{Datelike, NaiveDate};
 
 /// Payment frequency for coupon schedules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Frequency {
     Annual,
     SemiAnnual,
@@ -22,7 +22,7 @@ impl Frequency {
 }
 
 /// Business-day adjustment convention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BusinessDayConvention {
     ModifiedFollowing,
 }

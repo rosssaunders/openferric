@@ -1,7 +1,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Employee stock option valued with a binomial tree and Hull-White style assumptions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EmployeeStockOption {
     /// Call/put side (ESOs are typically calls but both are supported).
     pub option_type: OptionType,

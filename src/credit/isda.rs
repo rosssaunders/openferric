@@ -3,7 +3,7 @@ use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use crate::rates::{DayCountConvention, year_fraction};
 
 /// Protection side of a CDS trade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProtectionSide {
     Buyer,
     Seller,
@@ -19,7 +19,7 @@ impl ProtectionSide {
 }
 
 /// Date-generation style for CDS schedules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CdsDateRule {
     /// Legacy CDS schedule on the 20th of IMM months.
     TwentiethImm,
@@ -28,7 +28,7 @@ pub enum CdsDateRule {
 }
 
 /// Dated CDS contract for midpoint/ISDA-style pricing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DatedCds {
     pub side: ProtectionSide,
     pub notional: f64,
@@ -80,7 +80,7 @@ impl DatedCds {
 }
 
 /// ISDA market conventions used for valuation alignment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IsdaConventions {
     /// Step-in date offset in business days from valuation date.
     pub step_in_days: usize,
@@ -98,7 +98,7 @@ impl Default for IsdaConventions {
 }
 
 /// Valuation output for dated CDS pricing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CdsPriceResult {
     /// NPV from the trade side perspective (buyer positive when valuable to buyer).
     pub clean_npv: f64,
@@ -229,7 +229,7 @@ pub fn generate_imm_schedule(
     dates
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum PricingModel {
     Midpoint,
     IsdaStandard,

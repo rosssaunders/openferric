@@ -1,5 +1,5 @@
 /// Discount-factor term structure keyed by maturity tenor in years.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct YieldCurve {
     /// Curve nodes as `(tenor, discount_factor)`.
     pub tenors: Vec<(f64, f64)>,
@@ -34,6 +34,7 @@ impl YieldCurve {
 }
 
 /// Helper constructors for simple curve bootstrapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct YieldCurveBuilder;
 
 impl YieldCurveBuilder {

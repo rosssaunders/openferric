@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openferric.dev/schemas/pricing_audit.schema.json",
+  "title": "OpenFerric Pricing Audit Trail",
+  "type": "object",
+  "required": [
+    "trade",
+    "market_snapshot_id",
+    "engine_name",
+    "model_name",
+    "model_parameters",
+    "base_result",
+    "scenario_results",
+    "generated_at",
+    "notes"
+  ],
+  "properties": {
+    "trade": { "$ref": "trade.schema.json" },
+    "market_snapshot_id": { "type": "string" },
+    "engine_name": { "type": "string" },
+    "model_name": { "type": "string" },
+    "model_parameters": {
+      "type": "object",
+      "additionalProperties": { "type": "number" }
+    },
+    "base_result": {
+      "type": "object",
+      "required": ["price", "stderr", "greeks", "diagnostics"],
+      "properties": {
+        "price": { "type": "number" },
+        "stderr": { "type": ["number", "null"] },
+        "greeks": { "type": ["object", "null"] },
+        "diagnostics": { "type": "object" }
+      }
+    },
+    "scenario_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scenario_name", "bump_description", "result"],
+        "properties": {
+          "scenario_name": { "type": "string" },
+          "bump_description": { "type": ["string", "null"] },
+          "result": { "type": "object" }
+        }
+      }
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "RFC3339 UTC timestamp"
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

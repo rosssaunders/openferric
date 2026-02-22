@@ -1,7 +1,7 @@
 use crate::core::{ExerciseStyle, Instrument, OptionType, PricingError};
 
 /// Vanilla option instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VanillaOption {
     /// Call or put.
     pub option_type: OptionType,

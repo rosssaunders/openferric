@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openferric.dev/schemas/trade.schema.json",
+  "title": "OpenFerric Trade",
+  "type": "object",
+  "required": ["metadata", "product"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["trade_id", "version", "timestamp"],
+      "properties": {
+        "trade_id": { "type": "string" },
+        "version": { "type": "integer", "minimum": 0 },
+        "timestamp": {
+          "type": "string",
+          "description": "RFC3339 UTC timestamp"
+        }
+      }
+    },
+    "market_data_ref": {
+      "type": ["string", "null"],
+      "description": "Optional market snapshot reference"
+    },
+    "product": {
+      "type": "object",
+      "required": ["product_type", "payload"],
+      "properties": {
+        "product_type": {
+          "type": "string",
+          "enum": [
+            "vanilla_option",
+            "barrier_option",
+            "asian_option",
+            "basket_option",
+            "cash_or_nothing_option",
+            "asset_or_nothing_option",
+            "gap_option",
+            "double_barrier_option",
+            "spread_option",
+            "fx_option",
+            "futures_option",
+            "forward_start_option",
+            "commodity_forward",
+            "commodity_futures",
+            "commodity_option",
+            "commodity_spread_option",
+            "convertible_bond",
+            "employee_stock_option",
+            "exotic_option",
+            "power_option",
+            "best_of_two_call_option",
+            "worst_of_two_call_option",
+            "two_asset_correlation_option",
+            "range_accrual",
+            "dual_range_accrual",
+            "defer_investment_option",
+            "expand_option",
+            "abandonment_option",
+            "real_option_instrument",
+            "swing_option",
+            "tarf",
+            "variance_swap",
+            "volatility_swap",
+            "weather_swap",
+            "weather_option",
+            "catastrophe_bond",
+            "autocallable",
+            "phoenix_autocallable",
+            "mbs_pass_through",
+            "fixed_rate_bond",
+            "cap_floor",
+            "forward_rate_agreement",
+            "future",
+            "interest_rate_swap",
+            "swaption",
+            "overnight_index_swap",
+            "basis_swap",
+            "xccy_swap",
+            "zero_coupon_inflation_swap",
+            "year_on_year_inflation_swap",
+            "inflation_indexed_bond",
+            "cms_spread_option",
+            "cds",
+            "cds_option",
+            "cdo_tranche",
+            "synthetic_cdo",
+            "cds_index",
+            "nth_to_default_basket",
+            "dated_cds"
+          ]
+        },
+        "payload": {
+          "type": "object",
+          "description": "Serde payload for the corresponding product type"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

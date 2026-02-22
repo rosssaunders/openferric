@@ -6,8 +6,8 @@
 //!
 //! Reference: Andreasen & Huge, "Volatility Interpolation" (Risk, 2011).
 
-use crate::pricing::european::black_scholes_price;
 use crate::pricing::OptionType;
+use crate::pricing::european::black_scholes_price;
 use crate::vol::jaeckel::implied_vol_jaeckel;
 
 /// Andreasen-Huge arbitrage-free volatility interpolation.
@@ -15,7 +15,7 @@ use crate::vol::jaeckel::implied_vol_jaeckel;
 /// Given a set of market implied vol quotes, calibrates piecewise-constant
 /// local vol on a strike grid at each expiry, then recovers implied vols
 /// at arbitrary (K, T) by pricing on the calibrated grid.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AndreasenHugeInterpolation {
     expiries: Vec<f64>,
     grid: Vec<f64>,
@@ -58,7 +58,12 @@ impl AndreasenHugeInterpolation {
         for &t in &expiries {
             let dt = t - prev_t;
             if dt < 1e-14 {
-                local_vols.push(local_vols.last().cloned().unwrap_or_else(|| vec![0.2; n_grid]));
+                local_vols.push(
+                    local_vols
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| vec![0.2; n_grid]),
+                );
                 call_prices.push(prev_calls.clone());
                 continue;
             }
@@ -91,14 +96,7 @@ impl AndreasenHugeInterpolation {
 
             // Levenberg-Marquardt-style calibration loop.
             for _iter in 0..50 {
-                let new_calls = step_implicit(
-                    &prev_calls,
-                    &grid,
-                    &sigma_loc,
-                    dt,
-                    rate,
-                    dividend,
-                );
+                let new_calls = step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend);
 
                 if targets.is_empty() {
                     break;
@@ -123,14 +121,8 @@ impl AndreasenHugeInterpolation {
                         sigma_bumped[j] += bump;
                     }
 
-                    let bumped_calls = step_implicit(
-                        &prev_calls,
-                        &grid,
-                        &sigma_bumped,
-                        dt,
-                        rate,
-                        dividend,
-                    );
+                    let bumped_calls =
+                        step_implicit(&prev_calls, &grid, &sigma_bumped, dt, rate, dividend);
                     let dc_dsigma = (bumped_calls[idx] - c_model) / bump;
 
                     if dc_dsigma.abs() > 1e-14 {
@@ -154,14 +146,7 @@ impl AndreasenHugeInterpolation {
                 }
             }
 
-            let new_calls = step_implicit(
-                &prev_calls,
-                &grid,
-                &sigma_loc,
-                dt,
-                rate,
-                dividend,
-            );
+            let new_calls = step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend);
             local_vols.push(sigma_loc);
             call_prices.push(new_calls.clone());
             prev_calls = new_calls;
@@ -236,8 +221,7 @@ impl AndreasenHugeInterpolation {
 
         for i in 0..last {
             if expiry >= self.expiries[i] && expiry <= self.expiries[i + 1] {
-                let w = (expiry - self.expiries[i])
-                    / (self.expiries[i + 1] - self.expiries[i]);
+                let w = (expiry - self.expiries[i]) / (self.expiries[i + 1] - self.expiries[i]);
                 return interp_at(i) * (1.0 - w) + interp_at(i + 1) * w;
             }
         }
@@ -262,8 +246,7 @@ impl AndreasenHugeInterpolation {
         }
         for i in 0..last {
             if expiry >= self.expiries[i] && expiry <= self.expiries[i + 1] {
-                let w = (expiry - self.expiries[i])
-                    / (self.expiries[i + 1] - self.expiries[i]);
+                let w = (expiry - self.expiries[i]) / (self.expiries[i + 1] - self.expiries[i]);
                 return lv_at(i) * (1.0 - w) + lv_at(i + 1) * w;
             }
         }

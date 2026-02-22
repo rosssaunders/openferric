@@ -1,7 +1,7 @@
 use crate::rates::YieldCurve;
 
 /// Overnight index swap: fixed leg vs overnight floating leg.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OvernightIndexSwap {
     pub notional: f64,
     pub fixed_rate: f64,
@@ -95,7 +95,7 @@ impl OvernightIndexSwap {
 }
 
 /// Basis swap: two floating legs with different reset tenors.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BasisSwap {
     pub notional: f64,
     pub spread_on_short_leg: f64,

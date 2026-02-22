@@ -6,14 +6,14 @@ use crate::math::normal_cdf;
 use super::survival_curve::SurvivalCurve;
 
 /// One-factor Gaussian copula model for correlated defaults.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GaussianCopula {
     /// Common-factor loading in `[-1, 1]`.
     pub rho: f64,
 }
 
 /// Result of one basket default simulation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BasketDefaultSimulation {
     /// Simulated default times in years.
     pub default_times: Vec<f64>,

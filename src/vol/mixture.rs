@@ -3,7 +3,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::core::OptionType;
 use crate::pricing::european::black_scholes_price;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LognormalMixture {
     pub weights: Vec<f64>,
     pub vols: Vec<f64>,

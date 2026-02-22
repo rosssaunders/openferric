@@ -1,7 +1,7 @@
 use crate::core::{Instrument, PricingError};
 
 /// Discrete project cash flow paid at a given year fraction.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DiscreteCashFlow {
     /// Payment time in years from valuation date.
     pub time: f64,
@@ -10,7 +10,7 @@ pub struct DiscreteCashFlow {
 }
 
 /// Shared binomial settings for real-option valuation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RealOptionBinomialSpec {
     /// Current project NPV proxy (underlying state variable).
     pub project_value: f64,
@@ -66,7 +66,7 @@ impl RealOptionBinomialSpec {
 }
 
 /// Option to defer an investment decision (American call on project NPV).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeferInvestmentOption {
     /// Shared tree settings.
     pub model: RealOptionBinomialSpec,
@@ -88,7 +88,7 @@ impl DeferInvestmentOption {
 }
 
 /// Option to expand project scale (compound option on scaled NPV).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExpandOption {
     /// Shared tree settings.
     pub model: RealOptionBinomialSpec,
@@ -117,7 +117,7 @@ impl ExpandOption {
 }
 
 /// Option to abandon a project (American put with salvage value strike).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AbandonmentOption {
     /// Shared tree settings.
     pub model: RealOptionBinomialSpec,
@@ -139,7 +139,7 @@ impl AbandonmentOption {
 }
 
 /// Unified real-option instrument enum.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RealOptionInstrument {
     /// Option to defer investment.
     Defer(DeferInvestmentOption),

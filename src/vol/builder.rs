@@ -3,7 +3,7 @@ use crate::pricing::OptionType;
 use crate::vol::implied::implied_vol;
 use crate::vol::local_vol::{DupireLocalVol, ImpliedVolSurface as LocalVolSurface};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MarketOptionQuote {
     pub strike: f64,
     pub expiry: f64,

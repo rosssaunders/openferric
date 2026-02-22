@@ -1,7 +1,7 @@
 use crate::core::{Instrument, PricingError};
 
 /// Basket payoff definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BasketType {
     /// Weighted arithmetic basket `sum_i w_i * S_i(T)`.
     Average,
@@ -12,7 +12,7 @@ pub enum BasketType {
 }
 
 /// Multi-asset basket option.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BasketOption {
     /// Weights for weighted-average basket.
     pub weights: Vec<f64>,

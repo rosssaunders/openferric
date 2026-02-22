@@ -4,7 +4,7 @@ use crate::pricing::european::black_scholes_price;
 use crate::vol::builder::BuiltVolSurface;
 use crate::vol::sabr::SabrParams;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SmileDynamics {
     StickyStrike,
     StickyDelta,
@@ -338,7 +338,7 @@ pub fn sabr_smile_from_atm(
     (params, out)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VannaVolgaQuote {
     pub atm_vol: f64,
     pub rr_25d: f64,

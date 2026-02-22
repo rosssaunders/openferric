@@ -14,8 +14,6 @@ simd = []
 deribit = [
     "dep:reqwest",
     "dep:tokio",
-    "dep:serde",
-    "dep:serde_json",
     "dep:axum",
     "dep:tokio-tungstenite",
     "dep:futures-util",
@@ -24,7 +22,7 @@ deribit = [
 wasm = ["dep:wasm-bindgen", "dep:getrandom"]
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 rand = "0.10"
 rand_distr = "0.6"
 nalgebra = "0.34"
@@ -35,8 +33,9 @@ realfft = "3"
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 reqwest = { version = "0.13", features = ["json", "query"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+rmp-serde = "1"
 axum = { version = "0.8", features = ["ws"], optional = true }
 tokio-tungstenite = { version = "0.28", features = ["native-tls"], optional = true }
 futures-util = { version = "0.3", optional = true }

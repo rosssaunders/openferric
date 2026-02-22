@@ -1,5 +1,7 @@
 //! Market data container and volatility source abstractions.
 
+use std::any::Any;
+
 use crate::core::PricingError;
 
 /// Clone support for boxed volatility surface trait objects.
@@ -18,9 +20,12 @@ where
 }
 
 /// Volatility surface abstraction used by pricing engines.
-pub trait VolSurface: std::fmt::Debug + Send + Sync + VolSurfaceClone {
+pub trait VolSurface: std::fmt::Debug + Send + Sync + VolSurfaceClone + Any {
     /// Returns implied volatility for a given strike and expiry.
     fn vol(&self, strike: f64, expiry: f64) -> f64;
+
+    /// Dynamic downcast support used by serialization.
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl Clone for Box<dyn VolSurface> {
@@ -33,6 +38,10 @@ impl VolSurface for crate::vol::surface::VolSurface {
     fn vol(&self, strike: f64, expiry: f64) -> f64 {
         crate::vol::surface::VolSurface::vol(self, strike, expiry)
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Volatility source for a market snapshot.
@@ -42,6 +51,55 @@ pub enum VolSource {
     Flat(f64),
     /// Dynamic surface lookup.
     Surface(Box<dyn VolSurface>),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SerializableVolSource {
+    Flat {
+        value: f64,
+    },
+    Surface {
+        surface: crate::vol::surface::VolSurface,
+    },
+}
+
+impl serde::Serialize for VolSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let repr = match self {
+            Self::Flat(value) => SerializableVolSource::Flat { value: *value },
+            Self::Surface(surface) => {
+                let Some(surface) = surface
+                    .as_any()
+                    .downcast_ref::<crate::vol::surface::VolSurface>()
+                else {
+                    return Err(serde::ser::Error::custom(
+                        "unable to serialize custom vol surface trait object",
+                    ));
+                };
+                SerializableVolSource::Surface {
+                    surface: surface.clone(),
+                }
+            }
+        };
+        repr.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for VolSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let repr = SerializableVolSource::deserialize(deserializer)?;
+        Ok(match repr {
+            SerializableVolSource::Flat { value } => Self::Flat(value),
+            SerializableVolSource::Surface { surface } => Self::Surface(Box::new(surface)),
+        })
+    }
 }
 
 impl VolSource {
@@ -55,7 +113,7 @@ impl VolSource {
 }
 
 /// Market snapshot used by all pricing engines.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Market {
     /// Spot price.
     pub spot: f64,

@@ -1,7 +1,7 @@
 use crate::math::{gauss_legendre_integrate, normal_cdf, normal_inv_cdf, normal_pdf};
 
 /// Synthetic CDO tranche definition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CdoTranche {
     /// Attachment point as fraction of portfolio notional.
     pub attachment: f64,
@@ -14,7 +14,7 @@ pub struct CdoTranche {
 }
 
 /// Large homogeneous pool (LHP) synthetic CDO model.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SyntheticCdo {
     /// Number of names in the reference pool.
     pub num_names: usize,

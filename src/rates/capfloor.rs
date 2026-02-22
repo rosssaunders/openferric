@@ -5,7 +5,7 @@ use crate::rates::schedule::generate_schedule;
 use crate::rates::{DayCountConvention, Frequency, YieldCurve, year_fraction};
 
 /// Black-76 cap/floor instrument on forward rates.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CapFloor {
     pub notional: f64,
     pub strike: f64,

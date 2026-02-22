@@ -7,11 +7,10 @@
 /// - Henrard, "Interest Rate Modelling in the Multi-Curve Framework" (2014)
 /// - Ametrano, Bianchetti, "Everything You Always Wanted to Know About
 ///   Multiple Interest Rate Curve Bootstrapping" (2013)
-
 use crate::rates::yield_curve::YieldCurve;
 
 /// Multi-curve environment: one discount curve + multiple forwarding curves.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MultiCurveEnvironment {
     /// OIS discount curve (e.g., SOFR, €STR).
     pub discount_curve: YieldCurve,
@@ -29,8 +28,7 @@ impl MultiCurveEnvironment {
 
     /// Add a forwarding curve for a specific tenor.
     pub fn add_forward_curve(&mut self, tenor_name: &str, curve: YieldCurve) {
-        self.forward_curves
-            .push((tenor_name.to_string(), curve));
+        self.forward_curves.push((tenor_name.to_string(), curve));
     }
 
     /// Get discount factor from OIS curve.
@@ -116,7 +114,7 @@ pub fn dual_curve_bootstrap(
         let ois_df_n = ois_curve.discount_factor(t_n);
         annuity += ois_df_n * dt;
 
-        // Solve for DF_fwd(T): par_rate * annuity = float_pv + (1 - DF_fwd(T)) * ois_df_n / ... 
+        // Solve for DF_fwd(T): par_rate * annuity = float_pv + (1 - DF_fwd(T)) * ois_df_n / ...
         // Simplified: DF_fwd(T) = (1 - par_rate * annuity + float_pv) if float_pv is already computed
         // More precisely, for the last period:
         let fwd_df_prev = if fwd_points.is_empty() {
@@ -237,12 +235,7 @@ mod tests {
     #[test]
     fn dual_curve_bootstrap_produces_valid_curve() {
         let ois = make_flat_curve(0.03);
-        let swap_rates = vec![
-            (1.0, 0.035),
-            (2.0, 0.036),
-            (3.0, 0.037),
-            (5.0, 0.038),
-        ];
+        let swap_rates = vec![(1.0, 0.035), (2.0, 0.036), (3.0, 0.037), (5.0, 0.038)];
         let fwd_curve = dual_curve_bootstrap(&swap_rates, &ois, 4);
         assert!(!fwd_curve.tenors.is_empty());
         // All DFs should be positive and decreasing

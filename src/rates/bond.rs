@@ -1,7 +1,7 @@
 use crate::rates::{DayCountConvention, YieldCurve};
 
 /// Plain fixed-rate bond.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FixedRateBond {
     /// Notional/face amount.
     pub face_value: f64,

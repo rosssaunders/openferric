@@ -539,6 +539,10 @@ mod tests {
             let t = expiry.max(1e-6);
             (self.base + self.skew * x * x + 0.01 * (t - 1.0)).max(0.05)
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     fn heston_mc_price<I: MonteCarloInstrument>(

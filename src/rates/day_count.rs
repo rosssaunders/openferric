@@ -1,7 +1,7 @@
 use chrono::{Datelike, NaiveDate};
 
 /// Supported day-count conventions for fixed-income instruments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DayCountConvention {
     /// Actual day count over a 360-day year.
     Act360,

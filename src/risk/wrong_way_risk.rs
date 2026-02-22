@@ -8,7 +8,7 @@
 //! 3. **Hull-White credit-equity** (stochastic hazard rate)
 
 /// Result of a wrong-way risk calculation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WwrResult {
     /// CVA computed assuming independence between exposure and default.
     pub cva_independent: f64,
@@ -25,7 +25,7 @@ pub struct WwrResult {
 /// Basel regulatory alpha-multiplier approach to wrong-way risk.
 ///
 /// CVA_wwr = α × CVA_independent, where α ≥ 1.4 by default.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AlphaWWR {
     /// Multiplier applied to independent CVA. Basel default is 1.4.
     pub alpha: f64,
@@ -99,7 +99,10 @@ impl CopulaWWR {
         risk_free_rate: f64,
     ) -> WwrResult {
         let n_times = time_grid.len();
-        assert!(!exposure_paths.is_empty(), "need at least one exposure path");
+        assert!(
+            !exposure_paths.is_empty(),
+            "need at least one exposure path"
+        );
         assert!(n_times > 0, "time_grid must be non-empty");
         for p in exposure_paths {
             assert_eq!(p.len(), n_times, "each path must match time_grid length");
@@ -151,8 +154,10 @@ impl CopulaWWR {
             let scale = (z_exposure * exposure_paths[0].iter().sum::<f64>().signum()).exp();
 
             // CVA contribution: LGD * DF(τ) * E(τ)
-            cva_wwr_sum += cva_contribution(exposure, time_grid, tau_wwr, lgd, risk_free_rate, scale);
-            cva_indep_sum += cva_contribution(exposure, time_grid, tau_indep, lgd, risk_free_rate, 1.0);
+            cva_wwr_sum +=
+                cva_contribution(exposure, time_grid, tau_wwr, lgd, risk_free_rate, scale);
+            cva_indep_sum +=
+                cva_contribution(exposure, time_grid, tau_indep, lgd, risk_free_rate, 1.0);
         }
 
         let cva_wwr = cva_wwr_sum / self.num_paths as f64;
@@ -410,9 +415,7 @@ mod tests {
         let n_paths = 500;
 
         // Asset paths all at 1.0 (no moves) — should give ratio = 1 exactly
-        let asset_paths: Vec<Vec<f64>> = (0..n_paths)
-            .map(|_| vec![1.0; time_grid.len()])
-            .collect();
+        let asset_paths: Vec<Vec<f64>> = (0..n_paths).map(|_| vec![1.0; time_grid.len()]).collect();
         let exposure = simple_exposure_profile(&time_grid, 1_000_000.0);
         let exposure_paths: Vec<Vec<f64>> = (0..n_paths).map(|_| exposure.clone()).collect();
 
@@ -435,12 +438,7 @@ mod tests {
 
         // Asset paths trending up (1.0 → 1.5)
         let asset_paths: Vec<Vec<f64>> = (0..n_paths)
-            .map(|_| {
-                time_grid
-                    .iter()
-                    .map(|&t| 1.0 + 0.1 * t)
-                    .collect()
-            })
+            .map(|_| time_grid.iter().map(|&t| 1.0 + 0.1 * t).collect())
             .collect();
         let exposure = simple_exposure_profile(&time_grid, 1_000_000.0);
         let exposure_paths: Vec<Vec<f64>> = (0..n_paths).map(|_| exposure.clone()).collect();
@@ -462,12 +460,7 @@ mod tests {
         let n_paths = 100;
 
         let asset_paths: Vec<Vec<f64>> = (0..n_paths)
-            .map(|_| {
-                time_grid
-                    .iter()
-                    .map(|&t| 1.0 + 0.1 * t)
-                    .collect()
-            })
+            .map(|_| time_grid.iter().map(|&t| 1.0 + 0.1 * t).collect())
             .collect();
         let exposure = simple_exposure_profile(&time_grid, 1_000_000.0);
         let exposure_paths: Vec<Vec<f64>> = (0..n_paths).map(|_| exposure.clone()).collect();

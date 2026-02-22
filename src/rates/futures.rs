@@ -1,5 +1,5 @@
 /// Cost-of-carry futures contract.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Future {
     pub underlying_spot: f64,
     pub risk_free_rate: f64,
@@ -41,7 +41,7 @@ impl Future {
 }
 
 /// Eurodollar/SOFR futures quote conventions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InterestRateFutureQuote;
 
 impl InterestRateFutureQuote {

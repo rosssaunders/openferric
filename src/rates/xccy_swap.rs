@@ -1,7 +1,7 @@
 use crate::rates::YieldCurve;
 
 /// Cross-currency swap: fixed leg in currency 1 vs floating leg in currency 2.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct XccySwap {
     /// Notional for fixed leg in currency 1.
     pub notional1: f64,
