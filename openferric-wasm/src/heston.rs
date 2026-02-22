@@ -111,3 +111,83 @@ pub fn heston_fft_price(
     .next()
     .unwrap_or(f64::NAN)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Alan Lewis reference parameters
+    const SPOT: f64 = 100.0;
+    const V0: f64 = 0.04;
+    const RHO: f64 = -0.5;
+    const SIGMA_V: f64 = 1.0;
+    const KAPPA: f64 = 4.0;
+    const THETA: f64 = 0.25;
+    const R: f64 = 0.01;
+    const Q: f64 = 0.02;
+    const T: f64 = 1.0;
+
+    #[test]
+    fn heston_fft_price_reference_k100() {
+        let price = heston_fft_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        assert!((price - 16.070154917028834).abs() < 0.05);
+    }
+
+    #[test]
+    fn heston_fft_price_reference_k80() {
+        let price = heston_fft_price(SPOT, 80.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        assert!((price - 26.774758743998854).abs() < 0.05);
+    }
+
+    #[test]
+    fn heston_fft_prices_batch() {
+        let prices = heston_fft_prices(SPOT, &[80.0, 100.0, 120.0], R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        assert_eq!(prices.len(), 3);
+        // Call prices decrease with strike
+        assert!(prices[0] > prices[1]);
+        assert!(prices[1] > prices[2]);
+    }
+
+    #[test]
+    fn heston_fft_prices_empty() {
+        let prices = heston_fft_prices(SPOT, &[], R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        assert!(prices.is_empty());
+    }
+
+    #[test]
+    fn heston_fft_price_matches_batch() {
+        let scalar = heston_fft_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        let batch = heston_fft_prices(SPOT, &[100.0], R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        assert!((scalar - batch[0]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn heston_price_call_reference() {
+        let price = heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, true);
+        assert!((price - 16.070154917028834).abs() < 0.05);
+    }
+
+    #[test]
+    fn heston_price_put_reference() {
+        let price = heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, false);
+        assert!((price - 17.055270961270109).abs() < 0.05);
+    }
+
+    #[test]
+    fn heston_price_put_call_parity() {
+        let call = heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, true);
+        let put = heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, false);
+        let fwd = SPOT * (-Q * T).exp();
+        let pv_k = 100.0 * (-R * T).exp();
+        let parity = call - put - (fwd - pv_k);
+        assert!(parity.abs() < 1e-4);
+    }
+
+    #[test]
+    fn heston_price_zero_maturity() {
+        let call = heston_price(SPOT, 90.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, 0.0, true);
+        assert!((call - 10.0).abs() < 1e-10); // intrinsic
+        let put = heston_price(SPOT, 110.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, 0.0, false);
+        assert!((put - 10.0).abs() < 1e-10); // intrinsic
+    }
+}

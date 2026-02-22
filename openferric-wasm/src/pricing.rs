@@ -209,3 +209,195 @@ pub fn bond_price(
     pv += face_value * (1.0 + r_per).powi(-(n_periods as i32));
     pv
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOL: f64 = 1e-6;
+
+    // -- bs_price --
+
+    #[test]
+    fn bs_price_atm_call() {
+        let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        assert!((price - 10.4506).abs() < 0.01);
+    }
+
+    #[test]
+    fn bs_price_atm_put() {
+        let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false);
+        assert!((price - 5.5735).abs() < 0.01);
+    }
+
+    #[test]
+    fn bs_price_put_call_parity() {
+        let s = 100.0;
+        let k = 100.0;
+        let r = 0.05;
+        let q = 0.0;
+        let t = 1.0;
+        let call = bs_price(s, k, r, q, 0.20, t, true);
+        let put = bs_price(s, k, r, q, 0.20, t, false);
+        let s_adj = s * (-q * t).exp();
+        let parity = call - put - (s_adj - k * (-r * t).exp());
+        assert!(parity.abs() < 1e-8);
+    }
+
+    #[test]
+    fn bs_price_with_dividend() {
+        let no_div = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let with_div = bs_price(100.0, 100.0, 0.05, 0.03, 0.20, 1.0, true);
+        assert!(with_div < no_div);
+    }
+
+    // -- bs_implied_vol --
+
+    #[test]
+    fn bs_implied_vol_round_trip() {
+        let vol = 0.25;
+        let price = bs_price(100.0, 100.0, 0.05, 0.0, vol, 1.0, true);
+        let recovered = bs_implied_vol(price, 100.0, 100.0, 0.05, 0.0, 1.0, true);
+        assert!((recovered - vol).abs() < 1e-4);
+    }
+
+    #[test]
+    fn bs_implied_vol_put_round_trip() {
+        let vol = 0.30;
+        let price = bs_price(100.0, 110.0, 0.03, 0.0, vol, 0.5, false);
+        let recovered = bs_implied_vol(price, 100.0, 110.0, 0.03, 0.0, 0.5, false);
+        assert!((recovered - vol).abs() < 1e-3);
+    }
+
+    // -- bsm_greeks_wasm --
+
+    #[test]
+    fn bsm_greeks_call_has_7_values() {
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        assert_eq!(g.len(), 7);
+    }
+
+    #[test]
+    fn bsm_greeks_call_delta_range() {
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let delta = g[0];
+        assert!(delta > 0.0 && delta < 1.0);
+    }
+
+    #[test]
+    fn bsm_greeks_put_delta_negative() {
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false);
+        assert!(g[0] < 0.0);
+    }
+
+    #[test]
+    fn bsm_greeks_gamma_positive() {
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        assert!(g[1] > 0.0);
+    }
+
+    #[test]
+    fn bsm_greeks_vega_positive() {
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        assert!(g[2] > 0.0);
+    }
+
+    // -- bs_price_batch_wasm --
+
+    #[test]
+    fn bs_price_batch_matches_scalar() {
+        let spots = [100.0, 100.0];
+        let strikes = [100.0, 110.0];
+        let rates = [0.05, 0.05];
+        let divs = [0.0, 0.0];
+        let vols = [0.20, 0.20];
+        let mats = [1.0, 1.0];
+        let calls = [1u8, 0u8];
+        let batch = bs_price_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &mats, &calls);
+        assert_eq!(batch.len(), 2);
+        let p1 = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let p2 = bs_price(100.0, 110.0, 0.05, 0.0, 0.20, 1.0, false);
+        assert!((batch[0] - p1).abs() < TOL);
+        assert!((batch[1] - p2).abs() < TOL);
+    }
+
+    // -- bsm_greeks_batch_wasm --
+
+    #[test]
+    fn bsm_greeks_batch_matches_scalar() {
+        let spots = [100.0];
+        let strikes = [100.0];
+        let rates = [0.05];
+        let divs = [0.0];
+        let vols = [0.20];
+        let expiries = [1.0];
+        let calls = [1u8];
+        let batch = bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls);
+        let single = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        assert_eq!(batch.len(), 7);
+        for i in 0..7 {
+            assert!((batch[i] - single[i]).abs() < TOL);
+        }
+    }
+
+    // -- barrier_price --
+
+    #[test]
+    fn barrier_up_out_call_less_than_vanilla() {
+        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let bp = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true);
+        assert!(bp > 0.0 && bp < vanilla);
+    }
+
+    #[test]
+    fn barrier_in_plus_out_equals_vanilla() {
+        let in_p = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-in", true);
+        let out_p = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true);
+        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        assert!((in_p + out_p - vanilla).abs() < 1e-3);
+    }
+
+    #[test]
+    fn barrier_invalid_type_returns_nan() {
+        assert!(barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "sideways", true).is_nan());
+    }
+
+    #[test]
+    fn barrier_down_in_put() {
+        let price = barrier_price(100.0, 100.0, 80.0, 0.05, 0.0, 0.20, 1.0, "down-in", false);
+        assert!(price > 0.0);
+    }
+
+    // -- bond_price --
+
+    #[test]
+    fn bond_price_par() {
+        // When coupon rate == yield rate, bond price ≈ face value
+        let price = bond_price(1000.0, 0.05, 10.0, 0.05, 2);
+        assert!((price - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn bond_price_premium() {
+        // Coupon > yield → premium
+        let price = bond_price(1000.0, 0.08, 10.0, 0.05, 2);
+        assert!(price > 1000.0);
+    }
+
+    #[test]
+    fn bond_price_discount() {
+        // Coupon < yield → discount
+        let price = bond_price(1000.0, 0.03, 10.0, 0.05, 2);
+        assert!(price < 1000.0);
+    }
+
+    #[test]
+    fn bond_price_zero_freq_nan() {
+        assert!(bond_price(1000.0, 0.05, 10.0, 0.05, 0).is_nan());
+    }
+
+    #[test]
+    fn bond_price_negative_maturity_nan() {
+        assert!(bond_price(1000.0, 0.05, -1.0, 0.05, 2).is_nan());
+    }
+}

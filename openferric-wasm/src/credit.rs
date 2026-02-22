@@ -38,3 +38,39 @@ pub fn cds_fair_spread(
     };
     cds.fair_spread(&discount_curve, &survival_curve)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cds_fair_spread_positive() {
+        let spread = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.02, 0.03);
+        assert!(spread > 0.0);
+    }
+
+    #[test]
+    fn cds_fair_spread_approx_lgd_times_hazard() {
+        // Fair spread ≈ (1-R)*λ for flat curves
+        let hazard = 0.02;
+        let recovery = 0.40;
+        let spread = cds_fair_spread(1_000_000.0, 5.0, recovery, hazard, 0.03);
+        let approx = (1.0 - recovery) * hazard;
+        assert!((spread - approx).abs() < 0.005);
+    }
+
+    #[test]
+    fn cds_fair_spread_higher_hazard() {
+        let spread_low = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.01, 0.03);
+        let spread_high = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.05, 0.03);
+        assert!(spread_high > spread_low);
+    }
+
+    #[test]
+    fn cds_fair_spread_lower_recovery() {
+        // Lower recovery → higher spread
+        let spread_high_r = cds_fair_spread(1_000_000.0, 5.0, 0.60, 0.02, 0.03);
+        let spread_low_r = cds_fair_spread(1_000_000.0, 5.0, 0.20, 0.02, 0.03);
+        assert!(spread_low_r > spread_high_r);
+    }
+}
