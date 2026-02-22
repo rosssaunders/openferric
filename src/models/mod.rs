@@ -23,8 +23,11 @@ pub mod variance_gamma;
 
 pub use cgmy::Cgmy;
 pub use commodity::{
-    CommodityForwardCurve, FuturesQuote, SchwartzOneFactor, SchwartzSmithTwoFactor,
-    convenience_yield_from_term_structure, implied_convenience_yield,
+    CommodityForwardCurve, CommoditySeasonalityModel, CommodityStorageContract, CurveStructure,
+    ForwardInterpolation, FuturesQuote, SchwartzOneFactor, SchwartzSmithTwoFactor, SeasonalityMode,
+    StorageLsmConfig, StorageValuation, TwoFactorCommodityProcess, TwoFactorSpreadModel,
+    VolumeConstrainedSwing, convenience_yield_from_term_structure, implied_convenience_yield,
+    intrinsic_storage_value, value_storage_intrinsic_extrinsic,
 };
 pub use hjm::{HjmFactor, HjmFactorShape, HjmModel};
 pub use hw_calibration::{

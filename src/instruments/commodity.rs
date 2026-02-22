@@ -12,6 +12,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 use crate::engines::analytic::{black76_price, kirk_spread_price};
 use crate::instruments::{FuturesOption, SpreadOption};
+use crate::models::TwoFactorSpreadModel;
 
 /// Commodity forward contract priced with continuous carry and convenience yield.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -368,6 +369,70 @@ impl CommoditySpreadOption {
             notional,
         }
     }
+
+    /// Crush spread constructor: `max(soymeal_ratio * soymeal + oil_ratio * oil - bean_ratio * beans - K, 0)`.
+    ///
+    /// The two product legs are aggregated into `forward_1`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn crush_spread(
+        option_type: OptionType,
+        soymeal_forward: f64,
+        soybean_oil_forward: f64,
+        soybean_forward: f64,
+        strike: f64,
+        soymeal_ratio: f64,
+        oil_ratio: f64,
+        bean_ratio: f64,
+        vol_products: f64,
+        vol_beans: f64,
+        rho: f64,
+        risk_free_rate: f64,
+        maturity: f64,
+        notional: f64,
+    ) -> Self {
+        Self {
+            option_type,
+            forward_1: soymeal_ratio * soymeal_forward + oil_ratio * soybean_oil_forward,
+            forward_2: soybean_forward,
+            strike,
+            quantity_1: 1.0,
+            quantity_2: bean_ratio,
+            vol_1: vol_products,
+            vol_2: vol_beans,
+            rho,
+            risk_free_rate,
+            maturity,
+            notional,
+        }
+    }
+
+    /// Two-factor Monte Carlo price for this commodity spread.
+    ///
+    /// Returns `(price, stderr)` and applies notional scaling.
+    pub fn price_two_factor_mc(
+        &self,
+        model: &TwoFactorSpreadModel,
+        num_paths: usize,
+        seed: u64,
+    ) -> Result<(f64, f64), PricingError> {
+        self.validate()?;
+        let (unit_price, unit_stderr) = model
+            .price_spread_option_mc(
+                self.option_type,
+                self.forward_1,
+                self.forward_2,
+                self.strike,
+                self.quantity_1,
+                self.quantity_2,
+                self.risk_free_rate,
+                self.maturity,
+                num_paths,
+                seed,
+            )
+            .map_err(PricingError::InvalidInput)?;
+
+        Ok((self.notional * unit_price, self.notional * unit_stderr))
+    }
 }
 
 impl Instrument for CommoditySpreadOption {
@@ -379,6 +444,7 @@ impl Instrument for CommoditySpreadOption {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{TwoFactorCommodityProcess, TwoFactorSpreadModel};
 
     #[test]
     fn commodity_option_black76_price_is_positive() {
@@ -415,5 +481,64 @@ mod tests {
 
         let price = spread.price_kirk().unwrap();
         assert!(price > 0.0);
+    }
+
+    #[test]
+    fn crush_spread_constructor_is_valid() {
+        let spread = CommoditySpreadOption::crush_spread(
+            OptionType::Call,
+            320.0,
+            58.0,
+            285.0,
+            5.0,
+            0.8,
+            0.2,
+            1.0,
+            0.28,
+            0.22,
+            0.55,
+            0.03,
+            0.5,
+            10_000.0,
+        );
+
+        spread.validate().unwrap();
+        assert!(spread.price_kirk().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn two_factor_mc_pricing_returns_positive_value() {
+        let spread = CommoditySpreadOption::spark_spread(
+            OptionType::Call,
+            62.0,
+            5.4,
+            0.5,
+            9.5,
+            0.42,
+            0.36,
+            0.5,
+            0.03,
+            1.0,
+            1_000.0,
+        );
+
+        let model = TwoFactorSpreadModel {
+            leg_1: TwoFactorCommodityProcess {
+                kappa_fast: 2.3,
+                sigma_fast: 0.25,
+                sigma_slow: 0.18,
+            },
+            leg_2: TwoFactorCommodityProcess {
+                kappa_fast: 2.0,
+                sigma_fast: 0.20,
+                sigma_slow: 0.14,
+            },
+            rho_fast: 0.55,
+            rho_slow: 0.45,
+        };
+
+        let (price, stderr) = spread.price_two_factor_mc(&model, 20_000, 17).unwrap();
+        assert!(price.is_finite() && price > 0.0);
+        assert!(stderr.is_finite() && stderr > 0.0);
     }
 }
