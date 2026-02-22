@@ -1,6 +1,11 @@
-//! Risk analytics for Portfolio.
+//! Portfolio-level Greek aggregation and shock-based PnL approximation utilities.
 //!
-//! Module openferric::risk::portfolio provides portfolio-level measures and adjustments.
+//! [`Position`] stores quantity, per-trade Greeks, and local spot/vol metadata;
+//! [`Portfolio`] aggregates delta/gamma/vega/theta and computes scenario PnL via
+//! delta-gamma-vega-theta expansion.
+//! References: standard risk decomposition in Hull (risk management chapters).
+//! Numerical note: scenario PnL is a local approximation and omits higher-order cross terms.
+//! Use this module for fast portfolio risk summaries and stress-test pre-checks.
 
 use crate::core::Greeks;
 

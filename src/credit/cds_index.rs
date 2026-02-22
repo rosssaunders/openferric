@@ -1,6 +1,13 @@
-//! Credit analytics for Cds Index.
+//! Basket credit products built from single-name CDS and survival curves.
 //!
-//! Module openferric::credit::cds_index provides pricing helpers and model utilities for credit products.
+//! [`CdsIndex`] computes weighted index NPV/fair spread from constituent [`crate::credit::cds::Cds`]
+//! contracts, while [`NthToDefaultBasket`] approximates trigger probabilities from default-count
+//! distributions over time. `first_to_default_spread_copula` prices first-to-default via Monte Carlo
+//! default-time simulation from [`crate::credit::copula::GaussianCopula`].
+//! References: Hull (2018), Ch. 24-25; Li (2000) copula default-time construction.
+//! Numerical notes: weight normalization, trigger probability clamping, and midpoint accrual handling
+//! are used to keep premium/protection legs stable on coarse payment meshes.
+//! Use this module for index and basket spread diagnostics; use `cdo.rs` for tranche-loss modeling.
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;

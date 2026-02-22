@@ -1,6 +1,13 @@
-//! Instrument definition for Real Option contracts.
+//! Real-options contract definitions for defer, expand, and abandon decisions.
 //!
-//! Module openferric::instruments::real_option contains payoff parameters and validation logic.
+//! [`RealOptionBinomialSpec`] stores project-value tree inputs (volatility, rate, steps,
+//! maturity, and optional discrete cash flows), reused by defer/expand/abandon structs.
+//! References: Dixit and Pindyck (1994), Trigeorgis (1996).
+//! Validation enforces finite positive project value, maturity, and step count,
+//! plus product-specific constraints such as positive investment/salvage costs.
+//! This module is parameterization-only; valuation logic (typically American-style lattice
+//! with managerial exercise) is implemented by dedicated real-option engines.
+//! Use when strategic corporate-flexibility payoffs must be carried as typed instruments.
 
 use crate::core::{Instrument, PricingError};
 

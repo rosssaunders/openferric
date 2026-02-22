@@ -1,6 +1,12 @@
-//! Stochastic model implementation for Lmm dynamics.
+//! Lognormal LIBOR Market Model (BGM) simulation and swaption pricing utilities.
 //!
-//! Module openferric::models::lmm provides model equations and related calibration/simulation helpers.
+//! [`LmmModel`] evolves forward rates with correlated lognormal shocks and a spot-measure drift
+//! approximation, then prices European swaptions by Monte Carlo from terminal forward snapshots.
+//! Helper functions provide Black swaption pricing and initial swap-rate/annuity extraction.
+//! References: Brace, Gatarek, and Musiela (1997); Jamshidian market-model literature.
+//! Numerical safeguards include tenor/correlation validation, Cholesky PSD checks, and positive-rate floors.
+//! Bias/variance tradeoff is controlled by time-step granularity in drift accumulation.
+//! Use LMM when tenor-by-tenor forward dynamics and correlation structure are required.
 
 use crate::math::normal_cdf;
 use rand::SeedableRng;

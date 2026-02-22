@@ -1,6 +1,12 @@
-//! Instrument definition for Basket contracts.
+//! Multi-asset basket option definitions (average, best-of, and worst-of payoffs).
 //!
-//! Module openferric::instruments::basket contains payoff parameters and validation logic.
+//! [`BasketType`] distinguishes weighted arithmetic baskets from rank-based extrema,
+//! and [`BasketOption`] stores shared strike/maturity/call-put metadata.
+//! References: Stulz (1982) and Johnson (1987) for two-asset extreme payoffs,
+//! plus standard basket-option treatments in Hull.
+//! Validation requires finite weights and enforces non-empty weights for arithmetic baskets.
+//! Ranking-based baskets ignore explicit weights by design in this schema.
+//! Use this module for product definition; pricing choice (moment matching, MC, copula) is external.
 
 use crate::core::{Instrument, PricingError};
 

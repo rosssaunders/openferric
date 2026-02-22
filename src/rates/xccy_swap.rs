@@ -1,6 +1,12 @@
-//! Rates analytics for Xccy Swap.
+//! Cross-currency swap valuation with spot-FX conversion and dual-curve support.
 //!
-//! Module openferric::rates::xccy_swap contains pricing and conventions for fixed-income instruments.
+//! [`XccySwap`] models a fixed leg in currency 1 against a floating leg in currency 2,
+//! including terminal notional exchanges, FX conversion to reporting currency,
+//! par fixed-rate solving, and mark-to-market under shifted FX spot.
+//! References: Moreni and Pallavicini (2014) collateralized FX/rates framework (conceptual);
+//! standard market XCCY swap conventions.
+//! Numerical notes: annualized payment-grid simplification and deterministic-curve assumptions.
+//! Use this module for compact XCCY valuation plumbing before full CSA/collateral modeling.
 
 use crate::rates::YieldCurve;
 

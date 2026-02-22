@@ -1,6 +1,11 @@
-//! Rates analytics for Futures.
+//! Futures pricing helpers for cost-of-carry assets and short-rate futures quotes.
 //!
-//! Module openferric::rates::futures contains pricing and conventions for fixed-income instruments.
+//! [`Future`] implements continuous-carry futures pricing, basis, and implied repo extraction,
+//! while [`InterestRateFutureQuote`] converts between quoted price and implied rate and applies
+//! the standard convexity adjustment between futures and forwards.
+//! References: Hull (2018), futures pricing and Eurodollar/SOFR conventions.
+//! Numerical behavior returns `NaN` for invalid positive-domain quantities (spot, expiry, price).
+//! Use this module for quoting/normalization utilities in curve construction workflows.
 
 /// Cost-of-carry futures contract.
 #[derive(Debug, Clone, Copy, PartialEq)]

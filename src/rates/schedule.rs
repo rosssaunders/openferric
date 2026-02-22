@@ -1,6 +1,11 @@
-//! Rates analytics for Schedule.
+//! Coupon schedule generation primitives for rates instruments.
 //!
-//! Module openferric::rates::schedule contains pricing and conventions for fixed-income instruments.
+//! Defines [`Frequency`] month increments and a minimal [`BusinessDayConvention`] placeholder,
+//! then builds start-to-end date vectors used by swaps/capfloors.
+//! References: ISDA date-generation conventions (conceptual alignment).
+//! Current business-day adjustment is intentionally stubbed (no holiday calendar, no roll logic),
+//! so generated dates are suitable for simplified examples and tests, not production calendars.
+//! Use this module when a lightweight deterministic schedule is sufficient.
 
 use chrono::{Datelike, NaiveDate};
 

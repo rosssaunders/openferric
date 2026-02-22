@@ -1,6 +1,12 @@
-//! Instrument definition for Tarf contracts.
+//! TARF/accumulator product schema for target-accrual FX structures.
 //!
-//! Module openferric::instruments::tarf contains payoff parameters and validation logic.
+//! [`Tarf`] encodes strike, fixing schedule, downside leverage, KO barrier, and target-profit
+//! termination logic; [`TarfType`] distinguishes standard vs decumulator direction.
+//! References: Wystup (2017), FX structured-product desk conventions.
+//! Validation requires positive strike/notional/target/leverage and non-empty positive fixings.
+//! Pathwise accrual, KO state, and target-tracking are engine responsibilities,
+//! so this module focuses on consistent contract input representation.
+//! Use for structured FX products with early redemption on accumulated payoff targets.
 
 /// Target Accrual Redemption Forward (TARF) instrument definition.
 ///

@@ -1,6 +1,12 @@
-//! Volatility analytics for Local Vol.
+//! Dupire local-volatility extraction from an implied-vol surface.
 //!
-//! Module openferric::vol::local_vol provides smile/surface construction or volatility inversion utilities.
+//! [`DupireLocalVol`] finite-differences call prices in strike and maturity,
+//! then applies `sigma_loc^2 = 2*dC/dT / (K^2*d2C/dK2)` (forward-measure form).
+//! The module defines an [`ImpliedVolSurface`] trait and adapters for existing surface types.
+//! References: Dupire (1994), Derman and Kani (1994).
+//! Numerical safeguards: strike/time bumps are floor-limited, denominator degeneracy falls back
+//! to implied vol, and all outputs are floored to positive levels.
+//! Use this module to transform implied surfaces into local-vol inputs for path simulation/PDE engines.
 
 use crate::pricing::OptionType;
 use crate::pricing::european::black_76_price;

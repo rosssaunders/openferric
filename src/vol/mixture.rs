@@ -1,6 +1,12 @@
-//! Volatility analytics for Mixture.
+//! Lognormal-mixture smile model and Levenberg-Marquardt calibration helpers.
 //!
-//! Module openferric::vol::mixture provides smile/surface construction or volatility inversion utilities.
+//! [`LognormalMixture`] prices options as weighted sums of Black-Scholes components,
+//! provides implied-density extraction via Breeden-Litzenberger finite differences,
+//! and supports 2-3 component calibration through multi-start LM optimization.
+//! References: Brigo and Mercurio (mixture models); Breeden and Litzenberger (1978).
+//! Numerical design uses softmax-constrained weights, exponentiated vol parameters,
+//! parameter projection/clamping, and deterministic volatility-order sorting post-fit.
+//! Use mixture smiles when single-lognormal models cannot reproduce observed skew/smile curvature.
 
 use nalgebra::{DMatrix, DVector};
 

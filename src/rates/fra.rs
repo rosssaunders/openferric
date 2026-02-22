@@ -1,6 +1,10 @@
-//! Rates analytics for Fra.
+//! Forward Rate Agreement (FRA) payoff and valuation helper.
 //!
-//! Module openferric::rates::fra contains pricing and conventions for fixed-income instruments.
+//! [`ForwardRateAgreement`] computes implied forward rate from the curve and discounted NPV
+//! over a single accrual period.
+//! Reference: Hull (2018), FRAs and forward-rate agreements chapter.
+//! The implementation is intentionally compact and assumes deterministic curves/day-count conversion.
+//! Use this module for simple FRA valuation components or regression tests against larger swap stacks.
 
 use chrono::NaiveDate;
 

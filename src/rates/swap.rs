@@ -1,6 +1,12 @@
-//! Rates analytics for Swap.
+//! Plain-vanilla fixed-for-floating swap valuation and sensitivity utilities.
 //!
-//! Module openferric::rates::swap contains pricing and conventions for fixed-income instruments.
+//! [`InterestRateSwap`] computes fixed-leg PV, floating-leg PV, receiver-float NPV,
+//! par fixed rate, and parallel-bump DV01 from a single deterministic curve.
+//! A builder API ([`SwapBuilder`]) supplies market-style defaults and explicit overrides.
+//! References: Hull (2018), swap valuation fundamentals.
+//! Numerical notes: schedule-driven accrual integration, zero/negative accrual filtering,
+//! and rate-bump conversion via zero-rate reconstruction from discount factors.
+//! Use this module for single-curve swap benchmarks; use `multi_curve.rs` for OIS/IBOR separation.
 
 use chrono::NaiveDate;
 

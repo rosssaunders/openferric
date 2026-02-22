@@ -1,6 +1,13 @@
-//! Instrument definition for Barrier contracts.
+//! Single-barrier option schema plus ergonomic builder for knock-in/out variants.
 //!
-//! Module openferric::instruments::barrier contains payoff parameters and validation logic.
+//! [`BarrierOption`] couples vanilla fields with [`crate::core::BarrierSpec`], and
+//! [`BarrierOptionBuilder`] provides explicit constructors (`up_and_out`, `down_and_in`, etc.)
+//! to reduce invalid state combinations at call sites.
+//! References: Reiner and Rubinstein (1991); Haug (2007), barrier-option formulas.
+//! Validation enforces positive strike/barrier level and non-negative rebate.
+//! Path-hit semantics are evaluated by pricing engines (for example Monte Carlo barrier checks);
+//! this module only defines contract state and input constraints.
+//! Prefer this type over ad hoc tuples when barriers and rebates must remain explicit.
 
 use crate::core::{
     BarrierDirection, BarrierSpec, BarrierStyle, Instrument, OptionType, PricingError,

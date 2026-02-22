@@ -1,6 +1,11 @@
-//! Risk analytics for Mva.
+//! Margin Valuation Adjustment (MVA) routines with simplified SIMM-style initial margin.
 //!
-//! Module openferric::risk::mva provides portfolio-level measures and adjustments.
+//! [`SimmMargin`] computes a single-risk-class correlation-weighted margin proxy,
+//! and `mva_from_profile` integrates funding spread against expected IM over time.
+//! References: ISDA SIMM methodology (high-level), Andersen-Pykhtin-Sokol (2017).
+//! The SIMM representation is deliberately reduced (no full bucket hierarchy/concentration logic),
+//! making it useful for prototypes and sensitivity studies rather than regulatory production runs.
+//! Use this module to connect IM profiles to funding-cost adjustments in XVA stacks.
 
 /// Margin Valuation Adjustment (MVA).
 ///

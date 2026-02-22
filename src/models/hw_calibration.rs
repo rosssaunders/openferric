@@ -1,6 +1,12 @@
-//! Stochastic model implementation for Hw Calibration dynamics.
+//! Fast calibration helpers for one-factor Hull-White parameters from ATM swaption vols.
 //!
-//! Module openferric::models::hw_calibration provides model equations and related calibration/simulation helpers.
+//! `hw_atm_swaption_vol_approx` provides a closed-form volatility approximation as a function of
+//! mean reversion `a`, volatility `sigma`, expiry, and tenor, and `calibrate_hull_white_params`
+//! performs a coarse-to-fine grid search minimizing squared ATM Black-price errors.
+//! References: Hull and White (1990, 1994); Brigo and Mercurio (2006), HW calibration sections.
+//! The objective compares normalized ATM prices rather than raw vols for better scale behavior.
+//! Numerical notes: finite-domain validation, bounded search grids, and fallback to `None` on invalid quotes.
+//! Use this module for robust initial `(a,sigma)` seeds before higher-fidelity calibration routines.
 
 use crate::math::normal_cdf;
 

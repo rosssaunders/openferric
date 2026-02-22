@@ -1,6 +1,13 @@
-//! Credit analytics for Copula.
+//! One-factor Gaussian copula simulation of correlated default times.
 //!
-//! Module openferric::credit::copula provides pricing helpers and model utilities for credit products.
+//! The latent-variable mapping `Z_i = rho*M + sqrt(1-rho^2)*epsilon_i` is transformed through
+//! `Phi(Z_i)` and inverted via each name's survival curve to obtain simulated default times.
+//! [`GaussianCopula`] stores the common-factor loading and [`BasketDefaultSimulation`] stores
+//! realized latent variables, market factor, and default times for downstream basket pricing.
+//! References: Li (2000), Andersen-Sidenius-Basu (2003).
+//! Numerical safeguards clamp `rho` away from +/-1 and uniform draws away from {0,1} before
+//! inverse-survival evaluation, preventing infinities and unstable tail behavior.
+//! Use this module for dependency modeling in first/nth-to-default workflows.
 
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};

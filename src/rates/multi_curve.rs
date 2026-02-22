@@ -1,6 +1,12 @@
-//! Rates analytics for Multi Curve.
+//! Post-crisis multi-curve framework: OIS discounting plus tenor-specific forwarding curves.
 //!
-//! Module openferric::rates::multi_curve contains pricing and conventions for fixed-income instruments.
+//! [`MultiCurveEnvironment`] stores one discount curve and named forwarding curves,
+//! with helpers for tenor basis extraction and dual-curve IRS valuation.
+//! `dual_curve_bootstrap` builds a forwarding curve consistent with par swap quotes under OIS discounting.
+//! References: Henrard (2014); Ametrano and Bianchetti (2013).
+//! Numerical caveat: bootstrap uses a simplified recursion and interpolation that is suitable for
+//! compact examples but not a full production bootstrap stack with instrument hierarchy controls.
+//! Use this module to prototype basis/discounting separation and validate curve-usage plumbing.
 
 /// Multi-curve framework for post-2008 interest rate modeling.
 ///

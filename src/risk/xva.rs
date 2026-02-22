@@ -1,6 +1,11 @@
-//! Risk analytics for Xva.
+//! Deterministic-curve CVA/DVA calculator from exposure profiles and survival curves.
 //!
-//! Module openferric::risk::xva provides portfolio-level measures and adjustments.
+//! [`XvaCalculator`] combines discounting with counterparty/own survival term structures,
+//! exposes expected and negative-expected exposure profile builders from path matrices,
+//! and computes CVA/DVA via interval default probabilities.
+//! References: Gregory (2015); Green (2015) bilateral valuation adjustments.
+//! Numerical behavior relies on monotone time grids and deterministic LGD clamps to `[0,1]`.
+//! Use this module for transparent baseline XVA decomposition before adding stochastic-WWR models.
 
 use crate::credit::SurvivalCurve;
 use crate::rates::YieldCurve;

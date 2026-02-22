@@ -1,6 +1,13 @@
-//! Instrument definition for Variance Swap contracts.
+//! Variance and volatility swap contract schemas with replication quote inputs.
 //!
-//! Module openferric::instruments::variance_swap contains payoff parameters and validation logic.
+//! [`VarianceSwap`] and [`VolatilitySwap`] store vega notional, strike vol, expiry,
+//! optional observed realized variance, and OTM option-strip quotes ([`VarianceOptionQuote`]).
+//! References: Demeterfi, Derman, Kamal, and Zou (1999) variance swap replication.
+//! Validation enforces quote quality and minimum strip size, and includes convexity-input checks
+//! (`var_of_var`) for volatility-swap approximations.
+//! This module defines trade state; fair-strike replication and mark-to-market routines belong to
+//! pricing/risk engines consuming these quotes.
+//! Use when volatility-exposure products need explicit replication metadata in the instrument layer.
 
 use crate::core::{Instrument, PricingError};
 

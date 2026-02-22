@@ -1,6 +1,13 @@
-//! Credit analytics for Isda.
+//! ISDA-style dated CDS utilities: IMM schedules, settlement conventions, and flat-curve pricing.
 //!
-//! Module openferric::credit::isda provides pricing helpers and model utilities for credit products.
+//! The module supports both midpoint and exact-integral valuation under flat hazard/discount rates.
+//! [`DatedCds`] plus [`IsdaConventions`] drive step-in/cash-settle date handling, IMM roll logic,
+//! accrued premium treatment, and buyer/seller sign conventions.
+//! References: ISDA CDS Standard Model documentation (2014 onward), O'Kane (2008).
+//! Exact mode uses closed-form interval integrals for protection and accrual-on-default terms
+//! (see `exact_flat_interval_terms`) rather than midpoint approximations.
+//! Numerical caveats: business-day logic currently skips weekends only, and flat-rate assumptions
+//! are intended for benchmarking and utilities, not full production curve-by-curve CDS calibration.
 
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 

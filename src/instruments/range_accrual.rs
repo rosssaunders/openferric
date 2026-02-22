@@ -1,6 +1,12 @@
-//! Instrument definition for Range Accrual contracts.
+//! Range-accrual note schemas for single-rate and dual-rate (spread) coupons.
 //!
-//! Module openferric::instruments::range_accrual contains payoff parameters and validation logic.
+//! [`RangeAccrual`] accrues coupon when one reference remains inside `[lower, upper]`,
+//! and [`DualRangeAccrual`] does the same for a spread/rate pair proxy.
+//! References: Brigo and Mercurio (2006), CMS/range-accrual market conventions.
+//! Validation enforces positive notional/coupon, ordered bounds, and non-empty fixing schedules.
+//! Pricing is intentionally external because payoff valuation depends on daily fixing dynamics,
+//! interpolation rules, and callable overlays that vary across desks.
+//! Use this module for contractual representation before model-specific accrual simulation.
 
 /// Range accrual note instrument definition.
 ///

@@ -1,6 +1,12 @@
-//! Instrument definition for Rainbow contracts.
+//! Two-asset rainbow product schemas: best-of, worst-of, and correlation options.
 //!
-//! Module openferric::instruments::rainbow contains payoff parameters and validation logic.
+//! [`BestOfTwoCallOption`] and [`WorstOfTwoCallOption`] encode extreme-value payoffs,
+//! while [`TwoAssetCorrelationOption`] captures conditional digital-vanilla hybrids.
+//! References: Stulz (1982), Johnson (1987), Margrabe-style multi-asset extensions.
+//! Shared validation checks positive spots/vols, `rho in [-1,1]`, and non-negative maturity.
+//! This module separates payoff structure from numerical method; engines may use bivariate normal
+//! quadrature, copula simulation, or full-path Monte Carlo depending on model assumptions.
+//! Use for explicit two-underlying dependence products with interpretable correlation inputs.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

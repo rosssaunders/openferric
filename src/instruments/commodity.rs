@@ -1,6 +1,13 @@
-//! Instrument definition for Commodity contracts.
+//! Commodity contract definitions with embedded closed-form valuation utilities.
 //!
-//! Module openferric::instruments::commodity contains payoff parameters and validation logic.
+//! Covered products: cost-of-carry forwards ([`CommodityForward`]), futures MTM,
+//! Black-76 options ([`CommodityOption`]), and Kirk-approx spread options
+//! ([`CommoditySpreadOption`], including crack/spark constructors).
+//! References: Black (1976), Kirk (1995), Hull commodity derivatives chapters.
+//! Key numerical checks include finite positive forwards/notionals, bounded correlation,
+//! and put pricing by parity from Kirk-call valuation.
+//! Use this module for front-office commodity product setup with lightweight pricing hooks;
+//! for stochastic curve dynamics/calibration, pair with `models::commodity`.
 
 use crate::core::{Instrument, OptionType, PricingError};
 use crate::engines::analytic::{black76_price, kirk_spread_price};

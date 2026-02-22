@@ -1,6 +1,11 @@
-//! Risk analytics for Var.
+//! Value-at-Risk and Expected Shortfall estimators (historical and parametric).
 //!
-//! Module openferric::risk::var provides portfolio-level measures and adjustments.
+//! Includes historical VaR/ES, delta-normal VaR, delta-gamma normal moment matching,
+//! closed-form normal ES, and Cornish-Fisher quantile corrections from sample moments.
+//! References: Jorion (2007); Cornish and Fisher expansion; Basel market-risk concepts.
+//! Key numerical choices: empirical quantile interpolation, annual-to-horizon scaling by 252 days,
+//! and input validation via strict confidence/volatility/horizon checks.
+//! Use this module for fast market-risk estimators; heavy-tail and regime-switching models are external.
 
 use crate::math::{normal_inv_cdf, normal_pdf};
 

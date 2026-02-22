@@ -1,6 +1,12 @@
-//! Stochastic model implementation for Short Rate dynamics.
+//! Classic one-factor short-rate models: Vasicek, CIR, and calibrated Hull-White.
 //!
-//! Module openferric::models::short_rate provides model equations and related calibration/simulation helpers.
+//! [`Vasicek`] and [`CIR`] expose closed-form zero-coupon bond prices,
+//! while [`HullWhite`] adds theta calibration from an initial curve and model-consistent bond pricing.
+//! References: Vasicek (1977), Cox-Ingersoll-Ross (1985), Hull and White (1990).
+//! Calibration utilities approximate instantaneous forward and derivative terms via finite differences,
+//! with special handling of near-zero mean-reversion limits.
+//! Numerical caveat: interpolation and finite-difference step size can impact `theta(t)` smoothness.
+//! Use this module for rate-model benchmarking and analytic fixed-income pricing prototypes.
 
 use crate::rates::YieldCurve;
 

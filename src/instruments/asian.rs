@@ -1,6 +1,12 @@
-//! Instrument definition for Asian contracts.
+//! Asian option contract schema and validation rules.
 //!
-//! Module openferric::instruments::asian contains payoff parameters and validation logic.
+//! [`AsianOption`] wraps [`crate::core::AsianSpec`] (arithmetic/geometric averaging,
+//! fixed/floating strike convention, observation schedule) with option side, strike, and expiry.
+//! References for payoff conventions: Kemna and Vorst (1990), Turnbull and Wakeman (1991).
+//! Validation enforces non-empty observation times and bounds each fixing to `[0, expiry]`.
+//! This module intentionally does not price; pricing engines consume this schema in Monte Carlo
+//! and control-variate workflows (for example geometric-Asian closed-form variance reduction).
+//! Use this type when you need explicit averaging schedule semantics in instrument definitions.
 
 use crate::core::{AsianSpec, Instrument, OptionType, PricingError};
 

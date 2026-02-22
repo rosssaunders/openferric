@@ -1,6 +1,13 @@
-//! Instrument definition for Weather contracts.
+//! Weather-derivative contracts and index utilities (HDD/CDD, swaps/options, cat bonds).
 //!
-//! Module openferric::instruments::weather contains payoff parameters and validation logic.
+//! Utility functions compute daily and cumulative degree-day indices; [`WeatherSwap`] and
+//! [`WeatherOption`] price payoffs from expected or historical (burn-analysis) index distributions.
+//! [`CatastropheBond`] uses an expected-loss Poisson approximation for coupon/principal survival.
+//! References: Alaton, Djehiche, and Stillberger (2002) weather derivatives;
+//! Cummins and Weiss catastrophe-risk transfer literature.
+//! Numerical notes: strict finite/non-negative validation, discounting by maturity,
+//! and exponential survival approximation `exp(-lambda*EL*t)` for cat-bond principal.
+//! Use this module for lightweight weather-risk prototyping before full stochastic temperature models.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

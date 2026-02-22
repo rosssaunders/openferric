@@ -1,6 +1,10 @@
-//! Instrument definition for Power contracts.
+//! Power-option contract schema with transformed payoff exponent.
 //!
-//! Module openferric::instruments::power contains payoff parameters and validation logic.
+//! [`PowerOption`] represents `max(sign*(S^alpha-K), 0)` where `sign` depends on call/put side.
+//! References: Rubinstein and Reiner (1991) power options; Haug (2007) exotic catalog.
+//! Validation enforces finite positive strike and exponent `alpha`, plus non-negative expiry.
+//! The module does not prescribe pricing; closed-form and Monte Carlo treatments differ by model.
+//! Use this definition when non-linear exposure to spot level (beyond vanilla delta) is required.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

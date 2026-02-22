@@ -1,6 +1,12 @@
-//! Volatility analytics for Smile.
+//! Smile construction and transformation utilities (sticky rules, SABR anchoring, Vanna-Volga).
 //!
-//! Module openferric::vol::smile provides smile/surface construction or volatility inversion utilities.
+//! Provides strike-spline [`SmileSlice`], sticky-strike/sticky-delta dynamics,
+//! strike-from-delta inversion helpers, SABR smile generation from ATM inputs,
+//! and a practical Vanna-Volga adjustment from ATM/RR/BF market quotes.
+//! References: Hagan et al. (2002) SABR; Castagna and Mercurio (2007) Vanna-Volga.
+//! Numerical considerations include delta clamping, Newton plus bisection fallback for strike solves,
+//! and ATM-neutral correction weighting to avoid artificial center shifts.
+//! Use this module for FX/equity smile quoting workflows and spot-shift scenario transformations.
 
 use crate::core::OptionType;
 use crate::math::{CubicSpline, normal_cdf, normal_inv_cdf, normal_pdf};

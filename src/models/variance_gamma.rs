@@ -1,6 +1,13 @@
-//! Stochastic model implementation for Variance Gamma dynamics.
+//! Variance-Gamma (VG) model utilities: characteristic function pricing and path simulation.
 //!
-//! Module openferric::models::variance_gamma provides model equations and related calibration/simulation helpers.
+//! [`VarianceGamma`] encodes `(sigma, theta, nu)` for the time-changed Brownian process
+//! `X_t = theta*G_t + sigma*W_{G_t}`, with martingale drift correction for risk-neutral pricing.
+//! The module supports Carr-Madan FFT call pricing via characteristic functions and
+//! Monte Carlo simulation using gamma increments.
+//! References: Madan and Seneta (1990); Madan, Carr, and Chang (1998); Carr and Madan (1999).
+//! Numerical checks enforce the VG martingale condition `1-theta*nu-0.5*sigma^2*nu>0`
+//! and strict positivity for spot/maturity/path counts.
+//! Use this module for jump/skew modeling beyond lognormal diffusion assumptions.
 
 use num_complex::Complex;
 use rand::SeedableRng;

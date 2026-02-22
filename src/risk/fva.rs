@@ -1,6 +1,11 @@
-//! Risk analytics for Fva.
+//! Funding Valuation Adjustment (FVA) profile aggregation utilities.
 //!
-//! Module openferric::risk::fva provides portfolio-level measures and adjustments.
+//! `fva_from_profile` integrates discounted funding spread times funding exposure,
+//! and `funding_exposure_profile` transforms pathwise MTM into average uncollateralized exposure
+//! using simplified CSA settings ([`CsaTerms`]).
+//! Reference: Green (2015), XVA funding chapters.
+//! Numerical assumptions are first-order: deterministic spreads/discounting and basic threshold collateral.
+//! Use this module for transparent FVA decomposition; integrate with richer simulation stacks as needed.
 
 /// Funding Valuation Adjustment (FVA).
 ///

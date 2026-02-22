@@ -1,6 +1,12 @@
-//! Rates analytics for Capfloor.
+//! Black-76 cap/floor valuation on discretized accrual schedules.
 //!
-//! Module openferric::rates::capfloor contains pricing and conventions for fixed-income instruments.
+//! [`CapFloor`] prices contracts as sums of optionlets, using forward rates extracted from
+//! discount factors and Black caplet/floorlet formulas per accrual period.
+//! The module also provides implied-vol inversion by bisection against market price.
+//! References: Black (1976); Brigo and Mercurio (2006), cap/floor chapter.
+//! Numerical handling includes intrinsic-value branches for zero vol/expiry and robust
+//! schedule/accrual guards for irregular date inputs.
+//! Use this module for standard cap/floor pricing; for smile-consistent pricing, pair with SABR/surface tools.
 
 use chrono::NaiveDate;
 

@@ -1,6 +1,13 @@
-//! Volatility analytics for Jaeckel.
+//! Jaeckel-style robust implied-vol inversion in normalized Black coordinates.
 //!
-//! Module openferric::vol::jaeckel provides smile/surface construction or volatility inversion utilities.
+//! The solver maps quotes to normalized out-of-the-money call space,
+//! applies rational initial guesses, and refines with fourth-order Householder updates
+//! under explicit arbitrage bounds and bracketing.
+//! References: Jaeckel (2015), "Let's Be Rational".
+//! Key public entry points are `implied_vol_jaeckel_normalized` and `implied_vol_jaeckel`.
+//! Numerical controls include intrinsic/upper-price bounds, bounded `sigma*sqrt(T)` domain,
+//! and bisection-safe fallbacks when high-order steps leave the bracket.
+//! Use this when Newton-only implied-vol routines become unstable in deep ITM/OTM regions.
 
 use crate::core::PricingError;
 use crate::math::{normal_cdf, normal_inv_cdf, normal_pdf};

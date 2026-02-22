@@ -1,6 +1,11 @@
-//! Risk analytics for Kva.
+//! Capital Valuation Adjustment (KVA) helpers with simplified SA-CCR ingredients.
 //!
-//! Module openferric::risk::kva provides portfolio-level measures and adjustments.
+//! The module provides supervisory-factor lookup ([`SaCcrAssetClass`]),
+//! a compact EAD proxy (`sa_ccr_ead`), regulatory capital conversion, KVA time integration,
+//! and netting-vs-gross exposure aggregation utilities.
+//! References: Basel III SA-CCR framework; Green (2015).
+//! Numerical behavior is deterministic and intentionally simplified relative to full rulebooks.
+//! Use this for first-pass capital-cost analytics or testing KVA data pipelines.
 
 /// Capital Valuation Adjustment (KVA).
 ///

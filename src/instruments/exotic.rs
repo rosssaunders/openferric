@@ -1,6 +1,13 @@
-//! Instrument definition for Exotic contracts.
+//! Unified schemas for several classical exotics: lookback, chooser, quanto, and compound options.
 //!
-//! Module openferric::instruments::exotic contains payoff parameters and validation logic.
+//! [`ExoticOption`] is an enum wrapper over product-specific structs so engines can dispatch
+//! by payoff family while sharing validation behavior.
+//! References: Goldman et al. (1979) lookbacks, Rubinstein (1991) chooser options,
+//! Geske (1979) compound options, and quanto drift-adjustment literature.
+//! Validation enforces domain constraints such as `choose_time <= expiry`, FX-correlation bounds,
+//! and positive strikes/observed extrema.
+//! This module is intentionally payoff-parameter focused; pricing methods belong in analytic/MC engines.
+//! Use this when you need one type-safe container for multiple exotic product families.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

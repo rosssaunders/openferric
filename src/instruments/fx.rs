@@ -1,6 +1,11 @@
-//! Instrument definition for Fx contracts.
+//! European FX option schema for Garman-Kohlhagen style pricing.
 //!
-//! Module openferric::instruments::fx contains payoff parameters and validation logic.
+//! [`FxOption`] stores domestic/foreign rates, spot/strike FX levels, volatility,
+//! maturity, and option side.
+//! References: Garman and Kohlhagen (1983), Hull FX options chapter.
+//! Validation enforces positive spot/strike/vol and non-negative maturity.
+//! Pricing is not done in this module; it provides normalized contract inputs for engines.
+//! Use this type when carrying domestic-vs-foreign rate separation through the stack.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

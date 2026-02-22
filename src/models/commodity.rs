@@ -1,6 +1,13 @@
-//! Stochastic model implementation for Commodity dynamics.
+//! Commodity factor models and convenience-yield term-structure helpers.
 //!
-//! Module openferric::models::commodity provides model equations and related calibration/simulation helpers.
+//! Implements exact-step simulation for the one-factor Schwartz log-spot OU model
+//! and the two-factor Schwartz-Smith decomposition (`ln S = chi + xi`) with correlated shocks.
+//! Key types are [`SchwartzOneFactor`], [`SchwartzSmithTwoFactor`], and [`CommodityForwardCurve`].
+//! References: Schwartz (1997); Schwartz and Smith (2000); Gibson and Schwartz (1990).
+//! Numerical design uses closed-form transition moments (not Euler) and positivity-preserving
+//! spot reconstruction, with strict input validation for maturities/vols/correlation.
+//! Companion utilities infer convenience yields from futures quotes and build interpolated forward curves.
+//! Use this module for commodity dynamics/calibration inputs; product payoff schemas live in `instruments::commodity`.
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;

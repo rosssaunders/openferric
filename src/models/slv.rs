@@ -1,6 +1,13 @@
-//! Stochastic model implementation for Slv dynamics.
+//! Stochastic local volatility (SLV) calibration and pricing via particle methods.
 //!
-//! Module openferric::models::slv provides model equations and related calibration/simulation helpers.
+//! The module combines Heston-style variance dynamics ([`SlvParams`]) with a leverage function
+//! `L(t,S)` calibrated so model-implied local variance matches Dupire local variance from market smiles.
+//! Calibration builds per-time [`LeverageSlice`] objects using Nadaraya-Watson conditional variance
+//! estimation and fixed-point refinement passes, then prices instruments by Monte Carlo.
+//! References: Guyon and Henry-Labordere (2011); Van der Stoep, Grzelak, and Oosterlee (2014).
+//! Numerical stability is managed by leverage/variance floors-caps, Silverman bandwidth clipping,
+//! and positivity-preserving variance/spot updates.
+//! Use this module when local-smile fit and stochastic-vol path realism are both required.
 
 use crate::core::{Diagnostics, PricingError, PricingResult};
 use crate::engines::monte_carlo::MonteCarloInstrument;

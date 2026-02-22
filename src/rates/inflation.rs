@@ -1,6 +1,13 @@
-//! Rates analytics for Inflation.
+//! Inflation-linked term-structure and product valuation utilities.
 //!
-//! Module openferric::rates::inflation contains pricing and conventions for fixed-income instruments.
+//! [`InflationCurve`] stores CPI ratio nodes and provides zero/forward inflation rates via
+//! log-linear ratio interpolation; [`InflationCurveBuilder`] bootstraps from ZC inflation swap quotes.
+//! Product types include [`ZeroCouponInflationSwap`], [`YearOnYearInflationSwap`],
+//! and [`InflationIndexedBond`] with CPI-scaled coupons/principal.
+//! References: Jarrow and Yildirim (2003); Mercurio inflation derivatives chapters.
+//! Numerical safeguards enforce positive CPI ratios and handle interpolation/extrapolation
+//! in ratio space to maintain positivity.
+//! Use this module for deterministic inflation-curve analytics and simple inflation product PVs.
 
 use crate::rates::YieldCurve;
 

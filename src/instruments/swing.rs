@@ -1,6 +1,12 @@
-//! Instrument definition for Swing contracts.
+//! Swing-option contract schema with exercise-right constraints.
 //!
-//! Module openferric::instruments::swing contains payoff parameters and validation logic.
+//! [`SwingOption`] models min/max exercise counts, allowed exercise dates,
+//! strike, and per-exercise payoff scaling, matching common gas/power swing structures.
+//! References: Jaillet, Ronn, and Tompaidis (2004); Clewlow and Strickland energy derivatives text.
+//! Validation enforces feasible right counts (`min <= max <= #dates`), positive strike,
+//! and finite positive exercise times.
+//! Dynamic programming or least-squares Monte Carlo valuation is intentionally outside this module.
+//! Use this type when modeling flexible nomination rights in energy contracts.
 
 use crate::core::{Instrument, PricingError};
 

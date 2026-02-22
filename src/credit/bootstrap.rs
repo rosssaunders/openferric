@@ -1,6 +1,13 @@
-//! Credit analytics for Bootstrap.
+//! Piecewise-hazard CDS bootstrap for constructing survival curves from market spreads.
 //!
-//! Module openferric::credit::bootstrap provides pricing helpers and model utilities for credit products.
+//! The bootstrap solves one hazard pillar at a time so each quoted CDS reprices to zero NPV,
+//! using the premium/protection leg balance implemented by [`crate::credit::cds::Cds`].
+//! The root solve is bracketed with expanding upper bounds, then refined by bisection.
+//! Reference links: Hull (2018), Ch. 24; O'Kane and Turnbull (2003); ISDA standard CDS setup.
+//! Key output is [`crate::credit::survival_curve::SurvivalCurve`] under piecewise-constant hazard.
+//! Numerical safeguards include tenor sorting/deduplication, non-negative hazard projection,
+//! and fallback selection when strict sign-bracketing is not obtained.
+//! Prefer this module for market-consistent credit curves; use manual hazard inputs for scenarios.
 
 use crate::rates::YieldCurve;
 

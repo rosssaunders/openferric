@@ -1,6 +1,11 @@
-//! Instrument definition for Spread contracts.
+//! Two-asset spread option input bundle with Margrabe-style effective volatility helper.
 //!
-//! Module openferric::instruments::spread contains payoff parameters and validation logic.
+//! [`SpreadOption`] stores spot, strike, carry rates, vols, correlation, and tenor for payoffs
+//! of the form `max(S1-S2-K,0)` under lognormal approximations.
+//! `effective_volatility` computes `sqrt(s1^2 - 2*rho*s1*s2 + s2^2)` used by Kirk/Margrabe-like formulas.
+//! References: Margrabe (1978), Kirk (1995).
+//! Numerical guardrails detect negative variance from inconsistent inputs and clamp tiny negatives.
+//! Use this as the canonical spread-option parameter object consumed by analytic spread pricers.
 
 use crate::core::{Instrument, PricingError};
 

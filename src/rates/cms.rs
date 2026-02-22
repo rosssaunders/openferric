@@ -1,6 +1,12 @@
-//! Rates analytics for Cms.
+//! CMS convexity and CMS-spread option approximations.
 //!
-//! Module openferric::rates::cms contains pricing and conventions for fixed-income instruments.
+//! Provides linear Hagan-Woodward style convexity adjustments ([`CmsConvexityParams`]),
+//! SABR-enhanced convexity proxy, and Monte Carlo pricing for correlated lognormal CMS spreads
+//! via [`CmsSpreadOption`] and [`cms_spread_option_mc`].
+//! References: Hagan (2003) "Convexity Conundrums"; Pelsser (2000).
+//! Numerical behavior: MC estimator reports standard error and enforces finite input domains,
+//! while convexity formulas use annuity floors to avoid blow-ups near zero PV01.
+//! Use this module for desk-level CMS spread valuation prototypes before full LMM/HJM calibration.
 
 /// CMS (Constant Maturity Swap) spread options.
 ///

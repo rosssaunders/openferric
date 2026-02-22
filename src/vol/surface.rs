@@ -1,6 +1,12 @@
-//! Volatility analytics for Surface.
+//! SVI slice calibration and expiry interpolation for arbitrage-aware volatility surfaces.
 //!
-//! Module openferric::vol::surface provides smile/surface construction or volatility inversion utilities.
+//! [`SviParams`] implements raw-SVI total variance and slope metrics,
+//! `calibrate_svi` performs projected finite-difference gradient descent with multi-start,
+//! and [`VolSurface`] interpolates calibrated slices across maturities.
+//! References: Gatheral (2004) SVI parameterization; Gatheral and Jacquier (2014).
+//! Numerical controls include parameter projection (`b>0`, `sigma>0`, `|rho|<1`),
+//! objective-based learning-rate backoff, and linear fallback when spline interpolation fails.
+//! Use this module when parametric smile consistency is needed across sparse expiry slices.
 
 use crate::math::CubicSpline;
 

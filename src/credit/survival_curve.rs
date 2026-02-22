@@ -1,6 +1,13 @@
-//! Credit analytics for Survival Curve.
+//! Survival-probability term structures with hazard and inverse-survival utilities.
 //!
-//! Module openferric::credit::survival_curve provides pricing helpers and model utilities for credit products.
+//! [`SurvivalCurve`] stores `(tenor, survival)` nodes and evaluates survival via log-linear
+//! interpolation in probability space, equivalent to piecewise-constant hazard segments.
+//! It also exposes default probabilities over intervals, implied hazard extraction,
+//! inverse survival time lookup, and CDS-spread bootstrap entry points.
+//! References: Hull (2018), Ch. 24; standard reduced-form intensity modeling texts.
+//! Numerical handling enforces monotone non-increasing survival nodes, clamps probabilities away
+//! from machine-zero, and uses stable tail extrapolation for long-horizon queries.
+//! Use this module as the canonical counterparty/default curve representation across credit and XVA.
 
 use crate::rates::YieldCurve;
 

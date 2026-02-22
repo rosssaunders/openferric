@@ -1,6 +1,12 @@
-//! Core domain types for OpenFerric.
+//! Foundational contract and payoff enums shared across pricing modules.
 //!
-//! Module openferric::core::types defines shared enums/structs used by engines and instruments.
+//! This module defines the typed vocabulary used by engines: option side and exercise style,
+//! barrier direction/style tuples, and Asian averaging/strike conventions.
+//! Key types are [`OptionType`], [`ExerciseStyle`], [`BarrierSpec`], and [`AsianSpec`].
+//! References: Hull (2018), Ch. 10 (plain options) and Haug (2007), barrier and Asian chapters.
+//! Numerical note: these are data containers, but helper methods (for example `OptionType::sign`)
+//! support branch-light implementations in closed-form and Monte Carlo code.
+//! Use this module when building instrument definitions; pricing formulas live in engines/models.
 
 /// Plain-vanilla option side.
 ///

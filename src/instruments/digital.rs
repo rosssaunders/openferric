@@ -1,6 +1,11 @@
-//! Instrument definition for Digital contracts.
+//! Binary option contract definitions: cash-or-nothing, asset-or-nothing, and gap options.
 //!
-//! Module openferric::instruments::digital contains payoff parameters and validation logic.
+//! [`CashOrNothingOption`] pays fixed cash on trigger, [`AssetOrNothingOption`] pays the asset,
+//! and [`GapOption`] separates trigger strike `K2` from payoff strike `K1`.
+//! References: Reiner and Rubinstein (1991), Haug (2007) digital-option chapter.
+//! Validation focuses on strike positivity, non-negative cash payouts, and non-negative expiry.
+//! Pricing is not performed here; analytic/MC engines consume these validated payoff parameters.
+//! Use this module when trigger vs payoff semantics must stay explicit in risk reports.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

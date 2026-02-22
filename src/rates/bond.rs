@@ -1,6 +1,12 @@
-//! Rates analytics for Bond.
+//! Fixed-rate bond analytics: price decomposition, sensitivities, and yield solving.
 //!
-//! Module openferric::rates::bond contains pricing and conventions for fixed-income instruments.
+//! [`FixedRateBond`] computes dirty/clean price, accrued interest, Macaulay duration,
+//! convexity, and yield-to-maturity via Newton-Raphson root finding.
+//! References: Fabozzi fixed-income texts; Hull (2018) bond fundamentals.
+//! Cashflow generation supports arbitrary coupon frequency with principal at maturity.
+//! Numerical considerations: YTM solver uses damping via bounded iterations and derivative floors,
+//! and curve discounting is frequency-compounded from interpolated zero rates.
+//! Use this module for vanilla bond risk measures and quick valuation checks.
 
 use crate::rates::{DayCountConvention, YieldCurve};
 

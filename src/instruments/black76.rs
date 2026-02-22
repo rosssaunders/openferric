@@ -1,6 +1,12 @@
-//! Instrument definition for Black76 contracts.
+//! Input container for Black-76 options on forwards or futures.
 //!
-//! Module openferric::instruments::black76 contains payoff parameters and validation logic.
+//! [`FuturesOption`] stores forward level, strike, lognormal volatility, risk-free rate,
+//! expiry, and option side for direct use with Black (1976) formulas.
+//! References: Black (1976), "The Pricing of Commodity Contracts"; Hull futures chapter.
+//! Constructors (`call`, `put`) provide concise setup for common cases.
+//! Validation enforces positive forward/strike, non-negative volatility, and non-negative expiry,
+//! including finite-number checks for stable downstream analytics.
+//! Use this schema when the underlying is already a forward/futures rather than spot.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

@@ -1,6 +1,13 @@
-//! Stochastic model implementation for Rough Bergomi dynamics.
+//! Rough Bergomi Monte Carlo engine with fBm path generation and implied-vol surface extraction.
 //!
-//! Module openferric::models::rough_bergomi provides model equations and related calibration/simulation helpers.
+//! The implementation supports two fractional Brownian motion schemes:
+//! full Cholesky and a hybrid coarse-grid/interpolation method selected automatically by step count.
+//! `rbergomi_european_mc` prices calls with antithetic sampling and reports stderr/diagnostics,
+//! while `rbergomi_implied_vol_surface` reuses terminal samples across strikes per expiry.
+//! References: Bayer, Friz, and Gatheral (2016); Bennedsen, Lunde, and Pakkanen (2017).
+//! Numerical controls include input-domain validation (`H in (0,1)`, `rho in (-1,1)`),
+//! positivity floors on variance/spot, and covariance-PSD checks in Cholesky setup.
+//! Use this module for rough-volatility smile dynamics; use Heston/SLV modules for smoother alternatives.
 
 use crate::core::{Diagnostics, PricingResult};
 use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};

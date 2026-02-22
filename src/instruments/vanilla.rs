@@ -1,6 +1,12 @@
-//! Instrument definition for Vanilla contracts.
+//! Canonical plain-vanilla option contract definition used throughout the library.
 //!
-//! Module openferric::instruments::vanilla contains payoff parameters and validation logic.
+//! [`VanillaOption`] stores side, strike, expiry, and exercise rights
+//! ([`crate::core::ExerciseStyle`]: European/American/Bermudan).
+//! References: Hull (2018), Ch. 10-13 for payoff and exercise conventions.
+//! Validation accepts `expiry == 0` (intrinsic-value edge case) and enforces
+//! Bermudan-date consistency within `(0, expiry]`.
+//! This type is the default input for Black-Scholes, lattice, PDE, and Monte Carlo engines.
+//! Use this module unless a product requires explicit path dependence or additional state.
 
 use crate::core::{ExerciseStyle, Instrument, OptionType, PricingError};
 

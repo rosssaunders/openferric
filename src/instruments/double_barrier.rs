@@ -1,6 +1,12 @@
-//! Instrument definition for Double Barrier contracts.
+//! Double-barrier option schema for knock-in/knock-out contracts with rebates.
 //!
-//! Module openferric::instruments::double_barrier contains payoff parameters and validation logic.
+//! [`DoubleBarrierOption`] defines lower/upper barriers, call-put side, strike, expiry,
+//! barrier behavior ([`DoubleBarrierType`]), and rebate amount.
+//! References: Ikeda and Kunitomo (1992), Kunitomo and Ikeda (1992), Haug (2007).
+//! Validation enforces `lower < upper`, positive levels/strike, and non-negative rebate.
+//! Numerical details of first-touch probability and image-series truncation are left to engines;
+//! this module only represents validated contract state.
+//! Use when corridor-style barrier exposure must be modeled explicitly.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

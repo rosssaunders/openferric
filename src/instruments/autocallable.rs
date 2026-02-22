@@ -1,6 +1,13 @@
-//! Instrument definition for Autocallable contracts.
+//! Data models for worst-of autocallable and Phoenix-style structured notes.
 //!
-//! Module openferric::instruments::autocallable contains payoff parameters and validation logic.
+//! [`Autocallable`] encodes call dates, autocall/knock-in barriers, coupon rate, and underlyings,
+//! while [`PhoenixAutocallable`] extends this with coupon barrier and memory-coupon behavior.
+//! References: common equity/FX autocall term-sheet design (for example Wystup, 2017).
+//! Validation checks strictly increasing observation dates, positive barriers/notional,
+//! and unique underlying indices to prevent ambiguous path state updates.
+//! This module is contract-definition only; Monte Carlo payoff engines should implement the
+//! path-dependent redemption and coupon logic on top of these validated parameters.
+//! Use this when structuring callable retail-note style products.
 
 use std::collections::BTreeSet;
 

@@ -1,6 +1,12 @@
-//! Volatility analytics for Builder.
+//! Market-quote to implied-vol surface construction with local-vol fallback support.
 //!
-//! Module openferric::vol::builder provides smile/surface construction or volatility inversion utilities.
+//! [`VolSurfaceBuilder`] converts option prices ([`MarketOptionQuote`]) into implied vol nodes,
+//! builds strike splines per expiry, and interpolates across expiry in total variance.
+//! [`BuiltVolSurface`] can then be queried for implied vol and passed into Dupire local-vol extraction.
+//! References: Dupire (1994) local volatility; standard implied-vol inversion practice.
+//! Numerical safeguards include quote-domain checks, implied-vol solver tolerances,
+//! and variance-flooring to keep interpolation positive.
+//! Use this module to bootstrap smooth surfaces from sparse market quote grids.
 
 use crate::math::CubicSpline;
 use crate::pricing::OptionType;

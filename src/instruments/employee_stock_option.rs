@@ -1,6 +1,12 @@
-//! Instrument definition for Employee Stock Option contracts.
+//! Employee stock option (ESO) model with vesting, early-exercise, dilution, and attrition.
 //!
-//! Module openferric::instruments::employee_stock_option contains payoff parameters and validation logic.
+//! [`EmployeeStockOption::price_binomial`] uses a binomial tree with post-vesting exercise logic,
+//! optional forced-exercise multiple (`S > M*K` for calls), and turnover discounting.
+//! Dilution is approximated via shares-outstanding/options-granted scaling.
+//! References: Hull and White (2004), FASB ASC 718 valuation practice.
+//! Numerical safeguards include risk-neutral probability bounds, maturity truncation to expected life,
+//! and stable handling of zero-time intrinsic outcomes.
+//! Use this module for accounting-style ESO fair-value estimates; calibrate tree granularity for stability.
 
 use crate::core::{Instrument, OptionType, PricingError};
 

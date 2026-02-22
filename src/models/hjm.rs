@@ -1,6 +1,13 @@
-//! Stochastic model implementation for Hjm dynamics.
+//! Multi-factor Heath-Jarrow-Morton forward-rate model with simulation and swaption MC pricing.
 //!
-//! Module openferric::models::hjm provides model equations and related calibration/simulation helpers.
+//! Volatility factors are parameterized as parallel/slope/curvature loadings with exponential decay,
+//! and no-arbitrage drift is computed from `mu(t,T)=sum_ij rho_ij sigma_i(t,T) int_t^T sigma_j(t,u)du`.
+//! [`HjmModel`] supports 1-3 factors, Cholesky-correlated shocks, Euler forward-curve evolution,
+//! zero-coupon reconstruction by numerical integration, and payer/receiver swaption Monte Carlo.
+//! References: Heath, Jarrow, and Morton (1992); Brigo and Mercurio (2006).
+//! Numerical considerations: PSD checks on correlation, maturity-grid validation, and midpoint/trapezoid
+//! integration choices affect bias vs runtime for long-dated swaptions.
+//! Use HJM when curve-shape factor dynamics matter; use short-rate models for lower-dimensional setups.
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;

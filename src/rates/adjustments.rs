@@ -1,6 +1,11 @@
-//! Rates analytics for Adjustments.
+//! Closed-form approximation formulas for rates convexity, timing, and quanto adjustments.
 //!
-//! Module openferric::rates::adjustments contains pricing and conventions for fixed-income instruments.
+//! Includes futures-vs-forward convexity (`0.5*sigma^2*T1*T2`), CMS-in-arrears convexity proxies,
+//! payment-timing adjustments, and rate/FX quanto drift corrections.
+//! References: Hull (2018), futures/CMS chapters; Hagan (2003) CMS convexity discussion.
+//! Functions are intentionally lightweight and return `NaN` on invalid domains rather than panicking.
+//! These are approximation primitives, not full model calibrations.
+//! Use when you need first-order desk adjustments before running richer stochastic-rate models.
 
 /// Convexity adjustment between futures and forward rates:
 ///

@@ -1,6 +1,12 @@
-//! Rates analytics for Ois.
+//! Overnight-index and basis-swap valuation under OIS discounting conventions.
 //!
-//! Module openferric::rates::ois contains pricing and conventions for fixed-income instruments.
+//! [`OvernightIndexSwap`] prices fixed vs overnight compounded floating legs,
+//! computes payer/receiver NPV, and solves par fixed rates.
+//! [`BasisSwap`] handles dual-floating structures with separate projection curves and spread PV01.
+//! References: OIS market conventions in standard rates texts; Brigo and Mercurio (2006).
+//! Numerical considerations include accrual-step generation, non-positive-tenor guards,
+//! and explicit separation of discounting from projection.
+//! Use this module when benchmarking collateralized rates products in a deterministic-curve setting.
 
 use crate::rates::YieldCurve;
 

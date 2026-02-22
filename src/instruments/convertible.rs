@@ -1,6 +1,12 @@
-//! Instrument definition for Convertible contracts.
+//! Convertible-bond contract schema (no valuation engine in this module).
 //!
-//! Module openferric::instruments::convertible contains payoff parameters and validation logic.
+//! [`ConvertibleBond`] captures face value, coupon, maturity, conversion ratio,
+//! and optional issuer call / holder put provisions.
+//! References: Tsiveriotis and Fernandes (1998), standard convertible-bond treatment in Hull.
+//! Validation enforces sign and positivity constraints on contractual fields.
+//! Numerical and exercise-feature interactions (credit/equity coupling, call triggers,
+//! soft-call constraints) are intentionally out of scope here and belong in dedicated pricers.
+//! Use this type as the canonical input object for lattice/PDE convertible engines.
 
 use crate::core::{Instrument, PricingError};
 

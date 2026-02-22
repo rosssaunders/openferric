@@ -1,6 +1,11 @@
-//! Rates analytics for Swaption.
+//! European swaption pricing with Black-76 and implied-vol inversion.
 //!
-//! Module openferric::rates::swaption contains pricing and conventions for fixed-income instruments.
+//! [`Swaption`] computes forward swap rate and annuity from a curve,
+//! prices payer/receiver options under lognormal swap-rate assumptions,
+//! and solves implied Black volatility via bisection.
+//! References: Jamshidian (1989) swaption decomposition context; Black (1976) option formula.
+//! Numerical handling includes intrinsic branches for zero vol/time and robust bracketing checks.
+//! Use this module for deterministic-curve Black benchmarking and smile-calibration targets.
 
 use crate::math::normal_cdf;
 use crate::rates::YieldCurve;

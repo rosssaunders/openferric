@@ -1,6 +1,13 @@
-//! Credit analytics for Cds.
+//! Running-spread CDS leg valuation with accrual-on-default treatment.
 //!
-//! Module openferric::credit::cds provides pricing helpers and model utilities for credit products.
+//! [`Cds`] provides premium leg PV, protection leg PV, NPV, and fair spread for a standard
+//! single-name contract with periodic coupons and deterministic discount/survival inputs.
+//! The premium leg includes both coupon annuity and half-period accrued premium on default,
+//! while the protection leg discounts interval default probabilities at midpoints.
+//! References: ISDA CDS standard model conventions; Hull (2018), Ch. 24.
+//! Numerical behavior: invalid contracts short-circuit to zero, risky annuity floors avoid
+//! unstable fair-spread division, and payment times are generated with maturity-safe tail handling.
+//! Use this as the primitive building block for bootstrap and index/basket routines.
 
 use crate::rates::YieldCurve;
 

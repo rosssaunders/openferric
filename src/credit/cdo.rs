@@ -1,6 +1,14 @@
-//! Credit analytics for Cdo.
+//! Synthetic CDO tranche analytics under a large-homogeneous-pool Gaussian framework.
 //!
-//! Module openferric::credit::cdo provides pricing helpers and model utilities for credit products.
+//! The module combines a one-factor Vasicek/LHP loss model with tranche cashflow aggregation.
+//! [`CdoTranche`] describes attachment/detachment mechanics, while [`SyntheticCdo`] prices
+//! premium and protection legs using expected tranche loss increments on a payment grid.
+//! References: Vasicek (2002), Li (2000), Hull (2018) credit portfolio chapter.
+//! Expected tranche loss is integrated over the common factor using Gauss-Legendre quadrature;
+//! a coarse midpoint rule fallback is used if quadrature setup fails.
+//! Inputs are clamped to stable regions (`rho < 1`, bounded probabilities, non-negative LGD)
+//! to avoid singular inverse-CDF and tail-divergence issues.
+//! Use this for fast correlation/tranche sensitivity sweeps; prefer full copula MC for heterogeneity.
 
 use crate::math::{gauss_legendre_integrate, normal_cdf, normal_inv_cdf, normal_pdf};
 

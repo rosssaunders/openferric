@@ -1,6 +1,12 @@
-//! Instrument definition for Cliquet contracts.
+//! Forward-start (single-reset cliquet-style) option definitions and Rubinstein pricing helper.
 //!
-//! Module openferric::instruments::cliquet contains payoff parameters and validation logic.
+//! [`ForwardStartOption`] models strike reset as `alpha*S(t_start)` and includes a closed-form
+//! Rubinstein (1991) valuation method for the single-reset case (`type CliquetOption = ForwardStartOption`).
+//! References: Rubinstein (1991), Haug (2007) forward-start benchmarks.
+//! The implementation handles `tau -> 0` intrinsic limits and deterministic `vol=0` branches.
+//! Numerical safeguards validate positive spot/strike ratio and enforce `t_start <= expiry`.
+//! Use this for classic forward-start structures; multi-period local-cap/floor cliquets require
+//! a different payoff state model.
 
 use crate::core::{Instrument, OptionType, PricingError};
 use crate::math::normal_cdf;
