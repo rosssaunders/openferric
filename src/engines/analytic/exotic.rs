@@ -147,37 +147,22 @@ fn floating_lookback_price(spec: &LookbackFloatingOption, market: &Market, vol: 
         };
     }
 
-    let b = market.rate - market.dividend_yield;
+    let q = market.effective_dividend_yield(spec.expiry);
+    let b = market.rate - q;
     match spec.option_type {
         OptionType::Call => {
             let s_min = spec
                 .observed_extreme
                 .unwrap_or(market.spot)
                 .min(market.spot);
-            floating_lookback_call_formula(
-                market.spot,
-                s_min,
-                market.rate,
-                market.dividend_yield,
-                b,
-                vol,
-                spec.expiry,
-            )
+            floating_lookback_call_formula(market.spot, s_min, market.rate, q, b, vol, spec.expiry)
         }
         OptionType::Put => {
             let s_max = spec
                 .observed_extreme
                 .unwrap_or(market.spot)
                 .max(market.spot);
-            floating_lookback_put_formula(
-                market.spot,
-                s_max,
-                market.rate,
-                market.dividend_yield,
-                b,
-                vol,
-                spec.expiry,
-            )
+            floating_lookback_put_formula(market.spot, s_max, market.rate, q, b, vol, spec.expiry)
         }
     }
 }
@@ -282,7 +267,8 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
         };
     }
 
-    let carry = market.rate - market.dividend_yield;
+    let q = market.effective_dividend_yield(spec.expiry);
+    let carry = market.rate - q;
     match spec.option_type {
         OptionType::Call => {
             let s_max = spec
@@ -294,7 +280,7 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
                 spec.strike,
                 s_max,
                 market.rate,
-                market.dividend_yield,
+                q,
                 carry,
                 vol,
                 spec.expiry,
@@ -310,7 +296,7 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
                 spec.strike,
                 s_min,
                 market.rate,
-                market.dividend_yield,
+                q,
                 carry,
                 vol,
                 spec.expiry,
@@ -423,12 +409,13 @@ fn fixed_lookback_put_formula(
 
 #[inline]
 fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
+    let q_expiry = market.effective_dividend_yield(spec.expiry);
     let call = bs_price_with_dividend(
         OptionType::Call,
         market.spot,
         spec.strike,
         market.rate,
-        market.dividend_yield,
+        q_expiry,
         vol,
         spec.expiry,
     );
@@ -437,7 +424,7 @@ fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
         market.spot,
         spec.strike,
         market.rate,
-        market.dividend_yield,
+        q_expiry,
         vol,
         spec.expiry,
     );
@@ -447,14 +434,13 @@ fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
     }
 
     let tau = (spec.expiry - spec.choose_time).max(0.0);
+    let q_choose = market.effective_dividend_yield(spec.choose_time.max(1.0e-12));
+    let q_tau = market.effective_dividend_yield(tau.max(1.0e-12));
     let d1_choose = ((market.spot / spec.strike).ln()
-        + (0.5 * vol).mul_add(vol, market.rate - market.dividend_yield) * spec.choose_time)
+        + (0.5 * vol).mul_add(vol, market.rate - q_choose) * spec.choose_time)
         / (vol * spec.choose_time.sqrt());
 
-    put.mul_add(
-        (-market.dividend_yield * tau).exp() * normal_cdf(-d1_choose),
-        call,
-    )
+    put.mul_add((-q_tau * tau).exp() * normal_cdf(-d1_choose), call)
 }
 
 #[inline]
@@ -467,9 +453,9 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
         return spec.fx_rate * intrinsic;
     }
 
+    let q = market.effective_dividend_yield(spec.expiry);
     // Quanto drift adjustment under domestic measure: mu_adj = rf - q - rho * vol * fx_vol
-    let mu_adj =
-        (-spec.asset_fx_corr * spec.fx_vol).mul_add(vol, spec.foreign_rate - market.dividend_yield);
+    let mu_adj = (-spec.asset_fx_corr * spec.fx_vol).mul_add(vol, spec.foreign_rate - q);
     let sqrt_t = spec.expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 = ((market.spot / spec.strike).ln() + (0.5 * vol).mul_add(vol, mu_adj) * spec.expiry)
@@ -495,13 +481,14 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
 
 #[inline]
 fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f64, PricingError> {
+    let q_underlying = market.effective_dividend_yield(spec.underlying_expiry);
     if spec.compound_expiry <= 0.0 {
         let inner = bs_price_with_dividend(
             spec.underlying_option_type,
             market.spot,
             spec.underlying_strike,
             market.rate,
-            market.dividend_yield,
+            q_underlying,
             vol,
             spec.underlying_expiry,
         );
@@ -514,8 +501,10 @@ fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f6
     let t1 = spec.compound_expiry;
     let t2 = spec.underlying_expiry;
     let tau = (t2 - t1).max(0.0);
+    let q_t1 = market.effective_dividend_yield(t1.max(1.0e-12));
+    let q_tau = market.effective_dividend_yield(tau.max(1.0e-12));
     // drift = (r - q - 0.5 * vol^2) * t1 via FMA
-    let drift = (-0.5 * vol).mul_add(vol, market.rate - market.dividend_yield) * t1;
+    let drift = (-0.5 * vol).mul_add(vol, market.rate - q_t1) * t1;
     let vol_t1 = vol * t1.sqrt();
 
     // Numerical quadrature approximation to the Geske expectation.
@@ -527,7 +516,7 @@ fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f6
                 s_t1,
                 spec.underlying_strike,
                 market.rate,
-                market.dividend_yield,
+                q_tau,
                 vol,
                 tau,
             );

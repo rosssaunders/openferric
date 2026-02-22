@@ -325,7 +325,8 @@ impl CrankNicolsonEngine {
         let half_dt = 0.5 * dt;
         let inv_2ds = 1.0 / (2.0 * ds);
         let inv_ds2 = 1.0 / (ds * ds);
-        let drift = market.rate - market.dividend_yield;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let drift = market.rate - effective_dividend_yield;
 
         let mut boundary_rev = vec![PdeExerciseBoundaryPoint {
             time: instrument.expiry,
@@ -341,7 +342,7 @@ impl CrankNicolsonEngine {
                 &step_schedule,
                 dt,
                 market.rate,
-                market.dividend_yield,
+                effective_dividend_yield,
                 s_max,
             );
 
@@ -521,7 +522,8 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         let inv_ds2 = 1.0 / (ds * ds);
         let inv_2ds = 1.0 / (2.0 * ds);
         let half_vol2 = 0.5 * vol * vol;
-        let drift = market.rate - market.dividend_yield;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let drift = market.rate - effective_dividend_yield;
         let half_dt = 0.5 * dt;
 
         for k in 0..interior_n {
@@ -568,7 +570,7 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 is_american,
                 instrument.strike,
                 market.rate,
-                market.dividend_yield,
+                effective_dividend_yield,
                 s_max,
                 tau_new,
             );

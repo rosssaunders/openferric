@@ -9,6 +9,8 @@
 //! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
 //!
 //! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
+pub mod dividends;
 pub mod market;
 
+pub use dividends::*;
 pub use market::*;

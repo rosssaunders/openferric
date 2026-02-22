@@ -97,12 +97,13 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
                 "market volatility must be > 0".to_string(),
             ));
         }
+        let q = market.effective_dividend_yield(instrument.expiry);
 
         let (_, d2) = d1_d2(
             market.spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            q,
             vol,
             instrument.expiry,
         );
@@ -155,16 +156,17 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
                 "market volatility must be > 0".to_string(),
             ));
         }
+        let q = market.effective_dividend_yield(instrument.expiry);
 
         let (d1, _) = d1_d2(
             market.spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            q,
             vol,
             instrument.expiry,
         );
-        let df_q = (-market.dividend_yield * instrument.expiry).exp();
+        let df_q = (-q * instrument.expiry).exp();
 
         // Compute N(d1) once; derive put price via N(-d1) = 1 - N(d1).
         let nd1 = normal_cdf(d1);
@@ -214,17 +216,18 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
                 "market volatility must be > 0".to_string(),
             ));
         }
+        let q = market.effective_dividend_yield(instrument.expiry);
 
         let (d1, d2) = d1_d2(
             market.spot,
             instrument.trigger_strike,
             market.rate,
-            market.dividend_yield,
+            q,
             vol,
             instrument.expiry,
         );
         let df_r = (-market.rate * instrument.expiry).exp();
-        let df_q = (-market.dividend_yield * instrument.expiry).exp();
+        let df_q = (-q * instrument.expiry).exp();
 
         // Compute N(d1), N(d2) once; derive put via N(-d) = 1 - N(d).
         let nd1 = normal_cdf(d1);

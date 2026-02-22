@@ -39,6 +39,7 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
                 "market volatility must be > 0".to_string(),
             ));
         }
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
         let price = barrier_price_closed_form_with_carry_and_rebate(
             instrument.option_type,
@@ -48,7 +49,7 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
             instrument.strike,
             instrument.barrier.level,
             market.rate,
-            market.dividend_yield,
+            effective_dividend_yield,
             vol,
             instrument.expiry,
             instrument.barrier.rebate,

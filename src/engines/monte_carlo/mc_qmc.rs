@@ -81,7 +81,8 @@ pub fn mc_european_qmc_with_seed(
     }
 
     let dt = instrument.expiry / n_steps as f64;
-    let dt_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * dt;
+    let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+    let dt_drift = (market.rate - effective_dividend_yield - 0.5 * vol * vol) * dt;
     let dt_vol = vol * dt.sqrt();
     let discount = (-market.rate * instrument.expiry).exp();
 

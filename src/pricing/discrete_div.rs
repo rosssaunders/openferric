@@ -1,82 +1,115 @@
 //! Module `pricing::discrete_div`.
 //!
-//! Implements discrete div workflows with concrete routines such as `escrowed_dividend_adjusted_spot`, `european_price_discrete_div`.
+//! Discrete-dividend pricing helpers and bootstrap wrappers.
 //!
-//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
-//!
-//! Primary API surface: free functions `escrowed_dividend_adjusted_spot`, `european_price_discrete_div`.
-//!
-//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
-//!
-//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
+//! This module complements [`crate::market::dividends`] by exposing
+//! convenience free functions for pricing workflows.
+
 use crate::core::OptionType;
+use crate::market::{
+    DividendCurveBootstrap, DividendEvent, DividendSchedule, PutCallParityQuote,
+    bootstrap_dividend_curve_from_put_call_parity,
+};
 use crate::pricing::european::black_scholes_price;
 
-/// Escrowed-dividend spot adjustment: subtract PV of dividends paid before expiry.
+/// Escrowed-dividend spot adjustment for a pure cash schedule.
 ///
-/// Parameters:
-/// - `spot`: current stock spot.
-/// - `rate`: continuously compounded discount rate.
-/// - `expiry`: option maturity in years.
-/// - `dividends`: `(time, amount)` cash dividends.
-///
-/// Edge cases:
-/// - Dividends with non-positive payment times or after expiry are ignored.
-///
-/// # Examples
-/// ```rust
-/// use openferric::pricing::discrete_div::escrowed_dividend_adjusted_spot;
-///
-/// let adj = escrowed_dividend_adjusted_spot(100.0, 0.05, 1.0, &[(0.5, 2.0), (1.5, 2.0)]);
-/// assert!(adj < 100.0);
-/// ```
+/// Equivalent to the legacy API and kept for backward compatibility.
 pub fn escrowed_dividend_adjusted_spot(
     spot: f64,
     rate: f64,
     expiry: f64,
     dividends: &[(f64, f64)],
 ) -> f64 {
-    let pv_dividends = dividends
-        .iter()
-        .filter(|(time, _)| *time > 0.0 && *time <= expiry)
-        .map(|(time, amount)| amount * (-rate * *time).exp())
-        .sum::<f64>();
-
-    spot - pv_dividends
+    let mut events = Vec::with_capacity(dividends.len());
+    for (time, amount) in dividends {
+        if let Ok(event) = DividendEvent::cash(*time, *amount) {
+            events.push(event);
+        }
+    }
+    let schedule = DividendSchedule::new(events).unwrap_or_else(|_| DividendSchedule::empty());
+    schedule.escrowed_spot_adjustment(spot, rate, expiry)
 }
 
-/// European call under Black-Scholes-Merton with escrowed discrete dividends.
+/// Escrowed-dividend spot adjustment for a mixed schedule.
+#[inline]
+pub fn escrowed_dividend_adjusted_spot_mixed(
+    spot: f64,
+    rate: f64,
+    expiry: f64,
+    schedule: &DividendSchedule,
+) -> f64 {
+    schedule.escrowed_spot_adjustment(spot, rate, expiry)
+}
+
+/// Forward price with continuous yield plus mixed discrete dividends.
+#[inline]
+pub fn forward_price_discrete_div(
+    spot: f64,
+    rate: f64,
+    continuous_dividend_yield: f64,
+    expiry: f64,
+    schedule: &DividendSchedule,
+) -> f64 {
+    schedule.forward_price(spot, rate, continuous_dividend_yield, expiry)
+}
+
+/// Equivalent continuous dividend yield implied by mixed discrete dividends.
+#[inline]
+pub fn effective_dividend_yield_discrete(
+    spot: f64,
+    rate: f64,
+    continuous_dividend_yield: f64,
+    expiry: f64,
+    schedule: &DividendSchedule,
+) -> f64 {
+    schedule.effective_dividend_yield(spot, rate, continuous_dividend_yield, expiry)
+}
+
+/// European option price under Black-Scholes with escrowed spot adjustment.
 ///
-/// The spot is adjusted by PV of future discrete dividends, then priced as vanilla BSM.
-///
-/// Parameters:
-/// - `spot`, `strike`, `r`, `vol`, `t`: standard BSM inputs.
-/// - `dividends`: discrete dividend schedule before expiry.
-///
-/// Edge cases:
-/// - Returns `0.0` if the adjusted spot is non-positive.
-///
-/// # Examples
-/// ```rust
-/// use openferric::pricing::discrete_div::european_price_discrete_div;
-///
-/// let px = european_price_discrete_div(100.0, 100.0, 0.03, 0.20, 1.0, &[(0.25, 1.0), (0.75, 1.0)]);
-/// assert!(px.is_finite() && px > 0.0);
-/// ```
+/// The schedule is transformed to prepaid-forward spot and priced as vanilla
+/// with zero carry. This is the classic escrowed-dividend approximation.
 pub fn european_price_discrete_div(
     spot: f64,
     strike: f64,
-    r: f64,
+    rate: f64,
     vol: f64,
-    t: f64,
+    expiry: f64,
     dividends: &[(f64, f64)],
 ) -> f64 {
-    let adjusted_spot = escrowed_dividend_adjusted_spot(spot, r, t, dividends);
+    let adjusted_spot = escrowed_dividend_adjusted_spot(spot, rate, expiry, dividends);
     if adjusted_spot <= 0.0 {
         return 0.0;
     }
+    black_scholes_price(OptionType::Call, adjusted_spot, strike, rate, vol, expiry)
+}
 
-    black_scholes_price(OptionType::Call, adjusted_spot, strike, r, vol, t)
+/// European option price with mixed discrete schedule using escrowed model.
+pub fn european_price_discrete_div_mixed(
+    option_type: OptionType,
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    vol: f64,
+    expiry: f64,
+    schedule: &DividendSchedule,
+) -> f64 {
+    let adjusted_spot = schedule.escrowed_spot_adjustment(spot, rate, expiry);
+    if adjusted_spot <= 0.0 {
+        return 0.0;
+    }
+    black_scholes_price(option_type, adjusted_spot, strike, rate, vol, expiry)
+}
+
+/// Bootstraps an implied dividend curve from put-call parity observations.
+#[inline]
+pub fn bootstrap_dividend_curve(
+    spot: f64,
+    rate: f64,
+    parity_quotes: &[PutCallParityQuote],
+) -> Result<DividendCurveBootstrap, String> {
+    bootstrap_dividend_curve_from_put_call_parity(spot, rate, parity_quotes)
 }
 
 #[cfg(test)]
@@ -84,6 +117,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+    use crate::market::{DividendKind, DividendSchedule};
 
     #[test]
     fn escrowed_discrete_dividend_adjusts_spot_and_call_price() {
@@ -99,5 +133,28 @@ mod tests {
 
         assert_relative_eq!(adjusted_spot, 98.0494, epsilon = 2e-4);
         assert_relative_eq!(call, 9.2447, epsilon = 2e-4);
+    }
+
+    #[test]
+    fn mixed_schedule_forward_consistency() {
+        let schedule = DividendSchedule::new(vec![
+            DividendEvent {
+                time: 0.25,
+                kind: DividendKind::Cash(1.0),
+            },
+            DividendEvent {
+                time: 0.5,
+                kind: DividendKind::Proportional(0.01),
+            },
+            DividendEvent {
+                time: 0.75,
+                kind: DividendKind::Cash(0.5),
+            },
+        ])
+        .expect("valid mixed schedule");
+
+        let fwd = forward_price_discrete_div(100.0, 0.03, 0.0, 1.0, &schedule);
+        let prepaid = schedule.prepaid_forward_spot(100.0, 0.03, 0.0, 1.0);
+        assert_relative_eq!(prepaid * (0.03_f64).exp(), fwd, epsilon = 1e-12);
     }
 }

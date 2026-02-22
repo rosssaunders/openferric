@@ -310,8 +310,9 @@ pub fn mc_european_parallel(
     }
 
     let t = instrument.expiry;
+    let effective_dividend_yield = market.effective_dividend_yield(t);
     // Exact terminal-value drift and diffusion.
-    let total_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * t;
+    let total_drift = (market.rate - effective_dividend_yield - 0.5 * vol * vol) * t;
     let total_diffusion = vol * t.sqrt();
     let discount = (-market.rate * t).exp();
 
@@ -402,7 +403,8 @@ pub fn mc_european_sequential(
         };
     }
     let t = instrument.expiry;
-    let total_drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * t;
+    let effective_dividend_yield = market.effective_dividend_yield(t);
+    let total_drift = (market.rate - effective_dividend_yield - 0.5 * vol * vol) * t;
     let total_diffusion = vol * t.sqrt();
     let discount = (-market.rate * t).exp();
 

@@ -211,7 +211,7 @@ impl PricingEngine<VarianceSwap> for VarianceSwapEngine {
             instrument.expiry,
             market.rate,
             market.spot,
-            market.dividend_yield,
+            market.effective_dividend_yield(instrument.expiry),
             &instrument.option_quotes,
         )?;
         let fair_volatility = fair_variance.sqrt();
@@ -242,7 +242,7 @@ impl PricingEngine<VolatilitySwap> for VarianceSwapEngine {
             instrument.expiry,
             market.rate,
             market.spot,
-            market.dividend_yield,
+            market.effective_dividend_yield(instrument.expiry),
             &instrument.option_quotes,
         )?;
         let fair_volatility =

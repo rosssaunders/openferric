@@ -254,6 +254,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
                 "market volatility must be > 0".to_string(),
             ));
         }
+        let q = market.effective_dividend_yield(instrument.expiry);
 
         let df_r = (-market.rate * instrument.expiry).exp();
         let vanilla = bs_price_with_dividend(
@@ -261,7 +262,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
             market.spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            q,
             vol,
             instrument.expiry,
         );
@@ -275,7 +276,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
                     instrument.lower_barrier,
                     instrument.upper_barrier,
                     market.rate,
-                    market.dividend_yield,
+                    q,
                     vol,
                     instrument.expiry,
                     self.series_terms,
@@ -285,7 +286,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
                     instrument.lower_barrier,
                     instrument.upper_barrier,
                     market.rate,
-                    market.dividend_yield,
+                    q,
                     vol,
                     instrument.expiry,
                     self.series_terms,

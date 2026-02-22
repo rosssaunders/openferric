@@ -145,6 +145,7 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
         let dt = instrument.expiry / n_t as f64;
         let s_max = self.s_max_multiplier * instrument.strike;
         let ds = s_max / n_s as f64;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
         let bermudan_flags = match &instrument.exercise {
@@ -171,7 +172,7 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
             let i = k + 1;
             let s = i as f64 * ds;
             let alpha = 0.5 * vol * vol * s * s / (ds * ds);
-            let beta = (market.rate - market.dividend_yield) * s / (2.0 * ds);
+            let beta = (market.rate - effective_dividend_yield) * s / (2.0 * ds);
 
             a_coeff[k] = alpha - beta;
             b_coeff[k] = -2.0 * alpha - market.rate;
@@ -188,7 +189,7 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
                 is_american,
                 instrument.strike,
                 market.rate,
-                market.dividend_yield,
+                effective_dividend_yield,
                 s_max,
                 tau_new,
             );
