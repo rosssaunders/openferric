@@ -27,6 +27,131 @@ let edgeThreshold = 1.0;
 let edgeSideFilter = 'all';
 let isLinear = false;
 
+const SURFACE_PARAM_KEYS = {
+  svi: ['a', 'b', 'rho', 'm', 'sigma'],
+  sabr: ['alpha', 'beta', 'rho', 'nu'],
+  vv: ['atmVol', 'rr25', 'bf25'],
+};
+
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function finiteOr(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function defaultSurfaceConfig() {
+  return {
+    asset: 'BTC',
+    model: 'svi',
+    mode: 'calibrated',
+    params: {
+      smilePreset: 'neutral',
+      common: {
+        interpolationDomain: 'log-moneyness',
+        wingSlopeLeft: 1.0,
+        wingSlopeRight: 1.0,
+        volFloor: 5.0,
+        volCeiling: 250.0,
+        arbitragePenalty: 1.0,
+        calendarSmoothing: 0.0,
+        optimizerBoundScale: 1.0,
+        optimizerTolerance: 0.0005,
+      },
+      models: {
+        svi: {
+          variant: 'raw',
+          manual: { a: 0.025, b: 0.22, rho: -0.2, m: 0.0, sigma: 0.28 },
+          pins: { a: false, b: false, rho: false, m: false, sigma: false },
+        },
+        sabr: {
+          betaMode: 'free',
+          shift: 0.0,
+          bounds: { rhoMin: -0.999, rhoMax: 0.999, nuMin: 0.01, nuMax: 3.0 },
+          manual: { alpha: 0.55, beta: 0.5, rho: -0.2, nu: 1.0 },
+          pins: { alpha: false, beta: false, rho: false, nu: false },
+        },
+        vv: {
+          anchorPutDelta: 0.25,
+          anchorCallDelta: 0.25,
+          dampening: 1.0,
+          barrierCorrection: false,
+          manual: { atmVol: 0.55, rr25: 0.0, bf25: 0.01 },
+          pins: { atmVol: false, rr25: false, bf25: false },
+        },
+      },
+    },
+    calibration: {
+      fitWeighting: 'mid',
+      autoRecalibrate: true,
+      freezeMarket: false,
+    },
+    conventions: {
+      stickyRule: 'delta',
+    },
+    timestamp: Date.now(),
+    source: 'default',
+  };
+}
+
+function sanitizeSurfaceConfig(raw) {
+  const defaults = defaultSurfaceConfig();
+  if (!raw || typeof raw !== 'object') return defaults;
+  const cfg = deepClone(defaults);
+  if (typeof raw.asset === 'string') cfg.asset = raw.asset;
+  if (raw.model === 'svi' || raw.model === 'sabr' || raw.model === 'vv') cfg.model = raw.model;
+  if (raw.mode === 'calibrated' || raw.mode === 'manual' || raw.mode === 'hybrid') cfg.mode = raw.mode;
+  if (raw.params && typeof raw.params === 'object') {
+    if (raw.params.smilePreset === 'neutral' || raw.params.smilePreset === 'conservative' || raw.params.smilePreset === 'aggressive') {
+      cfg.params.smilePreset = raw.params.smilePreset;
+    }
+    if (raw.params.common && typeof raw.params.common === 'object') {
+      Object.assign(cfg.params.common, raw.params.common);
+    }
+    if (raw.params.models && typeof raw.params.models === 'object') {
+      for (const modelName of ['svi', 'sabr', 'vv']) {
+        if (raw.params.models[modelName] && typeof raw.params.models[modelName] === 'object') {
+          Object.assign(cfg.params.models[modelName], raw.params.models[modelName]);
+          if (raw.params.models[modelName].manual && typeof raw.params.models[modelName].manual === 'object') {
+            Object.assign(cfg.params.models[modelName].manual, raw.params.models[modelName].manual);
+          }
+          if (raw.params.models[modelName].pins && typeof raw.params.models[modelName].pins === 'object') {
+            Object.assign(cfg.params.models[modelName].pins, raw.params.models[modelName].pins);
+          }
+          if (raw.params.models[modelName].bounds && typeof raw.params.models[modelName].bounds === 'object') {
+            cfg.params.models[modelName].bounds = {
+              ...cfg.params.models[modelName].bounds,
+              ...raw.params.models[modelName].bounds,
+            };
+          }
+        }
+      }
+    }
+  }
+  if (raw.calibration && typeof raw.calibration === 'object') {
+    Object.assign(cfg.calibration, raw.calibration);
+    if (cfg.calibration.fitWeighting !== 'mid' && cfg.calibration.fitWeighting !== 'vega-weighted' && cfg.calibration.fitWeighting !== 'bid-ask-aware') {
+      cfg.calibration.fitWeighting = 'mid';
+    }
+  }
+  if (raw.conventions && typeof raw.conventions === 'object') {
+    Object.assign(cfg.conventions, raw.conventions);
+    if (cfg.conventions.stickyRule !== 'delta' && cfg.conventions.stickyRule !== 'strike' && cfg.conventions.stickyRule !== 'moneyness') {
+      cfg.conventions.stickyRule = 'delta';
+    }
+  }
+  cfg.timestamp = Number.isFinite(raw.timestamp) ? raw.timestamp : Date.now();
+  cfg.source = typeof raw.source === 'string' ? raw.source : cfg.source;
+  return cfg;
+}
+
+let surfaceConfig = defaultSurfaceConfig();
+
 // ---------------------------------------------------------------------------
 //  Pure helpers (copied from index.html — no DOM dependency)
 // ---------------------------------------------------------------------------
@@ -145,10 +270,253 @@ function unpackSliceResult(packed, expiryCode) {
   };
 }
 
+function getVolCaps(cfg) {
+  const common = cfg?.params?.common || {};
+  const floor = clamp(finiteOr(Number(common.volFloor), 5), 0, 500);
+  const ceil = clamp(finiteOr(Number(common.volCeiling), 250), floor + 0.01, 500);
+  return { floor, ceil };
+}
+
+function capIv(ivPct, caps) {
+  return clamp(finiteOr(ivPct, caps.floor), caps.floor, caps.ceil);
+}
+
+function paramsToArray(modelType, params) {
+  if (modelType === 'svi') return [params.a, params.b, params.rho, params.m, params.sigma];
+  if (modelType === 'sabr') return [params.alpha, params.beta, params.rho, params.nu];
+  return [params.atmVol, params.rr25, params.bf25];
+}
+
+function clampModelParams(modelType, params, modelCfg) {
+  const out = { ...params };
+  if (modelType === 'svi') {
+    out.a = Math.max(1e-8, finiteOr(out.a, 0.01));
+    out.b = Math.max(1e-8, finiteOr(out.b, 0.1));
+    out.rho = clamp(finiteOr(out.rho, -0.1), -0.999, 0.999);
+    out.m = clamp(finiteOr(out.m, 0.0), -3.0, 3.0);
+    out.sigma = Math.max(1e-5, finiteOr(out.sigma, 0.2));
+    return out;
+  }
+  if (modelType === 'sabr') {
+    const bounds = modelCfg?.bounds || {};
+    out.alpha = Math.max(1e-8, finiteOr(out.alpha, 0.2));
+    out.beta = clamp(finiteOr(out.beta, 0.5), 0.0, 1.0);
+    out.rho = clamp(
+      finiteOr(out.rho, -0.1),
+      finiteOr(Number(bounds.rhoMin), -0.999),
+      finiteOr(Number(bounds.rhoMax), 0.999)
+    );
+    out.nu = clamp(
+      finiteOr(out.nu, 0.8),
+      Math.max(1e-6, finiteOr(Number(bounds.nuMin), 0.01)),
+      Math.max(1e-5, finiteOr(Number(bounds.nuMax), 3.0))
+    );
+    return out;
+  }
+  out.atmVol = Math.max(0.01, finiteOr(out.atmVol, 0.5));
+  out.rr25 = clamp(finiteOr(out.rr25, 0.0), -2.5, 2.5);
+  out.bf25 = clamp(finiteOr(out.bf25, 0.0), -2.5, 2.5);
+  return out;
+}
+
+function getSmilePresetScale(preset) {
+  if (preset === 'conservative') return 0.8;
+  if (preset === 'aggressive') return 1.2;
+  return 1.0;
+}
+
+function mergeModeParams(slice, cfg) {
+  const mode = cfg?.mode || 'calibrated';
+  const modelCfg = cfg?.params?.models?.[slice.modelType] || {};
+  const manual = modelCfg.manual || {};
+  const pins = modelCfg.pins || {};
+  const keys = SURFACE_PARAM_KEYS[slice.modelType] || [];
+  const next = { ...slice.params };
+  for (const key of keys) {
+    const manualVal = Number(manual[key]);
+    const useManual = mode === 'manual' || (mode === 'hybrid' && !!pins[key]);
+    if (useManual && Number.isFinite(manualVal)) next[key] = manualVal;
+  }
+  return next;
+}
+
+function applyModelTweaks(slice, params, cfg) {
+  const common = cfg?.params?.common || {};
+  const modelCfg = cfg?.params?.models?.[slice.modelType] || {};
+  const out = { ...params };
+  const wingLeft = clamp(finiteOr(Number(common.wingSlopeLeft), 1.0), 0.2, 3.0);
+  const wingRight = clamp(finiteOr(Number(common.wingSlopeRight), 1.0), 0.2, 3.0);
+  const wingAvg = 0.5 * (wingLeft + wingRight);
+  const wingBias = wingRight - wingLeft;
+  const presetScale = getSmilePresetScale(cfg?.params?.smilePreset || 'neutral');
+
+  if (slice.modelType === 'svi') {
+    out.b *= wingAvg * presetScale;
+    out.sigma *= wingAvg * presetScale;
+    out.m += wingBias * 0.03;
+    out.rho = clamp(out.rho - wingBias * 0.08, -0.999, 0.999);
+    if (modelCfg.variant === 'jump-wings') {
+      out.b *= 1.08;
+      out.sigma *= 1.1;
+      out.rho = clamp(out.rho * 1.05, -0.999, 0.999);
+    }
+    return clampModelParams(slice.modelType, out, modelCfg);
+  }
+
+  if (slice.modelType === 'sabr') {
+    out.nu *= wingAvg * presetScale;
+    out.rho = clamp(out.rho - wingBias * 0.08, -0.999, 0.999);
+    if (modelCfg.betaMode === 'fixed' && Number.isFinite(Number(modelCfg.manual?.beta))) {
+      out.beta = Number(modelCfg.manual.beta);
+    }
+    const shift = finiteOr(Number(modelCfg.shift), 0.0);
+    if (shift !== 0.0) out.alpha *= 1.0 + clamp(shift / 200000.0, -0.2, 0.2);
+    return clampModelParams(slice.modelType, out, modelCfg);
+  }
+
+  const dampening = clamp(finiteOr(Number(modelCfg.dampening), 1.0), 0.1, 2.5);
+  out.rr25 *= wingAvg * presetScale * dampening;
+  out.bf25 *= presetScale * dampening;
+  const anchorPut = finiteOr(Number(modelCfg.anchorPutDelta), 0.25);
+  const anchorCall = finiteOr(Number(modelCfg.anchorCallDelta), 0.25);
+  out.rr25 += (anchorCall - anchorPut) * 0.12;
+  if (modelCfg.barrierCorrection) out.bf25 += 0.02;
+  return clampModelParams(slice.modelType, out, modelCfg);
+}
+
+function scaleSliceVolLevel(slice, scale) {
+  if (!Number.isFinite(scale) || scale <= 0) return;
+  if (slice.modelType === 'svi') {
+    const factor = scale * scale;
+    slice.params.a *= factor;
+    slice.params.b *= factor;
+    return;
+  }
+  if (slice.modelType === 'sabr') {
+    slice.params.alpha *= scale;
+    return;
+  }
+  slice.params.atmVol *= scale;
+  slice.params.rr25 *= scale;
+  slice.params.bf25 *= scale;
+}
+
+function recomputeSliceStats(slice, cfg) {
+  const caps = getVolCaps(cfg);
+  const modelCode = modelTypeCode(slice.modelType);
+  const paramsArr = new Float64Array(paramsToArray(slice.modelType, slice.params));
+  const ks = new Float64Array(slice.points.map(pt => pt.k));
+  const marketIvs = new Float64Array(slice.points.map(pt => pt.market_iv));
+  const strikes = new Float64Array(slice.points.map(pt => pt.strike));
+  const diag = wasm.slice_fit_diagnostics(
+    modelCode,
+    paramsArr,
+    slice.T,
+    slice.forward,
+    ks,
+    marketIvs,
+    strikes
+  );
+  if (diag && diag.length >= 3) {
+    slice.rmse = diag[0];
+    slice.skew = diag[1];
+    slice.kurtProxy = diag[2];
+    for (let i = 0; i < slice.points.length; i++) {
+      const fitted = diag[3 + i];
+      if (Number.isFinite(fitted)) slice.points[i].fitted_iv = capIv(fitted, caps);
+      slice.points[i].market_iv = capIv(slice.points[i].market_iv, caps);
+      if (slice.points[i].bid_iv > 0) slice.points[i].bid_iv = capIv(slice.points[i].bid_iv, caps);
+      if (slice.points[i].ask_iv > 0) slice.points[i].ask_iv = capIv(slice.points[i].ask_iv, caps);
+    }
+  }
+  const headers = new Float64Array([modelCode, slice.T, slice.forward, 0]);
+  const atmArr = wasm.iv_grid(headers, paramsArr, new Float64Array([0]));
+  if (atmArr && atmArr.length > 0 && Number.isFinite(atmArr[0])) {
+    slice.atmVol = capIv(atmArr[0], caps);
+  }
+}
+
+function applySurfaceConfigToSlices(slices, cfg) {
+  const output = slices.map(slice => {
+    const next = {
+      ...slice,
+      params: { ...slice.params },
+      points: slice.points.map(pt => ({ ...pt })),
+    };
+    next.params = mergeModeParams(next, cfg);
+    next.params = applyModelTweaks(next, next.params, cfg);
+    next.params = clampModelParams(next.modelType, next.params, cfg?.params?.models?.[next.modelType]);
+    recomputeSliceStats(next, cfg);
+    return next;
+  });
+
+  const smooth = clamp(finiteOr(Number(cfg?.params?.common?.calendarSmoothing), 0.0), 0.0, 1.0);
+  if (smooth > 0 && output.length >= 3) {
+    const targets = output.map((slice, idx) => {
+      if (idx === 0 || idx === output.length - 1) return slice.atmVol;
+      return 0.5 * (output[idx - 1].atmVol + output[idx + 1].atmVol);
+    });
+    for (let i = 0; i < output.length; i++) {
+      const cur = finiteOr(output[i].atmVol, targets[i]);
+      if (cur <= 0) continue;
+      const blended = cur + (targets[i] - cur) * smooth;
+      scaleSliceVolLevel(output[i], blended / cur);
+      recomputeSliceStats(output[i], cfg);
+    }
+  }
+
+  return output;
+}
+
+function preprocessCalibrationQuotes(quotes, forward, weighting) {
+  const strikes = [];
+  const markIvs = [];
+  const bidIvs = [];
+  const askIvs = [];
+  const ois = [];
+  const useBidAsk = weighting === 'bid-ask-aware';
+  const useVega = weighting === 'vega-weighted';
+
+  for (const q of quotes) {
+    const strike = Number(q.strike);
+    if (!Number.isFinite(strike) || strike <= 0) continue;
+    const mark = Number(q.mark_iv);
+    const bid = Number(q.bid_iv) > 0 ? Number(q.bid_iv) : 0;
+    const ask = Number(q.ask_iv) > 0 ? Number(q.ask_iv) : 0;
+    let chosenMark = mark;
+    let oi = Number(q.open_interest) > 0 ? Number(q.open_interest) : 0;
+
+    if (useBidAsk && bid > 0 && ask > 0) {
+      chosenMark = 0.5 * (bid + ask);
+      const spread = Math.max(0, ask - bid);
+      const quality = 1 / (1 + spread * 80);
+      oi = Math.max(oi, 1) * quality;
+    } else if (useVega && forward > 0) {
+      const k = Math.log(strike / forward);
+      const atmWeight = Math.max(0.25, 1.75 - Math.abs(k) * 3.5);
+      oi = Math.max(oi, 1) * atmWeight;
+    }
+
+    strikes.push(strike);
+    markIvs.push(chosenMark);
+    bidIvs.push(bid);
+    askIvs.push(ask);
+    ois.push(oi);
+  }
+
+  return {
+    strikes: new Float64Array(strikes),
+    markIvs: new Float64Array(markIvs),
+    bidIvs: new Float64Array(bidIvs),
+    askIvs: new Float64Array(askIvs),
+    ois: new Float64Array(ois),
+  };
+}
+
 // ---------------------------------------------------------------------------
 //  Calibration — all math in WASM via calibrate_slice_wasm
 // ---------------------------------------------------------------------------
-function runCalibration(chainEntries, spotPrice, model) {
+function runCalibration(chainEntries, spotPrice, model, cfg) {
   const now = Date.now();
   const nowSec = now / 1000;
 
@@ -164,6 +532,7 @@ function runCalibration(chainEntries, spotPrice, model) {
     grouped.get(key).push(q);
   }
 
+  const fitWeighting = cfg?.calibration?.fitWeighting || 'mid';
   const mtCode = modelTypeCode(model);
   const slices = [];
   for (const [expiryCode, quotes] of grouped) {
@@ -179,21 +548,26 @@ function runCalibration(chainEntries, spotPrice, model) {
     const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
     if (!isFinite(forward) || forward <= 0) continue;
 
-    // Pack raw arrays (no math — pure data marshalling)
-    const strikes = new Float64Array(quotes.map(q => q.strike));
-    const markIvs = new Float64Array(quotes.map(q => q.mark_iv));
-    const bidIvs = new Float64Array(quotes.map(q => q.bid_iv || 0));
-    const askIvs = new Float64Array(quotes.map(q => q.ask_iv || 0));
-    const ois = new Float64Array(quotes.map(q => q.open_interest || 0));
+    const prep = preprocessCalibrationQuotes(quotes, forward, fitWeighting);
+    if (prep.strikes.length < 5) continue;
 
     // Single WASM call — all filtering, log-moneyness, calibration, diagnostics in Rust
-    const packed = wasm.calibrate_slice_wasm(strikes, markIvs, bidIvs, askIvs, ois, forward, T, mtCode);
+    const packed = wasm.calibrate_slice_wasm(
+      prep.strikes,
+      prep.markIvs,
+      prep.bidIvs,
+      prep.askIvs,
+      prep.ois,
+      forward,
+      T,
+      mtCode
+    );
     const slice = unpackSliceResult(packed, expiryCode);
     if (slice) slices.push(slice);
   }
 
   slices.sort((a, b) => a.T - b.T);
-  return { slices, chain };
+  return { slices: applySurfaceConfigToSlices(slices, cfg), chain };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,14 +595,20 @@ function computeFrameCache(slices) {
   return { packed, d25, atmIv, termRr25, termBf25 };
 }
 
-function computeSurfaceData(slices, packed) {
+function computeSurfaceData(slices, packed, cfg) {
   if (slices.length === 0) return null;
 
-  const marketX = [], marketY = [], marketZ = [], marketText = [];
+  const marketK = [], marketStrike = [], marketMoneyness = [];
+  const marketY = [], marketZ = [], marketText = [];
+  const marketForwards = [], marketExpiries = [];
   for (const sl of slices) {
     for (const pt of sl.points) {
       if (pt.strike <= 0 || sl.forward <= 0) continue;
-      marketX.push(pt.k); // pre-computed in WASM (calibrate_slice_wasm)
+      marketK.push(pt.k); // pre-computed in WASM (calibrate_slice_wasm)
+      marketStrike.push(pt.strike);
+      marketMoneyness.push(Math.exp(pt.k));
+      marketForwards.push(sl.forward);
+      marketExpiries.push(sl.T);
       marketY.push(sl.T);
       marketZ.push(pt.market_iv);
       marketText.push(
@@ -240,9 +620,9 @@ function computeSurfaceData(slices, packed) {
   }
 
   let kMin = -0.45, kMax = 0.45;
-  if (marketX.length > 0) {
-    kMin = Math.min(...marketX);
-    kMax = Math.max(...marketX);
+  if (marketK.length > 0) {
+    kMin = Math.min(...marketK);
+    kMax = Math.max(...marketK);
     if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
   }
 
@@ -251,9 +631,83 @@ function computeSurfaceData(slices, packed) {
   for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
   const tGrid = slices.map(s => s.T);
   const kGridF64 = new Float64Array(kGrid);
-  const flatZ = Array.from(wasm.iv_grid(packed.headers, packed.params, kGridF64));
+  const caps = getVolCaps(cfg);
+  const flatZ = Array.from(wasm.iv_grid(packed.headers, packed.params, kGridF64)).map(v => capIv(v, caps));
 
-  return { kGrid, tGrid, flatZ, gridN, marketX, marketY, marketZ, marketText };
+  const stickyRule = cfg?.conventions?.stickyRule || 'delta';
+  let xGrid = kGrid;
+  let marketX = marketK;
+  let xAxisTitle = 'ln(K/F)';
+  const avgForward = slices.reduce((acc, sl) => acc + sl.forward, 0) / slices.length;
+
+  if (stickyRule === 'strike') {
+    xGrid = kGrid.map(k => avgForward * Math.exp(k));
+    marketX = marketStrike;
+    xAxisTitle = 'Strike';
+  } else if (stickyRule === 'moneyness') {
+    xGrid = kGrid.map(k => Math.exp(k));
+    marketX = marketMoneyness;
+    xAxisTitle = 'K/F';
+  } else {
+    const gForwards = [];
+    const gStrikes = [];
+    const gRates = [];
+    const gVols = [];
+    const gTimes = [];
+    const gCalls = [];
+    for (let si = 0; si < slices.length; si++) {
+      const sl = slices[si];
+      for (let ki = 0; ki < gridN; ki++) {
+        const iv = flatZ[si * gridN + ki];
+        gForwards.push(sl.forward);
+        gStrikes.push(sl.forward * Math.exp(kGrid[ki]));
+        gRates.push(0.05);
+        gVols.push(Math.max(0.0001, iv / 100));
+        gTimes.push(sl.T);
+        gCalls.push(1);
+      }
+    }
+    const gridGreeks = wasm.black76_greeks_batch_wasm(
+      new Float64Array(gForwards),
+      new Float64Array(gStrikes),
+      new Float64Array(gRates),
+      new Float64Array(gVols),
+      new Float64Array(gTimes),
+      new Uint8Array(gCalls)
+    );
+    const deltaGrid = [];
+    for (let ki = 0; ki < gridN; ki++) {
+      let sum = 0;
+      let n = 0;
+      for (let si = 0; si < slices.length; si++) {
+        const val = gridGreeks[(si * gridN + ki) * 7];
+        if (!Number.isFinite(val)) continue;
+        sum += val;
+        n++;
+      }
+      deltaGrid.push(n > 0 ? sum / n : 0.5);
+    }
+    xGrid = deltaGrid;
+
+    if (marketStrike.length > 0) {
+      const mRates = new Float64Array(marketStrike.length).fill(0.05);
+      const mVols = new Float64Array(marketZ.map(v => Math.max(0.0001, v / 100)));
+      const mCalls = new Uint8Array(marketStrike.length).fill(1);
+      const mGreeks = wasm.black76_greeks_batch_wasm(
+        new Float64Array(marketForwards),
+        new Float64Array(marketStrike),
+        mRates,
+        mVols,
+        new Float64Array(marketExpiries),
+        mCalls
+      );
+      marketX = [];
+      for (let i = 0; i < marketStrike.length; i++) marketX.push(mGreeks[i * 7]);
+    }
+    xAxisTitle = 'Call Delta';
+  }
+
+  return { xGrid, xAxisTitle, tGrid, flatZ, gridN, marketX, marketY, marketZ, marketText, stickyRule };
 }
 
 function computeGreeksData(slices, packed, spotPrice) {
@@ -536,6 +990,7 @@ self.onmessage = function(e) {
     if (payload.edgeThreshold !== undefined) edgeThreshold = payload.edgeThreshold;
     if (payload.edgeSideFilter !== undefined) edgeSideFilter = payload.edgeSideFilter;
     if (payload.isLinear !== undefined) isLinear = payload.isLinear;
+    if (payload.surfaceConfig !== undefined) surfaceConfig = sanitizeSurfaceConfig(payload.surfaceConfig);
     return;
   }
 
@@ -608,7 +1063,8 @@ self.onmessage = function(e) {
     const t0 = performance.now();
 
     // 1. Calibrate
-    const { slices, chain } = runCalibration(chainEntries, spotPrice, activeModel);
+    const modelForRun = surfaceConfig?.model || activeModel;
+    const { slices, chain } = runCalibration(chainEntries, spotPrice, modelForRun, surfaceConfig);
     const calibTimeUs = Math.round((performance.now() - t0) * 1000);
 
     if (slices.length === 0) {
@@ -639,7 +1095,7 @@ self.onmessage = function(e) {
     const warmup = renderCycle <= 5;
 
     if ((warmup || renderCycle % 5 === 0) && fc) {
-      surface = computeSurfaceData(slices, fc.packed);
+      surface = computeSurfaceData(slices, fc.packed, surfaceConfig);
     }
 
     if ((warmup || renderCycle % 2 === 0) && fc) {
