@@ -241,11 +241,11 @@ impl YieldCurve {
     /// Instantaneous forward rate with explicit interpolation errors.
     pub fn try_instantaneous_forward_rate(&self, t: f64) -> Result<f64, InterpolationError> {
         if t <= 0.0 {
-            return Ok(self.try_zero_rate(1.0e-8)?);
+            return self.try_zero_rate(1.0e-8);
         }
 
         let Some(state) = &self.interpolation_state else {
-            return Ok(self.try_zero_rate(t)?);
+            return self.try_zero_rate(t);
         };
 
         match state.quantity {

@@ -1024,13 +1024,12 @@ impl CommodityStorageContract {
         if !self.variable_cost.is_finite() || self.variable_cost < 0.0 {
             return Err("variable_cost must be finite and >= 0".to_string());
         }
-        if let Some(target) = self.terminal_inventory_target {
-            if !target.is_finite() || target < self.min_inventory || target > self.max_inventory {
-                return Err(
-                    "terminal_inventory_target must be finite and inside inventory bounds"
-                        .to_string(),
-                );
-            }
+        if let Some(target) = self.terminal_inventory_target
+            && (!target.is_finite() || target < self.min_inventory || target > self.max_inventory)
+        {
+            return Err(
+                "terminal_inventory_target must be finite and inside inventory bounds".to_string(),
+            );
         }
         Ok(())
     }
@@ -1302,8 +1301,7 @@ fn simulate_storage_spot_paths(
         let mut residual = 0.0_f64;
         let mut residual_var = 0.0_f64;
 
-        for i in 0..n_t {
-            let t = contract.decision_times[i];
+        for (i, &t) in contract.decision_times.iter().enumerate().take(n_t) {
             let dt = if i == 0 {
                 t
             } else {

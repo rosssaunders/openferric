@@ -236,7 +236,7 @@ pub fn implied_vol_newton(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use rand::{Rng, SeedableRng};
+    use rand::SeedableRng;
     use std::time::Instant;
 
     #[test]

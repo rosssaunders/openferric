@@ -737,8 +737,8 @@ fn instrument_and_portfolio_roundtrip() {
     assert_roundtrip(&DegreeDayType::CDD);
 
     let instruments = sample_trade_instruments();
-    for instrument in instruments.iter().cloned() {
-        assert_roundtrip(&instrument);
+    for instrument in instruments.iter() {
+        assert_roundtrip(instrument);
     }
 
     let trades = instruments

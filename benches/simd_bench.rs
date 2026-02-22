@@ -8,8 +8,6 @@ use openferric::math::simd_math::{exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
 use openferric::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
 use openferric::pricing::european::black_scholes_price;
 use statrs::distribution::{ContinuousCDF, Normal};
-#[cfg(all(feature = "simd", target_arch = "x86_64"))]
-use std::arch::x86_64::*;
 use std::hint::black_box;
 
 fn make_spot_strike(n: usize) -> (Vec<f64>, Vec<f64>) {

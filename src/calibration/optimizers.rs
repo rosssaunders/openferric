@@ -515,12 +515,13 @@ where
             continue;
         }
 
-        for i in 1..=dim {
-            for d in 0..dim {
-                simplex[i][d] = simplex[0][d] + options.shrink * (simplex[i][d] - simplex[0][d]);
+        let base = simplex[0].clone();
+        for (i, point) in simplex.iter_mut().enumerate().take(dim + 1).skip(1) {
+            for (coord, base_coord) in point.iter_mut().zip(base.iter()) {
+                *coord = *base_coord + options.shrink * (*coord - *base_coord);
             }
-            simplex[i] = bounds.clamp(&simplex[i]);
-            values[i] = objective_fn(&simplex[i]);
+            *point = bounds.clamp(point);
+            values[i] = objective_fn(point);
             evals += 1;
         }
     }

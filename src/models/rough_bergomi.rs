@@ -275,8 +275,8 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
     for i in 0..n {
         for j in 0..=i {
             let mut sum = matrix[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
+            for (&lik, &ljk) in l[i].iter().zip(l[j].iter()).take(j) {
+                sum -= lik * ljk;
             }
 
             if i == j {

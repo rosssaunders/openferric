@@ -225,13 +225,12 @@ pub fn validate_correlation_matrix(
         return Err("correlation matrix dimensions must match asset count".to_string());
     }
 
-    for i in 0..n_assets {
-        let di = corr_matrix[i][i];
+    for (i, row_i) in corr_matrix.iter().enumerate().take(n_assets) {
+        let di = row_i[i];
         if !di.is_finite() || (di - 1.0).abs() > 1.0e-10 {
             return Err("correlation matrix diagonal must be 1".to_string());
         }
-        for j in 0..n_assets {
-            let rho = corr_matrix[i][j];
+        for (j, rho) in row_i.iter().copied().enumerate().take(n_assets) {
             if !rho.is_finite() || !(-1.0..=1.0).contains(&rho) {
                 return Err("correlation entries must be finite and in [-1, 1]".to_string());
             }
@@ -319,13 +318,17 @@ pub fn nearest_correlation_matrix_higham(
     y = symmetrize(&y);
 
     let mut out = from_dmatrix(&y);
-    for i in 0..n {
+    let mut i = 0usize;
+    while i < n {
         out[i][i] = 1.0;
-        for j in (i + 1)..n {
+        let mut j = i + 1;
+        while j < n {
             let clipped = out[i][j].clamp(-1.0, 1.0);
             out[i][j] = clipped;
             out[j][i] = clipped;
+            j += 1;
         }
+        i += 1;
     }
 
     Ok(out)
@@ -367,8 +370,8 @@ pub fn cholesky_lower_psd(matrix: &[Vec<f64>], tol: f64) -> Option<Vec<Vec<f64>>
     for i in 0..n {
         for j in 0..=i {
             let mut sum = matrix[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
+            for (&lik, &ljk) in l[i].iter().zip(l[j].iter()).take(j) {
+                sum -= lik * ljk;
             }
 
             if i == j {
@@ -453,48 +456,64 @@ pub fn apply_correlation_stress(
                 if !factor.is_finite() {
                     return Err("scale factor must be finite".to_string());
                 }
-                for i in 0..n {
-                    for j in (i + 1)..n {
+                let mut i = 0usize;
+                while i < n {
+                    let mut j = i + 1;
+                    while j < n {
                         let rho = (out[i][j] * factor).clamp(-0.999_999, 0.999_999);
                         out[i][j] = rho;
                         out[j][i] = rho;
+                        j += 1;
                     }
+                    i += 1;
                 }
             }
             CorrelationStressScenario::AdditiveShift { shift } => {
                 if !shift.is_finite() {
                     return Err("additive shift must be finite".to_string());
                 }
-                for i in 0..n {
-                    for j in (i + 1)..n {
+                let mut i = 0usize;
+                while i < n {
+                    let mut j = i + 1;
+                    while j < n {
                         let rho = (out[i][j] + shift).clamp(-0.999_999, 0.999_999);
                         out[i][j] = rho;
                         out[j][i] = rho;
+                        j += 1;
                     }
+                    i += 1;
                 }
             }
             CorrelationStressScenario::FloorOffDiagonal { floor } => {
                 if !floor.is_finite() || *floor < -1.0 || *floor > 1.0 {
                     return Err("floor must be finite and in [-1, 1]".to_string());
                 }
-                for i in 0..n {
-                    for j in (i + 1)..n {
+                let mut i = 0usize;
+                while i < n {
+                    let mut j = i + 1;
+                    while j < n {
                         let rho = out[i][j].max(*floor).clamp(-0.999_999, 0.999_999);
                         out[i][j] = rho;
                         out[j][i] = rho;
+                        j += 1;
                     }
+                    i += 1;
                 }
             }
             CorrelationStressScenario::CapOffDiagonal { cap } => {
                 if !cap.is_finite() || *cap < -1.0 || *cap > 1.0 {
                     return Err("cap must be finite and in [-1, 1]".to_string());
                 }
-                for i in 0..n {
-                    for j in (i + 1)..n {
+                let mut i = 0usize;
+                while i < n {
+                    let mut j = i + 1;
+                    while j < n {
                         let rho = out[i][j].min(*cap).clamp(-0.999_999, 0.999_999);
                         out[i][j] = rho;
                         out[j][i] = rho;
+                        j += 1;
                     }
+                    i += 1;
                 }
             }
             CorrelationStressScenario::OverridePair { i, j, value } => {

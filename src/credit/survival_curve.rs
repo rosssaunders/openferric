@@ -260,7 +260,7 @@ mod tests {
         let true_curve =
             SurvivalCurve::from_piecewise_hazard(&pillars, &vec![hazard; pillars.len()]);
 
-        let maturities = vec![1.0, 3.0, 5.0, 7.0];
+        let maturities = [1.0, 3.0, 5.0, 7.0];
         let quotes = maturities
             .iter()
             .map(|&maturity| {

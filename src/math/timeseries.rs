@@ -457,7 +457,8 @@ pub fn ledoit_wolf_correlation_matrix(
     let f = scaled_identity(n_assets, mu);
 
     let mut pi_hat = 0.0;
-    for t in 0..n_obs {
+    let mut t = 0usize;
+    while t < n_obs {
         let mut outer = vec![vec![0.0; n_assets]; n_assets];
         for i in 0..n_assets {
             for j in 0..n_assets {
@@ -465,6 +466,7 @@ pub fn ledoit_wolf_correlation_matrix(
             }
         }
         pi_hat += frobenius_norm_sq_diff(&outer, &s_pop);
+        t += 1;
     }
     pi_hat /= n_obs as f64;
 
@@ -1026,8 +1028,10 @@ fn covariance_from_centered(centered: &[Vec<f64>], denom: f64) -> Vec<Vec<f64>> 
     for i in 0..n_assets {
         for j in i..n_assets {
             let mut sum = 0.0;
-            for t in 0..n_obs {
+            let mut t = 0usize;
+            while t < n_obs {
                 sum += centered[i][t] * centered[j][t];
+                t += 1;
             }
             let v = sum / denom;
             cov[i][j] = v;

@@ -26,11 +26,6 @@ pub struct GreeksGridPoint {
     pub vega: f64,
 }
 
-#[inline]
-fn uniform_open01(u: f64) -> f64 {
-    u.clamp(f64::EPSILON, 1.0 - f64::EPSILON)
-}
-
 #[inline(always)]
 fn payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
@@ -182,7 +177,7 @@ unsafe fn simulate_chunk_exact_avx2(
     let drift_v = unsafe { splat_f64x4(total_drift) };
     let diff_v = unsafe { splat_f64x4(total_diffusion) };
     let strike_v = unsafe { splat_f64x4(strike) };
-    let zero_v = unsafe { _mm256_setzero_pd() };
+    let zero_v = _mm256_setzero_pd();
 
     // Block size for batch normal generation (fits in L1 cache).
     const BLOCK: usize = 512;

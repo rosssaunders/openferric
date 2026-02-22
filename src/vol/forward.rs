@@ -596,7 +596,7 @@ fn model_free_variance_for_expiry<S: ForwardVarianceSource>(
     }
 
     let mut n = settings.strike_count.max(11);
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         n += 1;
     }
     let span = settings.log_moneyness_span.max(0.3);

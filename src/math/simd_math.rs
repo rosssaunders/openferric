@@ -20,12 +20,16 @@ const LN_2_LO: f64 = 1.908_214_929_270_587_7e-10;
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn splat_f64x4(val: f64) -> __m256d {
     _mm256_set1_pd(val)
 }
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available and `values[i..i + 4]` is in-bounds.
 pub unsafe fn load_f64x4(values: &[f64], i: usize) -> __m256d {
     // SAFETY: caller guarantees there are at least 4 elements starting at `i`.
     unsafe { _mm256_loadu_pd(values.as_ptr().add(i)) }
@@ -33,6 +37,8 @@ pub unsafe fn load_f64x4(values: &[f64], i: usize) -> __m256d {
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available and `values[i..i + 4]` is in-bounds.
 pub unsafe fn store_f64x4(values: &mut [f64], i: usize, v: __m256d) {
     // SAFETY: caller guarantees there are at least 4 elements starting at `i`.
     unsafe { _mm256_storeu_pd(values.as_mut_ptr().add(i), v) };
@@ -40,6 +46,8 @@ pub unsafe fn store_f64x4(values: &mut [f64], i: usize, v: __m256d) {
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
     let max_x = _mm256_set1_pd(709.782_712_893_384);
     let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
@@ -96,6 +104,8 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
 /// for Monte Carlo simulation, path generation, and most pricing applications.
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
     let max_x = _mm256_set1_pd(709.782_712_893_384);
     let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
@@ -143,6 +153,8 @@ pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn ln_f64x4(x: __m256d) -> __m256d {
     // Extract exponent and mantissa: x = m * 2^k, m in [1, 2).
     let x_bits = _mm256_castpd_si256(x);
@@ -223,6 +235,8 @@ pub unsafe fn ln_f64x4(x: __m256d) -> __m256d {
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn norm_pdf_f64x4(x: __m256d) -> __m256d {
     let inv_sqrt_2pi = _mm256_set1_pd(0.398_942_280_401_432_7);
     let exponent = _mm256_mul_pd(_mm256_set1_pd(-0.5), _mm256_mul_pd(x, x));
@@ -231,6 +245,8 @@ pub unsafe fn norm_pdf_f64x4(x: __m256d) -> __m256d {
 
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn norm_cdf_f64x4(x: __m256d) -> __m256d {
     let one = _mm256_set1_pd(1.0);
     let zero = _mm256_setzero_pd();
@@ -308,6 +324,8 @@ const INV_CDF_P_HIGH: f64 = 1.0 - INV_CDF_P_LOW;
 /// This eliminates the data-dependent branching in the scalar version.
 #[inline]
 #[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
 pub unsafe fn inv_norm_cdf_f64x4(p: __m256d) -> __m256d {
     unsafe {
         let one = _mm256_set1_pd(1.0);

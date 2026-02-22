@@ -163,7 +163,7 @@ fn test_normal_inv_cdf_known_values() {
     assert_abs_diff_eq!(normal_inv_cdf(0.5), 0.0, epsilon = 1e-10);
 
     // Phi^{-1}(Phi(1.0)) ~ 1.0
-    let p1 = 0.8413447460685430;
+    let p1 = 0.841_344_746_068_543;
     assert_abs_diff_eq!(normal_inv_cdf(p1), 1.0, epsilon = 1e-5);
 
     // Phi^{-1}(Phi(2.0)) ~ 2.0

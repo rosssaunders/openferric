@@ -1043,9 +1043,9 @@ fn average_off_diagonal(corr_matrix: &[Vec<f64>]) -> Option<f64> {
 
     let mut sum = 0.0;
     let mut count = 0usize;
-    for i in 0..corr_matrix.len() {
-        for j in (i + 1)..corr_matrix.len() {
-            sum += corr_matrix[i][j];
+    for (i, row) in corr_matrix.iter().enumerate() {
+        for rho in row.iter().skip(i + 1) {
+            sum += *rho;
             count += 1;
         }
     }
@@ -1271,12 +1271,16 @@ mod tests {
         let vols = vec![0.2; 10];
         let dividends = vec![0.0; 10];
         let mut corr = vec![vec![0.0; 10]; 10];
-        for i in 0..10 {
+        let mut i = 0usize;
+        while i < 10 {
             corr[i][i] = 1.0;
-            for j in (i + 1)..10 {
+            let mut j = i + 1;
+            while j < 10 {
                 corr[i][j] = 0.35;
                 corr[j][i] = 0.35;
+                j += 1;
             }
+            i += 1;
         }
 
         let start = Instant::now();
