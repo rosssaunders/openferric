@@ -257,3 +257,157 @@ pub fn log_returns_batch_wasm(prices: &[f64]) -> Vec<f64> {
 pub fn realized_vol(log_returns: &[f64], obs_per_year: f64) -> f64 {
     openferric::vol::slice::realized_vol(log_returns, obs_per_year)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- sabr_vol --
+
+    #[test]
+    fn sabr_vol_atm_approx_alpha() {
+        let vol = sabr_vol(100.0, 100.0, 1.0, 0.20, 1.0, -0.3, 0.4);
+        assert!((vol - 0.20).abs() < 0.02);
+    }
+
+    #[test]
+    fn sabr_vol_smile_skew() {
+        let vol_low = sabr_vol(100.0, 80.0, 1.0, 0.20, 0.5, -0.4, 0.6);
+        let vol_atm = sabr_vol(100.0, 100.0, 1.0, 0.20, 0.5, -0.4, 0.6);
+        // Negative rho → downside skew
+        assert!(vol_low > vol_atm);
+    }
+
+    #[test]
+    fn sabr_vol_positive() {
+        let vol = sabr_vol(100.0, 100.0, 1.0, 0.25, 0.5, 0.0, 0.3);
+        assert!(vol > 0.0);
+    }
+
+    // -- fit_sabr_wasm --
+
+    #[test]
+    fn fit_sabr_round_trip() {
+        let alpha = 0.25;
+        let beta = 0.5;
+        let rho = -0.2;
+        let nu = 0.4;
+        let forward = 100.0;
+        let t = 1.0;
+        let strikes: Vec<f64> = (80..=120).step_by(5).map(|s| s as f64).collect();
+        let vols: Vec<f64> = strikes
+            .iter()
+            .map(|&k| sabr_vol(forward, k, t, alpha, beta, rho, nu))
+            .collect();
+        let result = fit_sabr_wasm(forward, &strikes, &vols, t, beta);
+        assert!((result.alpha - alpha).abs() < 0.05);
+        // beta is fixed
+        assert!((result.beta - beta).abs() < 1e-10);
+    }
+
+    // -- WasmSviParams --
+
+    #[test]
+    fn svi_total_variance_atm() {
+        let params = WasmSviParams { a: 0.04, b: 0.1, rho: 0.0, m: 0.0, sigma: 0.1 };
+        let tv = params.total_variance(0.0); // k=0 (ATM)
+        let expected = 0.04 + 0.1 * 0.1; // a + b*sigma when rho=0, k=m=0
+        assert!((tv - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn svi_total_variance_positive_wings() {
+        let params = WasmSviParams { a: 0.04, b: 0.1, rho: -0.2, m: 0.0, sigma: 0.1 };
+        let tv_low = params.total_variance(-0.3);
+        let tv_high = params.total_variance(0.3);
+        assert!(tv_low > 0.0);
+        assert!(tv_high > 0.0);
+    }
+
+    #[test]
+    fn svi_dw_dk_finite() {
+        let params = WasmSviParams { a: 0.04, b: 0.1, rho: -0.2, m: 0.0, sigma: 0.1 };
+        let dw = params.dw_dk(0.0);
+        assert!(dw.is_finite());
+    }
+
+    // -- calibrate_svi_wasm --
+
+    #[test]
+    fn calibrate_svi_wasm_recovers_shape() {
+        let a_true = 0.04;
+        let b_true = 0.10;
+        let rho_true = -0.2;
+        let m_true = 0.0;
+        let sigma_true = 0.1;
+        let svi = SviParams { a: a_true, b: b_true, rho: rho_true, m: m_true, sigma: sigma_true };
+        let mut points_flat = Vec::new();
+        for k in (-5..=5).map(|i| i as f64 * 0.05) {
+            let tv = svi.total_variance(k);
+            points_flat.push(k);
+            points_flat.push(tv);
+        }
+        let result = calibrate_svi_wasm(&points_flat, 0.04, 0.1, -0.1, 0.0, 0.15, 2000, 0.002);
+        // Check it reproduces total variance at ATM
+        let tv_atm = result.total_variance(0.0);
+        let expected_atm = svi.total_variance(0.0);
+        assert!((tv_atm - expected_atm).abs() < 0.01);
+    }
+
+    // -- log_moneyness_batch_wasm --
+
+    #[test]
+    fn log_moneyness_atm_is_zero() {
+        let km = log_moneyness_batch_wasm(&[100.0], &[100.0]);
+        assert!((km[0]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log_moneyness_otm() {
+        let km = log_moneyness_batch_wasm(&[110.0], &[100.0]);
+        let expected = (110.0_f64 / 100.0).ln();
+        assert!((km[0] - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log_moneyness_broadcast_forward() {
+        let km = log_moneyness_batch_wasm(&[90.0, 100.0, 110.0], &[100.0]);
+        assert_eq!(km.len(), 3);
+        assert!(km[0] < 0.0);
+        assert!((km[1]).abs() < 1e-10);
+        assert!(km[2] > 0.0);
+    }
+
+    // -- log_returns_batch_wasm --
+
+    #[test]
+    fn log_returns_basic() {
+        let prices = [100.0, 110.0, 105.0];
+        let lr = log_returns_batch_wasm(&prices);
+        assert_eq!(lr.len(), 2);
+        assert!((lr[0] - (110.0_f64 / 100.0).ln()).abs() < 1e-10);
+        assert!((lr[1] - (105.0_f64 / 110.0).ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log_returns_single_price_empty() {
+        let lr = log_returns_batch_wasm(&[100.0]);
+        assert!(lr.is_empty());
+    }
+
+    // -- realized_vol --
+
+    #[test]
+    fn realized_vol_positive() {
+        let log_ret = [0.01, -0.02, 0.015, -0.005, 0.008];
+        let rv = realized_vol(&log_ret, 252.0);
+        assert!(rv > 0.0);
+    }
+
+    #[test]
+    fn realized_vol_zero_returns() {
+        let log_ret = [0.0, 0.0, 0.0];
+        let rv = realized_vol(&log_ret, 252.0);
+        assert!(rv.abs() < 1e-10 || rv == 0.0);
+    }
+}
