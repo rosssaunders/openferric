@@ -1,6 +1,9 @@
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use chrono::{Datelike, Duration, NaiveDate};
 
-use crate::rates::{DayCountConvention, year_fraction};
+use crate::rates::{
+    Calendar, DayCountConvention, add_business_days, next_cds_date, previous_cds_date,
+    year_fraction,
+};
 
 /// Protection side of a CDS trade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,42 +161,22 @@ pub fn hazard_from_par_spread(par_spread: f64, recovery_rate: f64) -> f64 {
 
 /// Standard CDS step-in date (T+1 business day).
 pub fn step_in_date(valuation_date: NaiveDate) -> NaiveDate {
-    advance_business_days(valuation_date, 1)
+    add_business_days(valuation_date, 1, &Calendar::weekends_only())
 }
 
 /// Standard CDS cash-settlement date (T+3 business days).
 pub fn cash_settle_date(valuation_date: NaiveDate) -> NaiveDate {
-    advance_business_days(valuation_date, 3)
+    add_business_days(valuation_date, 3, &Calendar::weekends_only())
 }
 
 /// Previous quarterly IMM date (20th of Mar/Jun/Sep/Dec) on or before `date`.
 pub fn previous_imm_twentieth(date: NaiveDate) -> NaiveDate {
-    let mut y = date.year();
-    loop {
-        for &m in [12_u32, 9, 6, 3].iter() {
-            if let Some(c) = NaiveDate::from_ymd_opt(y, m, 20)
-                && c <= date
-            {
-                return c;
-            }
-        }
-        y -= 1;
-    }
+    previous_cds_date(date)
 }
 
 /// Next quarterly IMM date (20th of Mar/Jun/Sep/Dec) on or after `date`.
 pub fn next_imm_twentieth(date: NaiveDate) -> NaiveDate {
-    let mut y = date.year();
-    loop {
-        for &m in [3_u32, 6, 9, 12].iter() {
-            if let Some(c) = NaiveDate::from_ymd_opt(y, m, 20)
-                && c >= date
-            {
-                return c;
-            }
-        }
-        y += 1;
-    }
+    next_cds_date(date)
 }
 
 /// Generates a coupon-boundary schedule including one boundary before issue date.
@@ -375,19 +358,7 @@ fn exact_flat_interval_terms(t1: f64, t2: f64, r: f64, h: f64) -> (f64, f64) {
 }
 
 fn advance_business_days(date: NaiveDate, days: usize) -> NaiveDate {
-    let mut d = date;
-    let mut left = days;
-    while left > 0 {
-        d += Duration::days(1);
-        if is_business_day(d) {
-            left -= 1;
-        }
-    }
-    d
-}
-
-fn is_business_day(date: NaiveDate) -> bool {
-    !matches!(date.weekday(), Weekday::Sat | Weekday::Sun)
+    add_business_days(date, days as i32, &Calendar::weekends_only())
 }
 
 fn add_months(date: NaiveDate, months: i32) -> NaiveDate {

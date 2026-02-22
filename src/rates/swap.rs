@@ -1,6 +1,9 @@
 use chrono::NaiveDate;
 
-use crate::rates::schedule::{Frequency, generate_schedule};
+use crate::rates::schedule::{
+    BusinessDayConvention, Calendar, Frequency, RollConvention, ScheduleConfig, StubConvention,
+    generate_schedule_with_config,
+};
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 
 /// Plain-vanilla fixed-for-floating interest-rate swap.
@@ -13,6 +16,10 @@ pub struct InterestRateSwap {
     pub end_date: NaiveDate,
     pub fixed_freq: Frequency,
     pub float_freq: Frequency,
+    pub calendar: Calendar,
+    pub business_day_convention: BusinessDayConvention,
+    pub stub_convention: StubConvention,
+    pub roll_convention: RollConvention,
     pub fixed_day_count: DayCountConvention,
     pub float_day_count: DayCountConvention,
 }
@@ -25,7 +32,7 @@ impl InterestRateSwap {
 
     /// PV of the fixed leg as discounted coupon cashflows.
     pub fn fixed_leg_pv(&self, curve: &YieldCurve) -> f64 {
-        let schedule = generate_schedule(self.start_date, self.end_date, self.fixed_freq);
+        let schedule = self.schedule(self.fixed_freq);
         if schedule.len() < 2 {
             return 0.0;
         }
@@ -47,7 +54,7 @@ impl InterestRateSwap {
 
     /// PV of the floating leg as discounted forward coupons.
     pub fn float_leg_pv(&self, curve: &YieldCurve) -> f64 {
-        let schedule = generate_schedule(self.start_date, self.end_date, self.float_freq);
+        let schedule = self.schedule(self.float_freq);
         if schedule.len() < 2 {
             return 0.0;
         }
@@ -94,7 +101,7 @@ impl InterestRateSwap {
     }
 
     fn fixed_leg_annuity(&self, curve: &YieldCurve) -> f64 {
-        let schedule = generate_schedule(self.start_date, self.end_date, self.fixed_freq);
+        let schedule = self.schedule(self.fixed_freq);
         if schedule.len() < 2 {
             return 0.0;
         }
@@ -113,6 +120,16 @@ impl InterestRateSwap {
                     accrual * curve.discount_factor(pay_time)
                 })
                 .sum::<f64>()
+    }
+
+    fn schedule(&self, frequency: Frequency) -> Vec<NaiveDate> {
+        let config = ScheduleConfig {
+            calendar: self.calendar.clone(),
+            business_day_convention: self.business_day_convention,
+            stub_convention: self.stub_convention,
+            roll_convention: self.roll_convention,
+        };
+        generate_schedule_with_config(self.start_date, self.end_date, frequency, &config)
     }
 }
 
@@ -139,6 +156,10 @@ pub struct SwapBuilder {
     end_date: NaiveDate,
     fixed_freq: Frequency,
     float_freq: Frequency,
+    calendar: Calendar,
+    business_day_convention: BusinessDayConvention,
+    stub_convention: StubConvention,
+    roll_convention: RollConvention,
     fixed_day_count: DayCountConvention,
     float_day_count: DayCountConvention,
 }
@@ -153,6 +174,10 @@ impl Default for SwapBuilder {
             end_date: NaiveDate::from_ymd_opt(2030, 1, 1).expect("valid default end date"),
             fixed_freq: Frequency::Annual,
             float_freq: Frequency::Quarterly,
+            calendar: Calendar::weekends_only(),
+            business_day_convention: BusinessDayConvention::ModifiedFollowing,
+            stub_convention: StubConvention::ShortBack,
+            roll_convention: RollConvention::None,
             fixed_day_count: DayCountConvention::Act365Fixed,
             float_day_count: DayCountConvention::Act360,
         }
@@ -195,6 +220,29 @@ impl SwapBuilder {
         self
     }
 
+    pub fn calendar(mut self, calendar: Calendar) -> Self {
+        self.calendar = calendar;
+        self
+    }
+
+    pub fn business_day_convention(
+        mut self,
+        business_day_convention: BusinessDayConvention,
+    ) -> Self {
+        self.business_day_convention = business_day_convention;
+        self
+    }
+
+    pub fn stub_convention(mut self, stub_convention: StubConvention) -> Self {
+        self.stub_convention = stub_convention;
+        self
+    }
+
+    pub fn roll_convention(mut self, roll_convention: RollConvention) -> Self {
+        self.roll_convention = roll_convention;
+        self
+    }
+
     pub fn fixed_day_count(mut self, fixed_day_count: DayCountConvention) -> Self {
         self.fixed_day_count = fixed_day_count;
         self
@@ -214,6 +262,10 @@ impl SwapBuilder {
             end_date: self.end_date,
             fixed_freq: self.fixed_freq,
             float_freq: self.float_freq,
+            calendar: self.calendar,
+            business_day_convention: self.business_day_convention,
+            stub_convention: self.stub_convention,
+            roll_convention: self.roll_convention,
             fixed_day_count: self.fixed_day_count,
             float_day_count: self.float_day_count,
         }
