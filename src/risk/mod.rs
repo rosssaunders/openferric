@@ -4,6 +4,7 @@ pub mod fva;
 pub mod kva;
 pub mod mva;
 pub mod portfolio;
+pub mod sensitivities;
 pub mod var;
 pub mod wrong_way_risk;
 pub mod xva;
@@ -14,6 +15,7 @@ pub use kva::{
 };
 pub use mva::{SimmMargin, SimmRiskClass, mva_from_profile};
 pub use portfolio::{AggregatedGreeks, Portfolio, Position};
+pub use sensitivities::*;
 pub use var::{
     cornish_fisher_var, cornish_fisher_var_from_pnl, delta_gamma_normal_var, delta_normal_var,
     historical_expected_shortfall, historical_var, normal_expected_shortfall,
