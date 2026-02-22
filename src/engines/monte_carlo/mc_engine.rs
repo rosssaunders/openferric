@@ -9,6 +9,7 @@
 //! Numerical considerations: estimator variance, path count, and random-seed strategy drive confidence intervals; monitor bias from discretization and variance reduction choices.
 //!
 //! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::core::{
@@ -295,8 +296,8 @@ unsafe fn mc_exact_avx2_inner(
     strike: f64,
     i: &mut usize,
 ) {
-    use std::arch::x86_64::*;
     use crate::math::simd_math::{fast_exp_f64x4, fill_normals_simd, splat_f64x4, store_f64x4};
+    use std::arch::x86_64::*;
 
     let spot_v = unsafe { splat_f64x4(spot) };
     let drift_v = unsafe { splat_f64x4(total_drift) };
@@ -321,8 +322,12 @@ unsafe fn mc_exact_avx2_inner(
             let s_terminal = _mm256_mul_pd(spot_v, growth);
 
             let payoff_v = match option_type {
-                crate::core::OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
-                crate::core::OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+                crate::core::OptionType::Call => {
+                    _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v)
+                }
+                crate::core::OptionType::Put => {
+                    _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v)
+                }
             };
 
             unsafe { store_f64x4(payoff_buffer, *i + j, payoff_v) };
@@ -345,8 +350,12 @@ unsafe fn mc_exact_avx2_inner(
             let s_terminal = _mm256_mul_pd(spot_v, growth);
 
             let payoff_v = match option_type {
-                crate::core::OptionType::Call => _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v),
-                crate::core::OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
+                crate::core::OptionType::Call => {
+                    _mm256_max_pd(_mm256_sub_pd(s_terminal, strike_v), zero_v)
+                }
+                crate::core::OptionType::Put => {
+                    _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v)
+                }
             };
 
             unsafe { store_f64x4(payoff_buffer, *i + j, payoff_v) };
@@ -742,7 +751,7 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
 
 impl<T> PricingEngine<T> for MonteCarloPricingEngine
 where
-    T: MonteCarloInstrument + Sync,
+    T: MonteCarloInstrument + Sync + Any,
 {
     fn price(&self, instrument: &T, market: &Market) -> Result<PricingResult, PricingError> {
         instrument.validate_for_mc()?;
@@ -832,6 +841,18 @@ where
             greeks: None,
             diagnostics,
         })
+    }
+
+    fn price_with_greeks_aad(
+        &self,
+        instrument: &T,
+        market: &Market,
+    ) -> Result<PricingResult, PricingError> {
+        if let Some(vanilla) = (instrument as &dyn Any).downcast_ref::<VanillaOption>() {
+            return super::mc_aad::mc_european_pathwise_aad(self, vanilla, market);
+        }
+
+        self.price(instrument, market)
     }
 }
 
@@ -1001,8 +1022,12 @@ mod tests {
 
         // With parallel feature, rayon's work-stealing causes non-deterministic FP
         // summation order, so results may differ by a few ULPs between runs.
-        assert!((first.price - second.price).abs() < 1e-12,
-            "price mismatch: {} vs {}", first.price, second.price);
+        assert!(
+            (first.price - second.price).abs() < 1e-12,
+            "price mismatch: {} vs {}",
+            first.price,
+            second.price
+        );
         match (first.stderr, second.stderr) {
             (Some(a), Some(b)) => assert!((a - b).abs() < 1e-12, "stderr mismatch: {a} vs {b}"),
             (None, None) => {}

@@ -9,6 +9,7 @@
 //! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
 //!
 //! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
+pub mod aad;
 pub mod arena;
 pub mod fast_norm;
 pub mod fast_rng;
@@ -21,6 +22,7 @@ pub mod simd_math;
 pub mod simd_neon;
 pub mod sobol;
 
+pub use aad::*;
 pub use arena::PricingArena;
 pub use fast_norm::{
     beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,

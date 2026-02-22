@@ -37,6 +37,18 @@ pub trait Instrument: std::fmt::Debug {
 pub trait PricingEngine<I: Instrument> {
     /// Prices an instrument under the provided market state.
     fn price(&self, instrument: &I, market: &Market) -> Result<PricingResult, PricingError>;
+
+    /// Prices an instrument and, when implemented, computes Greeks via AAD.
+    ///
+    /// Default behavior falls back to [`PricingEngine::price`].
+    #[inline]
+    fn price_with_greeks_aad(
+        &self,
+        instrument: &I,
+        market: &Market,
+    ) -> Result<PricingResult, PricingError> {
+        self.price(instrument, market)
+    }
 }
 
 /// Compact key set for engine diagnostics.

@@ -12,7 +12,7 @@
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
-use crate::math::{normal_cdf, normal_pdf};
+use crate::math::{black_scholes_price_greeks_aad, normal_cdf, normal_pdf};
 
 /// Analytic Black-Scholes engine for European vanilla options.
 #[derive(Debug, Clone, Default)]
@@ -53,8 +53,7 @@ fn d1_d2(
     expiry: f64,
 ) -> (f64, f64) {
     let sig_sqrt_t = vol * expiry.sqrt();
-    let d1 = ((spot / strike).ln()
-        + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
         / sig_sqrt_t;
     (d1, d1 - sig_sqrt_t)
 }
@@ -184,13 +183,10 @@ pub fn bs_theta(
     let theta_common = -spot * df_q * norm_pdf(d1) * vol / (2.0 * sqrt_t);
     match option_type {
         OptionType::Call => {
-            theta_common
-                + dividend_yield * spot * df_q * nd1
-                - rate * strike * df_r * nd2
+            theta_common + dividend_yield * spot * df_q * nd1 - rate * strike * df_r * nd2
         }
         OptionType::Put => {
-            theta_common
-                - dividend_yield * spot * df_q * (1.0 - nd1)
+            theta_common - dividend_yield * spot * df_q * (1.0 - nd1)
                 + rate * strike * df_r * (1.0 - nd2)
         }
     }
@@ -237,8 +233,7 @@ fn bs_price_greeks_with_dividend(
     // Shared intermediates — computed exactly once.
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln()
-        + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
         / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
@@ -258,9 +253,7 @@ fn bs_price_greeks_with_dividend(
     let (price, delta, theta) = match option_type {
         OptionType::Call => {
             let d = df_q * nd1;
-            let th = theta_common
-                + dividend_yield * s_df_q * nd1
-                - rate * k_df_r * nd2;
+            let th = theta_common + dividend_yield * s_df_q * nd1 - rate * k_df_r * nd2;
             (call, d, th)
         }
         OptionType::Put => {
@@ -268,9 +261,7 @@ fn bs_price_greeks_with_dividend(
             let nmd2 = 1.0 - nd2;
             let p = call - s_df_q + k_df_r;
             let d = df_q * (nd1 - 1.0);
-            let th = theta_common
-                - dividend_yield * s_df_q * nmd1
-                + rate * k_df_r * nmd2;
+            let th = theta_common - dividend_yield * s_df_q * nmd1 + rate * k_df_r * nmd2;
             (p, d, th)
         }
     };
@@ -342,6 +333,60 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             vol,
             instrument.expiry,
         );
+
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
+        diagnostics.insert_key(crate::core::DiagKey::D1, d1);
+        diagnostics.insert_key(crate::core::DiagKey::D2, d2);
+
+        Ok(PricingResult {
+            price,
+            stderr: None,
+            greeks: Some(greeks),
+            diagnostics,
+        })
+    }
+
+    fn price_with_greeks_aad(
+        &self,
+        instrument: &VanillaOption,
+        market: &Market,
+    ) -> Result<PricingResult, PricingError> {
+        instrument.validate()?;
+        if !matches!(instrument.exercise, ExerciseStyle::European) {
+            return Err(PricingError::InvalidInput(
+                "BlackScholesEngine supports European exercise only".to_string(),
+            ));
+        }
+
+        let vol = market.vol_for(instrument.strike, instrument.expiry);
+        if vol <= 0.0 {
+            return Err(PricingError::InvalidInput(
+                "market volatility must be > 0".to_string(),
+            ));
+        }
+
+        let (price, greeks) = black_scholes_price_greeks_aad(
+            instrument.option_type,
+            market.spot,
+            instrument.strike,
+            market.rate,
+            market.dividend_yield,
+            vol,
+            instrument.expiry,
+        );
+        let (d1, d2) = if instrument.expiry > 0.0 && vol > 0.0 {
+            d1_d2(
+                market.spot,
+                instrument.strike,
+                market.rate,
+                market.dividend_yield,
+                vol,
+                instrument.expiry,
+            )
+        } else {
+            (0.0, 0.0)
+        };
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
