@@ -30,7 +30,9 @@ pub use portfolio::{AggregatedGreeks, Portfolio, Position};
 pub use scenarios::*;
 pub use sensitivities::*;
 pub use var::{
-    cornish_fisher_var, cornish_fisher_var_from_pnl, delta_gamma_normal_var, delta_normal_var,
-    historical_expected_shortfall, historical_var, normal_expected_shortfall,
+    backtest_historical_var_from_prices, cornish_fisher_var, cornish_fisher_var_from_pnl,
+    delta_gamma_normal_var, delta_normal_var, historical_expected_shortfall,
+    historical_expected_shortfall_from_prices, historical_var, historical_var_from_prices,
+    normal_expected_shortfall, rolling_historical_var_from_prices,
 };
 pub use xva::XvaCalculator;
