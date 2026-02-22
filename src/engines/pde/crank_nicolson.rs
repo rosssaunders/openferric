@@ -10,8 +10,28 @@
 //!
 //! When to use: use PDE engines for early-exercise and barrier-style boundary problems in low dimensions; switch to Monte Carlo or trees for high-dimensional state spaces.
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
-use crate::instruments::vanilla::VanillaOption;
+use crate::instruments::{BermudanOption, vanilla::VanillaOption};
 use crate::market::Market;
+
+/// Exercise-boundary estimate at a Bermudan decision time from Crank-Nicolson.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PdeExerciseBoundaryPoint {
+    /// Exercise date in year fractions.
+    pub time: f64,
+    /// Strike at this exercise date.
+    pub strike: f64,
+    /// Estimated boundary `S*` where exercise and continuation are equal.
+    pub boundary_spot: Option<f64>,
+}
+
+/// Bermudan Crank-Nicolson output including price and boundary diagnostics.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BermudanPdeOutput {
+    /// Standard engine result payload.
+    pub result: PricingResult,
+    /// Exercise boundary points in chronological order.
+    pub exercise_boundary: Vec<PdeExerciseBoundaryPoint>,
+}
 
 /// Crank-Nicolson finite-difference engine for Black-Scholes PDE.
 #[derive(Debug, Clone)]
@@ -106,6 +126,88 @@ fn boundary_values(
     }
 }
 
+fn bermudan_boundary_values(
+    option_type: OptionType,
+    step: usize,
+    step_schedule: &[Option<(f64, f64)>],
+    dt: f64,
+    rate: f64,
+    dividend_yield: f64,
+    s_max: f64,
+) -> (f64, f64) {
+    let future = step_schedule
+        .iter()
+        .enumerate()
+        .skip(step)
+        .filter_map(|(j, e)| e.map(|(_, k)| (j, k)));
+
+    match option_type {
+        OptionType::Put => {
+            let mut lower = 0.0_f64;
+            for (j, k) in future {
+                let tau = (j - step) as f64 * dt;
+                lower = lower.max(k * (-rate * tau).exp());
+            }
+            (lower, 0.0)
+        }
+        OptionType::Call => {
+            let mut upper = 0.0_f64;
+            for (j, k) in future {
+                let tau = (j - step) as f64 * dt;
+                upper = upper.max(
+                    (s_max * (-dividend_yield * tau).exp() - k * (-rate * tau).exp()).max(0.0),
+                );
+            }
+            (0.0, upper)
+        }
+    }
+}
+
+fn estimate_exercise_boundary(option_type: OptionType, diff: &[f64], ds: f64) -> Option<f64> {
+    let eps = 1.0e-12;
+    if diff.is_empty() {
+        return None;
+    }
+    match option_type {
+        OptionType::Put => {
+            let mut last_ex_idx = None;
+            for (i, &d) in diff.iter().enumerate() {
+                if d >= -eps {
+                    last_ex_idx = Some(i);
+                } else {
+                    break;
+                }
+            }
+            let i = last_ex_idx?;
+            if i + 1 >= diff.len() {
+                return Some(i as f64 * ds);
+            }
+            let d0 = diff[i];
+            let d1 = diff[i + 1];
+            let w = if (d0 - d1).abs() > eps {
+                (d0 / (d0 - d1)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            Some((i as f64 + w) * ds)
+        }
+        OptionType::Call => {
+            let first_ex_idx = diff.iter().position(|&d| d >= -eps)?;
+            if first_ex_idx == 0 {
+                return Some(0.0);
+            }
+            let d0 = diff[first_ex_idx - 1];
+            let d1 = diff[first_ex_idx];
+            let w = if (d0 - d1).abs() > eps {
+                (d0 / (d0 - d1)).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            Some(((first_ex_idx - 1) as f64 + w) * ds)
+        }
+    }
+}
+
 /// In-place tridiagonal solve using pre-allocated scratch buffers.
 /// Writes solution into `x`. `c_star` and `d_star` are scratch space.
 #[inline(always)]
@@ -149,6 +251,203 @@ fn solve_tridiagonal_inplace(
         x[i] = (-c_star[i]).mul_add(x[i + 1], d_star[i]);
     }
     Ok(())
+}
+
+impl CrankNicolsonEngine {
+    /// Prices a Bermudan option with Crank-Nicolson and returns an exercise boundary.
+    ///
+    /// Supports time-varying strikes by applying the date-specific intrinsic value
+    /// during the discrete exercise projection at each scheduled date.
+    ///
+    /// The local volatility is sampled from `market.vol_for(S, t)` for each
+    /// `(spot-grid, time-step)` pair, so flat and smile/surface inputs are both
+    /// supported in one implementation.
+    pub fn price_bermudan_with_boundary(
+        &self,
+        instrument: &BermudanOption,
+        market: &Market,
+    ) -> Result<BermudanPdeOutput, PricingError> {
+        instrument.validate()?;
+
+        if self.time_steps == 0 || self.space_steps < 2 {
+            return Err(PricingError::InvalidInput(
+                "time_steps must be > 0 and space_steps must be >= 2".to_string(),
+            ));
+        }
+        if self.s_max_multiplier <= 0.0 || !self.s_max_multiplier.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "s_max_multiplier must be finite and > 0".to_string(),
+            ));
+        }
+
+        let schedule = instrument.effective_schedule()?;
+        let terminal_strike = schedule.last().map(|(_, k)| *k).ok_or_else(|| {
+            PricingError::InvalidInput("bermudan schedule cannot be empty".to_string())
+        })?;
+
+        let n_t = self.time_steps;
+        let n_s = self.space_steps;
+        let dt = instrument.expiry / n_t as f64;
+        let max_strike = schedule.iter().map(|(_, k)| *k).fold(0.0_f64, f64::max);
+        let s_anchor = market.spot.max(max_strike).max(1.0e-8);
+        let s_max = self.s_max_multiplier * s_anchor;
+        let ds = s_max / n_s as f64;
+
+        let mut step_schedule = vec![None::<(f64, f64)>; n_t + 1];
+        for &(t, k) in &schedule {
+            let idx = (((t / instrument.expiry) * n_t as f64).round() as usize).clamp(1, n_t);
+            step_schedule[idx] = Some((t, k));
+        }
+        step_schedule[n_t] = Some((instrument.expiry, terminal_strike));
+
+        let mut values = vec![0.0_f64; n_s + 1];
+        for (i, v) in values.iter_mut().enumerate() {
+            let s = i as f64 * ds;
+            *v = intrinsic(instrument.option_type, s, terminal_strike);
+        }
+
+        let interior_n = n_s - 1;
+        let mut lhs_lower = vec![0.0_f64; interior_n];
+        let mut lhs_diag = vec![0.0_f64; interior_n];
+        let mut lhs_upper = vec![0.0_f64; interior_n];
+        let mut rhs_lower = vec![0.0_f64; interior_n];
+        let mut rhs_diag = vec![0.0_f64; interior_n];
+        let mut rhs_upper = vec![0.0_f64; interior_n];
+
+        let mut rhs_buf = vec![0.0_f64; interior_n];
+        let mut solve_lower = vec![0.0_f64; interior_n];
+        let mut solve_upper = vec![0.0_f64; interior_n];
+        let mut c_star = vec![0.0_f64; interior_n];
+        let mut d_star = vec![0.0_f64; interior_n];
+        let mut next_values = vec![0.0_f64; n_s + 1];
+        let mut diff_buf = vec![0.0_f64; n_s + 1];
+
+        let half_dt = 0.5 * dt;
+        let inv_2ds = 1.0 / (2.0 * ds);
+        let inv_ds2 = 1.0 / (ds * ds);
+        let drift = market.rate - market.dividend_yield;
+
+        let mut boundary_rev = vec![PdeExerciseBoundaryPoint {
+            time: instrument.expiry,
+            strike: terminal_strike,
+            boundary_spot: Some(terminal_strike),
+        }];
+
+        for n in (0..n_t).rev() {
+            let t_node = (n as f64 * dt).max(1.0e-8);
+            let (lower_new, upper_new) = bermudan_boundary_values(
+                instrument.option_type,
+                n,
+                &step_schedule,
+                dt,
+                market.rate,
+                market.dividend_yield,
+                s_max,
+            );
+
+            for k in 0..interior_n {
+                let i = k + 1;
+                let s = i as f64 * ds;
+                let sigma = market.vol_for(s.max(1.0e-8), t_node);
+                if !sigma.is_finite() || sigma <= 0.0 {
+                    return Err(PricingError::InvalidInput(
+                        "market/local volatility must be finite and > 0".to_string(),
+                    ));
+                }
+
+                let alpha = 0.5 * sigma * sigma * s * s * inv_ds2;
+                let beta = drift * s * inv_2ds;
+                let a = alpha - beta;
+                let b = -2.0 * alpha - market.rate;
+                let c = alpha + beta;
+
+                lhs_lower[k] = -half_dt * a;
+                lhs_diag[k] = 1.0 - half_dt * b;
+                lhs_upper[k] = -half_dt * c;
+
+                rhs_lower[k] = half_dt * a;
+                rhs_diag[k] = 1.0 + half_dt * b;
+                rhs_upper[k] = half_dt * c;
+            }
+
+            solve_lower.copy_from_slice(&lhs_lower);
+            solve_lower[0] = 0.0;
+            solve_upper.copy_from_slice(&lhs_upper);
+            solve_upper[interior_n - 1] = 0.0;
+
+            for k in 0..interior_n {
+                let i = k + 1;
+                rhs_buf[k] = rhs_diag[k].mul_add(
+                    values[i],
+                    rhs_lower[k].mul_add(values[i - 1], rhs_upper[k] * values[i + 1]),
+                );
+            }
+
+            rhs_buf[0] -= lhs_lower[0] * lower_new;
+            rhs_buf[interior_n - 1] -= lhs_upper[interior_n - 1] * upper_new;
+
+            next_values[0] = lower_new;
+            next_values[n_s] = upper_new;
+            solve_tridiagonal_inplace(
+                &solve_lower,
+                &lhs_diag,
+                &solve_upper,
+                &rhs_buf,
+                &mut c_star,
+                &mut d_star,
+                &mut next_values[1..n_s],
+            )?;
+
+            if let Some((time, strike)) = step_schedule[n] {
+                for (i, v) in next_values.iter_mut().enumerate() {
+                    let s = i as f64 * ds;
+                    let continuation = *v;
+                    let exercise = intrinsic(instrument.option_type, s, strike);
+                    diff_buf[i] = exercise - continuation;
+                    *v = continuation.max(exercise);
+                }
+                boundary_rev.push(PdeExerciseBoundaryPoint {
+                    time,
+                    strike,
+                    boundary_spot: estimate_exercise_boundary(
+                        instrument.option_type,
+                        &diff_buf,
+                        ds,
+                    ),
+                });
+            }
+
+            std::mem::swap(&mut values, &mut next_values);
+        }
+
+        let price = if market.spot <= 0.0 {
+            values[0]
+        } else if market.spot >= s_max {
+            values[n_s]
+        } else {
+            let x = market.spot / ds;
+            let i = x.floor() as usize;
+            let w = x - i as f64;
+            (1.0 - w) * values[i] + w * values[i + 1]
+        };
+
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert_key(crate::core::DiagKey::NumTimeSteps, n_t as f64);
+        diagnostics.insert_key(crate::core::DiagKey::NumSpaceSteps, n_s as f64);
+        diagnostics.insert_key(crate::core::DiagKey::SMax, s_max);
+        diagnostics.insert_key(crate::core::DiagKey::ExerciseDates, schedule.len() as f64);
+
+        boundary_rev.reverse();
+        Ok(BermudanPdeOutput {
+            result: PricingResult {
+                price,
+                stderr: None,
+                greeks: None,
+                diagnostics,
+            },
+            exercise_boundary: boundary_rev,
+        })
+    }
 }
 
 impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
@@ -379,6 +678,17 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             greeks: None,
             diagnostics,
         })
+    }
+}
+
+impl PricingEngine<BermudanOption> for CrankNicolsonEngine {
+    fn price(
+        &self,
+        instrument: &BermudanOption,
+        market: &Market,
+    ) -> Result<PricingResult, PricingError> {
+        self.price_bermudan_with_boundary(instrument, market)
+            .map(|out| out.result)
     }
 }
 

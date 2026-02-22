@@ -14,6 +14,7 @@ pub mod asian;
 pub mod autocallable;
 pub mod barrier;
 pub mod basket;
+pub mod bermudan;
 pub mod black76;
 pub mod cliquet;
 pub mod commodity;
@@ -39,6 +40,7 @@ pub use asian::AsianOption;
 pub use autocallable::{Autocallable, PhoenixAutocallable};
 pub use barrier::{BarrierOption, BarrierOptionBuilder};
 pub use basket::{BasketOption, BasketType};
+pub use bermudan::BermudanOption;
 pub use black76::FuturesOption;
 pub use cliquet::{CliquetOption, ForwardStartOption};
 pub use commodity::{CommodityForward, CommodityFutures, CommodityOption, CommoditySpreadOption};
@@ -86,6 +88,7 @@ pub enum TradeInstrument {
     PhoenixAutocallable(PhoenixAutocallable),
     BarrierOption(BarrierOption),
     BasketOption(BasketOption),
+    BermudanOption(BermudanOption),
     FuturesOption(FuturesOption),
     CliquetOption(CliquetOption),
     ForwardStartOption(ForwardStartOption),

@@ -15,7 +15,7 @@ pub mod explicit_fd;
 pub mod hopscotch;
 pub mod implicit_fd;
 
-pub use crank_nicolson::CrankNicolsonEngine;
+pub use crank_nicolson::{BermudanPdeOutput, CrankNicolsonEngine, PdeExerciseBoundaryPoint};
 pub use explicit_fd::ExplicitFdEngine;
 pub use hopscotch::HopscotchEngine;
 pub use implicit_fd::ImplicitFdEngine;
