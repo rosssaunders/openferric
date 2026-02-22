@@ -2,8 +2,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::prelude::*;
 
-type HestonFftCache =
-    OnceLock<Mutex<Option<([u64; 12], Arc<openferric_core::engines::fft::CarrMadanContext>)>>>;
+type HestonFftCache = OnceLock<
+    Mutex<
+        Option<(
+            [u64; 12],
+            Arc<openferric_core::engines::fft::CarrMadanContext>,
+        )>,
+    >,
+>;
 
 static HESTON_FFT_CACHE: HestonFftCache = OnceLock::new();
 
@@ -58,13 +64,12 @@ pub(crate) fn heston_fft_prices_cached(
     let cache = HESTON_FFT_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(cached_ctx) = {
         let guard = cache.lock().ok()?;
-        let result: Option<Arc<openferric_core::engines::fft::CarrMadanContext>> =
-            match guard.as_ref() {
-                Some((cached_key, cached_ctx)) if *cached_key == key => {
-                    Some(Arc::clone(cached_ctx))
-                }
-                _ => None,
-            };
+        let result: Option<Arc<openferric_core::engines::fft::CarrMadanContext>> = match guard
+            .as_ref()
+        {
+            Some((cached_key, cached_ctx)) if *cached_key == key => Some(Arc::clone(cached_ctx)),
+            _ => None,
+        };
         result
     } {
         return cached_ctx.price_strikes(strikes).ok();

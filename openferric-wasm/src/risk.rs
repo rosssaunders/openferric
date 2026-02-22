@@ -17,14 +17,18 @@ mod tests {
 
     #[test]
     fn var_historical_positive_for_losses() {
-        let returns = [-0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05];
+        let returns = [
+            -0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05,
+        ];
         let var = var_historical(&returns, 0.95);
         assert!(var > 0.0);
     }
 
     #[test]
     fn var_historical_higher_confidence_higher_var() {
-        let returns = [-0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05];
+        let returns = [
+            -0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05,
+        ];
         let var_90 = var_historical(&returns, 0.90);
         let var_99 = var_historical(&returns, 0.99);
         assert!(var_99 >= var_90);

@@ -81,11 +81,7 @@ pub(crate) fn tenor_grid(maturity: f64, payment_freq: usize) -> Vec<f64> {
 }
 
 #[inline]
-pub(crate) fn intrinsic_from_option_type(
-    option_type: OptionType,
-    spot: f64,
-    strike: f64,
-) -> f64 {
+pub(crate) fn intrinsic_from_option_type(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
         OptionType::Call => (spot - strike).max(0.0),
         OptionType::Put => (strike - spot).max(0.0),

@@ -144,9 +144,8 @@ mod tests {
     fn kva_is_negative_for_positive_capital() {
         let times = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let expected_capital = vec![100_000.0; 5];
-        let discount_curve = YieldCurve::new(
-            times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect(),
-        );
+        let discount_curve =
+            YieldCurve::new(times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect());
         let kva = kva_from_profile(&times, &expected_capital, 0.10, &discount_curve);
         assert!(kva < 0.0);
         assert!(kva.is_finite());
@@ -165,9 +164,13 @@ mod tests {
     #[test]
     fn supervisory_factors_are_ordered() {
         // IR < FX < Credit < Commodity < Equity
-        assert!(SaCcrAssetClass::InterestRate.supervisory_factor()
-            < SaCcrAssetClass::ForeignExchange.supervisory_factor());
-        assert!(SaCcrAssetClass::ForeignExchange.supervisory_factor()
-            < SaCcrAssetClass::Equity.supervisory_factor());
+        assert!(
+            SaCcrAssetClass::InterestRate.supervisory_factor()
+                < SaCcrAssetClass::ForeignExchange.supervisory_factor()
+        );
+        assert!(
+            SaCcrAssetClass::ForeignExchange.supervisory_factor()
+                < SaCcrAssetClass::Equity.supervisory_factor()
+        );
     }
 }

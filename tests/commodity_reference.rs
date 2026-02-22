@@ -47,11 +47,7 @@ fn schwartz_one_factor_ou_expected_mean() {
     let alpha_star = 3.00;
     let mu = alpha_star + 0.5 * sigma * sigma / kappa;
 
-    let model = SchwartzOneFactor {
-        kappa,
-        mu,
-        sigma,
-    };
+    let model = SchwartzOneFactor { kappa, mu, sigma };
 
     let alpha_computed = model.long_run_log_mean();
     assert!(
@@ -85,11 +81,7 @@ fn schwartz_one_factor_ou_variance() {
     let alpha_star = 3.00;
     let mu = alpha_star + 0.5 * sigma * sigma / kappa;
 
-    let model = SchwartzOneFactor {
-        kappa,
-        mu,
-        sigma,
-    };
+    let model = SchwartzOneFactor { kappa, mu, sigma };
 
     // Check model validates
     model.validate().expect("model should be valid");
@@ -213,11 +205,7 @@ fn schwartz_one_factor_step_exact_moments() {
     let alpha_star = 3.00;
     let mu = alpha_star + 0.5 * sigma * sigma / kappa;
 
-    let model = SchwartzOneFactor {
-        kappa,
-        mu,
-        sigma,
-    };
+    let model = SchwartzOneFactor { kappa, mu, sigma };
 
     let x0 = 20.0_f64.ln();
     let dt = 1.0;
@@ -230,7 +218,11 @@ fn schwartz_one_factor_step_exact_moments() {
 
     let log_terminals: Vec<f64> = terminals.iter().map(|s| s.ln()).collect();
     let mean_log = log_terminals.iter().sum::<f64>() / n as f64;
-    let var_log = log_terminals.iter().map(|x| (x - mean_log).powi(2)).sum::<f64>() / n as f64;
+    let var_log = log_terminals
+        .iter()
+        .map(|x| (x - mean_log).powi(2))
+        .sum::<f64>()
+        / n as f64;
 
     let expected_mean = ou_expected_mean(alpha_star, x0, kappa, dt);
     let expected_var = ou_variance(sigma, kappa, dt);
@@ -865,16 +857,16 @@ fn forward_curve_from_futures_quotes() {
 fn commodity_spread_option_crack_spread_positive() {
     let spread = CommoditySpreadOption::crack_spread(
         OptionType::Call,
-        95.0,  // refined forward
-        88.0,  // crude forward
-        2.0,   // strike
-        2.0,   // refined ratio
-        1.0,   // crude ratio
-        0.30,  // vol refined
-        0.25,  // vol crude
-        0.6,   // rho
-        0.03,  // risk_free_rate
-        0.75,  // maturity
+        95.0,    // refined forward
+        88.0,    // crude forward
+        2.0,     // strike
+        2.0,     // refined ratio
+        1.0,     // crude ratio
+        0.30,    // vol refined
+        0.25,    // vol crude
+        0.6,     // rho
+        0.03,    // risk_free_rate
+        0.75,    // maturity
         1_000.0, // notional
     );
 
@@ -886,15 +878,15 @@ fn commodity_spread_option_crack_spread_positive() {
 fn commodity_spread_option_spark_spread_positive() {
     let spread = CommoditySpreadOption::spark_spread(
         OptionType::Call,
-        60.0,  // power forward
-        5.0,   // gas forward
-        0.0,   // strike (at-the-money spread)
-        10.0,  // heat rate
-        0.40,  // vol power
-        0.35,  // vol gas
-        0.5,   // rho
-        0.03,  // risk_free_rate
-        1.0,   // maturity
+        60.0,    // power forward
+        5.0,     // gas forward
+        0.0,     // strike (at-the-money spread)
+        10.0,    // heat rate
+        0.40,    // vol power
+        0.35,    // vol gas
+        0.5,     // rho
+        0.03,    // risk_free_rate
+        1.0,     // maturity
         1_000.0, // notional
     );
 
@@ -1149,9 +1141,5 @@ fn black76_deep_otm_call_near_zero() {
     let t = 1.0;
 
     let price = black76_price(OptionType::Call, forward, strike, r, vol, t).unwrap();
-    assert!(
-        price < 1e-6,
-        "deep OTM call should be near zero: {}",
-        price
-    );
+    assert!(price < 1e-6, "deep OTM call should be near zero: {}", price);
 }

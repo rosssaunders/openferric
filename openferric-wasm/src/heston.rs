@@ -141,7 +141,18 @@ mod tests {
 
     #[test]
     fn heston_fft_prices_batch() {
-        let prices = heston_fft_prices(SPOT, &[80.0, 100.0, 120.0], R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T);
+        let prices = heston_fft_prices(
+            SPOT,
+            &[80.0, 100.0, 120.0],
+            R,
+            Q,
+            V0,
+            KAPPA,
+            THETA,
+            SIGMA_V,
+            RHO,
+            T,
+        );
         assert_eq!(prices.len(), 3);
         // Call prices decrease with strike
         assert!(prices[0] > prices[1]);
@@ -187,7 +198,9 @@ mod tests {
     fn heston_price_zero_maturity() {
         let call = heston_price(SPOT, 90.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, 0.0, true);
         assert!((call - 10.0).abs() < 1e-10); // intrinsic
-        let put = heston_price(SPOT, 110.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, 0.0, false);
+        let put = heston_price(
+            SPOT, 110.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, 0.0, false,
+        );
         assert!((put - 10.0).abs() < 1e-10); // intrinsic
     }
 }

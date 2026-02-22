@@ -9,14 +9,14 @@ use chrono::{Datelike, NaiveDate};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+use openferric::credit::cds_option::{CdsOption, fair_spread_from_hazard, risky_annuity};
 use openferric::credit::{
-    Cds, CdoTranche, CdsDateRule, CdsIndex, DatedCds, GaussianCopula,
-    IsdaConventions, NthToDefaultBasket, ProtectionSide, SurvivalCurve, SyntheticCdo,
+    CdoTranche, Cds, CdsDateRule, CdsIndex, DatedCds, GaussianCopula, IsdaConventions,
+    NthToDefaultBasket, ProtectionSide, SurvivalCurve, SyntheticCdo,
     bootstrap_survival_curve_from_cds_spreads, cash_settle_date, first_to_default_spread_copula,
     generate_imm_schedule, hazard_from_par_spread, next_imm_twentieth, previous_imm_twentieth,
     price_isda_flat, price_midpoint_flat, step_in_date, vasicek_portfolio_loss_cdf,
 };
-use openferric::credit::cds_option::{CdsOption, fair_spread_from_hazard, risky_annuity};
 use openferric::rates::YieldCurve;
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,8 @@ fn inverse_survival_round_trip() {
 
 #[test]
 fn survival_curve_monotonicity() {
-    let curve = SurvivalCurve::from_piecewise_hazard(&[1.0, 3.0, 5.0, 10.0], &[0.01, 0.02, 0.03, 0.04]);
+    let curve =
+        SurvivalCurve::from_piecewise_hazard(&[1.0, 3.0, 5.0, 10.0], &[0.01, 0.02, 0.03, 0.04]);
     let times: Vec<f64> = (0..=100).map(|i| i as f64 * 0.1).collect();
     for w in times.windows(2) {
         assert!(
@@ -233,8 +234,7 @@ fn bootstrap_repricing_via_survival_curve_method() {
     let recovery = 0.4;
     let quotes = vec![(1.0, 0.0050), (3.0, 0.0070), (5.0, 0.0090)];
 
-    let curve =
-        SurvivalCurve::bootstrap_from_cds_spreads(&quotes, recovery, 4, &discount_curve);
+    let curve = SurvivalCurve::bootstrap_from_cds_spreads(&quotes, recovery, 4, &discount_curve);
 
     for &(tenor, spread) in &quotes {
         let cds = Cds {
@@ -431,14 +431,7 @@ fn isda_midpoint_cached_regression() {
 #[test]
 fn isda_flat_vs_midpoint_same_sign_similar_magnitude() {
     let eval = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
-    let cds = DatedCds::standard_imm(
-        ProtectionSide::Buyer,
-        eval,
-        5,
-        10_000_000.0,
-        0.01,
-        0.4,
-    );
+    let cds = DatedCds::standard_imm(ProtectionSide::Buyer, eval, 5, 10_000_000.0, 0.01, 0.4);
 
     let hazard = 0.02;
     let conventions = IsdaConventions::default();
@@ -468,14 +461,7 @@ fn isda_flat_vs_midpoint_same_sign_similar_magnitude() {
 #[test]
 fn standard_imm_constructor_conventions() {
     let eval = NaiveDate::from_ymd_opt(2026, 2, 16).unwrap();
-    let cds = DatedCds::standard_imm(
-        ProtectionSide::Buyer,
-        eval,
-        5,
-        10_000_000.0,
-        0.01,
-        0.4,
-    );
+    let cds = DatedCds::standard_imm(ProtectionSide::Buyer, eval, 5, 10_000_000.0, 0.01, 0.4);
 
     // Coupon interval should be quarterly
     assert_eq!(cds.coupon_interval_months, 3);
@@ -653,12 +639,7 @@ fn generate_imm_schedule_strictly_increasing() {
 
     // Strictly increasing
     for w in schedule.windows(2) {
-        assert!(
-            w[1] > w[0],
-            "Non-increasing schedule: {} >= {}",
-            w[0],
-            w[1]
-        );
+        assert!(w[1] > w[0], "Non-increasing schedule: {} >= {}", w[0], w[1]);
     }
 
     // Last date should be at or after maturity
@@ -716,7 +697,11 @@ fn cds_option_zero_vol_gives_intrinsic() {
         is_payer: false,
         ..payer.clone()
     };
-    assert_relative_eq!(receiver.black_price(forward, 0.0, rpv01), 0.0, epsilon = 1e-6);
+    assert_relative_eq!(
+        receiver.black_price(forward, 0.0, rpv01),
+        0.0,
+        epsilon = 1e-6
+    );
 }
 
 #[test]
@@ -835,12 +820,30 @@ fn equity_tranche_loss_exceeds_mezzanine_exceeds_senior() {
     };
 
     let t = cdo.maturity;
-    let lf_eq = equity.expected_loss_fraction(cdo.default_probability(t), cdo.recovery_rate, cdo.correlation);
-    let lf_mz = mezz.expected_loss_fraction(cdo.default_probability(t), cdo.recovery_rate, cdo.correlation);
-    let lf_sn = senior.expected_loss_fraction(cdo.default_probability(t), cdo.recovery_rate, cdo.correlation);
+    let lf_eq = equity.expected_loss_fraction(
+        cdo.default_probability(t),
+        cdo.recovery_rate,
+        cdo.correlation,
+    );
+    let lf_mz = mezz.expected_loss_fraction(
+        cdo.default_probability(t),
+        cdo.recovery_rate,
+        cdo.correlation,
+    );
+    let lf_sn = senior.expected_loss_fraction(
+        cdo.default_probability(t),
+        cdo.recovery_rate,
+        cdo.correlation,
+    );
 
-    assert!(lf_eq > lf_mz, "equity loss {lf_eq} should > mezz loss {lf_mz}");
-    assert!(lf_mz > lf_sn, "mezz loss {lf_mz} should > senior loss {lf_sn}");
+    assert!(
+        lf_eq > lf_mz,
+        "equity loss {lf_eq} should > mezz loss {lf_mz}"
+    );
+    assert!(
+        lf_mz > lf_sn,
+        "mezz loss {lf_mz} should > senior loss {lf_sn}"
+    );
 }
 
 #[test]
@@ -855,9 +858,24 @@ fn tranche_expected_losses_sum_to_portfolio_loss() {
         payment_freq: 4,
     };
 
-    let equity = CdoTranche { attachment: 0.0, detachment: 0.03, notional: 0.03, spread: 0.0 };
-    let mezz = CdoTranche { attachment: 0.03, detachment: 0.07, notional: 0.04, spread: 0.0 };
-    let senior = CdoTranche { attachment: 0.07, detachment: 1.0, notional: 0.93, spread: 0.0 };
+    let equity = CdoTranche {
+        attachment: 0.0,
+        detachment: 0.03,
+        notional: 0.03,
+        spread: 0.0,
+    };
+    let mezz = CdoTranche {
+        attachment: 0.03,
+        detachment: 0.07,
+        notional: 0.04,
+        spread: 0.0,
+    };
+    let senior = CdoTranche {
+        attachment: 0.07,
+        detachment: 1.0,
+        notional: 0.93,
+        spread: 0.0,
+    };
 
     let t = cdo.maturity;
     let el_sum = cdo.expected_tranche_loss(&equity, t)
@@ -880,9 +898,24 @@ fn cdo_fair_spread_ordering() {
         payment_freq: 4,
     };
 
-    let equity = CdoTranche { attachment: 0.0, detachment: 0.03, notional: 0.03, spread: 0.0 };
-    let mezz = CdoTranche { attachment: 0.03, detachment: 0.07, notional: 0.04, spread: 0.0 };
-    let senior = CdoTranche { attachment: 0.07, detachment: 1.0, notional: 0.93, spread: 0.0 };
+    let equity = CdoTranche {
+        attachment: 0.0,
+        detachment: 0.03,
+        notional: 0.03,
+        spread: 0.0,
+    };
+    let mezz = CdoTranche {
+        attachment: 0.03,
+        detachment: 0.07,
+        notional: 0.04,
+        spread: 0.0,
+    };
+    let senior = CdoTranche {
+        attachment: 0.07,
+        detachment: 1.0,
+        notional: 0.93,
+        spread: 0.0,
+    };
 
     let s_eq = cdo.fair_spread(&equity);
     let s_mz = cdo.fair_spread(&mezz);
@@ -1166,7 +1199,10 @@ fn cds_fair_spread_positive_for_nonzero_hazard() {
             payment_freq: 4,
         };
         let fair = cds.fair_spread(&discount_curve, &survival_curve);
-        assert!(fair > 0.0, "Fair spread at {maturity}Y should be positive, got {fair}");
+        assert!(
+            fair > 0.0,
+            "Fair spread at {maturity}Y should be positive, got {fair}"
+        );
     }
 }
 
@@ -1190,14 +1226,7 @@ fn protection_leg_pv_positive_for_nonzero_hazard() {
 #[test]
 fn dated_cds_fair_spread_positive() {
     let eval = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
-    let cds = DatedCds::standard_imm(
-        ProtectionSide::Buyer,
-        eval,
-        5,
-        10_000_000.0,
-        0.01,
-        0.4,
-    );
+    let cds = DatedCds::standard_imm(ProtectionSide::Buyer, eval, 5, 10_000_000.0, 0.01, 0.4);
 
     let result = price_midpoint_flat(&cds, eval, 0.02, 0.03, IsdaConventions::default());
     assert!(

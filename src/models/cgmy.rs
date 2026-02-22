@@ -64,8 +64,7 @@ impl Cgmy {
         let gamma_neg_y = gamma(-self.y);
         let omega = -self.c
             * gamma_neg_y
-            * ((self.m - 1.0).powf(self.y) - self.m.powf(self.y)
-                + (self.g + 1.0).powf(self.y)
+            * ((self.m - 1.0).powf(self.y) - self.m.powf(self.y) + (self.g + 1.0).powf(self.y)
                 - self.g.powf(self.y));
         Ok(omega)
     }
@@ -178,7 +177,7 @@ impl Cgmy {
                 log_s += drift_dt + g_pos - g_neg;
                 // Add diffusion component scaled by subordinator
                 let _ = z; // In the pure jump CGMY, the BM component is absent
-                           // but we keep the drift correction
+                // but we keep the drift correction
             }
             out.push(log_s.exp());
         }
@@ -281,10 +280,7 @@ mod tests {
             .unwrap();
         for (k, p) in &prices {
             assert!(*p > 0.0, "price at strike {k} should be > 0, got {p}");
-            assert!(
-                *p < 100.0,
-                "price at strike {k} should be < spot, got {p}"
-            );
+            assert!(*p < 100.0, "price at strike {k} should be < spot, got {p}");
         }
     }
 

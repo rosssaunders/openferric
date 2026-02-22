@@ -115,10 +115,10 @@ pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
     //   p(r) ≈ 1 + r + r²/2 + r³/6 + r⁴/24 + r⁵/120 + r⁶/720 + r⁷/5040
     // The low-order terms (c0–c2) are exact; the high-order terms carry the
     // minimax correction that keeps max relative error < 2e-10.
-    let c7 = _mm256_set1_pd(1.984_126_984_12e-4);  // ≈ 1/5040
-    let c6 = _mm256_set1_pd(1.388_888_889_0e-3);   // ≈ 1/720
-    let c5 = _mm256_set1_pd(8.333_333_333_3e-3);   // ≈ 1/120
-    let c4 = _mm256_set1_pd(4.166_666_666_67e-2);   // ≈ 1/24
+    let c7 = _mm256_set1_pd(1.984_126_984_12e-4); // ≈ 1/5040
+    let c6 = _mm256_set1_pd(1.388_888_889_0e-3); // ≈ 1/720
+    let c5 = _mm256_set1_pd(8.333_333_333_3e-3); // ≈ 1/120
+    let c4 = _mm256_set1_pd(4.166_666_666_67e-2); // ≈ 1/24
     let c3 = _mm256_set1_pd(1.666_666_666_666_67e-1); // ≈ 1/6
     let c2 = _mm256_set1_pd(0.5);
     let c1 = _mm256_set1_pd(1.0);
@@ -267,17 +267,17 @@ pub unsafe fn norm_cdf_f64x4(x: __m256d) -> __m256d {
 /// Acklam rational-approximation coefficients for the central region.
 const ACKLAM_A: [f64; 6] = [
     -3.969_683_028_665_376e1,
-     2.209_460_984_245_205e2,
+    2.209_460_984_245_205e2,
     -2.759_285_104_469_687e2,
-     1.383_577_518_672_69e2,
+    1.383_577_518_672_69e2,
     -3.066_479_806_614_716e1,
-     2.506_628_277_459_239,
+    2.506_628_277_459_239,
 ];
 const ACKLAM_B: [f64; 5] = [
     -5.447_609_879_822_406e1,
-     1.615_858_368_580_409e2,
+    1.615_858_368_580_409e2,
     -1.556_989_798_598_866e2,
-     6.680_131_188_771_972e1,
+    6.680_131_188_771_972e1,
     -1.328_068_155_288_572e1,
 ];
 const ACKLAM_C: [f64; 6] = [
@@ -285,14 +285,14 @@ const ACKLAM_C: [f64; 6] = [
     -3.223_964_580_411_365e-1,
     -2.400_758_277_161_838,
     -2.549_732_539_343_734,
-     4.374_664_141_464_968,
-     2.938_163_982_698_783,
+    4.374_664_141_464_968,
+    2.938_163_982_698_783,
 ];
 const ACKLAM_D: [f64; 4] = [
-     7.784_695_709_041_462e-3,
-     3.224_671_290_700_398e-1,
-     2.445_134_137_142_996,
-     3.754_408_661_907_416,
+    7.784_695_709_041_462e-3,
+    3.224_671_290_700_398e-1,
+    2.445_134_137_142_996,
+    3.754_408_661_907_416,
 ];
 const INV_CDF_P_LOW: f64 = 0.024_25;
 const INV_CDF_P_HIGH: f64 = 1.0 - INV_CDF_P_LOW;
@@ -310,81 +310,78 @@ const INV_CDF_P_HIGH: f64 = 1.0 - INV_CDF_P_LOW;
 #[target_feature(enable = "avx2,fma")]
 pub unsafe fn inv_norm_cdf_f64x4(p: __m256d) -> __m256d {
     unsafe {
-    let one = _mm256_set1_pd(1.0);
-    let half = _mm256_set1_pd(0.5);
-    let neg_two = _mm256_set1_pd(-2.0);
-    let p_low = _mm256_set1_pd(INV_CDF_P_LOW);
-    let p_high = _mm256_set1_pd(INV_CDF_P_HIGH);
+        let one = _mm256_set1_pd(1.0);
+        let half = _mm256_set1_pd(0.5);
+        let neg_two = _mm256_set1_pd(-2.0);
+        let p_low = _mm256_set1_pd(INV_CDF_P_LOW);
+        let p_high = _mm256_set1_pd(INV_CDF_P_HIGH);
 
-    // ── Central region: P_LOW <= p <= P_HIGH ──
-    let q_central = _mm256_sub_pd(p, half);
-    let r_central = _mm256_mul_pd(q_central, q_central);
+        // ── Central region: P_LOW <= p <= P_HIGH ──
+        let q_central = _mm256_sub_pd(p, half);
+        let r_central = _mm256_mul_pd(q_central, q_central);
 
-    let mut num_c = _mm256_set1_pd(ACKLAM_A[0]);
-    num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[1]));
-    num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[2]));
-    num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[3]));
-    num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[4]));
-    num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[5]));
-    num_c = _mm256_mul_pd(num_c, q_central);
+        let mut num_c = _mm256_set1_pd(ACKLAM_A[0]);
+        num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[1]));
+        num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[2]));
+        num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[3]));
+        num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[4]));
+        num_c = _mm256_fmadd_pd(num_c, r_central, _mm256_set1_pd(ACKLAM_A[5]));
+        num_c = _mm256_mul_pd(num_c, q_central);
 
-    let mut den_c = _mm256_set1_pd(ACKLAM_B[0]);
-    den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[1]));
-    den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[2]));
-    den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[3]));
-    den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[4]));
-    den_c = _mm256_fmadd_pd(den_c, r_central, one);
+        let mut den_c = _mm256_set1_pd(ACKLAM_B[0]);
+        den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[1]));
+        den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[2]));
+        den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[3]));
+        den_c = _mm256_fmadd_pd(den_c, r_central, _mm256_set1_pd(ACKLAM_B[4]));
+        den_c = _mm256_fmadd_pd(den_c, r_central, one);
 
-    let val_central = _mm256_div_pd(num_c, den_c);
+        let val_central = _mm256_div_pd(num_c, den_c);
 
-    // ── Low tail: p < P_LOW ──
-    let ln_p = ln_f64x4(_mm256_max_pd(p, _mm256_set1_pd(1e-300)));
-    let q_low = _mm256_sqrt_pd(_mm256_mul_pd(neg_two, ln_p));
+        // ── Low tail: p < P_LOW ──
+        let ln_p = ln_f64x4(_mm256_max_pd(p, _mm256_set1_pd(1e-300)));
+        let q_low = _mm256_sqrt_pd(_mm256_mul_pd(neg_two, ln_p));
 
-    let mut num_l = _mm256_set1_pd(ACKLAM_C[0]);
-    num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[1]));
-    num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[2]));
-    num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[3]));
-    num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[4]));
-    num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[5]));
+        let mut num_l = _mm256_set1_pd(ACKLAM_C[0]);
+        num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[1]));
+        num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[2]));
+        num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[3]));
+        num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[4]));
+        num_l = _mm256_fmadd_pd(num_l, q_low, _mm256_set1_pd(ACKLAM_C[5]));
 
-    let mut den_l = _mm256_set1_pd(ACKLAM_D[0]);
-    den_l = _mm256_fmadd_pd(den_l, q_low, _mm256_set1_pd(ACKLAM_D[1]));
-    den_l = _mm256_fmadd_pd(den_l, q_low, _mm256_set1_pd(ACKLAM_D[2]));
-    den_l = _mm256_fmadd_pd(den_l, q_low, _mm256_set1_pd(ACKLAM_D[3]));
-    den_l = _mm256_fmadd_pd(den_l, q_low, one);
+        let mut den_l = _mm256_set1_pd(ACKLAM_D[0]);
+        den_l = _mm256_fmadd_pd(den_l, q_low, _mm256_set1_pd(ACKLAM_D[1]));
+        den_l = _mm256_fmadd_pd(den_l, q_low, _mm256_set1_pd(ACKLAM_D[2]));
+        den_l = _mm256_fmadd_pd(den_l, q_low, _mm256_set1_pd(ACKLAM_D[3]));
+        den_l = _mm256_fmadd_pd(den_l, q_low, one);
 
-    let val_low = _mm256_div_pd(num_l, den_l);
+        let val_low = _mm256_div_pd(num_l, den_l);
 
-    // ── High tail: p > P_HIGH ──
-    let one_minus_p = _mm256_sub_pd(one, p);
-    let ln_1mp = ln_f64x4(_mm256_max_pd(one_minus_p, _mm256_set1_pd(1e-300)));
-    let q_high = _mm256_sqrt_pd(_mm256_mul_pd(neg_two, ln_1mp));
+        // ── High tail: p > P_HIGH ──
+        let one_minus_p = _mm256_sub_pd(one, p);
+        let ln_1mp = ln_f64x4(_mm256_max_pd(one_minus_p, _mm256_set1_pd(1e-300)));
+        let q_high = _mm256_sqrt_pd(_mm256_mul_pd(neg_two, ln_1mp));
 
-    let mut num_h = _mm256_set1_pd(ACKLAM_C[0]);
-    num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[1]));
-    num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[2]));
-    num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[3]));
-    num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[4]));
-    num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[5]));
+        let mut num_h = _mm256_set1_pd(ACKLAM_C[0]);
+        num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[1]));
+        num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[2]));
+        num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[3]));
+        num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[4]));
+        num_h = _mm256_fmadd_pd(num_h, q_high, _mm256_set1_pd(ACKLAM_C[5]));
 
-    let mut den_h = _mm256_set1_pd(ACKLAM_D[0]);
-    den_h = _mm256_fmadd_pd(den_h, q_high, _mm256_set1_pd(ACKLAM_D[1]));
-    den_h = _mm256_fmadd_pd(den_h, q_high, _mm256_set1_pd(ACKLAM_D[2]));
-    den_h = _mm256_fmadd_pd(den_h, q_high, _mm256_set1_pd(ACKLAM_D[3]));
-    den_h = _mm256_fmadd_pd(den_h, q_high, one);
+        let mut den_h = _mm256_set1_pd(ACKLAM_D[0]);
+        den_h = _mm256_fmadd_pd(den_h, q_high, _mm256_set1_pd(ACKLAM_D[1]));
+        den_h = _mm256_fmadd_pd(den_h, q_high, _mm256_set1_pd(ACKLAM_D[2]));
+        den_h = _mm256_fmadd_pd(den_h, q_high, _mm256_set1_pd(ACKLAM_D[3]));
+        den_h = _mm256_fmadd_pd(den_h, q_high, one);
 
-    let val_high = _mm256_xor_pd(
-        _mm256_div_pd(num_h, den_h),
-        _mm256_set1_pd(-0.0),
-    );
+        let val_high = _mm256_xor_pd(_mm256_div_pd(num_h, den_h), _mm256_set1_pd(-0.0));
 
-    // ── Blend the three regions ──
-    let is_low = _mm256_cmp_pd(p, p_low, _CMP_LT_OQ);
-    let is_high = _mm256_cmp_pd(p, p_high, _CMP_GT_OQ);
+        // ── Blend the three regions ──
+        let is_low = _mm256_cmp_pd(p, p_low, _CMP_LT_OQ);
+        let is_high = _mm256_cmp_pd(p, p_high, _CMP_GT_OQ);
 
-    let result = _mm256_blendv_pd(val_central, val_low, is_low);
-    _mm256_blendv_pd(result, val_high, is_high)
+        let result = _mm256_blendv_pd(val_central, val_low, is_low);
+        _mm256_blendv_pd(result, val_high, is_high)
     }
 }
 
@@ -418,7 +415,10 @@ pub unsafe fn inv_norm_cdf_batch_avx2(uniforms: &mut [f64]) {
 /// Caller must ensure AVX2+FMA are available (runtime check).
 #[inline]
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn fill_normals_simd(rng: &mut crate::math::fast_rng::Xoshiro256PlusPlus, buf: &mut [f64]) {
+pub unsafe fn fill_normals_simd(
+    rng: &mut crate::math::fast_rng::Xoshiro256PlusPlus,
+    buf: &mut [f64],
+) {
     // Step 1: Fill with uniform open (ε, 1−ε) values.
     let eps = f64::EPSILON;
     let hi = 1.0 - eps;

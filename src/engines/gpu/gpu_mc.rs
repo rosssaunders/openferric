@@ -204,11 +204,7 @@ async fn init_gpu_context() -> Result<GpuContext, String> {
 
 /// Encode and submit the compute dispatch, returning the staging buffer
 /// and the number of bytes to read back.
-fn encode_and_submit(
-    ctx: &GpuContext,
-    params: GpuParams,
-    num_paths: usize,
-) -> (wgpu::Buffer, u64) {
+fn encode_and_submit(ctx: &GpuContext, params: GpuParams, num_paths: usize) -> (wgpu::Buffer, u64) {
     let device = &ctx.device;
     let queue = &ctx.queue;
 
@@ -337,8 +333,15 @@ mod native {
     ) -> Result<GpuMcResult, String> {
         let discount = (-rate * expiry).exp();
         let params = build_params(
-            spot, strike, rate, vol, expiry,
-            num_paths as u32, num_steps as u32, seed, is_call,
+            spot,
+            strike,
+            rate,
+            vol,
+            expiry,
+            num_paths as u32,
+            num_steps as u32,
+            seed,
+            is_call,
         );
 
         let ctx = get_or_init_gpu()?;
@@ -449,13 +452,11 @@ mod wasm {
     ) -> Result<GpuMcResult, String> {
         let discount = (-rate * expiry).exp();
         let params = build_params(
-            spot, strike, rate, vol, expiry,
-            num_paths, num_steps, seed, is_call,
+            spot, strike, rate, vol, expiry, num_paths, num_steps, seed, is_call,
         );
 
         let ctx = ensure_gpu_ctx().await?;
-        let (staging_buffer, _payoff_size) =
-            encode_and_submit(&ctx, params, num_paths as usize);
+        let (staging_buffer, _payoff_size) = encode_and_submit(&ctx, params, num_paths as usize);
         readback_async(&ctx.device, &staging_buffer, num_paths as usize, discount).await
     }
 }

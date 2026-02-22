@@ -187,15 +187,11 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
                     for j in 0..=i {
                         let hold = expected_continuation(next[rem][j + 1], next[rem][j], p, disc);
                         let mut best = hold;
-                        let continuation_after_exercise = expected_continuation(
-                            next[rem - 1][j + 1],
-                            next[rem - 1][j],
-                            p,
-                            disc,
-                        );
+                        let continuation_after_exercise =
+                            expected_continuation(next[rem - 1][j + 1], next[rem - 1][j], p, disc);
                         if continuation_after_exercise.is_finite() {
-                            let payoff = instrument.payoff_per_exercise
-                                * (st - instrument.strike).max(0.0);
+                            let payoff =
+                                instrument.payoff_per_exercise * (st - instrument.strike).max(0.0);
                             best = best.max(payoff + continuation_after_exercise);
                         }
                         current[rem][j] = best;

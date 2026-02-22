@@ -100,9 +100,8 @@ pub fn power_option_price(
     }
 
     let sig_sqrt_t = vol_adj * expiry.sqrt();
-    let d1 = ((pv_forward / discounted_strike).ln()
-        + 0.5 * vol_adj * vol_adj * expiry)
-        / sig_sqrt_t;
+    let d1 =
+        ((pv_forward / discounted_strike).ln() + 0.5 * vol_adj * vol_adj * expiry) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     // Compute call, derive put via put-call parity to halve CDF evaluations.

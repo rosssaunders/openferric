@@ -14,8 +14,8 @@
 use approx::{assert_abs_diff_eq, assert_relative_eq};
 use openferric::math::normal_inv_cdf;
 use openferric::risk::{
-    cornish_fisher_var, delta_gamma_normal_var, delta_normal_var,
-    historical_expected_shortfall, historical_var, normal_expected_shortfall,
+    cornish_fisher_var, delta_gamma_normal_var, delta_normal_var, historical_expected_shortfall,
+    historical_var, normal_expected_shortfall,
 };
 
 // ============================================================================
@@ -30,12 +30,36 @@ struct NormalVarCase {
 
 fn standard_normal_cases() -> Vec<NormalVarCase> {
     vec![
-        NormalVarCase { alpha: 0.90,  expected_var: 1.2815515655446, expected_es: 1.7549833193249 },
-        NormalVarCase { alpha: 0.95,  expected_var: 1.6448536269515, expected_es: 2.0627128075074 },
-        NormalVarCase { alpha: 0.975, expected_var: 1.9599639845401, expected_es: 2.3378027922014 },
-        NormalVarCase { alpha: 0.99,  expected_var: 2.3263478740408, expected_es: 2.6652142203458 },
-        NormalVarCase { alpha: 0.995, expected_var: 2.5758293035489, expected_es: 2.8919486053835 },
-        NormalVarCase { alpha: 0.999, expected_var: 3.0902323061678, expected_es: 3.3670900770640 },
+        NormalVarCase {
+            alpha: 0.90,
+            expected_var: 1.2815515655446,
+            expected_es: 1.7549833193249,
+        },
+        NormalVarCase {
+            alpha: 0.95,
+            expected_var: 1.6448536269515,
+            expected_es: 2.0627128075074,
+        },
+        NormalVarCase {
+            alpha: 0.975,
+            expected_var: 1.9599639845401,
+            expected_es: 2.3378027922014,
+        },
+        NormalVarCase {
+            alpha: 0.99,
+            expected_var: 2.3263478740408,
+            expected_es: 2.6652142203458,
+        },
+        NormalVarCase {
+            alpha: 0.995,
+            expected_var: 2.5758293035489,
+            expected_es: 2.8919486053835,
+        },
+        NormalVarCase {
+            alpha: 0.999,
+            expected_var: 3.0902323061678,
+            expected_es: 3.3670900770640,
+        },
     ]
 }
 
@@ -44,11 +68,7 @@ fn standard_normal_var_matches_analytical() {
     for case in standard_normal_cases() {
         // VaR for standard normal N(0,1) is just Phi^{-1}(alpha)
         let computed_var = normal_inv_cdf(case.alpha);
-        assert_relative_eq!(
-            computed_var,
-            case.expected_var,
-            epsilon = 1e-6,
-        );
+        assert_relative_eq!(computed_var, case.expected_var, epsilon = 1e-6,);
     }
 }
 
@@ -58,11 +78,7 @@ fn standard_normal_es_matches_analytical() {
         // ES for standard normal N(0,1): phi(Phi^{-1}(alpha)) / (1 - alpha)
         // Using the library's normal_expected_shortfall with mean=0, std=1
         let computed_es = normal_expected_shortfall(0.0, 1.0, case.alpha);
-        assert_relative_eq!(
-            computed_es,
-            case.expected_es,
-            epsilon = 1e-6,
-        );
+        assert_relative_eq!(computed_es, case.expected_es, epsilon = 1e-6,);
     }
 }
 
@@ -80,10 +96,34 @@ struct ScaledNormalCase {
 
 fn scaled_normal_cases() -> Vec<ScaledNormalCase> {
     vec![
-        ScaledNormalCase { mu: 0.01, sigma: 0.02, alpha: 0.95, expected_var: 0.04289707254, expected_es: 0.05125425615 },
-        ScaledNormalCase { mu: 0.01, sigma: 0.02, alpha: 0.99, expected_var: 0.05652695748, expected_es: 0.06330428441 },
-        ScaledNormalCase { mu: 0.0,  sigma: 0.20, alpha: 0.95, expected_var: 0.32897072539, expected_es: 0.41254256150 },
-        ScaledNormalCase { mu: 0.0,  sigma: 0.20, alpha: 0.99, expected_var: 0.46526957481, expected_es: 0.53304284407 },
+        ScaledNormalCase {
+            mu: 0.01,
+            sigma: 0.02,
+            alpha: 0.95,
+            expected_var: 0.04289707254,
+            expected_es: 0.05125425615,
+        },
+        ScaledNormalCase {
+            mu: 0.01,
+            sigma: 0.02,
+            alpha: 0.99,
+            expected_var: 0.05652695748,
+            expected_es: 0.06330428441,
+        },
+        ScaledNormalCase {
+            mu: 0.0,
+            sigma: 0.20,
+            alpha: 0.95,
+            expected_var: 0.32897072539,
+            expected_es: 0.41254256150,
+        },
+        ScaledNormalCase {
+            mu: 0.0,
+            sigma: 0.20,
+            alpha: 0.99,
+            expected_var: 0.46526957481,
+            expected_es: 0.53304284407,
+        },
     ]
 }
 
@@ -92,11 +132,7 @@ fn scaled_normal_var_matches_analytical() {
     for case in scaled_normal_cases() {
         // VaR = mu + sigma * Phi^{-1}(alpha)
         let computed_var = case.mu + case.sigma * normal_inv_cdf(case.alpha);
-        assert_relative_eq!(
-            computed_var,
-            case.expected_var,
-            epsilon = 1e-6,
-        );
+        assert_relative_eq!(computed_var, case.expected_var, epsilon = 1e-6,);
     }
 }
 
@@ -105,11 +141,7 @@ fn scaled_normal_es_matches_analytical() {
     for case in scaled_normal_cases() {
         // ES = mu + sigma * phi(Phi^{-1}(alpha)) / (1 - alpha)
         let computed_es = normal_expected_shortfall(case.mu, case.sigma, case.alpha);
-        assert_relative_eq!(
-            computed_es,
-            case.expected_es,
-            epsilon = 1e-6,
-        );
+        assert_relative_eq!(computed_es, case.expected_es, epsilon = 1e-6,);
     }
 }
 
@@ -128,14 +160,54 @@ struct CornishFisherCase {
 
 fn cornish_fisher_cases() -> Vec<CornishFisherCase> {
     vec![
-        CornishFisherCase { skewness:  0.0, excess_kurtosis: 0.0, alpha: 0.95, expected_z_cf: 1.6448536269515 },
-        CornishFisherCase { skewness:  0.0, excess_kurtosis: 0.0, alpha: 0.99, expected_z_cf: 2.3263478740408 },
-        CornishFisherCase { skewness:  0.5, excess_kurtosis: 0.0, alpha: 0.95, expected_z_cf: 1.7822865690155 },
-        CornishFisherCase { skewness: -0.5, excess_kurtosis: 0.0, alpha: 0.95, expected_z_cf: 1.4980293266662 },
-        CornishFisherCase { skewness:  0.0, excess_kurtosis: 3.0, alpha: 0.95, expected_z_cf: 1.5843113872626 },
-        CornishFisherCase { skewness:  0.0, excess_kurtosis: 3.0, alpha: 0.99, expected_z_cf: 3.0277110593026 },
-        CornishFisherCase { skewness: -1.0, excess_kurtosis: 5.0, alpha: 0.95, expected_z_cf: 1.2409099353450 },
-        CornishFisherCase { skewness:  0.5, excess_kurtosis: 2.0, alpha: 0.95, expected_z_cf: 1.7419250758896 },
+        CornishFisherCase {
+            skewness: 0.0,
+            excess_kurtosis: 0.0,
+            alpha: 0.95,
+            expected_z_cf: 1.6448536269515,
+        },
+        CornishFisherCase {
+            skewness: 0.0,
+            excess_kurtosis: 0.0,
+            alpha: 0.99,
+            expected_z_cf: 2.3263478740408,
+        },
+        CornishFisherCase {
+            skewness: 0.5,
+            excess_kurtosis: 0.0,
+            alpha: 0.95,
+            expected_z_cf: 1.7822865690155,
+        },
+        CornishFisherCase {
+            skewness: -0.5,
+            excess_kurtosis: 0.0,
+            alpha: 0.95,
+            expected_z_cf: 1.4980293266662,
+        },
+        CornishFisherCase {
+            skewness: 0.0,
+            excess_kurtosis: 3.0,
+            alpha: 0.95,
+            expected_z_cf: 1.5843113872626,
+        },
+        CornishFisherCase {
+            skewness: 0.0,
+            excess_kurtosis: 3.0,
+            alpha: 0.99,
+            expected_z_cf: 3.0277110593026,
+        },
+        CornishFisherCase {
+            skewness: -1.0,
+            excess_kurtosis: 5.0,
+            alpha: 0.95,
+            expected_z_cf: 1.2409099353450,
+        },
+        CornishFisherCase {
+            skewness: 0.5,
+            excess_kurtosis: 2.0,
+            alpha: 0.95,
+            expected_z_cf: 1.7419250758896,
+        },
     ]
 }
 
@@ -144,12 +216,9 @@ fn cornish_fisher_var_matches_analytical() {
     // cornish_fisher_var(mean_loss, std_dev_loss, skewness, excess_kurtosis, confidence)
     // With mean=0, std=1 the result equals z_cf directly
     for case in cornish_fisher_cases() {
-        let computed = cornish_fisher_var(0.0, 1.0, case.skewness, case.excess_kurtosis, case.alpha);
-        assert_relative_eq!(
-            computed,
-            case.expected_z_cf,
-            epsilon = 1e-6,
-        );
+        let computed =
+            cornish_fisher_var(0.0, 1.0, case.skewness, case.excess_kurtosis, case.alpha);
+        assert_relative_eq!(computed, case.expected_z_cf, epsilon = 1e-6,);
     }
 }
 
@@ -178,12 +247,48 @@ struct DeltaNormalCase {
 
 fn delta_normal_cases() -> Vec<DeltaNormalCase> {
     vec![
-        DeltaNormalCase { delta: 1.0,   annual_vol: 0.20, horizon_days: 1.0,  alpha: 0.95, expected_var: 0.02072320781 },
-        DeltaNormalCase { delta: 1.0,   annual_vol: 0.20, horizon_days: 1.0,  alpha: 0.99, expected_var: 0.02930922827 },
-        DeltaNormalCase { delta: 1.0,   annual_vol: 0.20, horizon_days: 10.0, alpha: 0.95, expected_var: 0.06553253710 },
-        DeltaNormalCase { delta: 1.0,   annual_vol: 0.20, horizon_days: 10.0, alpha: 0.99, expected_var: 0.09268391781 },
-        DeltaNormalCase { delta: 100.0, annual_vol: 0.20, horizon_days: 1.0,  alpha: 0.99, expected_var: 2.93092282749 },
-        DeltaNormalCase { delta: 0.5,   annual_vol: 0.20, horizon_days: 1.0,  alpha: 0.99, expected_var: 0.01465461414 },
+        DeltaNormalCase {
+            delta: 1.0,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.95,
+            expected_var: 0.02072320781,
+        },
+        DeltaNormalCase {
+            delta: 1.0,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 0.02930922827,
+        },
+        DeltaNormalCase {
+            delta: 1.0,
+            annual_vol: 0.20,
+            horizon_days: 10.0,
+            alpha: 0.95,
+            expected_var: 0.06553253710,
+        },
+        DeltaNormalCase {
+            delta: 1.0,
+            annual_vol: 0.20,
+            horizon_days: 10.0,
+            alpha: 0.99,
+            expected_var: 0.09268391781,
+        },
+        DeltaNormalCase {
+            delta: 100.0,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 2.93092282749,
+        },
+        DeltaNormalCase {
+            delta: 0.5,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 0.01465461414,
+        },
     ]
 }
 
@@ -191,11 +296,7 @@ fn delta_normal_cases() -> Vec<DeltaNormalCase> {
 fn delta_normal_var_matches_analytical() {
     for case in delta_normal_cases() {
         let computed = delta_normal_var(case.delta, case.annual_vol, case.alpha, case.horizon_days);
-        assert_relative_eq!(
-            computed,
-            case.expected_var,
-            epsilon = 1e-6,
-        );
+        assert_relative_eq!(computed, case.expected_var, epsilon = 1e-6,);
     }
 }
 
@@ -217,10 +318,38 @@ struct DeltaGammaNormalCase {
 
 fn delta_gamma_normal_cases() -> Vec<DeltaGammaNormalCase> {
     vec![
-        DeltaGammaNormalCase { delta: 1.0, gamma:  0.0,  annual_vol: 0.20, horizon_days: 1.0, alpha: 0.99, expected_var: 0.02930922827 },
-        DeltaGammaNormalCase { delta: 1.0, gamma:  0.5,  annual_vol: 0.20, horizon_days: 1.0, alpha: 0.99, expected_var: 0.02926983650 },
-        DeltaGammaNormalCase { delta: 0.0, gamma:  1.0,  annual_vol: 0.20, horizon_days: 1.0, alpha: 0.99, expected_var: 0.00018174228 },
-        DeltaGammaNormalCase { delta: 1.0, gamma: -0.5,  annual_vol: 0.20, horizon_days: 1.0, alpha: 0.99, expected_var: 0.02934920158 },
+        DeltaGammaNormalCase {
+            delta: 1.0,
+            gamma: 0.0,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 0.02930922827,
+        },
+        DeltaGammaNormalCase {
+            delta: 1.0,
+            gamma: 0.5,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 0.02926983650,
+        },
+        DeltaGammaNormalCase {
+            delta: 0.0,
+            gamma: 1.0,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 0.00018174228,
+        },
+        DeltaGammaNormalCase {
+            delta: 1.0,
+            gamma: -0.5,
+            annual_vol: 0.20,
+            horizon_days: 1.0,
+            alpha: 0.99,
+            expected_var: 0.02934920158,
+        },
     ]
 }
 
@@ -234,11 +363,7 @@ fn delta_gamma_normal_var_matches_analytical() {
             case.alpha,
             case.horizon_days,
         );
-        assert_relative_eq!(
-            computed,
-            case.expected_var,
-            epsilon = 1e-6,
-        );
+        assert_relative_eq!(computed, case.expected_var, epsilon = 1e-6,);
     }
 }
 
@@ -336,34 +461,58 @@ struct PortfolioVarCase {
 
 fn portfolio_var_cases() -> Vec<PortfolioVarCase> {
     vec![
-        PortfolioVarCase { w1: 0.5, w2: 0.5, s1: 0.20, s2: 0.30, rho:  0.0, alpha: 0.99, expected_var: 0.41939 },
-        PortfolioVarCase { w1: 0.5, w2: 0.5, s1: 0.20, s2: 0.30, rho:  0.5, alpha: 0.99, expected_var: 0.50702 },
-        PortfolioVarCase { w1: 0.5, w2: 0.5, s1: 0.20, s2: 0.30, rho:  1.0, alpha: 0.99, expected_var: 0.58159 },
-        PortfolioVarCase { w1: 0.5, w2: 0.5, s1: 0.20, s2: 0.30, rho: -1.0, alpha: 0.99, expected_var: 0.11632 },
+        PortfolioVarCase {
+            w1: 0.5,
+            w2: 0.5,
+            s1: 0.20,
+            s2: 0.30,
+            rho: 0.0,
+            alpha: 0.99,
+            expected_var: 0.41939,
+        },
+        PortfolioVarCase {
+            w1: 0.5,
+            w2: 0.5,
+            s1: 0.20,
+            s2: 0.30,
+            rho: 0.5,
+            alpha: 0.99,
+            expected_var: 0.50702,
+        },
+        PortfolioVarCase {
+            w1: 0.5,
+            w2: 0.5,
+            s1: 0.20,
+            s2: 0.30,
+            rho: 1.0,
+            alpha: 0.99,
+            expected_var: 0.58159,
+        },
+        PortfolioVarCase {
+            w1: 0.5,
+            w2: 0.5,
+            s1: 0.20,
+            s2: 0.30,
+            rho: -1.0,
+            alpha: 0.99,
+            expected_var: 0.11632,
+        },
     ]
 }
 
 /// Portfolio VaR computed manually from component volatilities and correlation,
 /// using the library's normal_inv_cdf for the quantile.
 fn compute_portfolio_var(w1: f64, w2: f64, s1: f64, s2: f64, rho: f64, alpha: f64) -> f64 {
-    let sigma_p = (w1 * w1 * s1 * s1
-        + w2 * w2 * s2 * s2
-        + 2.0 * w1 * w2 * s1 * s2 * rho)
-        .sqrt();
+    let sigma_p = (w1 * w1 * s1 * s1 + w2 * w2 * s2 * s2 + 2.0 * w1 * w2 * s1 * s2 * rho).sqrt();
     sigma_p * normal_inv_cdf(alpha)
 }
 
 #[test]
 fn portfolio_var_two_asset_matches_analytical() {
     for case in portfolio_var_cases() {
-        let computed = compute_portfolio_var(
-            case.w1, case.w2, case.s1, case.s2, case.rho, case.alpha,
-        );
-        assert_relative_eq!(
-            computed,
-            case.expected_var,
-            epsilon = 1e-3,
-        );
+        let computed =
+            compute_portfolio_var(case.w1, case.w2, case.s1, case.s2, case.rho, case.alpha);
+        assert_relative_eq!(computed, case.expected_var, epsilon = 1e-3,);
     }
 }
 
@@ -395,10 +544,6 @@ fn portfolio_var_n_identical_uncorrelated_scales_as_inverse_sqrt_n() {
         let portfolio_sigma = sigma / (n as f64).sqrt();
         let portfolio_var = portfolio_sigma * normal_inv_cdf(alpha);
         let expected_ratio = 1.0 / (n as f64).sqrt();
-        assert_relative_eq!(
-            portfolio_var / single_var,
-            expected_ratio,
-            epsilon = 1e-12,
-        );
+        assert_relative_eq!(portfolio_var / single_var, expected_ratio, epsilon = 1e-12,);
     }
 }

@@ -10,8 +10,8 @@
 //!
 //! When to use: use trees for early-exercise intuition and lattice diagnostics; use analytic formulas for plain vanillas and Monte Carlo/PDE for richer dynamics.
 use crate::core::{PricingEngine, PricingError, PricingResult};
-use crate::instruments::spread::SpreadOption;
 use crate::instruments::rainbow::{BestOfTwoCallOption, WorstOfTwoCallOption};
+use crate::instruments::spread::SpreadOption;
 use crate::market::Market;
 
 /// Two-asset binomial tree engine using Rubinstein's 2D recombining tree.

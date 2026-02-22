@@ -50,7 +50,9 @@ mod tests {
 
     #[test]
     fn option_price_from_call_returns_call_for_is_call() {
-        assert!((option_price_from_call(10.0, 100.0, 100.0, 0.05, 0.0, 1.0, true) - 10.0).abs() < 1e-10);
+        assert!(
+            (option_price_from_call(10.0, 100.0, 100.0, 0.05, 0.0, 1.0, true) - 10.0).abs() < 1e-10
+        );
     }
 
     #[test]

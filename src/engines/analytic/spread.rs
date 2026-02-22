@@ -120,7 +120,8 @@ pub fn kirk_spread_price(option: &SpreadOption) -> Result<f64, PricingError> {
     // sigma_k^2 = vol1^2 - 2*beta*rho*vol1*vol2 + beta^2*vol2^2 via FMA
     let sigma_k2 = option.vol1.mul_add(
         option.vol1,
-        (-2.0 * beta * option.rho * option.vol1).mul_add(option.vol2, beta * beta * option.vol2 * option.vol2),
+        (-2.0 * beta * option.rho * option.vol1)
+            .mul_add(option.vol2, beta * beta * option.vol2 * option.vol2),
     );
 
     if sigma_k2 < -1.0e-14 {

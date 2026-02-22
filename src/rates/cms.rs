@@ -213,11 +213,12 @@ pub fn sabr_cms_convexity_adjustment(
 
     // SABR ATM vol approximation
     let f_beta = s.powf(beta);
-    let atm_vol = alpha / f_beta * (1.0 + (
-        (1.0 - beta).powi(2) / 24.0 * alpha * alpha / f_beta.powi(2)
-        + 0.25 * rho * beta * nu * alpha / f_beta
-        + (2.0 - 3.0 * rho * rho) / 24.0 * nu * nu
-    ) * t);
+    let atm_vol = alpha / f_beta
+        * (1.0
+            + ((1.0 - beta).powi(2) / 24.0 * alpha * alpha / f_beta.powi(2)
+                + 0.25 * rho * beta * nu * alpha / f_beta
+                + (2.0 - 3.0 * rho * rho) / 24.0 * nu * nu)
+                * t);
 
     // Apply same Hagan formula with SABR vol
     s * s * atm_vol * atm_vol * t * duration / annuity.max(1e-10)
@@ -252,14 +253,14 @@ mod tests {
             expiry: 1.0,
         };
         let result = cms_spread_option_mc(
-            &option,
-            0.04, 0.025,         // 10Y=4%, 2Y=2.5%
-            0.20, 0.25,          // vols
-            0.85,                // correlation
-            0.001, 0.0005,       // convexity adjustments
-            0.03,                // discount rate
+            &option, 0.04, 0.025, // 10Y=4%, 2Y=2.5%
+            0.20, 0.25, // vols
+            0.85, // correlation
+            0.001, 0.0005, // convexity adjustments
+            0.03,   // discount rate
             10000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result.price > 0.0);
         assert!(result.price.is_finite());
     }
@@ -267,20 +268,15 @@ mod tests {
     #[test]
     fn cms_spread_put_is_positive_when_itm() {
         let option = CmsSpreadOption {
-            strike: 0.05,  // Deep ITM put (spread ≈ 0.015)
+            strike: 0.05, // Deep ITM put (spread ≈ 0.015)
             option_type: CmsSpreadOptionType::Put,
             notional: 1_000_000.0,
             expiry: 1.0,
         };
         let result = cms_spread_option_mc(
-            &option,
-            0.04, 0.025,
-            0.20, 0.25,
-            0.85,
-            0.001, 0.0005,
-            0.03,
-            10000, 42,
-        ).unwrap();
+            &option, 0.04, 0.025, 0.20, 0.25, 0.85, 0.001, 0.0005, 0.03, 10000, 42,
+        )
+        .unwrap();
         assert!(result.price > 0.0);
     }
 
@@ -294,19 +290,19 @@ mod tests {
         };
         let high_rho = cms_spread_option_mc(
             &option, 0.04, 0.025, 0.20, 0.25, 0.95, 0.001, 0.0005, 0.03, 10000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         let low_rho = cms_spread_option_mc(
             &option, 0.04, 0.025, 0.20, 0.25, 0.3, 0.001, 0.0005, 0.03, 10000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         // Lower correlation → higher spread vol → higher option value
         assert!(low_rho.price > high_rho.price);
     }
 
     #[test]
     fn sabr_convexity_adjustment_is_positive() {
-        let ca = sabr_cms_convexity_adjustment(
-            0.04, 8.5, 10.0, 1.0, 0.03, 0.5, -0.3, 0.4,
-        );
+        let ca = sabr_cms_convexity_adjustment(0.04, 8.5, 10.0, 1.0, 0.03, 0.5, -0.3, 0.4);
         assert!(ca > 0.0);
         assert!(ca.is_finite());
     }
@@ -321,7 +317,8 @@ mod tests {
         };
         let result = cms_spread_option_mc(
             &option, 0.04, 0.025, 0.20, 0.25, 0.85, 0.001, 0.0005, 0.03, 50000, 42,
-        ).unwrap();
+        )
+        .unwrap();
         // Expected rates should be near the adjusted forwards
         assert!((result.expected_cms1 - 0.041).abs() < 0.005);
         assert!((result.expected_cms2 - 0.0255).abs() < 0.005);

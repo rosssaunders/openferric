@@ -341,14 +341,7 @@ pub struct NigCharFn {
 }
 
 impl NigCharFn {
-    pub fn new(
-        spot: f64,
-        drift: f64,
-        maturity: f64,
-        alpha: f64,
-        beta: f64,
-        delta: f64,
-    ) -> Self {
+    pub fn new(spot: f64, drift: f64, maturity: f64, alpha: f64, beta: f64, delta: f64) -> Self {
         Self {
             ln_spot: spot.ln(),
             drift,

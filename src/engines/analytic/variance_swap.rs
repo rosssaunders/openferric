@@ -159,7 +159,8 @@ pub fn variance_swap_mtm(
 
     let expected_realized_var = instrument.observed_realized_var.unwrap_or(fair_variance);
     let variance_notional = instrument.notional_vega / (2.0 * instrument.strike_vol);
-    let payoff = variance_notional * (expected_realized_var - instrument.strike_vol * instrument.strike_vol);
+    let payoff =
+        variance_notional * (expected_realized_var - instrument.strike_vol * instrument.strike_vol);
 
     Ok((-rate * instrument.expiry).exp() * payoff)
 }

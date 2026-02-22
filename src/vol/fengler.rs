@@ -72,11 +72,8 @@ impl FenglerSurface {
             let spline = if ks.len() >= 2 {
                 CubicSpline::new(ks.clone(), ws.clone()).unwrap_or_else(|_| {
                     // Fallback: just two endpoint spline.
-                    CubicSpline::new(
-                        vec![ks[0], ks[ks.len() - 1]],
-                        vec![ws[0], ws[ws.len() - 1]],
-                    )
-                    .unwrap()
+                    CubicSpline::new(vec![ks[0], ks[ks.len() - 1]], vec![ws[0], ws[ws.len() - 1]])
+                        .unwrap()
                 })
             } else {
                 // Single point — create flat spline around it.

@@ -100,7 +100,14 @@ pub fn bs_price_batch_wasm(
             OptionType::Put
         };
         let s_adj = spots[i] * (-div_yields[i] * maturities[i]).exp();
-        out.push(black_scholes_price(ot, s_adj, strikes[i], rates[i], vols[i], maturities[i]));
+        out.push(black_scholes_price(
+            ot,
+            s_adj,
+            strikes[i],
+            rates[i],
+            vols[i],
+            maturities[i],
+        ));
     }
     out
 }
@@ -139,7 +146,13 @@ pub fn bsm_greeks_batch_wasm(
             OptionType::Put
         };
         let g = black_scholes_merton_greeks(
-            ot, spots[i], strikes[i], rates[i], div_yields[i], vols[i], expiries[i],
+            ot,
+            spots[i],
+            strikes[i],
+            rates[i],
+            div_yields[i],
+            vols[i],
+            expiries[i],
         );
         out.push(g.delta);
         out.push(g.gamma);
@@ -332,7 +345,8 @@ mod tests {
         let vols = [0.20];
         let expiries = [1.0];
         let calls = [1u8];
-        let batch = bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls);
+        let batch =
+            bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls);
         let single = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
         assert_eq!(batch.len(), 7);
         for i in 0..7 {
@@ -359,7 +373,9 @@ mod tests {
 
     #[test]
     fn barrier_invalid_type_returns_nan() {
-        assert!(barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "sideways", true).is_nan());
+        assert!(
+            barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "sideways", true).is_nan()
+        );
     }
 
     #[test]

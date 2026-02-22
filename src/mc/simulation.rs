@@ -102,7 +102,11 @@ impl PathGenerator for HestonPathGenerator {
         let mut v = self.model.v0;
         out[0] = s;
 
-        for (j, (&z1, &z2)) in normals_1.iter().zip(normals_2.iter()).enumerate().take(self.steps)
+        for (j, (&z1, &z2)) in normals_1
+            .iter()
+            .zip(normals_2.iter())
+            .enumerate()
+            .take(self.steps)
         {
             let (s_next, v_next) = self.model.step_euler(s, v, dt, z1, z2);
             s = s_next.max(1e-12);
@@ -316,10 +320,10 @@ impl MonteCarloEngine {
             // sum_adj^2 = sum_x2 + 2*beta*cv_expected*sum_x - 2*beta*sum_xy
             //           + beta^2 * (n*cv_expected^2 - 2*cv_expected*sum_y + sum_y2)
             let sum_adj = sum_x + beta * (n * cv_expected - sum_y);
-            let sum_adj_sq = sum_x2
-                + 2.0 * beta * cv_expected * sum_x
-                - 2.0 * beta * sum_xy
-                + beta * beta * (n * cv_expected * cv_expected - 2.0 * cv_expected * sum_y + sum_y2);
+            let sum_adj_sq = sum_x2 + 2.0 * beta * cv_expected * sum_x - 2.0 * beta * sum_xy
+                + beta
+                    * beta
+                    * (n * cv_expected * cv_expected - 2.0 * cv_expected * sum_y + sum_y2);
 
             let mean = sum_adj / n;
             let var = if n > 1.0 {

@@ -22,16 +22,14 @@ mod tests {
     fn long_call_pnl() {
         // Long 1 call at K=100, cost=5
         let spots = [80.0, 90.0, 100.0, 110.0, 120.0];
-        let pnl = strategy_intrinsic_pnl_wasm(
-            &spots, &[100.0], &[1.0], &[1u8], 5.0,
-        );
+        let pnl = strategy_intrinsic_pnl_wasm(&spots, &[100.0], &[1.0], &[1u8], 5.0);
         assert_eq!(pnl.len(), 5);
         // Below strike: PnL = -cost
         assert!((pnl[0] - (-5.0)).abs() < 1e-10);
         assert!((pnl[1] - (-5.0)).abs() < 1e-10);
         assert!((pnl[2] - (-5.0)).abs() < 1e-10);
         // Above strike: PnL = intrinsic - cost
-        assert!((pnl[3] - 5.0).abs() < 1e-10);  // 110-100-5
+        assert!((pnl[3] - 5.0).abs() < 1e-10); // 110-100-5
         assert!((pnl[4] - 15.0).abs() < 1e-10); // 120-100-5
     }
 
@@ -39,12 +37,10 @@ mod tests {
     fn long_put_pnl() {
         // Long 1 put at K=100, cost=5
         let spots = [80.0, 90.0, 100.0, 110.0, 120.0];
-        let pnl = strategy_intrinsic_pnl_wasm(
-            &spots, &[100.0], &[1.0], &[0u8], 5.0,
-        );
+        let pnl = strategy_intrinsic_pnl_wasm(&spots, &[100.0], &[1.0], &[0u8], 5.0);
         assert_eq!(pnl.len(), 5);
-        assert!((pnl[0] - 15.0).abs() < 1e-10);  // 100-80-5
-        assert!((pnl[1] - 5.0).abs() < 1e-10);   // 100-90-5
+        assert!((pnl[0] - 15.0).abs() < 1e-10); // 100-80-5
+        assert!((pnl[1] - 5.0).abs() < 1e-10); // 100-90-5
         assert!((pnl[2] - (-5.0)).abs() < 1e-10); // 0-5
         assert!((pnl[3] - (-5.0)).abs() < 1e-10);
     }
@@ -53,9 +49,8 @@ mod tests {
     fn bull_call_spread() {
         // Long call K=100, short call K=110, net debit=3
         let spots = [90.0, 100.0, 105.0, 110.0, 120.0];
-        let pnl = strategy_intrinsic_pnl_wasm(
-            &spots, &[100.0, 110.0], &[1.0, -1.0], &[1u8, 1u8], 3.0,
-        );
+        let pnl =
+            strategy_intrinsic_pnl_wasm(&spots, &[100.0, 110.0], &[1.0, -1.0], &[1u8, 1u8], 3.0);
         assert_eq!(pnl.len(), 5);
         // Below both strikes: max loss = -cost
         assert!((pnl[0] - (-3.0)).abs() < 1e-10);
@@ -67,9 +62,7 @@ mod tests {
 
     #[test]
     fn empty_spot_axis() {
-        let pnl = strategy_intrinsic_pnl_wasm(
-            &[], &[100.0], &[1.0], &[1u8], 5.0,
-        );
+        let pnl = strategy_intrinsic_pnl_wasm(&[], &[100.0], &[1.0], &[1u8], 5.0);
         assert!(pnl.is_empty());
     }
 }

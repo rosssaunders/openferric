@@ -161,8 +161,8 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     num_steps: usize,
     seed: u64,
 ) -> SoaPaths {
-    use std::arch::x86_64::*;
     use crate::math::fast_rng::Xoshiro256PlusPlus;
+    use std::arch::x86_64::*;
 
     assert!(num_paths > 0, "num_paths must be > 0");
     assert!(num_steps > 0, "num_steps must be > 0");
@@ -190,7 +190,9 @@ unsafe fn simulate_gbm_paths_soa_avx2(
         let next = &mut prev_tail[0];
 
         // Batch-generate all normals for this step via SIMD inverse CDF.
-        unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normal_buf[..num_paths]) };
+        unsafe {
+            crate::math::simd_math::fill_normals_simd(&mut rng, &mut normal_buf[..num_paths])
+        };
 
         let mut i = 0usize;
         while i + 4 <= num_paths {

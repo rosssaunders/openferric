@@ -28,8 +28,24 @@ fn flat_vol_quotes(
     (1..=max_strike)
         .map(|k| {
             let strike = k as f64;
-            let call = bs_price(OptionType::Call, spot, strike, rate, dividend_yield, vol, expiry);
-            let put = bs_price(OptionType::Put, spot, strike, rate, dividend_yield, vol, expiry);
+            let call = bs_price(
+                OptionType::Call,
+                spot,
+                strike,
+                rate,
+                dividend_yield,
+                vol,
+                expiry,
+            );
+            let put = bs_price(
+                OptionType::Put,
+                spot,
+                strike,
+                rate,
+                dividend_yield,
+                vol,
+                expiry,
+            );
             VarianceOptionQuote::new(strike, call, put)
         })
         .collect()
@@ -47,10 +63,24 @@ fn skewed_vol_quotes(
     strikes_and_vols
         .iter()
         .map(|&(strike, vol)| {
-            let call =
-                bs_price(OptionType::Call, spot, strike, rate, dividend_yield, vol, expiry);
-            let put =
-                bs_price(OptionType::Put, spot, strike, rate, dividend_yield, vol, expiry);
+            let call = bs_price(
+                OptionType::Call,
+                spot,
+                strike,
+                rate,
+                dividend_yield,
+                vol,
+                expiry,
+            );
+            let put = bs_price(
+                OptionType::Put,
+                spot,
+                strike,
+                rate,
+                dividend_yield,
+                vol,
+                expiry,
+            );
             VarianceOptionQuote::new(strike, call, put)
         })
         .collect()
@@ -293,7 +323,10 @@ fn engine_variance_swap_flat_vol() {
 
     // Verify diagnostics contain fair_variance
     let diag_var = result.diagnostics.get("fair_variance");
-    assert!(diag_var.is_some(), "diagnostics should contain fair_variance");
+    assert!(
+        diag_var.is_some(),
+        "diagnostics should contain fair_variance"
+    );
     let fair_var = diag_var.unwrap();
     assert!(
         (fair_var - 0.04).abs() < 1e-3,
@@ -314,8 +347,7 @@ fn engine_volatility_swap_flat_vol() {
 
     let quotes = flat_vol_quotes(spot, rate, dividend_yield, vol, expiry, 500);
 
-    let instrument =
-        VolatilitySwap::new(notional_vega, strike_vol, expiry, quotes, var_of_var);
+    let instrument = VolatilitySwap::new(notional_vega, strike_vol, expiry, quotes, var_of_var);
 
     let market = Market::builder()
         .spot(spot)
@@ -395,9 +427,8 @@ fn mtm_long_variance_swap_losing() {
     let t_elapsed: f64 = 0.5;
 
     // Blended expected variance over the full period
-    let expected_var =
-        (t_elapsed / original_expiry) * realized_var
-            + ((original_expiry - t_elapsed) / original_expiry) * new_fair_var;
+    let expected_var = (t_elapsed / original_expiry) * realized_var
+        + ((original_expiry - t_elapsed) / original_expiry) * new_fair_var;
 
     let n_var = notional_vega / (2.0 * strike_vol);
     let k_var = strike_vol * strike_vol;
@@ -526,7 +557,10 @@ fn vol_swap_mtm_in_the_money() {
         (mtm - expected).abs() < 1e-6,
         "In-the-money vol swap: expected {expected:.2}, got {mtm:.2}"
     );
-    assert!(mtm > 0.0, "Long vol swap should profit when realized > strike");
+    assert!(
+        mtm > 0.0,
+        "Long vol swap should profit when realized > strike"
+    );
 }
 
 // ===========================================================================
@@ -696,8 +730,8 @@ fn settlement_payoff_long_variance() {
         VarianceOptionQuote::new(90.0, 12.0, 2.0),
         VarianceOptionQuote::new(110.0, 2.0, 12.0),
     ];
-    let instrument = VarianceSwap::new(n_vega, k_vol, 1.0, quotes)
-        .with_observed_realized_var(realized_var);
+    let instrument =
+        VarianceSwap::new(n_vega, k_vol, 1.0, quotes).with_observed_realized_var(realized_var);
 
     let mtm = variance_swap_mtm(&instrument, 0.0, 0.0).unwrap();
     assert!(

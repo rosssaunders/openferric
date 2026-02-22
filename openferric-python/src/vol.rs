@@ -51,15 +51,7 @@ pub fn py_sabr_vol(
 }
 
 #[pyfunction]
-pub fn py_svi_vol(
-    strike: f64,
-    forward: f64,
-    a: f64,
-    b: f64,
-    rho: f64,
-    m: f64,
-    sigma: f64,
-) -> f64 {
+pub fn py_svi_vol(strike: f64, forward: f64, a: f64, b: f64, rho: f64, m: f64, sigma: f64) -> f64 {
     let k = (strike / forward).ln();
     let total_var = a + b * (rho * (k - m) + ((k - m).powi(2) + sigma * sigma).sqrt());
     if total_var > 0.0 {

@@ -10,8 +10,8 @@
 //!
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 
-use crate::pricing::european::black_scholes_price;
 use crate::pricing::OptionType;
+use crate::pricing::european::black_scholes_price;
 use crate::vol::jaeckel::implied_vol_jaeckel;
 
 /// Andreasen-Huge arbitrage-free volatility interpolation.
@@ -62,7 +62,12 @@ impl AndreasenHugeInterpolation {
         for &t in &expiries {
             let dt = t - prev_t;
             if dt < 1e-14 {
-                local_vols.push(local_vols.last().cloned().unwrap_or_else(|| vec![0.2; n_grid]));
+                local_vols.push(
+                    local_vols
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| vec![0.2; n_grid]),
+                );
                 call_prices.push(prev_calls.clone());
                 continue;
             }
@@ -95,14 +100,7 @@ impl AndreasenHugeInterpolation {
 
             // Levenberg-Marquardt-style calibration loop.
             for _iter in 0..50 {
-                let new_calls = step_implicit(
-                    &prev_calls,
-                    &grid,
-                    &sigma_loc,
-                    dt,
-                    rate,
-                    dividend,
-                );
+                let new_calls = step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend);
 
                 if targets.is_empty() {
                     break;
@@ -123,18 +121,16 @@ impl AndreasenHugeInterpolation {
 
                     // Spread the bump over nearby grid points for stability.
                     let spread_pts = 3;
-                    for sb in sigma_bumped.iter_mut().take((idx + spread_pts).min(n_grid - 1) + 1).skip(idx.saturating_sub(spread_pts)) {
+                    for sb in sigma_bumped
+                        .iter_mut()
+                        .take((idx + spread_pts).min(n_grid - 1) + 1)
+                        .skip(idx.saturating_sub(spread_pts))
+                    {
                         *sb += bump;
                     }
 
-                    let bumped_calls = step_implicit(
-                        &prev_calls,
-                        &grid,
-                        &sigma_bumped,
-                        dt,
-                        rate,
-                        dividend,
-                    );
+                    let bumped_calls =
+                        step_implicit(&prev_calls, &grid, &sigma_bumped, dt, rate, dividend);
                     let dc_dsigma = (bumped_calls[idx] - c_model) / bump;
 
                     if dc_dsigma.abs() > 1e-14 {
@@ -158,14 +154,7 @@ impl AndreasenHugeInterpolation {
                 }
             }
 
-            let new_calls = step_implicit(
-                &prev_calls,
-                &grid,
-                &sigma_loc,
-                dt,
-                rate,
-                dividend,
-            );
+            let new_calls = step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend);
             local_vols.push(sigma_loc);
             call_prices.push(new_calls.clone());
             prev_calls = new_calls;
@@ -240,8 +229,7 @@ impl AndreasenHugeInterpolation {
 
         for i in 0..last {
             if expiry >= self.expiries[i] && expiry <= self.expiries[i + 1] {
-                let w = (expiry - self.expiries[i])
-                    / (self.expiries[i + 1] - self.expiries[i]);
+                let w = (expiry - self.expiries[i]) / (self.expiries[i + 1] - self.expiries[i]);
                 return interp_at(i) * (1.0 - w) + interp_at(i + 1) * w;
             }
         }
@@ -266,8 +254,7 @@ impl AndreasenHugeInterpolation {
         }
         for i in 0..last {
             if expiry >= self.expiries[i] && expiry <= self.expiries[i + 1] {
-                let w = (expiry - self.expiries[i])
-                    / (self.expiries[i + 1] - self.expiries[i]);
+                let w = (expiry - self.expiries[i]) / (self.expiries[i + 1] - self.expiries[i]);
                 return lv_at(i) * (1.0 - w) + lv_at(i + 1) * w;
             }
         }

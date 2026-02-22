@@ -64,57 +64,285 @@ struct BawCase {
 }
 
 const BAW_CALLS: &[BawCase] = &[
-    BawCase { option_type: OptionType::Call, spot: 90.0,  t: 0.10, vol: 0.15, expected: 0.0206 },
-    BawCase { option_type: OptionType::Call, spot: 100.0, t: 0.10, vol: 0.15, expected: 1.8771 },
-    BawCase { option_type: OptionType::Call, spot: 110.0, t: 0.10, vol: 0.15, expected: 10.0089 },
-    BawCase { option_type: OptionType::Call, spot: 90.0,  t: 0.10, vol: 0.25, expected: 0.3159 },
-    BawCase { option_type: OptionType::Call, spot: 100.0, t: 0.10, vol: 0.25, expected: 3.1280 },
-    BawCase { option_type: OptionType::Call, spot: 110.0, t: 0.10, vol: 0.25, expected: 10.3919 },
-    BawCase { option_type: OptionType::Call, spot: 90.0,  t: 0.10, vol: 0.35, expected: 0.9495 },
-    BawCase { option_type: OptionType::Call, spot: 100.0, t: 0.10, vol: 0.35, expected: 4.3777 },
-    BawCase { option_type: OptionType::Call, spot: 110.0, t: 0.10, vol: 0.35, expected: 11.1679 },
-    BawCase { option_type: OptionType::Call, spot: 90.0,  t: 0.50, vol: 0.15, expected: 0.8208 },
-    BawCase { option_type: OptionType::Call, spot: 100.0, t: 0.50, vol: 0.15, expected: 4.0842 },
-    BawCase { option_type: OptionType::Call, spot: 110.0, t: 0.50, vol: 0.15, expected: 10.8087 },
-    BawCase { option_type: OptionType::Call, spot: 90.0,  t: 0.50, vol: 0.25, expected: 2.7437 },
-    BawCase { option_type: OptionType::Call, spot: 100.0, t: 0.50, vol: 0.25, expected: 6.8015 },
-    BawCase { option_type: OptionType::Call, spot: 110.0, t: 0.50, vol: 0.25, expected: 13.0170 },
-    BawCase { option_type: OptionType::Call, spot: 90.0,  t: 0.50, vol: 0.35, expected: 5.0063 },
-    BawCase { option_type: OptionType::Call, spot: 100.0, t: 0.50, vol: 0.35, expected: 9.5106 },
-    BawCase { option_type: OptionType::Call, spot: 110.0, t: 0.50, vol: 0.35, expected: 15.5689 },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 90.0,
+        t: 0.10,
+        vol: 0.15,
+        expected: 0.0206,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 100.0,
+        t: 0.10,
+        vol: 0.15,
+        expected: 1.8771,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 110.0,
+        t: 0.10,
+        vol: 0.15,
+        expected: 10.0089,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 90.0,
+        t: 0.10,
+        vol: 0.25,
+        expected: 0.3159,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 100.0,
+        t: 0.10,
+        vol: 0.25,
+        expected: 3.1280,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 110.0,
+        t: 0.10,
+        vol: 0.25,
+        expected: 10.3919,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 90.0,
+        t: 0.10,
+        vol: 0.35,
+        expected: 0.9495,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 100.0,
+        t: 0.10,
+        vol: 0.35,
+        expected: 4.3777,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 110.0,
+        t: 0.10,
+        vol: 0.35,
+        expected: 11.1679,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 90.0,
+        t: 0.50,
+        vol: 0.15,
+        expected: 0.8208,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 100.0,
+        t: 0.50,
+        vol: 0.15,
+        expected: 4.0842,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 110.0,
+        t: 0.50,
+        vol: 0.15,
+        expected: 10.8087,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 90.0,
+        t: 0.50,
+        vol: 0.25,
+        expected: 2.7437,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 100.0,
+        t: 0.50,
+        vol: 0.25,
+        expected: 6.8015,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 110.0,
+        t: 0.50,
+        vol: 0.25,
+        expected: 13.0170,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 90.0,
+        t: 0.50,
+        vol: 0.35,
+        expected: 5.0063,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 100.0,
+        t: 0.50,
+        vol: 0.35,
+        expected: 9.5106,
+    },
+    BawCase {
+        option_type: OptionType::Call,
+        spot: 110.0,
+        t: 0.50,
+        vol: 0.35,
+        expected: 15.5689,
+    },
 ];
 
 const BAW_PUTS: &[BawCase] = &[
-    BawCase { option_type: OptionType::Put, spot: 90.0,  t: 0.10, vol: 0.15, expected: 10.0000 },
-    BawCase { option_type: OptionType::Put, spot: 100.0, t: 0.10, vol: 0.15, expected: 1.8770 },
-    BawCase { option_type: OptionType::Put, spot: 110.0, t: 0.10, vol: 0.15, expected: 0.0410 },
-    BawCase { option_type: OptionType::Put, spot: 90.0,  t: 0.10, vol: 0.25, expected: 10.2533 },
-    BawCase { option_type: OptionType::Put, spot: 100.0, t: 0.10, vol: 0.25, expected: 3.1277 },
-    BawCase { option_type: OptionType::Put, spot: 110.0, t: 0.10, vol: 0.25, expected: 0.4562 },
-    BawCase { option_type: OptionType::Put, spot: 90.0,  t: 0.10, vol: 0.35, expected: 10.8787 },
-    BawCase { option_type: OptionType::Put, spot: 100.0, t: 0.10, vol: 0.35, expected: 4.3777 },
-    BawCase { option_type: OptionType::Put, spot: 110.0, t: 0.10, vol: 0.35, expected: 1.2402 },
-    BawCase { option_type: OptionType::Put, spot: 90.0,  t: 0.50, vol: 0.15, expected: 10.5595 },
-    BawCase { option_type: OptionType::Put, spot: 100.0, t: 0.50, vol: 0.15, expected: 4.0842 },
-    BawCase { option_type: OptionType::Put, spot: 110.0, t: 0.50, vol: 0.15, expected: 1.0822 },
-    BawCase { option_type: OptionType::Put, spot: 90.0,  t: 0.50, vol: 0.25, expected: 12.4419 },
-    BawCase { option_type: OptionType::Put, spot: 100.0, t: 0.50, vol: 0.25, expected: 6.8014 },
-    BawCase { option_type: OptionType::Put, spot: 110.0, t: 0.50, vol: 0.25, expected: 3.3226 },
-    BawCase { option_type: OptionType::Put, spot: 90.0,  t: 0.50, vol: 0.35, expected: 14.6945 },
-    BawCase { option_type: OptionType::Put, spot: 100.0, t: 0.50, vol: 0.35, expected: 9.5104 },
-    BawCase { option_type: OptionType::Put, spot: 110.0, t: 0.50, vol: 0.35, expected: 5.8823 },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 90.0,
+        t: 0.10,
+        vol: 0.15,
+        expected: 10.0000,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 100.0,
+        t: 0.10,
+        vol: 0.15,
+        expected: 1.8770,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 110.0,
+        t: 0.10,
+        vol: 0.15,
+        expected: 0.0410,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 90.0,
+        t: 0.10,
+        vol: 0.25,
+        expected: 10.2533,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 100.0,
+        t: 0.10,
+        vol: 0.25,
+        expected: 3.1277,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 110.0,
+        t: 0.10,
+        vol: 0.25,
+        expected: 0.4562,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 90.0,
+        t: 0.10,
+        vol: 0.35,
+        expected: 10.8787,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 100.0,
+        t: 0.10,
+        vol: 0.35,
+        expected: 4.3777,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 110.0,
+        t: 0.10,
+        vol: 0.35,
+        expected: 1.2402,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 90.0,
+        t: 0.50,
+        vol: 0.15,
+        expected: 10.5595,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 100.0,
+        t: 0.50,
+        vol: 0.15,
+        expected: 4.0842,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 110.0,
+        t: 0.50,
+        vol: 0.15,
+        expected: 1.0822,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 90.0,
+        t: 0.50,
+        vol: 0.25,
+        expected: 12.4419,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 100.0,
+        t: 0.50,
+        vol: 0.25,
+        expected: 6.8014,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 110.0,
+        t: 0.50,
+        vol: 0.25,
+        expected: 3.3226,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 90.0,
+        t: 0.50,
+        vol: 0.35,
+        expected: 14.6945,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 100.0,
+        t: 0.50,
+        vol: 0.35,
+        expected: 9.5104,
+    },
+    BawCase {
+        option_type: OptionType::Put,
+        spot: 110.0,
+        t: 0.50,
+        vol: 0.35,
+        expected: 5.8823,
+    },
 ];
 
 #[test]
 fn baw_american_calls() {
     let steps = 1000;
     for (i, case) in BAW_CALLS.iter().enumerate() {
-        let price = american_price(case.option_type, case.spot, 100.0, 0.10, 0.10, case.vol, case.t, steps);
+        let price = american_price(
+            case.option_type,
+            case.spot,
+            100.0,
+            0.10,
+            0.10,
+            case.vol,
+            case.t,
+            steps,
+        );
         let err = (price - case.expected).abs();
         assert!(
             err < 0.15,
             "BAW call #{i}: S={}, T={}, vol={}: got {price}, expected {}, err={err}",
-            case.spot, case.t, case.vol, case.expected
+            case.spot,
+            case.t,
+            case.vol,
+            case.expected
         );
     }
 }
@@ -123,12 +351,24 @@ fn baw_american_calls() {
 fn baw_american_puts() {
     let steps = 1000;
     for (i, case) in BAW_PUTS.iter().enumerate() {
-        let price = american_price(case.option_type, case.spot, 100.0, 0.10, 0.10, case.vol, case.t, steps);
+        let price = american_price(
+            case.option_type,
+            case.spot,
+            100.0,
+            0.10,
+            0.10,
+            case.vol,
+            case.t,
+            steps,
+        );
         let err = (price - case.expected).abs();
         assert!(
             err < 0.15,
             "BAW put #{i}: S={}, T={}, vol={}: got {price}, expected {}, err={err}",
-            case.spot, case.t, case.vol, case.expected
+            case.spot,
+            case.t,
+            case.vol,
+            case.expected
         );
     }
 }
@@ -147,33 +387,168 @@ struct JuCase {
 }
 
 const JU_PUTS: &[JuCase] = &[
-    JuCase { strike: 35.0, t: 0.0833, vol: 0.20, expected: 0.006 },
-    JuCase { strike: 35.0, t: 0.3333, vol: 0.20, expected: 0.201 },
-    JuCase { strike: 35.0, t: 0.5833, vol: 0.20, expected: 0.433 },
-    JuCase { strike: 40.0, t: 0.0833, vol: 0.20, expected: 0.851 },
-    JuCase { strike: 40.0, t: 0.3333, vol: 0.20, expected: 1.576 },
-    JuCase { strike: 40.0, t: 0.5833, vol: 0.20, expected: 1.984 },
-    JuCase { strike: 45.0, t: 0.0833, vol: 0.20, expected: 5.000 },
-    JuCase { strike: 45.0, t: 0.3333, vol: 0.20, expected: 5.084 },
-    JuCase { strike: 45.0, t: 0.5833, vol: 0.20, expected: 5.260 },
-    JuCase { strike: 35.0, t: 0.0833, vol: 0.30, expected: 0.078 },
-    JuCase { strike: 35.0, t: 0.3333, vol: 0.30, expected: 0.697 },
-    JuCase { strike: 35.0, t: 0.5833, vol: 0.30, expected: 1.218 },
-    JuCase { strike: 40.0, t: 0.0833, vol: 0.30, expected: 1.309 },
-    JuCase { strike: 40.0, t: 0.3333, vol: 0.30, expected: 2.477 },
-    JuCase { strike: 40.0, t: 0.5833, vol: 0.30, expected: 3.161 },
-    JuCase { strike: 45.0, t: 0.0833, vol: 0.30, expected: 5.059 },
-    JuCase { strike: 45.0, t: 0.3333, vol: 0.30, expected: 5.699 },
-    JuCase { strike: 45.0, t: 0.5833, vol: 0.30, expected: 6.231 },
-    JuCase { strike: 35.0, t: 0.0833, vol: 0.40, expected: 0.247 },
-    JuCase { strike: 35.0, t: 0.3333, vol: 0.40, expected: 1.344 },
-    JuCase { strike: 35.0, t: 0.5833, vol: 0.40, expected: 2.150 },
-    JuCase { strike: 40.0, t: 0.0833, vol: 0.40, expected: 1.767 },
-    JuCase { strike: 40.0, t: 0.3333, vol: 0.40, expected: 3.381 },
-    JuCase { strike: 40.0, t: 0.5833, vol: 0.40, expected: 4.342 },
-    JuCase { strike: 45.0, t: 0.0833, vol: 0.40, expected: 5.288 },
-    JuCase { strike: 45.0, t: 0.3333, vol: 0.40, expected: 6.501 },
-    JuCase { strike: 45.0, t: 0.5833, vol: 0.40, expected: 7.367 },
+    JuCase {
+        strike: 35.0,
+        t: 0.0833,
+        vol: 0.20,
+        expected: 0.006,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.3333,
+        vol: 0.20,
+        expected: 0.201,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.5833,
+        vol: 0.20,
+        expected: 0.433,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.0833,
+        vol: 0.20,
+        expected: 0.851,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.3333,
+        vol: 0.20,
+        expected: 1.576,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.5833,
+        vol: 0.20,
+        expected: 1.984,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.0833,
+        vol: 0.20,
+        expected: 5.000,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.3333,
+        vol: 0.20,
+        expected: 5.084,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.5833,
+        vol: 0.20,
+        expected: 5.260,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.0833,
+        vol: 0.30,
+        expected: 0.078,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.3333,
+        vol: 0.30,
+        expected: 0.697,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.5833,
+        vol: 0.30,
+        expected: 1.218,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.0833,
+        vol: 0.30,
+        expected: 1.309,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.3333,
+        vol: 0.30,
+        expected: 2.477,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.5833,
+        vol: 0.30,
+        expected: 3.161,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.0833,
+        vol: 0.30,
+        expected: 5.059,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.3333,
+        vol: 0.30,
+        expected: 5.699,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.5833,
+        vol: 0.30,
+        expected: 6.231,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.0833,
+        vol: 0.40,
+        expected: 0.247,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.3333,
+        vol: 0.40,
+        expected: 1.344,
+    },
+    JuCase {
+        strike: 35.0,
+        t: 0.5833,
+        vol: 0.40,
+        expected: 2.150,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.0833,
+        vol: 0.40,
+        expected: 1.767,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.3333,
+        vol: 0.40,
+        expected: 3.381,
+    },
+    JuCase {
+        strike: 40.0,
+        t: 0.5833,
+        vol: 0.40,
+        expected: 4.342,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.0833,
+        vol: 0.40,
+        expected: 5.288,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.3333,
+        vol: 0.40,
+        expected: 6.501,
+    },
+    JuCase {
+        strike: 45.0,
+        t: 0.5833,
+        vol: 0.40,
+        expected: 7.367,
+    },
 ];
 
 #[test]
@@ -194,7 +569,10 @@ fn ju_american_puts() {
         assert!(
             err < 0.15,
             "Ju put #{i}: K={}, T={}, vol={}: got {price}, expected {}, err={err}",
-            case.strike, case.t, case.vol, case.expected
+            case.strike,
+            case.t,
+            case.vol,
+            case.expected
         );
     }
 }

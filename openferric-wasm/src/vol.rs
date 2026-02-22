@@ -309,7 +309,13 @@ mod tests {
 
     #[test]
     fn svi_total_variance_atm() {
-        let params = WasmSviParams { a: 0.04, b: 0.1, rho: 0.0, m: 0.0, sigma: 0.1 };
+        let params = WasmSviParams {
+            a: 0.04,
+            b: 0.1,
+            rho: 0.0,
+            m: 0.0,
+            sigma: 0.1,
+        };
         let tv = params.total_variance(0.0); // k=0 (ATM)
         let expected = 0.04 + 0.1 * 0.1; // a + b*sigma when rho=0, k=m=0
         assert!((tv - expected).abs() < 1e-10);
@@ -317,7 +323,13 @@ mod tests {
 
     #[test]
     fn svi_total_variance_positive_wings() {
-        let params = WasmSviParams { a: 0.04, b: 0.1, rho: -0.2, m: 0.0, sigma: 0.1 };
+        let params = WasmSviParams {
+            a: 0.04,
+            b: 0.1,
+            rho: -0.2,
+            m: 0.0,
+            sigma: 0.1,
+        };
         let tv_low = params.total_variance(-0.3);
         let tv_high = params.total_variance(0.3);
         assert!(tv_low > 0.0);
@@ -326,7 +338,13 @@ mod tests {
 
     #[test]
     fn svi_dw_dk_finite() {
-        let params = WasmSviParams { a: 0.04, b: 0.1, rho: -0.2, m: 0.0, sigma: 0.1 };
+        let params = WasmSviParams {
+            a: 0.04,
+            b: 0.1,
+            rho: -0.2,
+            m: 0.0,
+            sigma: 0.1,
+        };
         let dw = params.dw_dk(0.0);
         assert!(dw.is_finite());
     }
@@ -340,7 +358,13 @@ mod tests {
         let rho_true = -0.2;
         let m_true = 0.0;
         let sigma_true = 0.1;
-        let svi = SviParams { a: a_true, b: b_true, rho: rho_true, m: m_true, sigma: sigma_true };
+        let svi = SviParams {
+            a: a_true,
+            b: b_true,
+            rho: rho_true,
+            m: m_true,
+            sigma: sigma_true,
+        };
         let mut points_flat = Vec::new();
         for k in (-5..=5).map(|i| i as f64 * 0.05) {
             let tv = svi.total_variance(k);

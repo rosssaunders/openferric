@@ -19,11 +19,11 @@ use openferric::rates::{YieldCurve, YieldCurveBuilder};
 fn yield_curve_from_deposits_discount_factors() {
     // Typical USD deposit rates (simplified from QuantLib test setup)
     let deposits = vec![
-        (1.0 / 52.0, 0.0525),   // 1W
-        (1.0 / 12.0, 0.0530),   // 1M
-        (3.0 / 12.0, 0.0545),   // 3M
-        (6.0 / 12.0, 0.0560),   // 6M
-        (9.0 / 12.0, 0.0570),   // 9M
+        (1.0 / 52.0, 0.0525), // 1W
+        (1.0 / 12.0, 0.0530), // 1M
+        (3.0 / 12.0, 0.0545), // 3M
+        (6.0 / 12.0, 0.0560), // 6M
+        (9.0 / 12.0, 0.0570), // 9M
     ];
 
     let curve = YieldCurveBuilder::from_deposits(&deposits);
@@ -32,11 +32,7 @@ fn yield_curve_from_deposits_discount_factors() {
     for &(tenor, rate) in &deposits {
         let expected_df = 1.0 / (1.0 + rate * tenor);
         let actual_df = curve.discount_factor(tenor);
-        assert_relative_eq!(
-            actual_df,
-            expected_df,
-            epsilon = 1.0e-10,
-        );
+        assert_relative_eq!(actual_df, expected_df, epsilon = 1.0e-10,);
     }
 
     // DF(0) = 1
@@ -58,11 +54,7 @@ fn yield_curve_from_deposits_discount_factors() {
 /// discount factors (monotonically decreasing, between neighboring pillars).
 #[test]
 fn yield_curve_deposits_interpolation() {
-    let deposits = vec![
-        (0.25, 0.05),
-        (0.50, 0.055),
-        (1.00, 0.06),
-    ];
+    let deposits = vec![(0.25, 0.05), (0.50, 0.055), (1.00, 0.06)];
 
     let curve = YieldCurveBuilder::from_deposits(&deposits);
 
@@ -71,8 +63,10 @@ fn yield_curve_deposits_interpolation() {
     let df_0_375 = curve.discount_factor(0.375);
     let df_0_50 = curve.discount_factor(0.50);
 
-    assert!(df_0_375 < df_0_25 && df_0_375 > df_0_50,
-        "Interpolated DF must be between neighbors");
+    assert!(
+        df_0_375 < df_0_25 && df_0_375 > df_0_50,
+        "Interpolated DF must be between neighbors"
+    );
 
     // Zero rate should be sensible
     let z = curve.zero_rate(0.375);
@@ -143,17 +137,11 @@ fn yield_curve_swap_bootstrap_recovers_par_rates() {
 
     for &(tenor, expected_rate) in &swap_rates {
         let n = tenor as usize;
-        let annuity: f64 = (1..=n)
-            .map(|i| curve.discount_factor(i as f64))
-            .sum();
+        let annuity: f64 = (1..=n).map(|i| curve.discount_factor(i as f64)).sum();
         let df_n = curve.discount_factor(tenor);
         let par_rate = (1.0 - df_n) / annuity;
 
-        assert_relative_eq!(
-            par_rate,
-            expected_rate,
-            epsilon = 1.0e-4,
-        );
+        assert_relative_eq!(par_rate, expected_rate, epsilon = 1.0e-4,);
     }
 }
 
@@ -163,12 +151,7 @@ fn yield_curve_swap_bootstrap_recovers_par_rates() {
 /// DF(t2) = DF(t1) * exp(-f * (t2 - t1)) where f is the forward rate.
 #[test]
 fn yield_curve_forward_rate_consistency() {
-    let deposits = vec![
-        (0.25, 0.05),
-        (0.50, 0.055),
-        (1.00, 0.06),
-        (2.00, 0.065),
-    ];
+    let deposits = vec![(0.25, 0.05), (0.50, 0.055), (1.00, 0.06), (2.00, 0.065)];
     let curve = YieldCurveBuilder::from_deposits(&deposits);
 
     let pairs = [(0.1, 0.5), (0.25, 1.0), (0.5, 2.0), (0.1, 2.0)];
@@ -179,11 +162,7 @@ fn yield_curve_forward_rate_consistency() {
         let df2 = curve.discount_factor(t2);
         let expected_df2 = df1 * (-(fwd) * (t2 - t1)).exp();
 
-        assert_relative_eq!(
-            df2,
-            expected_df2,
-            epsilon = 1.0e-10,
-        );
+        assert_relative_eq!(df2, expected_df2, epsilon = 1.0e-10,);
     }
 }
 
@@ -209,7 +188,10 @@ fn yield_curve_forward_rates_positive() {
 
     for &(t1, t2) in &pairs {
         let fwd = curve.forward_rate(t1, t2);
-        assert!(fwd > 0.0, "Forward rate must be positive: f({t1},{t2}) = {fwd}");
+        assert!(
+            fwd > 0.0,
+            "Forward rate must be positive: f({t1},{t2}) = {fwd}"
+        );
     }
 }
 
@@ -219,12 +201,7 @@ fn yield_curve_forward_rates_positive() {
 /// DF(t) = exp(-z * t), z = -ln(DF(t)) / t
 #[test]
 fn yield_curve_zero_rate_discount_factor_consistency() {
-    let swap_rates = vec![
-        (1.0, 0.05),
-        (2.0, 0.052),
-        (5.0, 0.055),
-        (10.0, 0.058),
-    ];
+    let swap_rates = vec![(1.0, 0.05), (2.0, 0.052), (5.0, 0.055), (10.0, 0.058)];
     let curve = YieldCurveBuilder::from_swap_rates(&swap_rates, 1);
 
     for t in [0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0] {
@@ -232,11 +209,7 @@ fn yield_curve_zero_rate_discount_factor_consistency() {
         let df = curve.discount_factor(t);
         let expected_df = (-z * t).exp();
 
-        assert_relative_eq!(
-            df,
-            expected_df,
-            epsilon = 1.0e-12,
-        );
+        assert_relative_eq!(df, expected_df, epsilon = 1.0e-12,);
     }
 }
 
@@ -269,10 +242,7 @@ fn yield_curve_flat_constant_rates() {
 /// (flat extrapolation of the last zero rate).
 #[test]
 fn yield_curve_extrapolation_beyond_last_pillar() {
-    let deposits = vec![
-        (1.0, 0.05),
-        (2.0, 0.055),
-    ];
+    let deposits = vec![(1.0, 0.05), (2.0, 0.055)];
     let curve = YieldCurveBuilder::from_deposits(&deposits);
 
     // DF at 3Y (extrapolated) should still be positive and less than DF at 2Y
@@ -287,11 +257,7 @@ fn yield_curve_extrapolation_beyond_last_pillar() {
 /// Bootstrap with semi-annual frequency should also produce consistent par rates.
 #[test]
 fn yield_curve_swap_bootstrap_semiannual() {
-    let swap_rates = vec![
-        (1.0, 0.050),
-        (2.0, 0.052),
-        (5.0, 0.056),
-    ];
+    let swap_rates = vec![(1.0, 0.050), (2.0, 0.052), (5.0, 0.056)];
 
     let curve = YieldCurveBuilder::from_swap_rates(&swap_rates, 2);
 

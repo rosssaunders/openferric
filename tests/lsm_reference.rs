@@ -29,30 +29,150 @@ struct LsmAmericanPutCase {
 fn longstaff_schwartz_table1_cases() -> Vec<LsmAmericanPutCase> {
     vec![
         // S=36
-        LsmAmericanPutCase { spot: 36.0, sigma: 0.20, expiry: 1.0, expected: 4.474, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 36.0, sigma: 0.20, expiry: 2.0, expected: 4.831, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 36.0, sigma: 0.40, expiry: 1.0, expected: 7.081, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 36.0, sigma: 0.40, expiry: 2.0, expected: 8.480, tolerance: 0.10 },
+        LsmAmericanPutCase {
+            spot: 36.0,
+            sigma: 0.20,
+            expiry: 1.0,
+            expected: 4.474,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 36.0,
+            sigma: 0.20,
+            expiry: 2.0,
+            expected: 4.831,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 36.0,
+            sigma: 0.40,
+            expiry: 1.0,
+            expected: 7.081,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 36.0,
+            sigma: 0.40,
+            expiry: 2.0,
+            expected: 8.480,
+            tolerance: 0.10,
+        },
         // S=38
-        LsmAmericanPutCase { spot: 38.0, sigma: 0.20, expiry: 1.0, expected: 3.242, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 38.0, sigma: 0.20, expiry: 2.0, expected: 3.746, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 38.0, sigma: 0.40, expiry: 1.0, expected: 6.141, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 38.0, sigma: 0.40, expiry: 2.0, expected: 7.647, tolerance: 0.10 },
+        LsmAmericanPutCase {
+            spot: 38.0,
+            sigma: 0.20,
+            expiry: 1.0,
+            expected: 3.242,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 38.0,
+            sigma: 0.20,
+            expiry: 2.0,
+            expected: 3.746,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 38.0,
+            sigma: 0.40,
+            expiry: 1.0,
+            expected: 6.141,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 38.0,
+            sigma: 0.40,
+            expiry: 2.0,
+            expected: 7.647,
+            tolerance: 0.10,
+        },
         // S=40 (ATM)
-        LsmAmericanPutCase { spot: 40.0, sigma: 0.20, expiry: 1.0, expected: 2.319, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 40.0, sigma: 0.20, expiry: 2.0, expected: 2.875, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 40.0, sigma: 0.40, expiry: 1.0, expected: 5.318, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 40.0, sigma: 0.40, expiry: 2.0, expected: 6.912, tolerance: 0.10 },
+        LsmAmericanPutCase {
+            spot: 40.0,
+            sigma: 0.20,
+            expiry: 1.0,
+            expected: 2.319,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 40.0,
+            sigma: 0.20,
+            expiry: 2.0,
+            expected: 2.875,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 40.0,
+            sigma: 0.40,
+            expiry: 1.0,
+            expected: 5.318,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 40.0,
+            sigma: 0.40,
+            expiry: 2.0,
+            expected: 6.912,
+            tolerance: 0.10,
+        },
         // S=42
-        LsmAmericanPutCase { spot: 42.0, sigma: 0.20, expiry: 1.0, expected: 1.615, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 42.0, sigma: 0.20, expiry: 2.0, expected: 2.216, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 42.0, sigma: 0.40, expiry: 1.0, expected: 4.586, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 42.0, sigma: 0.40, expiry: 2.0, expected: 6.241, tolerance: 0.10 },
+        LsmAmericanPutCase {
+            spot: 42.0,
+            sigma: 0.20,
+            expiry: 1.0,
+            expected: 1.615,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 42.0,
+            sigma: 0.20,
+            expiry: 2.0,
+            expected: 2.216,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 42.0,
+            sigma: 0.40,
+            expiry: 1.0,
+            expected: 4.586,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 42.0,
+            sigma: 0.40,
+            expiry: 2.0,
+            expected: 6.241,
+            tolerance: 0.10,
+        },
         // S=44
-        LsmAmericanPutCase { spot: 44.0, sigma: 0.20, expiry: 1.0, expected: 1.100, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 44.0, sigma: 0.20, expiry: 2.0, expected: 1.678, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 44.0, sigma: 0.40, expiry: 1.0, expected: 3.942, tolerance: 0.10 },
-        LsmAmericanPutCase { spot: 44.0, sigma: 0.40, expiry: 2.0, expected: 5.642, tolerance: 0.10 },
+        LsmAmericanPutCase {
+            spot: 44.0,
+            sigma: 0.20,
+            expiry: 1.0,
+            expected: 1.100,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 44.0,
+            sigma: 0.20,
+            expiry: 2.0,
+            expected: 1.678,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 44.0,
+            sigma: 0.40,
+            expiry: 1.0,
+            expected: 3.942,
+            tolerance: 0.10,
+        },
+        LsmAmericanPutCase {
+            spot: 44.0,
+            sigma: 0.40,
+            expiry: 2.0,
+            expected: 5.642,
+            tolerance: 0.10,
+        },
     ]
 }
 
@@ -87,7 +207,12 @@ fn test_lsm_longstaff_schwartz_table1_american_put() {
         assert!(
             error <= c.tolerance,
             "LSM Table 1 case {i}: S={} sigma={} T={} expected={} got={:.4} err={:.4}",
-            c.spot, c.sigma, c.expiry, c.expected, result.price, error
+            c.spot,
+            c.sigma,
+            c.expiry,
+            c.expected,
+            result.price,
+            error
         );
     }
 
@@ -140,7 +265,11 @@ fn test_lsm_american_put_geq_european_put() {
             american_result.price >= european_result.price - 0.15,
             "American put should be >= European put: S={} sigma={} T={} \
              american={:.4} european={:.4}",
-            spot, sigma, expiry, american_result.price, european_result.price
+            spot,
+            sigma,
+            expiry,
+            american_result.price,
+            european_result.price
         );
     }
 
@@ -185,7 +314,9 @@ fn test_lsm_put_price_increases_with_volatility() {
         assert!(
             price_high > price_low,
             "Put price should increase with vol: S={} low_vol_price={:.4} high_vol_price={:.4}",
-            spot, price_low, price_high
+            spot,
+            price_low,
+            price_high
         );
     }
 
@@ -225,7 +356,9 @@ fn test_lsm_put_price_increases_as_spot_decreases() {
             assert!(
                 price > prev_price - 0.05, // small MC tolerance
                 "Put price should increase as spot decreases: S={} price={:.4} prev_price={:.4}",
-                spot, price, prev_price
+                spot,
+                price,
+                prev_price
             );
         }
         prev_price = price;
@@ -266,7 +399,10 @@ fn test_lsm_american_put_price_increases_with_maturity() {
             price_2y > price_1y - 0.10, // MC noise margin
             "American put price should increase with maturity: S={} sigma={} \
              price_1y={:.4} price_2y={:.4}",
-            spot, sigma, price_1y, price_2y
+            spot,
+            sigma,
+            price_1y,
+            price_2y
         );
     }
 
@@ -304,7 +440,9 @@ fn test_lsm_convergence_toward_bjerksund_stensland() {
     assert!(
         error <= tolerance,
         "LSM should converge toward Bjerksund-Stensland: expected={} got={:.4} err={:.4}",
-        reference, result.price, error
+        reference,
+        result.price,
+        error
     );
 
     // Verify stderr is reported
@@ -362,7 +500,8 @@ fn test_lsm_barrier_knockout_leq_plain() {
     assert!(
         barrier_price <= vanilla_price + 0.15, // small MC noise margin
         "Knock-out should be <= plain: vanilla={:.4} barrier={:.4}",
-        vanilla_price, barrier_price
+        vanilla_price,
+        barrier_price
     );
 
     println!(
@@ -429,7 +568,11 @@ fn test_lsm_barrier_knockin_plus_knockout_approx_plain() {
     assert!(
         error <= 0.50,
         "KI + KO should approximate plain: ki={:.4} + ko={:.4} = {:.4} vs plain={:.4} err={:.4}",
-        ki_price, ko_price, combined, plain_price, error
+        ki_price,
+        ko_price,
+        combined,
+        plain_price,
+        error
     );
 
     println!(
@@ -466,10 +609,7 @@ fn test_lsm_diagnostics_populated() {
         diag.get("num_steps").is_some(),
         "diagnostics should contain num_steps"
     );
-    assert!(
-        diag.get("vol").is_some(),
-        "diagnostics should contain vol"
-    );
+    assert!(diag.get("vol").is_some(), "diagnostics should contain vol");
 
     assert_eq!(*diag.get("num_paths").unwrap(), 10_000.0);
     assert_eq!(*diag.get("num_steps").unwrap(), 20.0);
@@ -501,7 +641,8 @@ fn test_lsm_seed_reproducibility() {
     assert!(
         (result1.price - result2.price).abs() < 1e-12,
         "Same seed should produce identical prices: {} vs {}",
-        result1.price, result2.price
+        result1.price,
+        result2.price
     );
 
     println!("Seed reproducibility test passed");
@@ -543,7 +684,9 @@ fn test_lsm_american_call_no_dividend_approx_european() {
     assert!(
         diff < 0.50,
         "American call (q=0) should be close to European: am={:.4} eu={:.4} diff={:.4}",
-        am_price, eu_price, diff
+        am_price,
+        eu_price,
+        diff
     );
 
     println!(

@@ -18,7 +18,7 @@ use crate::core::{
 use crate::instruments::{BarrierOption, VanillaOption};
 use crate::market::Market;
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
-use crate::math::fast_rng::{uniform_open01, Xoshiro256PlusPlus};
+use crate::math::fast_rng::{Xoshiro256PlusPlus, uniform_open01};
 
 /// Longstaff-Schwartz least-squares Monte Carlo engine.
 #[derive(Debug, Clone)]
@@ -165,7 +165,13 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         }
 
         let mut values: Vec<f64> = (0..self.num_paths)
-            .map(|pi| intrinsic(instrument.option_type, paths[pi * stride + self.num_steps], instrument.strike))
+            .map(|pi| {
+                intrinsic(
+                    instrument.option_type,
+                    paths[pi * stride + self.num_steps],
+                    instrument.strike,
+                )
+            })
             .collect();
 
         let mut can_exercise = vec![false; self.num_steps + 1];
@@ -199,7 +205,11 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
 
             let itm: Vec<usize> = (0..self.num_paths)
                 .filter(|&idx| {
-                    intrinsic(instrument.option_type, paths[idx * stride + ti], instrument.strike) > 0.0
+                    intrinsic(
+                        instrument.option_type,
+                        paths[idx * stride + ti],
+                        instrument.strike,
+                    ) > 0.0
                 })
                 .collect();
 
@@ -232,11 +242,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 s_s2y += s2 * y;
             }
             let _ = n_itm;
-            let xtx = Matrix3::new(
-                s1,   s_s,  s_s2,
-                s_s,  s_s2, s_s3,
-                s_s2, s_s3, s_s4,
-            );
+            let xtx = Matrix3::new(s1, s_s, s_s2, s_s, s_s2, s_s3, s_s2, s_s3, s_s4);
             let xty = Vector3::new(s_y, s_sy, s_s2y);
             let beta = xtx.lu().solve(&xty).unwrap_or(Vector3::zeros());
 
@@ -319,7 +325,10 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
             if use_simd {
                 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
                 unsafe {
-                    crate::math::simd_math::fill_normals_simd(&mut rng, &mut normal_buf[..self.num_steps]);
+                    crate::math::simd_math::fill_normals_simd(
+                        &mut rng,
+                        &mut normal_buf[..self.num_steps],
+                    );
                 }
                 for ti in 0..self.num_steps {
                     path[ti + 1] = path[ti] * step_vol.mul_add(normal_buf[ti], drift).exp();

@@ -6,9 +6,7 @@
 //! These values are independent of QuantLib and serve as cross-validation
 //! for the FFT-based Heston pricer.
 
-use openferric::engines::fft::{
-    CarrMadanParams, HestonCharFn, carr_madan_fft_strikes,
-};
+use openferric::engines::fft::{CarrMadanParams, HestonCharFn, carr_madan_fft_strikes};
 
 /// Fang-Oosterlee Heston parameter set (Equation 53 of the paper).
 /// This set VIOLATES the Feller condition: 2*kappa*theta = 0.1255 < sigma_v^2 = 0.3307.
@@ -22,7 +20,9 @@ const SIGMA_V: f64 = 0.5751;
 const RHO: f64 = -0.5711;
 
 fn heston_call_price(strike: f64, maturity: f64) -> f64 {
-    let cf = HestonCharFn::new(SPOT, RATE, DIVIDEND, maturity, V0, KAPPA, THETA, SIGMA_V, RHO);
+    let cf = HestonCharFn::new(
+        SPOT, RATE, DIVIDEND, maturity, V0, KAPPA, THETA, SIGMA_V, RHO,
+    );
     let params = CarrMadanParams::high_resolution();
     let prices = carr_madan_fft_strikes(&cf, RATE, maturity, SPOT, &[strike], params)
         .expect("FFT pricing failed");
@@ -61,7 +61,7 @@ fn fang_oosterlee_heston_t10_k100() {
 // GBM reference (Table 2): S0=100, r=0.1, sigma=0.25, T=0.1
 // Three strikes: K=80 -> 20.799226309, K=100 -> 3.659968453, K=120 -> 0.044577814
 // -----------------------------------------------------------------------
-use openferric::engines::fft::{BlackScholesCharFn};
+use openferric::engines::fft::BlackScholesCharFn;
 
 fn gbm_call_price(spot: f64, rate: f64, vol: f64, maturity: f64, strike: f64) -> f64 {
     let cf = BlackScholesCharFn::new(spot, rate, 0.0, vol, maturity);
@@ -153,8 +153,8 @@ fn cgmy_call_price(y: f64) -> f64 {
     let cf = CgmyCharFn::risk_neutral(100.0, 0.1, 0.0, 1.0, 1.0, 5.0, 5.0, y)
         .expect("CGMY construction failed");
     let params = CarrMadanParams::high_resolution();
-    let prices = carr_madan_fft_strikes(&cf, 0.1, 1.0, 100.0, &[100.0], params)
-        .expect("FFT pricing failed");
+    let prices =
+        carr_madan_fft_strikes(&cf, 0.1, 1.0, 100.0, &[100.0], params).expect("FFT pricing failed");
     prices[0].1
 }
 

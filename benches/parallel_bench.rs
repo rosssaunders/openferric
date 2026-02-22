@@ -1,7 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use openferric::core::OptionType;
 use openferric::core::PricingEngine;
-use openferric::pricing::european::black_scholes_price;
 use openferric::engines::monte_carlo::{
     MonteCarloPricingEngine, mc_european_parallel, mc_european_qmc_with_seed,
     mc_european_sequential, mc_greeks_grid_parallel, mc_greeks_grid_sequential,
@@ -10,6 +9,7 @@ use openferric::instruments::VanillaOption;
 use openferric::market::Market;
 use openferric::math::fast_norm::fast_norm_cdf;
 use openferric::math::fast_rng::{FastRngKind, Pcg64Rng, Xoshiro256Rng};
+use openferric::pricing::european::black_scholes_price;
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
 use rayon::ThreadPoolBuilder;

@@ -51,15 +51,14 @@ fn ois_cached_value_flat_curve_at_par() {
 
     // Both PVs should be positive
     assert!(fixed_pv > 0.0, "Fixed leg PV must be positive: {fixed_pv}");
-    assert!(floating_pv > 0.0, "Floating leg PV must be positive: {floating_pv}");
+    assert!(
+        floating_pv > 0.0,
+        "Floating leg PV must be positive: {floating_pv}"
+    );
 
     // NPV (pay fixed) should be approximately zero for at-par swap
     let npv = ois.npv(&curve, &curve, true);
-    assert_relative_eq!(
-        npv,
-        0.0,
-        epsilon = 0.01,
-    );
+    assert_relative_eq!(npv, 0.0, epsilon = 0.01,);
 }
 
 /// Reference: QuantLib overnightindexedswap.cpp testCachedValue.
@@ -109,11 +108,7 @@ fn ois_par_rate_flat_curve() {
         };
 
         let par = ois.par_fixed_rate(&curve, &curve);
-        assert_relative_eq!(
-            par,
-            rate,
-            epsilon = 1.0e-6,
-        );
+        assert_relative_eq!(par, rate, epsilon = 1.0e-6,);
     }
 }
 
@@ -143,11 +138,7 @@ fn ois_par_rate_with_spread() {
 
     // Spread on float leg should increase par fixed rate by approximately
     // the same amount
-    assert_relative_eq!(
-        par_with_spread - par_no_spread,
-        spread,
-        epsilon = 1.0e-6,
-    );
+    assert_relative_eq!(par_with_spread - par_no_spread, spread, epsilon = 1.0e-6,);
 }
 
 // ── Notional and tenor dependence ───────────────────────────────────────────

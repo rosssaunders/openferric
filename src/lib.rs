@@ -91,6 +91,7 @@
 //! assert!(var_95 >= 0.0);
 //! ```
 
+pub mod calibration;
 pub mod core;
 pub mod credit;
 pub mod engines;
@@ -110,6 +111,7 @@ pub mod pricing;
 /// Common imports for ergonomic usage.
 #[allow(ambiguous_glob_reexports)]
 pub mod prelude {
+    pub use crate::calibration::*;
     pub use crate::core::*;
     pub use crate::credit::*;
     pub use crate::engines::analytic::*;
