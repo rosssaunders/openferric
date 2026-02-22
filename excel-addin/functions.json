@@ -3,7 +3,7 @@
   "functions": [
     {
       "id": "BS_PRICE",
-      "name": "OPENFERRIC.BS_PRICE",
+      "name": "BS_PRICE",
       "description": "Black-Scholes European option price",
       "parameters": [
         {"name": "spot", "type": "number", "description": "Spot price"},
@@ -18,7 +18,7 @@
     },
     {
       "id": "BS_IMPLIED_VOL",
-      "name": "OPENFERRIC.BS_IMPLIED_VOL",
+      "name": "BS_IMPLIED_VOL",
       "description": "Black-Scholes implied volatility",
       "parameters": [
         {"name": "price", "type": "number", "description": "Option market price"},
@@ -33,7 +33,7 @@
     },
     {
       "id": "BS_GREEKS",
-      "name": "OPENFERRIC.BS_GREEKS",
+      "name": "BS_GREEKS",
       "description": "BSM Greeks: delta, gamma, vega, theta, rho, vanna, volga",
       "parameters": [
         {"name": "spot", "type": "number"},
@@ -48,7 +48,7 @@
     },
     {
       "id": "HESTON_PRICE",
-      "name": "OPENFERRIC.HESTON_PRICE",
+      "name": "HESTON_PRICE",
       "description": "Heston stochastic volatility European option price",
       "parameters": [
         {"name": "spot", "type": "number"},
@@ -67,7 +67,7 @@
     },
     {
       "id": "BARRIER_PRICE",
-      "name": "OPENFERRIC.BARRIER_PRICE",
+      "name": "BARRIER_PRICE",
       "description": "Barrier option price (up-in, up-out, down-in, down-out)",
       "parameters": [
         {"name": "spot", "type": "number"},
@@ -84,7 +84,7 @@
     },
     {
       "id": "BOND_PRICE",
-      "name": "OPENFERRIC.BOND_PRICE",
+      "name": "BOND_PRICE",
       "description": "Fixed-rate bond price (flat yield)",
       "parameters": [
         {"name": "face_value", "type": "number"},
@@ -97,7 +97,7 @@
     },
     {
       "id": "CDS_SPREAD",
-      "name": "OPENFERRIC.CDS_SPREAD",
+      "name": "CDS_SPREAD",
       "description": "CDS fair spread from flat hazard rate",
       "parameters": [
         {"name": "notional", "type": "number"},
@@ -110,7 +110,7 @@
     },
     {
       "id": "VAR",
-      "name": "OPENFERRIC.VAR",
+      "name": "VAR",
       "description": "Historical Value-at-Risk",
       "parameters": [
         {"name": "returns", "type": "number", "dimensionality": "matrix"},
@@ -120,7 +120,7 @@
     },
     {
       "id": "SABR_VOL",
-      "name": "OPENFERRIC.SABR_VOL",
+      "name": "SABR_VOL",
       "description": "SABR implied volatility",
       "parameters": [
         {"name": "forward", "type": "number"},
