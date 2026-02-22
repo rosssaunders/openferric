@@ -65,6 +65,10 @@ harness = false
 name = "fft_bench"
 harness = false
 
+[[bench]]
+name = "aad_bench"
+harness = false
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

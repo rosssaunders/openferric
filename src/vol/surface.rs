@@ -1,4 +1,5 @@
 use crate::math::CubicSpline;
+use crate::math::Tape;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SviParams {
@@ -229,6 +230,97 @@ impl VolSurface {
         let t = expiry.max(1e-10);
         (self.total_variance(strike, t) / t).sqrt()
     }
+
+    /// Returns implied vol and AAD sensitivities to input slice vols at the same strike.
+    ///
+    /// The inputs are interpreted as one vol quote per expiry slice (`d vol(t*) / d vol_i`).
+    /// For robust and transparent sensitivities this method interpolates in total variance
+    /// using a linear-in-time rule.
+    pub fn vol_with_input_vol_sensitivities_aad(
+        &self,
+        strike: f64,
+        expiry: f64,
+    ) -> (f64, Vec<(f64, f64)>) {
+        if self.expiries.is_empty() {
+            return (f64::NAN, Vec::new());
+        }
+
+        let mut tape = Tape::with_capacity(self.expiries.len() * 8 + 24);
+        let mut vol_inputs = Vec::with_capacity(self.expiries.len());
+        for &t in &self.expiries {
+            vol_inputs.push(tape.input(self.vol(strike, t)));
+        }
+
+        let t_query = expiry.max(1e-10);
+        let mut total_vars = Vec::with_capacity(vol_inputs.len());
+        for (i, &v) in vol_inputs.iter().enumerate() {
+            let t = self.expiries[i];
+            let vv = tape.mul(v, v);
+            total_vars.push(tape.mul_const(vv, t));
+        }
+
+        let tv = if total_vars.len() == 1 {
+            total_vars[0]
+        } else if t_query <= self.expiries[0] {
+            linear_interp_var(
+                &mut tape,
+                self.expiries[0],
+                total_vars[0],
+                self.expiries[1],
+                total_vars[1],
+                t_query,
+            )
+        } else if t_query >= self.expiries[self.expiries.len() - 1] {
+            let n = self.expiries.len();
+            linear_interp_var(
+                &mut tape,
+                self.expiries[n - 2],
+                total_vars[n - 2],
+                self.expiries[n - 1],
+                total_vars[n - 1],
+                t_query,
+            )
+        } else {
+            let idx = self
+                .expiries
+                .windows(2)
+                .position(|w| t_query >= w[0] && t_query <= w[1])
+                .unwrap_or(self.expiries.len() - 2);
+            linear_interp_var(
+                &mut tape,
+                self.expiries[idx],
+                total_vars[idx],
+                self.expiries[idx + 1],
+                total_vars[idx + 1],
+                t_query,
+            )
+        };
+
+        let scaled = tape.mul_const(tv, 1.0 / t_query);
+        let vol = tape.sqrt(scaled);
+        let grad = tape.gradient(vol, &vol_inputs);
+        (
+            tape.value(vol),
+            self.expiries.iter().copied().zip(grad).collect::<Vec<_>>(),
+        )
+    }
+}
+
+fn linear_interp_var(
+    tape: &mut Tape,
+    t0: f64,
+    v0: crate::math::VarId,
+    t1: f64,
+    v1: crate::math::VarId,
+    t: f64,
+) -> crate::math::VarId {
+    if (t1 - t0).abs() <= f64::EPSILON {
+        return v1;
+    }
+    let w = (t - t0) / (t1 - t0);
+    let dv = tape.sub(v1, v0);
+    let wd = tape.mul_const(dv, w);
+    tape.add(v0, wd)
 }
 
 #[cfg(test)]
@@ -313,5 +405,38 @@ mod tests {
         assert!(v_mid > 0.0);
         assert!(v_long > 0.0);
         assert!(v_mid >= v_short * 0.7);
+    }
+
+    #[test]
+    fn input_vol_sensitivities_match_linear_total_variance_formula() {
+        let p1 = SviParams {
+            a: 0.01,
+            b: 0.12,
+            rho: -0.2,
+            m: 0.0,
+            sigma: 0.3,
+        };
+        let p2 = SviParams {
+            a: 0.02,
+            b: 0.14,
+            rho: -0.15,
+            m: 0.0,
+            sigma: 0.35,
+        };
+        let surface = VolSurface::new(vec![(0.5, p1), (1.5, p2)], 100.0).unwrap();
+
+        let strike = 100.0;
+        let expiry = 1.0;
+        let (vol, grad) = surface.vol_with_input_vol_sensitivities_aad(strike, expiry);
+
+        let v0 = surface.vol(strike, 0.5);
+        let v1 = surface.vol(strike, 1.5);
+        let w = (expiry - 0.5) / (1.5 - 0.5);
+        let expected_dv0 = ((1.0 - w) * v0 * 0.5) / (expiry * vol);
+        let expected_dv1 = (w * v1 * 1.5) / (expiry * vol);
+
+        assert_eq!(grad.len(), 2);
+        assert!((grad[0].1 - expected_dv0).abs() < 1e-10);
+        assert!((grad[1].1 - expected_dv1).abs() < 1e-10);
     }
 }

@@ -1,7 +1,10 @@
-use crate::core::{ExerciseStyle, Greeks, OptionType, PricingEngine, PricingError, PricingResult};
+use crate::core::{
+    AadPricingResult, AadSensitivity, ExerciseStyle, Greeks, OptionType, PricingEngine,
+    PricingError, PricingResult,
+};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
-use crate::math::{normal_cdf, normal_pdf};
+use crate::math::{Tape, VarId, normal_cdf, normal_pdf};
 
 /// Analytic Black-Scholes engine for European vanilla options.
 #[derive(Debug, Clone, Default)]
@@ -228,6 +231,67 @@ fn bs_price_greeks_with_dividend(
     )
 }
 
+fn bs_price_tape(
+    tape: &mut Tape,
+    option_type: OptionType,
+    spot: VarId,
+    strike: f64,
+    rate: VarId,
+    dividend_yield: VarId,
+    vol: VarId,
+    expiry: VarId,
+) -> VarId {
+    let sqrt_t = tape.sqrt(expiry);
+    let sig_sqrt_t = tape.mul(vol, sqrt_t);
+
+    let spot_over_strike = tape.mul_const(spot, 1.0 / strike);
+    let log_moneyness = tape.ln(spot_over_strike);
+
+    let vol_sq = tape.mul(vol, vol);
+    let half_vol_sq = tape.mul_const(vol_sq, 0.5);
+    let r_minus_q = tape.sub(rate, dividend_yield);
+    let carry = tape.add(r_minus_q, half_vol_sq);
+    let drift = tape.mul(carry, expiry);
+    let numerator = tape.add(log_moneyness, drift);
+    let d1 = tape.div(numerator, sig_sqrt_t);
+    let d2 = tape.sub(d1, sig_sqrt_t);
+
+    let rt = tape.mul(rate, expiry);
+    let neg_rt = tape.neg(rt);
+    let df_r = tape.exp(neg_rt);
+
+    let qt = tape.mul(dividend_yield, expiry);
+    let neg_qt = tape.neg(qt);
+    let df_q = tape.exp(neg_qt);
+
+    match option_type {
+        OptionType::Call => {
+            let nd1 = tape.normal_cdf(d1);
+            let nd2 = tape.normal_cdf(d2);
+
+            let spot_df_q = tape.mul(spot, df_q);
+            let left = tape.mul(spot_df_q, nd1);
+
+            let strike_df_r = tape.mul_const(df_r, strike);
+            let right = tape.mul(strike_df_r, nd2);
+            tape.sub(left, right)
+        }
+        OptionType::Put => {
+            let neg_d1 = tape.neg(d1);
+            let neg_d2 = tape.neg(d2);
+            let n_neg_d1 = tape.normal_cdf(neg_d1);
+            let n_neg_d2 = tape.normal_cdf(neg_d2);
+
+            let strike_df_r = tape.mul_const(df_r, strike);
+            let left = tape.mul(strike_df_r, n_neg_d2);
+
+            let spot_df_q = tape.mul(spot, df_q);
+            let right = tape.mul(spot_df_q, n_neg_d1);
+            tape.sub(left, right)
+        }
+    }
+}
+
 impl PricingEngine<VanillaOption> for BlackScholesEngine {
     fn price(
         &self,
@@ -286,6 +350,97 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             diagnostics,
         })
     }
+
+    fn price_with_greeks_aad(
+        &self,
+        instrument: &VanillaOption,
+        market: &Market,
+    ) -> Result<AadPricingResult, PricingError> {
+        instrument.validate()?;
+        if !matches!(instrument.exercise, ExerciseStyle::European) {
+            return Err(PricingError::InvalidInput(
+                "BlackScholesEngine supports European exercise only".to_string(),
+            ));
+        }
+
+        let vol = market.vol_for(instrument.strike, instrument.expiry);
+        if vol <= 0.0 {
+            return Err(PricingError::InvalidInput(
+                "market volatility must be > 0".to_string(),
+            ));
+        }
+        if instrument.expiry <= 0.0 {
+            return Ok(AadPricingResult {
+                price: intrinsic(instrument.option_type, market.spot, instrument.strike),
+                gradient: vec![
+                    AadSensitivity {
+                        factor: "spot".to_string(),
+                        value: 0.0,
+                    },
+                    AadSensitivity {
+                        factor: "rate".to_string(),
+                        value: 0.0,
+                    },
+                    AadSensitivity {
+                        factor: "dividend_yield".to_string(),
+                        value: 0.0,
+                    },
+                    AadSensitivity {
+                        factor: "vol".to_string(),
+                        value: 0.0,
+                    },
+                    AadSensitivity {
+                        factor: "expiry".to_string(),
+                        value: 0.0,
+                    },
+                ],
+            });
+        }
+
+        let mut tape = Tape::with_capacity(128);
+        let spot = tape.input(market.spot);
+        let rate = tape.input(market.rate);
+        let dividend = tape.input(market.dividend_yield);
+        let sigma = tape.input(vol);
+        let expiry = tape.input(instrument.expiry);
+        let price_node = bs_price_tape(
+            &mut tape,
+            instrument.option_type,
+            spot,
+            instrument.strike,
+            rate,
+            dividend,
+            sigma,
+            expiry,
+        );
+        let grads = tape.gradient(price_node, &[spot, rate, dividend, sigma, expiry]);
+
+        Ok(AadPricingResult {
+            price: tape.value(price_node),
+            gradient: vec![
+                AadSensitivity {
+                    factor: "spot".to_string(),
+                    value: grads[0],
+                },
+                AadSensitivity {
+                    factor: "rate".to_string(),
+                    value: grads[1],
+                },
+                AadSensitivity {
+                    factor: "dividend_yield".to_string(),
+                    value: grads[2],
+                },
+                AadSensitivity {
+                    factor: "vol".to_string(),
+                    value: grads[3],
+                },
+                AadSensitivity {
+                    factor: "expiry".to_string(),
+                    value: grads[4],
+                },
+            ],
+        })
+    }
 }
 
 /// One-liner convenience wrapper for Black-Scholes pricing.
@@ -311,4 +466,66 @@ pub fn black_scholes(
         .build()?;
     let engine = BlackScholesEngine::new();
     Ok(engine.price(&instrument, &market)?.price)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::greeks::black_scholes_merton_greeks;
+    use approx::assert_relative_eq;
+
+    fn grad(result: &AadPricingResult, factor: &str) -> f64 {
+        result
+            .gradient
+            .iter()
+            .find(|g| g.factor == factor)
+            .map(|g| g.value)
+            .unwrap()
+    }
+
+    #[test]
+    fn aad_matches_analytic_greeks_to_1e10() {
+        let option = VanillaOption {
+            option_type: OptionType::Call,
+            strike: 100.0,
+            expiry: 1.5,
+            exercise: ExerciseStyle::European,
+        };
+        let market = Market::builder()
+            .spot(110.0)
+            .rate(0.03)
+            .dividend_yield(0.01)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+
+        let engine = BlackScholesEngine::new();
+        let aad = engine.price_with_greeks_aad(&option, &market).unwrap();
+        let cf = black_scholes_merton_greeks(
+            option.option_type,
+            market.spot,
+            option.strike,
+            market.rate,
+            market.dividend_yield,
+            0.2,
+            option.expiry,
+        );
+
+        assert_relative_eq!(
+            aad.price,
+            bs_price(
+                option.option_type,
+                market.spot,
+                option.strike,
+                market.rate,
+                market.dividend_yield,
+                0.2,
+                option.expiry
+            ),
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(grad(&aad, "spot"), cf.delta, epsilon = 1e-10);
+        assert_relative_eq!(grad(&aad, "vol"), cf.vega, epsilon = 1e-10);
+        assert_relative_eq!(grad(&aad, "rate"), cf.rho, epsilon = 1e-10);
+    }
 }

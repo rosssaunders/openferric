@@ -1,5 +1,6 @@
 //! Monte Carlo pricing engines.
 
+pub mod mc_aad;
 pub mod mc_engine;
 pub mod mc_greeks;
 #[cfg(feature = "parallel")]
@@ -8,6 +9,7 @@ pub mod mc_qmc;
 pub mod mc_simd;
 pub mod spread_mc;
 
+pub use mc_aad::{HestonAadParams, MonteCarloAadEngine};
 pub use mc_engine::{
     ArithmeticAsianMC, MonteCarloInstrument, MonteCarloPricingEngine, VarianceReduction,
     mc_european_with_arena,

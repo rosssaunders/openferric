@@ -1,5 +1,6 @@
 use std::f64::consts::PI;
 
+pub mod aad;
 pub mod arena;
 pub mod fast_norm;
 pub mod fast_rng;
@@ -10,6 +11,7 @@ pub mod simd_math;
 pub mod simd_neon;
 pub mod sobol;
 
+pub use aad::{Dual, Tape, TapeCheckpoint, VarId, forward_sensitivity};
 pub use arena::PricingArena;
 pub use fast_norm::{
     beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,

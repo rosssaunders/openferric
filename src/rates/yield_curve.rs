@@ -1,3 +1,5 @@
+use crate::math::Tape;
+
 /// Discount-factor term structure keyed by maturity tenor in years.
 #[derive(Debug, Clone, PartialEq)]
 pub struct YieldCurve {
@@ -18,12 +20,45 @@ impl YieldCurve {
         discount_factor_from_points(&self.tenors, t)
     }
 
+    /// Returns discount factor and sensitivities with respect to input discount-factor nodes.
+    ///
+    /// The gradient vector is aligned to `self.tenors` order.
+    pub fn discount_factor_with_sensitivities_aad(&self, t: f64) -> (f64, Vec<f64>) {
+        if t <= 0.0 || self.tenors.is_empty() {
+            return (1.0, vec![0.0; self.tenors.len()]);
+        }
+
+        let mut tape = Tape::with_capacity(self.tenors.len() * 8 + 16);
+        let inputs: Vec<_> = self.tenors.iter().map(|(_, df)| tape.input(*df)).collect();
+
+        let out = discount_factor_from_points_aad(&mut tape, &self.tenors, &inputs, t);
+        let gradient = tape.gradient(out, &inputs);
+        (tape.value(out), gradient)
+    }
+
     /// Returns continuously-compounded zero rate at tenor `t`.
     pub fn zero_rate(&self, t: f64) -> f64 {
         if t <= 0.0 {
             return 0.0;
         }
         -self.discount_factor(t).ln() / t
+    }
+
+    /// Returns zero rate and sensitivities with respect to input discount-factor nodes.
+    ///
+    /// The gradient vector is aligned to `self.tenors` order.
+    pub fn zero_rate_with_sensitivities_aad(&self, t: f64) -> (f64, Vec<f64>) {
+        if t <= 0.0 || self.tenors.is_empty() {
+            return (0.0, vec![0.0; self.tenors.len()]);
+        }
+
+        let mut tape = Tape::with_capacity(self.tenors.len() * 8 + 24);
+        let inputs: Vec<_> = self.tenors.iter().map(|(_, df)| tape.input(*df)).collect();
+        let df = discount_factor_from_points_aad(&mut tape, &self.tenors, &inputs, t);
+        let ln_df = tape.ln(df);
+        let scaled = tape.mul_const(ln_df, -1.0 / t);
+        let gradient = tape.gradient(scaled, &inputs);
+        (tape.value(scaled), gradient)
     }
 
     /// Returns continuously-compounded forward rate between `t1` and `t2`.
@@ -119,10 +154,104 @@ fn discount_factor_from_points(points: &[(f64, f64)], t: f64) -> f64 {
     log_linear_df(left.0, left.1, right.0, right.1, t)
 }
 
+fn discount_factor_from_points_aad(
+    tape: &mut Tape,
+    points: &[(f64, f64)],
+    inputs: &[crate::math::VarId],
+    t: f64,
+) -> crate::math::VarId {
+    if t <= 0.0 || points.is_empty() {
+        return tape.constant(1.0);
+    }
+
+    let first = points[0];
+    if t <= first.0 {
+        let one = tape.constant(1.0);
+        return log_linear_df_aad(tape, 0.0, one, first.0, inputs[0], t);
+    }
+
+    for i in 1..points.len() {
+        if t <= points[i].0 {
+            return log_linear_df_aad(
+                tape,
+                points[i - 1].0,
+                inputs[i - 1],
+                points[i].0,
+                inputs[i],
+                t,
+            );
+        }
+    }
+
+    if points.len() == 1 {
+        let t1 = points[0].0;
+        let df1 = inputs[0];
+        let ln_df1 = tape.ln(df1);
+        let scale = tape.mul_const(ln_df1, -t / t1);
+        return tape.exp(scale);
+    }
+
+    let i = points.len() - 2;
+    log_linear_df_aad(
+        tape,
+        points[i].0,
+        inputs[i],
+        points[i + 1].0,
+        inputs[i + 1],
+        t,
+    )
+}
+
 fn log_linear_df(t1: f64, df1: f64, t2: f64, df2: f64, t: f64) -> f64 {
     if (t2 - t1).abs() <= f64::EPSILON {
         return df2;
     }
     let w = (t - t1) / (t2 - t1);
     (df1.ln() + w * (df2.ln() - df1.ln())).exp()
+}
+
+fn log_linear_df_aad(
+    tape: &mut Tape,
+    t1: f64,
+    df1: crate::math::VarId,
+    t2: f64,
+    df2: crate::math::VarId,
+    t: f64,
+) -> crate::math::VarId {
+    if (t2 - t1).abs() <= f64::EPSILON {
+        return df2;
+    }
+
+    let w = (t - t1) / (t2 - t1);
+    let ln_df1 = tape.ln(df1);
+    let ln_df2 = tape.ln(df2);
+    let dln = tape.sub(ln_df2, ln_df1);
+    let wdln = tape.mul_const(dln, w);
+    let ln_df = tape.add(ln_df1, wdln);
+    tape.exp(ln_df)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn discount_factor_aad_matches_finite_differences() {
+        let curve = YieldCurve::new(vec![(0.5, 0.99), (1.0, 0.965), (2.0, 0.91)]);
+        let t = 1.35;
+        let (df, grad) = curve.discount_factor_with_sensitivities_aad(t);
+
+        let bump = 1e-6;
+        for i in 0..curve.tenors.len() {
+            let mut up = curve.clone();
+            up.tenors[i].1 += bump;
+            let mut dn = curve.clone();
+            dn.tenors[i].1 -= bump;
+            let fd = (up.discount_factor(t) - dn.discount_factor(t)) / (2.0 * bump);
+            assert_relative_eq!(grad[i], fd, epsilon = 5e-8);
+        }
+
+        assert_relative_eq!(df, curve.discount_factor(t), epsilon = 1e-14);
+    }
 }

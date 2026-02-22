@@ -21,6 +21,24 @@ pub struct Greeks {
     pub rho: f64,
 }
 
+/// Named first-order sensitivity from AAD.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AadSensitivity {
+    /// Risk factor identifier.
+    pub factor: String,
+    /// Partial derivative with respect to `factor`.
+    pub value: f64,
+}
+
+/// AAD pricing payload: scalar price and gradient vector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AadPricingResult {
+    /// Present value.
+    pub price: f64,
+    /// Gradient entries keyed by risk factor name.
+    pub gradient: Vec<AadSensitivity>,
+}
+
 /// Common trait implemented by every priceable instrument.
 pub trait Instrument: std::fmt::Debug {
     /// Returns a short type identifier for diagnostics and bindings.
@@ -31,6 +49,21 @@ pub trait Instrument: std::fmt::Debug {
 pub trait PricingEngine<I: Instrument> {
     /// Prices an instrument under the provided market state.
     fn price(&self, instrument: &I, market: &Market) -> Result<PricingResult, PricingError>;
+
+    /// Prices and returns first-order sensitivities via AAD when available.
+    ///
+    /// Default implementation returns a valid price with an empty gradient.
+    fn price_with_greeks_aad(
+        &self,
+        instrument: &I,
+        market: &Market,
+    ) -> Result<AadPricingResult, PricingError> {
+        let result = self.price(instrument, market)?;
+        Ok(AadPricingResult {
+            price: result.price,
+            gradient: Vec::new(),
+        })
+    }
 }
 
 /// Compact key set for engine diagnostics.
