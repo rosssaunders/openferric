@@ -282,6 +282,85 @@
       border-radius: 4px;
       border: none;
     }
+    .mode-badge {
+      font-size: 10px;
+      font-family: var(--mono);
+      border-radius: 999px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .mode-badge.calibrated { color: var(--accent2); border-color: rgba(25,216,168,0.8); }
+    .mode-badge.manual { color: var(--warn); border-color: rgba(255,179,71,0.85); }
+    .mode-badge.hybrid { color: var(--accent); border-color: rgba(47,178,255,0.85); }
+
+    /* ---- Surface Config ---- */
+    .surfacecfg-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .surfacecfg-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px 8px;
+      font-size: 10px;
+      align-items: center;
+    }
+    .surfacecfg-grid label { color: var(--muted); text-transform: lowercase; }
+    .surfacecfg-grid select,
+    .surfacecfg-grid input[type="number"],
+    .surfacecfg-grid input[type="text"] {
+      width: 100%;
+      background: #0d141d;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+    .surfacecfg-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .surfacecfg-row .tab-btn {
+      font-size: 10px;
+      padding: 2px 6px;
+    }
+    .surfacecfg-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+    }
+    .surfacecfg-table th,
+    .surfacecfg-table td {
+      padding: 2px 0;
+      border-bottom: 1px solid rgba(142,161,184,0.1);
+      text-align: left;
+      font-family: var(--mono);
+    }
+    .surfacecfg-table th { color: var(--muted); font-weight: 500; }
+    .surfacecfg-table td:last-child { text-align: right; }
+    .surfacecfg-advanced {
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      padding: 5px;
+      background: rgba(0,0,0,0.2);
+    }
+    .surfacecfg-msg {
+      min-height: 12px;
+      font-size: 10px;
+      color: var(--muted);
+    }
   </style>
   <script type="importmap">
   {
@@ -324,6 +403,7 @@
         <option value="sabr">SABR</option>
         <option value="vv">Vanna-Volga</option>
       </select>
+      <span id="surface-mode-badge" class="mode-badge calibrated">calibrated</span>
       <span id="calib-time" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></span>
     </div>
     <div class="view-switcher">
@@ -516,11 +596,214 @@
     let lastForwardVolData = null;
 
     // =====================================================================
+    //  Surface Config State
+    // =====================================================================
+    const SURFACE_CONFIG_KEY = 'vol-terminal-surface-config-v1';
+    const SURFACE_PARAM_KEYS = {
+      svi: ['a', 'b', 'rho', 'm', 'sigma'],
+      sabr: ['alpha', 'beta', 'rho', 'nu'],
+      vv: ['atmVol', 'rr25', 'bf25'],
+    };
+
+    function deepClone(obj) {
+      return JSON.parse(JSON.stringify(obj));
+    }
+
+    function defaultSurfaceConfig(asset, model) {
+      return {
+        asset,
+        model,
+        mode: 'calibrated',
+        params: {
+          smilePreset: 'neutral',
+          common: {
+            interpolationDomain: 'log-moneyness',
+            wingSlopeLeft: 1.0,
+            wingSlopeRight: 1.0,
+            volFloor: 5.0,
+            volCeiling: 250.0,
+            arbitragePenalty: 1.0,
+            calendarSmoothing: 0.0,
+            optimizerBoundScale: 1.0,
+            optimizerTolerance: 0.0005,
+          },
+          models: {
+            svi: {
+              variant: 'raw',
+              manual: { a: 0.025, b: 0.22, rho: -0.2, m: 0.0, sigma: 0.28 },
+              pins: { a: false, b: false, rho: false, m: false, sigma: false },
+            },
+            sabr: {
+              betaMode: 'free',
+              shift: 0.0,
+              bounds: { rhoMin: -0.999, rhoMax: 0.999, nuMin: 0.01, nuMax: 3.0 },
+              manual: { alpha: 0.55, beta: 0.5, rho: -0.2, nu: 1.0 },
+              pins: { alpha: false, beta: false, rho: false, nu: false },
+            },
+            vv: {
+              anchorPutDelta: 0.25,
+              anchorCallDelta: 0.25,
+              dampening: 1.0,
+              barrierCorrection: false,
+              manual: { atmVol: 0.55, rr25: 0.0, bf25: 0.01 },
+              pins: { atmVol: false, rr25: false, bf25: false },
+            },
+          },
+        },
+        calibration: {
+          fitWeighting: 'mid',
+          autoRecalibrate: true,
+          freezeMarket: false,
+        },
+        conventions: {
+          stickyRule: 'delta',
+        },
+        timestamp: Date.now(),
+        source: 'default',
+      };
+    }
+
+    function sanitizeSurfaceConfig(raw, asset, model) {
+      const cfg = defaultSurfaceConfig(asset, model);
+      if (!raw || typeof raw !== 'object') return cfg;
+      if (raw.mode === 'calibrated' || raw.mode === 'manual' || raw.mode === 'hybrid') cfg.mode = raw.mode;
+      if (raw.params && typeof raw.params === 'object') {
+        if (raw.params.smilePreset === 'neutral' || raw.params.smilePreset === 'conservative' || raw.params.smilePreset === 'aggressive') {
+          cfg.params.smilePreset = raw.params.smilePreset;
+        }
+        if (raw.params.common && typeof raw.params.common === 'object') {
+          Object.assign(cfg.params.common, raw.params.common);
+        }
+        if (raw.params.models && typeof raw.params.models === 'object') {
+          for (const m of ['svi', 'sabr', 'vv']) {
+            if (raw.params.models[m] && typeof raw.params.models[m] === 'object') {
+              Object.assign(cfg.params.models[m], raw.params.models[m]);
+              if (raw.params.models[m].manual && typeof raw.params.models[m].manual === 'object') {
+                Object.assign(cfg.params.models[m].manual, raw.params.models[m].manual);
+              }
+              if (raw.params.models[m].pins && typeof raw.params.models[m].pins === 'object') {
+                Object.assign(cfg.params.models[m].pins, raw.params.models[m].pins);
+              }
+              if (raw.params.models[m].bounds && typeof raw.params.models[m].bounds === 'object') {
+                cfg.params.models[m].bounds = {
+                  ...cfg.params.models[m].bounds,
+                  ...raw.params.models[m].bounds,
+                };
+              }
+            }
+          }
+        }
+      }
+      if (raw.calibration && typeof raw.calibration === 'object') Object.assign(cfg.calibration, raw.calibration);
+      if (raw.conventions && typeof raw.conventions === 'object') Object.assign(cfg.conventions, raw.conventions);
+      cfg.asset = raw.asset || asset;
+      cfg.model = (raw.model === 'svi' || raw.model === 'sabr' || raw.model === 'vv') ? raw.model : model;
+      if (cfg.calibration.fitWeighting !== 'mid' && cfg.calibration.fitWeighting !== 'vega-weighted' && cfg.calibration.fitWeighting !== 'bid-ask-aware') {
+        cfg.calibration.fitWeighting = 'mid';
+      }
+      if (cfg.conventions.stickyRule !== 'delta' && cfg.conventions.stickyRule !== 'strike' && cfg.conventions.stickyRule !== 'moneyness') {
+        cfg.conventions.stickyRule = 'delta';
+      }
+      cfg.timestamp = Number.isFinite(raw.timestamp) ? raw.timestamp : Date.now();
+      cfg.source = typeof raw.source === 'string' ? raw.source : 'local';
+      return cfg;
+    }
+
+    function loadSurfaceConfig(asset, model) {
+      try {
+        const raw = localStorage.getItem(SURFACE_CONFIG_KEY);
+        if (!raw) return defaultSurfaceConfig(asset, model);
+        return sanitizeSurfaceConfig(JSON.parse(raw), asset, model);
+      } catch (e) {
+        return defaultSurfaceConfig(asset, model);
+      }
+    }
+
+    let activeModel = 'svi'; // 'svi' | 'sabr' | 'vv'
+    let surfaceConfig = loadSurfaceConfig(activeCurrency, activeModel);
+    if (surfaceConfig.model === 'svi' || surfaceConfig.model === 'sabr' || surfaceConfig.model === 'vv') {
+      activeModel = surfaceConfig.model;
+      document.getElementById('model-select').value = activeModel;
+    } else {
+      surfaceConfig.model = activeModel;
+    }
+    surfaceConfig.asset = activeCurrency;
+
+    function saveSurfaceConfig() {
+      try {
+        localStorage.setItem(SURFACE_CONFIG_KEY, JSON.stringify(surfaceConfig));
+      } catch (e) { /* localStorage can fail */ }
+    }
+
+    function updateModeBadge() {
+      const badge = document.getElementById('surface-mode-badge');
+      if (!badge) return;
+      badge.className = 'mode-badge ' + surfaceConfig.mode;
+      badge.textContent = surfaceConfig.mode;
+    }
+
+    function isMarketFrozen() {
+      return !!surfaceConfig.calibration.freezeMarket;
+    }
+
+    function pushWorkerConfig(extra = {}) {
+      if (!computeWorker) return;
+      computeWorker.postMessage({
+        type: 'config-update',
+        payload: {
+          activeModel,
+          activeGreek,
+          edgeThreshold,
+          edgeSideFilter,
+          isLinear: currencyConfig.isLinear,
+          surfaceConfig,
+          ...extra,
+        },
+      });
+    }
+
+    function setSurfaceConfig(next, opts = {}) {
+      const source = opts.source || 'ui';
+      const recompute = opts.recompute !== false;
+      const preserveModel = opts.preserveModel !== false;
+      const sanitized = sanitizeSurfaceConfig(next, activeCurrency, activeModel);
+      const prevModel = activeModel;
+
+      if (preserveModel) sanitized.model = activeModel;
+      if (sanitized.model !== activeModel && (sanitized.model === 'svi' || sanitized.model === 'sabr' || sanitized.model === 'vv')) {
+        activeModel = sanitized.model;
+        document.getElementById('model-select').value = activeModel;
+      }
+
+      sanitized.asset = activeCurrency;
+      sanitized.timestamp = Date.now();
+      sanitized.source = source;
+      surfaceConfig = sanitized;
+      saveSurfaceConfig();
+      updateModeBadge();
+      renderSurfaceConfigPanel();
+      pushWorkerConfig();
+      if (recompute) {
+        if (prevModel !== activeModel) resetModelDependentState();
+        dirty = true;
+        scheduleCalibration('config');
+      }
+    }
+
+    function mutateSurfaceConfig(mutator, opts = {}) {
+      const next = deepClone(surfaceConfig);
+      mutator(next);
+      setSurfaceConfig(next, opts);
+    }
+
+    updateModeBadge();
+
+    // =====================================================================
     //  View Mode System
     // =====================================================================
     const VIEW_DEFS = {
       overview: {
-        panels: ['surface', 'term', 'smile', 'scanner'],
+        panels: ['surface', 'term', 'smile', 'scanner', 'surfacecfg'],
         build(dv) {
           dv.addPanel({ id: 'surface', component: 'surface', title: '3D Vol Surface' });
           dv.addPanel({ id: 'term', component: 'term', title: 'Term Structure',
@@ -529,10 +812,12 @@
             position: { referencePanel: 'term', direction: 'below' } });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
             position: { referencePanel: 'surface', direction: 'below' } });
+          dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
+            position: { referencePanel: 'scanner', direction: 'right' } });
         },
       },
       analysis: {
-        panels: ['greeks', 'forwardvol', 'volcone', 'volchange'],
+        panels: ['greeks', 'forwardvol', 'volcone', 'volchange', 'surfacecfg'],
         build(dv) {
           dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap (Black-76)' });
           dv.addPanel({ id: 'forwardvol', component: 'forwardvol', title: 'Forward Vol',
@@ -541,30 +826,36 @@
             position: { referencePanel: 'greeks', direction: 'below' } });
           dv.addPanel({ id: 'volchange', component: 'volchange', title: 'IV Change Heatmap',
             position: { referencePanel: 'forwardvol', direction: 'below' } });
+          dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
+            position: { referencePanel: 'volcone', direction: 'right' } });
         },
       },
       scanner: {
-        panels: ['scanner', 'metrics', 'smile'],
+        panels: ['scanner', 'metrics', 'smile', 'surfacecfg'],
         build(dv) {
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner' });
           dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
             position: { referencePanel: 'scanner', direction: 'right' } });
           dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
             position: { referencePanel: 'metrics', direction: 'below' } });
+          dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
+            position: { referencePanel: 'smile', direction: 'right' } });
         },
       },
       trading: {
-        panels: ['tradeflow', 'strategy', 'funding'],
+        panels: ['tradeflow', 'strategy', 'funding', 'surfacecfg'],
         build(dv) {
           dv.addPanel({ id: 'tradeflow', component: 'tradeflow', title: 'Trade Flow' });
           dv.addPanel({ id: 'strategy', component: 'strategy', title: 'Strategy Builder',
             position: { referencePanel: 'tradeflow', direction: 'right' } });
           dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding & Basis',
             position: { referencePanel: 'tradeflow', direction: 'below' } });
+          dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
+            position: { referencePanel: 'funding', direction: 'right' } });
         },
       },
       all: {
-        panels: ['surface','volchange','smile','greeks','term','forwardvol','metrics','funding','volcone','scanner','tradeflow','strategy'],
+        panels: ['surface','volchange','smile','greeks','term','forwardvol','metrics','funding','volcone','scanner','tradeflow','strategy','surfacecfg'],
         build: null, // uses createDefaultLayout
       },
     };
@@ -575,6 +866,7 @@
     const lastDbWrite = { vol_snapshots: 0, atm_iv_series: 0, spot_series: 0, realized_vol_series: 0, trade_flow_agg: 0, funding_basis: 0 };
 
     function noteQuote(name, q) {
+      if (isMarketFrozen()) return;
       chain.set(name, q);
       dirty = true;
       tickCount++;
@@ -592,10 +884,7 @@
     // =====================================================================
     //  Active model selection
     // =====================================================================
-    let activeModel = 'svi'; // 'svi' | 'sabr' | 'vv'
-
-    document.getElementById('model-select').addEventListener('change', (e) => {
-      activeModel = e.target.value;
+    function resetModelDependentState() {
       dirty = true;
       baselineSurface = null; // reset baseline on model switch
       calibratedSlices = [];
@@ -611,8 +900,19 @@
         if (p && p.heatDiv) Plotly.purge(p.heatDiv);
         if (p && p.heatmapDiv) Plotly.purge(p.heatmapDiv);
       }
-      if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel } });
-      scheduleCalibration();
+    }
+
+    function applyModelSelection(model, source = 'ui') {
+      if (model !== 'svi' && model !== 'sabr' && model !== 'vv') return;
+      if (model === activeModel && surfaceConfig.model === model) return;
+      activeModel = model;
+      document.getElementById('model-select').value = activeModel;
+      resetModelDependentState();
+      mutateSurfaceConfig((cfg) => { cfg.model = activeModel; }, { source, recompute: true, preserveModel: false });
+    }
+
+    document.getElementById('model-select').addEventListener('change', (e) => {
+      applyModelSelection(e.target.value, 'ui');
     });
 
     // =====================================================================
@@ -662,8 +962,10 @@
       document.querySelector('.header-title').textContent = currencyConfig.label + ' Options Vol Terminal';
       document.getElementById('hdr-spot').textContent = '--';
 
-      // Notify worker of reset
-      if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeModel, isLinear: currencyConfig.isLinear } });
+      mutateSurfaceConfig((cfg) => { cfg.asset = activeCurrency; }, {
+        source: 'currency-switch',
+        recompute: false,
+      });
 
       // Re-seed and reconnect
       seedFromRest();
@@ -680,20 +982,34 @@
     //  Calibration (per-expiry, model-aware)
     // =====================================================================
     let calibrationScheduled = false;
+    let calibrationTimer = null;
+    let scheduledDelayMs = 0;
     let lastCalibTime = 0;
     let calibTimeUs = 0;
     let calibratedSlices = []; // sorted by T
     let activeExpiry = '';
     let activeGreek = 'delta';
 
-    function scheduleCalibration() {
-      if (calibrationScheduled) return;
+    function scheduleCalibration(reason = 'market') {
+      if (reason === 'market' && (!surfaceConfig.calibration.autoRecalibrate || isMarketFrozen())) return;
+      const delayMs = reason === 'config' ? 30 : 1000;
+      if (calibrationScheduled) {
+        if (delayMs < scheduledDelayMs && calibrationTimer) {
+          clearTimeout(calibrationTimer);
+          scheduledDelayMs = delayMs;
+          calibrationTimer = setTimeout(runCalibration, delayMs);
+        }
+        return;
+      }
       calibrationScheduled = true;
-      setTimeout(runCalibration, 1000);
+      scheduledDelayMs = delayMs;
+      calibrationTimer = setTimeout(runCalibration, delayMs);
     }
 
     function runCalibration() {
       calibrationScheduled = false;
+      scheduledDelayMs = 0;
+      calibrationTimer = null;
       if (!dirty || !workerReady) {
         if (dirty && !workerReady) setTimeout(runCalibration, 100);
         return;
@@ -740,6 +1056,199 @@
     //  Panel Component Classes (Dockview vanilla API)
     // =====================================================================
     const panels = {};
+
+    class SurfaceConfigPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = `
+          <div class="panel-head">
+            <div class="panel-title">Surface Config</div>
+          </div>
+          <div class="surfacecfg-wrap">
+            <div class="surfacecfg-grid">
+              <label for="cfg-mode">mode</label>
+              <select id="cfg-mode">
+                <option value="calibrated">calibrated</option>
+                <option value="manual">manual</option>
+                <option value="hybrid">hybrid</option>
+              </select>
+              <label for="cfg-preset">smile preset</label>
+              <select id="cfg-preset">
+                <option value="neutral">neutral</option>
+                <option value="conservative">conservative wings</option>
+                <option value="aggressive">aggressive wings</option>
+              </select>
+              <label for="cfg-weighting">fit weighting</label>
+              <select id="cfg-weighting">
+                <option value="mid">mid</option>
+                <option value="vega-weighted">vega-weighted</option>
+                <option value="bid-ask-aware">bid-ask-aware</option>
+              </select>
+              <label for="cfg-sticky">sticky rule</label>
+              <select id="cfg-sticky">
+                <option value="delta">delta</option>
+                <option value="strike">strike</option>
+                <option value="moneyness">moneyness</option>
+              </select>
+            </div>
+            <div class="surfacecfg-row">
+              <label><input type="checkbox" class="cfg-auto-recal"> auto recalibrate</label>
+              <button class="tab-btn cfg-freeze-btn">Freeze Market</button>
+              <button class="tab-btn cfg-recal-btn">Recalibrate</button>
+            </div>
+            <div class="surfacecfg-row">
+              <label><input type="checkbox" class="cfg-advanced-toggle"> advanced mode</label>
+              <span class="cfg-model-label" style="color:var(--muted);font-size:10px;"></span>
+            </div>
+            <table class="surfacecfg-table">
+              <thead><tr><th>param</th><th>manual value</th><th>pin (hybrid)</th></tr></thead>
+              <tbody class="cfg-param-body"></tbody>
+            </table>
+            <div class="surfacecfg-advanced cfg-advanced-wrap" style="display:none;">
+              <div class="surfacecfg-grid cfg-common-advanced">
+                <label for="cfg-domain">interp domain</label>
+                <select id="cfg-domain" data-common="interpolationDomain">
+                  <option value="log-moneyness">log-moneyness</option>
+                  <option value="moneyness">moneyness</option>
+                  <option value="strike">strike</option>
+                </select>
+                <label for="cfg-wing-left">left wing</label>
+                <input id="cfg-wing-left" type="number" step="0.05" min="0.2" max="3" data-common="wingSlopeLeft">
+                <label for="cfg-wing-right">right wing</label>
+                <input id="cfg-wing-right" type="number" step="0.05" min="0.2" max="3" data-common="wingSlopeRight">
+                <label for="cfg-vol-floor">vol floor (%)</label>
+                <input id="cfg-vol-floor" type="number" step="0.5" min="0" max="500" data-common="volFloor">
+                <label for="cfg-vol-ceil">vol cap (%)</label>
+                <input id="cfg-vol-ceil" type="number" step="0.5" min="1" max="500" data-common="volCeiling">
+                <label for="cfg-arb">arb penalty</label>
+                <input id="cfg-arb" type="number" step="0.1" min="0" max="10" data-common="arbitragePenalty">
+                <label for="cfg-cal-sm">calendar smoothing</label>
+                <input id="cfg-cal-sm" type="number" step="0.05" min="0" max="1" data-common="calendarSmoothing">
+                <label for="cfg-bound-scale">optim bounds</label>
+                <input id="cfg-bound-scale" type="number" step="0.1" min="0.1" max="10" data-common="optimizerBoundScale">
+                <label for="cfg-tol">optim tolerance</label>
+                <input id="cfg-tol" type="number" step="0.0001" min="0.00001" max="1" data-common="optimizerTolerance">
+              </div>
+              <div class="surfacecfg-grid cfg-model-advanced"></div>
+            </div>
+            <div class="surfacecfg-row">
+              <button class="tab-btn cfg-export">Export JSON</button>
+              <button class="tab-btn cfg-import">Import JSON</button>
+              <button class="tab-btn cfg-reset">Reset</button>
+            </div>
+            <div class="surfacecfg-msg cfg-msg"></div>
+          </div>
+        `;
+
+        this.modeSel = this._el.querySelector('#cfg-mode');
+        this.presetSel = this._el.querySelector('#cfg-preset');
+        this.weightingSel = this._el.querySelector('#cfg-weighting');
+        this.stickySel = this._el.querySelector('#cfg-sticky');
+        this.autoRecal = this._el.querySelector('.cfg-auto-recal');
+        this.freezeBtn = this._el.querySelector('.cfg-freeze-btn');
+        this.recalBtn = this._el.querySelector('.cfg-recal-btn');
+        this.advancedToggle = this._el.querySelector('.cfg-advanced-toggle');
+        this.modelLabel = this._el.querySelector('.cfg-model-label');
+        this.paramBody = this._el.querySelector('.cfg-param-body');
+        this.advancedWrap = this._el.querySelector('.cfg-advanced-wrap');
+        this.commonAdvanced = this._el.querySelector('.cfg-common-advanced');
+        this.modelAdvanced = this._el.querySelector('.cfg-model-advanced');
+        this.msgEl = this._el.querySelector('.cfg-msg');
+        panels.surfacecfg = this;
+
+        this.modeSel.addEventListener('change', (e) => {
+          mutateSurfaceConfig((cfg) => { cfg.mode = e.target.value; }, { source: 'ui-mode' });
+        });
+        this.presetSel.addEventListener('change', (e) => {
+          mutateSurfaceConfig((cfg) => { cfg.params.smilePreset = e.target.value; }, { source: 'ui-preset' });
+        });
+        this.weightingSel.addEventListener('change', (e) => {
+          mutateSurfaceConfig((cfg) => { cfg.calibration.fitWeighting = e.target.value; }, { source: 'ui-weighting' });
+        });
+        this.stickySel.addEventListener('change', (e) => {
+          mutateSurfaceConfig((cfg) => { cfg.conventions.stickyRule = e.target.value; }, { source: 'ui-sticky' });
+        });
+        this.autoRecal.addEventListener('change', (e) => {
+          mutateSurfaceConfig((cfg) => { cfg.calibration.autoRecalibrate = !!e.target.checked; }, { source: 'ui-auto', recompute: false });
+        });
+        this.freezeBtn.addEventListener('click', () => {
+          mutateSurfaceConfig((cfg) => { cfg.calibration.freezeMarket = !cfg.calibration.freezeMarket; }, { source: 'ui-freeze', recompute: true });
+        });
+        this.recalBtn.addEventListener('click', () => {
+          dirty = true;
+          scheduleCalibration('config');
+          this.setMessage('manual recalibration queued');
+        });
+        this.advancedToggle.addEventListener('change', (e) => {
+          mutateSurfaceConfig((cfg) => { cfg.calibration.advancedMode = !!e.target.checked; }, { source: 'ui-advanced', recompute: false });
+        });
+        this._el.querySelector('.cfg-export').addEventListener('click', () => { exportSurfaceConfigJson(); });
+        this._el.querySelector('.cfg-import').addEventListener('click', () => { importSurfaceConfigJson(); });
+        this._el.querySelector('.cfg-reset').addEventListener('click', () => { resetSurfaceConfigDefaults(); });
+
+        this.paramBody.addEventListener('change', (e) => {
+          const valueInput = e.target.closest('[data-param]');
+          if (valueInput) {
+            const key = valueInput.dataset.param;
+            const num = parseFloat(valueInput.value);
+            if (!Number.isFinite(num)) return;
+            mutateSurfaceConfig((cfg) => { cfg.params.models[activeModel].manual[key] = num; }, { source: 'ui-param' });
+            return;
+          }
+          const pinInput = e.target.closest('[data-pin]');
+          if (pinInput) {
+            const key = pinInput.dataset.pin;
+            mutateSurfaceConfig((cfg) => { cfg.params.models[activeModel].pins[key] = !!pinInput.checked; }, { source: 'ui-pin' });
+          }
+        });
+
+        this.commonAdvanced.addEventListener('change', (e) => {
+          const field = e.target.dataset.common;
+          if (!field) return;
+          const parsed = e.target.type === 'number' ? parseFloat(e.target.value) : e.target.value;
+          if (e.target.type === 'number' && !Number.isFinite(parsed)) return;
+          mutateSurfaceConfig((cfg) => { cfg.params.common[field] = parsed; }, { source: 'ui-common' });
+        });
+
+        this.modelAdvanced.addEventListener('change', (e) => {
+          const modelField = e.target.dataset.modelField;
+          if (!modelField) return;
+          const t = e.target;
+          let value;
+          if (t.type === 'checkbox') value = !!t.checked;
+          else if (t.type === 'number') {
+            value = parseFloat(t.value);
+            if (!Number.isFinite(value)) return;
+          } else value = t.value;
+          mutateSurfaceConfig((cfg) => {
+            const modelCfg = cfg.params.models[activeModel];
+            if (modelField.includes('.')) {
+              const [p0, p1] = modelField.split('.');
+              if (!modelCfg[p0] || typeof modelCfg[p0] !== 'object') modelCfg[p0] = {};
+              modelCfg[p0][p1] = value;
+            } else {
+              modelCfg[modelField] = value;
+            }
+          }, { source: 'ui-model-advanced' });
+        });
+
+        renderSurfaceConfigPanel();
+      }
+      setMessage(text) {
+        if (!this.msgEl) return;
+        this.msgEl.textContent = text || '';
+        clearTimeout(this._msgTimer);
+        if (text) this._msgTimer = setTimeout(() => { this.msgEl.textContent = ''; }, 2500);
+      }
+      dispose() {
+        clearTimeout(this._msgTimer);
+        delete panels.surfacecfg;
+      }
+    }
 
     class SurfacePanel {
       constructor() {
@@ -857,10 +1366,10 @@
           this.tabContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           activeGreek = btn.dataset.greek;
-          if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { activeGreek } });
+          pushWorkerConfig({ activeGreek });
           // Force recompute greeks on next cycle
           dirty = true;
-          scheduleCalibration();
+          scheduleCalibration('config');
         });
         this._resizeObs = new ResizeObserver(() => {
           if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
@@ -989,14 +1498,14 @@
         panels.scanner = this;
         this._el.querySelector('.edge-threshold').addEventListener('change', (e) => {
           edgeThreshold = parseFloat(e.target.value);
-          if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { edgeThreshold } });
+          pushWorkerConfig({ edgeThreshold });
           // Re-render from cached data or trigger recompute
           if (lastScannerData) renderScanner(lastScannerData);
           else renderScanner();
         });
         this._el.querySelector('.edge-side').addEventListener('change', (e) => {
           edgeSideFilter = e.target.value;
-          if (computeWorker) computeWorker.postMessage({ type: 'config-update', payload: { edgeSideFilter } });
+          pushWorkerConfig({ edgeSideFilter });
           if (lastScannerData) renderScanner(lastScannerData);
           else renderScanner();
         });
@@ -1230,6 +1739,137 @@
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.strategy; }
     }
 
+    function exportSurfaceConfigJson() {
+      const payload = deepClone(surfaceConfig);
+      payload.timestamp = Date.now();
+      payload.source = 'export';
+      const json = JSON.stringify(payload, null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(json)
+          .then(() => { if (panels.surfacecfg) panels.surfacecfg.setMessage('surface config copied'); })
+          .catch(() => {
+            window.prompt('Copy SurfaceConfig JSON', json);
+            if (panels.surfacecfg) panels.surfacecfg.setMessage('clipboard unavailable, shown in prompt');
+          });
+      } else {
+        window.prompt('Copy SurfaceConfig JSON', json);
+        if (panels.surfacecfg) panels.surfacecfg.setMessage('clipboard unavailable, shown in prompt');
+      }
+    }
+
+    function importSurfaceConfigJson() {
+      const raw = window.prompt('Paste SurfaceConfig JSON');
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        setSurfaceConfig(parsed, { source: 'import', preserveModel: false, recompute: true });
+        if (panels.surfacecfg) panels.surfacecfg.setMessage('surface config imported');
+      } catch (e) {
+        if (panels.surfacecfg) panels.surfacecfg.setMessage('invalid JSON');
+      }
+    }
+
+    function resetSurfaceConfigDefaults() {
+      const next = defaultSurfaceConfig(activeCurrency, activeModel);
+      setSurfaceConfig(next, { source: 'reset', preserveModel: true, recompute: true });
+      if (panels.surfacecfg) panels.surfacecfg.setMessage('surface config reset');
+    }
+
+    function renderSurfaceConfigPanel() {
+      const p = panels.surfacecfg;
+      if (!p) return;
+
+      const mode = surfaceConfig.mode || 'calibrated';
+      const modelCfg = surfaceConfig.params.models[activeModel];
+      const manual = modelCfg.manual || {};
+      const pins = modelCfg.pins || {};
+      const keys = SURFACE_PARAM_KEYS[activeModel] || [];
+      const advOn = !!surfaceConfig.calibration.advancedMode;
+
+      p.modeSel.value = mode;
+      p.presetSel.value = surfaceConfig.params.smilePreset || 'neutral';
+      p.weightingSel.value = surfaceConfig.calibration.fitWeighting || 'mid';
+      p.stickySel.value = surfaceConfig.conventions.stickyRule || 'delta';
+      p.autoRecal.checked = !!surfaceConfig.calibration.autoRecalibrate;
+      p.freezeBtn.textContent = isMarketFrozen() ? 'Unfreeze Market' : 'Freeze Market';
+      p.freezeBtn.classList.toggle('active', isMarketFrozen());
+      p.advancedToggle.checked = advOn;
+      p.advancedWrap.style.display = advOn ? '' : 'none';
+      if (p.modelLabel) p.modelLabel.textContent = `model=${activeModel.toUpperCase()}`;
+
+      p.paramBody.innerHTML = keys.map((key) => {
+        const val = Number.isFinite(Number(manual[key])) ? Number(manual[key]) : 0;
+        const pinChecked = !!pins[key] ? 'checked' : '';
+        const pinDisabled = mode === 'hybrid' ? '' : 'disabled';
+        return `<tr>
+          <td>${key}</td>
+          <td><input type="number" step="0.0001" data-param="${key}" value="${val}"></td>
+          <td><input type="checkbox" data-pin="${key}" ${pinChecked} ${pinDisabled}></td>
+        </tr>`;
+      }).join('');
+
+      for (const el of p.commonAdvanced.querySelectorAll('[data-common]')) {
+        const field = el.dataset.common;
+        const value = surfaceConfig.params.common[field];
+        if (el.type === 'number') el.value = Number.isFinite(Number(value)) ? Number(value) : '';
+        else el.value = value ?? '';
+      }
+
+      if (activeModel === 'svi') {
+        p.modelAdvanced.innerHTML = `
+          <label for="cfg-svi-variant">svi variant</label>
+          <select id="cfg-svi-variant" data-model-field="variant">
+            <option value="raw">raw</option>
+            <option value="jump-wings">jump-wings</option>
+          </select>
+        `;
+        p.modelAdvanced.querySelector('#cfg-svi-variant').value = modelCfg.variant || 'raw';
+      } else if (activeModel === 'sabr') {
+        const bounds = modelCfg.bounds || {};
+        p.modelAdvanced.innerHTML = `
+          <label for="cfg-sabr-beta-mode">beta mode</label>
+          <select id="cfg-sabr-beta-mode" data-model-field="betaMode">
+            <option value="free">free</option>
+            <option value="fixed">fixed</option>
+          </select>
+          <label for="cfg-sabr-beta">beta</label>
+          <input id="cfg-sabr-beta" type="number" step="0.01" min="0" max="1" data-model-field="manual.beta">
+          <label for="cfg-sabr-shift">shift</label>
+          <input id="cfg-sabr-shift" type="number" step="1" min="-50000" max="50000" data-model-field="shift">
+          <label for="cfg-sabr-rho-min">rho min</label>
+          <input id="cfg-sabr-rho-min" type="number" step="0.01" min="-0.999" max="0.999" data-model-field="bounds.rhoMin">
+          <label for="cfg-sabr-rho-max">rho max</label>
+          <input id="cfg-sabr-rho-max" type="number" step="0.01" min="-0.999" max="0.999" data-model-field="bounds.rhoMax">
+          <label for="cfg-sabr-nu-min">nu min</label>
+          <input id="cfg-sabr-nu-min" type="number" step="0.01" min="0.001" max="10" data-model-field="bounds.nuMin">
+          <label for="cfg-sabr-nu-max">nu max</label>
+          <input id="cfg-sabr-nu-max" type="number" step="0.01" min="0.001" max="10" data-model-field="bounds.nuMax">
+        `;
+        p.modelAdvanced.querySelector('#cfg-sabr-beta-mode').value = modelCfg.betaMode || 'free';
+        p.modelAdvanced.querySelector('#cfg-sabr-beta').value = modelCfg.manual.beta ?? 0.5;
+        p.modelAdvanced.querySelector('#cfg-sabr-shift').value = modelCfg.shift ?? 0;
+        p.modelAdvanced.querySelector('#cfg-sabr-rho-min').value = bounds.rhoMin ?? -0.999;
+        p.modelAdvanced.querySelector('#cfg-sabr-rho-max').value = bounds.rhoMax ?? 0.999;
+        p.modelAdvanced.querySelector('#cfg-sabr-nu-min').value = bounds.nuMin ?? 0.01;
+        p.modelAdvanced.querySelector('#cfg-sabr-nu-max').value = bounds.nuMax ?? 3.0;
+      } else {
+        p.modelAdvanced.innerHTML = `
+          <label for="cfg-vv-put">anchor put delta</label>
+          <input id="cfg-vv-put" type="number" step="0.01" min="0.01" max="0.49" data-model-field="anchorPutDelta">
+          <label for="cfg-vv-call">anchor call delta</label>
+          <input id="cfg-vv-call" type="number" step="0.01" min="0.01" max="0.49" data-model-field="anchorCallDelta">
+          <label for="cfg-vv-damp">dampening</label>
+          <input id="cfg-vv-damp" type="number" step="0.05" min="0.1" max="3.0" data-model-field="dampening">
+          <label for="cfg-vv-barrier">barrier correction</label>
+          <label><input id="cfg-vv-barrier" type="checkbox" data-model-field="barrierCorrection"> enabled</label>
+        `;
+        p.modelAdvanced.querySelector('#cfg-vv-put').value = modelCfg.anchorPutDelta ?? 0.25;
+        p.modelAdvanced.querySelector('#cfg-vv-call').value = modelCfg.anchorCallDelta ?? 0.25;
+        p.modelAdvanced.querySelector('#cfg-vv-damp').value = modelCfg.dampening ?? 1.0;
+        p.modelAdvanced.querySelector('#cfg-vv-barrier').checked = !!modelCfg.barrierCorrection;
+      }
+    }
+
     // =====================================================================
     //  Render cycle counter (tiering is done in the worker)
     // =====================================================================
@@ -1391,7 +2031,7 @@
         return;
       }
 
-      const { kGrid, tGrid, flatZ, gridN, marketX, marketY, marketZ, marketText } = data;
+      const { xGrid, xAxisTitle, tGrid, flatZ, gridN, marketX, marketY, marketZ, marketText } = data;
       const zGrid = [];
       const nSlices = tGrid.length;
       for (let i = 0; i < nSlices; i++) {
@@ -1401,7 +2041,7 @@
       if (!surfaceInitialized) {
         const traces = [
           {
-            type: 'surface', name: 'Fitted', x: kGrid, y: tGrid, z: zGrid,
+            type: 'surface', name: 'Fitted', x: xGrid, y: tGrid, z: zGrid,
             opacity: 0.82, showscale: false,
             colorscale: [[0,'#144f83'],[0.5,'#1e8ac8'],[1,'#39dba7']],
           },
@@ -1419,7 +2059,7 @@
           uirevision: 'stable',
           margin: { l: 0, r: 0, b: 0, t: 0 },
           scene: {
-            xaxis: { title: 'ln(K/F)', ...axisStyle },
+            xaxis: { title: xAxisTitle || 'ln(K/F)', ...axisStyle },
             yaxis: { title: 'T (yr)', ...axisStyle },
             zaxis: { title: 'IV (%)', ...axisStyle },
             camera: { eye: { x: 1.65, y: 1.25, z: 0.8 } },
@@ -1455,8 +2095,9 @@
         }, { passive: false });
       } else {
         Plotly.restyle(div,
-          { x: [kGrid, marketX], y: [tGrid, marketY], z: [zGrid, marketZ], text: [null, marketText] },
+          { x: [xGrid, marketX], y: [tGrid, marketY], z: [zGrid, marketZ], text: [null, marketText] },
           [0, 1]);
+        Plotly.relayout(div, { 'scene.xaxis.title.text': xAxisTitle || 'ln(K/F)' });
       }
 
       surfaceDirty = false;
@@ -1513,6 +2154,20 @@
     }
 
     // --- Smile Slice ---
+    function smileXValue(point, slice, stickyRule) {
+      if (stickyRule === 'strike') return point.strike;
+      if (stickyRule === 'moneyness') return Math.exp(point.k);
+      if (stickyRule === 'delta') return 1 / (1 + Math.exp(2.3 * point.k));
+      return point.k;
+    }
+
+    function smileAxisTitle(stickyRule) {
+      if (stickyRule === 'strike') return 'Strike';
+      if (stickyRule === 'moneyness') return 'K/F';
+      if (stickyRule === 'delta') return 'Call Delta (proxy)';
+      return 'ln(K/F)';
+    }
+
     function renderSmile() {
       const div = panels.smile ? panels.smile.chartDiv : null;
       if (!div) return;
@@ -1523,7 +2178,8 @@
       if (!slice) return;
 
       const pts = slice.points;
-      const x = pts.map(p => p.k); // pre-computed in WASM (calibrate_slice_wasm)
+      const stickyRule = surfaceConfig.conventions.stickyRule || 'delta';
+      const x = pts.map(p => smileXValue(p, slice, stickyRule));
       const marketIv = pts.map(p => p.market_iv);
       const fittedIv = pts.map(p => p.fitted_iv);
       const bidIv = pts.map(p => p.bid_iv);
@@ -1560,7 +2216,7 @@
         ...darkLayout,
         uirevision: 'stable',
         margin: { l: 40, r: 8, b: 30, t: 6 },
-        xaxis: { title: 'ln(K/F)', ...axisStyle },
+        xaxis: { title: smileAxisTitle(stickyRule), ...axisStyle },
         yaxis: { title: 'IV (%)', ...axisStyle },
         legend: { orientation: 'h', y: 1.02, x: 0.01, font: { size: 9 } },
         transition: { duration: 120, easing: 'linear' },
@@ -1895,6 +2551,7 @@
     //  Trade Flow Panel
     // =====================================================================
     function handleTradeMessage(data) {
+      if (isMarketFrozen()) return;
       const trades = Array.isArray(data) ? data : [data];
       for (const t of trades) {
         if (!t.instrument_name) continue;
@@ -2054,6 +2711,7 @@
     //  Perpetual WS Handler
     // =====================================================================
     function handlePerpetualMessage(data) {
+      if (isMarketFrozen()) return;
       if (!data) return;
       const d = Array.isArray(data) ? data[0] : data;
       if (d.funding !== undefined) fundingState.currentRate = d.funding;
@@ -2220,6 +2878,7 @@
         if (panels.volcone) renderVolCone();
         if (panels.tradeflow) renderTradeFlow();
         if (lastStrategyResult && panels.strategy) renderStrategyPayoff(lastStrategyResult);
+        if (panels.surfacecfg) renderSurfaceConfigPanel();
       });
     }
 
@@ -2294,7 +2953,7 @@
           count++;
         }
         console.log(`[rest] seeded ${count} options, spot=${spotPrice}`);
-        scheduleCalibration();
+        scheduleCalibration('config');
       } catch (e) {
         console.error('[rest] seed failed:', e);
       }
@@ -2332,6 +2991,7 @@
           const msg = JSON.parse(event.data);
           if (!msg.params || !msg.params.data) return;
           const channel = msg.params.channel || '';
+          if (isMarketFrozen() && channel.startsWith('markprice.options.')) return;
 
           // Route trade flow messages
           if (channel.startsWith('trades.')) { handleTradeMessage(msg.params.data); return; }
@@ -2435,6 +3095,8 @@
         position: { referencePanel: 'term' } });
       dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
         position: { referencePanel: 'greeks', direction: 'below' } });
+      dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
+        position: { referencePanel: 'metrics' } });
       // Funding and Vol Cone tabbed with Metrics
       dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding & Basis',
         position: { referencePanel: 'metrics' } });
@@ -2459,6 +3121,7 @@
           case 'greeks': return new GreeksPanel();
           case 'term': return new TermPanel();
           case 'metrics': return new MetricsPanel();
+          case 'surfacecfg': return new SurfaceConfigPanel();
           case 'scanner': return new ScannerPanel();
           case 'forwardvol': return new ForwardVolPanel();
           case 'funding': return new FundingBasisPanel();
@@ -2528,6 +3191,8 @@
     (async () => {
       await workerReadyPromise;
       console.log('[boot] worker ready');
+      pushWorkerConfig();
+      renderSurfaceConfigPanel();
 
       // Initialize IndexedDB + prune old data
       terminalDb.open().then(() => { terminalDb.pruneAll(); setInterval(() => terminalDb.pruneAll(), 3600000); }).catch(() => {});
