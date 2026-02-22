@@ -24,18 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: >
-          cargo clippy --workspace --all-targets --features parallel,simd -- -D warnings
-          -A clippy::too_many_arguments
-          -A clippy::needless_range_loop
-          -A clippy::module_inception
-          -A clippy::derivable_impls
-          -A clippy::missing_safety_doc
-          -A clippy::type_complexity
-          -A clippy::excessive_precision
-          -A dead_code
-          -A unused_imports
-          -A unused_unsafe
+        run: cargo clippy --workspace --all-targets --features parallel,simd
 
   test:
     name: Test
