@@ -39,7 +39,7 @@ pub mod weather;
 pub use asian::AsianOption;
 pub use autocallable::{Autocallable, PhoenixAutocallable};
 pub use barrier::{BarrierOption, BarrierOptionBuilder};
-pub use basket::{BasketOption, BasketType};
+pub use basket::{BasketOption, BasketType, OutperformanceBasketOption, QuantoBasketOption};
 pub use bermudan::BermudanOption;
 pub use black76::FuturesOption;
 pub use cliquet::{CliquetOption, ForwardStartOption};
@@ -88,6 +88,8 @@ pub enum TradeInstrument {
     PhoenixAutocallable(PhoenixAutocallable),
     BarrierOption(BarrierOption),
     BasketOption(BasketOption),
+    OutperformanceBasketOption(OutperformanceBasketOption),
+    QuantoBasketOption(QuantoBasketOption),
     BermudanOption(BermudanOption),
     FuturesOption(FuturesOption),
     CliquetOption(CliquetOption),

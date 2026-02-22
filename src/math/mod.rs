@@ -11,6 +11,7 @@
 //! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 pub mod aad;
 pub mod arena;
+pub mod correlation;
 pub mod fast_norm;
 pub mod fast_rng;
 pub mod functions;
@@ -24,6 +25,7 @@ pub mod sobol;
 
 pub use aad::*;
 pub use arena::PricingArena;
+pub use correlation::*;
 pub use fast_norm::{
     beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,
 };
