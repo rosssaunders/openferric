@@ -14,7 +14,7 @@ use crate::engines::analytic::{black76_price, kirk_spread_price};
 use crate::instruments::{FuturesOption, SpreadOption};
 
 /// Commodity forward contract priced with continuous carry and convenience yield.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommodityForward {
     pub spot: f64,
     pub strike: f64,
@@ -97,7 +97,7 @@ impl Instrument for CommodityForward {
 }
 
 /// Commodity futures contract marked-to-market daily.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommodityFutures {
     pub contract_price: f64,
     pub contract_size: f64,
@@ -140,7 +140,7 @@ impl Instrument for CommodityFutures {
 }
 
 /// Commodity option on a forward/futures level priced with Black-76.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommodityOption {
     pub forward: f64,
     pub strike: f64,
@@ -197,7 +197,7 @@ impl Instrument for CommodityOption {
 /// Commodity spread option priced with Kirk approximation.
 ///
 /// Payoff convention: `max(q1 * F1 - q2 * F2 - K, 0)` for calls.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommoditySpreadOption {
     pub option_type: OptionType,
     pub forward_1: f64,

@@ -10,7 +10,7 @@
 //!
 //! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 /// Plain-vanilla option side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OptionType {
     /// Call option payoff profile.
     Call,
@@ -38,7 +38,7 @@ impl OptionType {
 }
 
 /// Exercise rights for an option contract.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExerciseStyle {
     /// Exercise only at expiry.
     European,
@@ -49,7 +49,7 @@ pub enum ExerciseStyle {
 }
 
 /// Barrier crossing direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BarrierDirection {
     /// Barrier is breached when spot moves upward through the level.
     Up,
@@ -58,7 +58,7 @@ pub enum BarrierDirection {
 }
 
 /// Barrier knock behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BarrierStyle {
     /// Option activates once the barrier is hit.
     In,
@@ -80,7 +80,7 @@ pub enum BarrierStyle {
 /// };
 /// assert_eq!(b.level, 80.0);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BarrierSpec {
     /// Barrier direction.
     pub direction: BarrierDirection,
@@ -93,7 +93,7 @@ pub struct BarrierSpec {
 }
 
 /// Averaging method for Asian options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Averaging {
     /// Arithmetic averaging.
     Arithmetic,
@@ -102,7 +102,7 @@ pub enum Averaging {
 }
 
 /// Strike convention for Asian options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StrikeType {
     /// Fixed strike contract.
     Fixed,
@@ -111,7 +111,7 @@ pub enum StrikeType {
 }
 
 /// Asian option contract parameters.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AsianSpec {
     /// Averaging method.
     pub averaging: Averaging,

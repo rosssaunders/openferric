@@ -12,7 +12,7 @@
 use crate::core::{Instrument, PricingError};
 
 /// Two-asset spread option input bundle.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpreadOption {
     pub s1: f64,
     pub s2: f64,

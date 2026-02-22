@@ -12,7 +12,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Degree-day index type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DegreeDayType {
     /// Heating degree days: `max(base - temp, 0)`.
     HDD,
@@ -71,7 +71,7 @@ pub fn cumulative_degree_days(
 }
 
 /// Weather swap with linear payoff on cumulative HDD/CDD.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WeatherSwap {
     pub index_type: DegreeDayType,
     pub strike: f64,
@@ -165,7 +165,7 @@ impl Instrument for WeatherSwap {
 }
 
 /// Weather option on cumulative HDD/CDD priced by burn analysis.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WeatherOption {
     pub index_type: DegreeDayType,
     pub option_type: OptionType,
@@ -293,7 +293,7 @@ impl Instrument for WeatherOption {
 }
 
 /// Catastrophe bond with coupon and principal at risk under a Poisson loss model.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CatastropheBond {
     pub principal: f64,
     pub coupon_rate: f64,

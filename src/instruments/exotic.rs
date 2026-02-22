@@ -12,7 +12,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Floating-strike lookback option.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LookbackFloatingOption {
     /// Call (payoff `S_T - S_min`) or put (payoff `S_max - S_T`).
     pub option_type: OptionType,
@@ -24,7 +24,7 @@ pub struct LookbackFloatingOption {
 }
 
 /// Fixed-strike lookback option.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LookbackFixedOption {
     /// Call (payoff `max(S_max - K, 0)`) or put (payoff `max(K - S_min, 0)`).
     pub option_type: OptionType,
@@ -38,7 +38,7 @@ pub struct LookbackFixedOption {
 }
 
 /// Simple chooser option where the holder chooses call or put at `choose_time`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChooserOption {
     /// Strike level shared by call and put.
     pub strike: f64,
@@ -49,7 +49,7 @@ pub struct ChooserOption {
 }
 
 /// Quanto European option with fixed FX conversion.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QuantoOption {
     /// Call or put.
     pub option_type: OptionType,
@@ -68,7 +68,7 @@ pub struct QuantoOption {
 }
 
 /// Compound option on a vanilla option.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CompoundOption {
     /// Outer option type (call/put on the underlying option value).
     pub option_type: OptionType,
@@ -85,7 +85,7 @@ pub struct CompoundOption {
 }
 
 /// Unified exotic option instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExoticOption {
     /// Floating-strike lookback option.
     LookbackFloating(LookbackFloatingOption),

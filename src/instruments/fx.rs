@@ -12,7 +12,7 @@
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// European FX option parameters for Garman-Kohlhagen pricing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FxOption {
     /// Call or put.
     pub option_type: OptionType,

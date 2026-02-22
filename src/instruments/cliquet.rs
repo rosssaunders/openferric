@@ -13,7 +13,7 @@ use crate::core::{Instrument, OptionType, PricingError};
 use crate::math::normal_cdf;
 
 /// Forward-start option with strike set as a multiple of spot at start time.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ForwardStartOption {
     pub option_type: OptionType,
     pub spot: f64,

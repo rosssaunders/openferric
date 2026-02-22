@@ -16,9 +16,10 @@ use crate::math::interpolation::{
     MonotoneConvexInterpolator, NelsonSiegelInterpolator, NelsonSiegelSvenssonInterpolator,
     SmithWilsonInterpolator, TensionSplineInterpolator,
 };
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Interpolation method used to convert input nodes into a full curve.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum YieldCurveInterpolationMethod {
     /// Log-linear interpolation on discount factors.
     LogLinearDiscount,
@@ -41,7 +42,7 @@ pub enum YieldCurveInterpolationMethod {
 }
 
 /// Interpolation configuration for [`YieldCurve`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct YieldCurveInterpolationSettings {
     pub method: YieldCurveInterpolationMethod,
     pub extrapolation: ExtrapolationMode,
@@ -90,6 +91,30 @@ pub struct YieldCurve {
 impl PartialEq for YieldCurve {
     fn eq(&self, other: &Self) -> bool {
         self.tenors == other.tenors && self.interpolation == other.interpolation
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct YieldCurveSerde {
+    tenors: Vec<(f64, f64)>,
+    interpolation: YieldCurveInterpolationSettings,
+}
+
+impl Serialize for YieldCurve {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        YieldCurveSerde {
+            tenors: self.tenors.clone(),
+            interpolation: self.interpolation,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for YieldCurve {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = YieldCurveSerde::deserialize(deserializer)?;
+        YieldCurve::new_with_settings(raw.tenors, raw.interpolation)
+            .map_err(|err| serde::de::Error::custom(format!("{err:?}")))
     }
 }
 

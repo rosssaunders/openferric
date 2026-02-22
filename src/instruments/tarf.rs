@@ -18,7 +18,7 @@
 ///
 /// References: Wystup, "FX Options and Structured Products" (2nd ed.)
 /// TARF product type.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TarfType {
     /// Standard TARF: accumulate on upside, leverage on downside.
     Standard,
@@ -27,7 +27,7 @@ pub enum TarfType {
 }
 
 /// Accumulator / TARF instrument.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tarf {
     /// Forward strike.
     pub strike: f64,
@@ -63,7 +63,11 @@ impl Tarf {
         if self.fixing_times.is_empty() {
             return Err("fixing_times must be non-empty".to_string());
         }
-        if self.fixing_times.iter().any(|t| !t.is_finite() || *t <= 0.0) {
+        if self
+            .fixing_times
+            .iter()
+            .any(|t| !t.is_finite() || *t <= 0.0)
+        {
             return Err("all fixing_times must be finite and > 0".to_string());
         }
         Ok(())

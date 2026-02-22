@@ -14,7 +14,7 @@
 /// A range accrual pays a coupon that accrues on each day the reference rate
 /// is within a specified range [lower, upper]. Common in rates desks.
 /// Single-rate range accrual.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RangeAccrual {
     /// Notional amount.
     pub notional: f64,
@@ -31,7 +31,7 @@ pub struct RangeAccrual {
 }
 
 /// Dual-rate range accrual (e.g., CMS spread range accrual).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DualRangeAccrual {
     /// Notional amount.
     pub notional: f64,
