@@ -2,3 +2,5 @@
 /pkg
 www/pkg/
 vol_surface.html
+__pycache__/
+.DS_Store
