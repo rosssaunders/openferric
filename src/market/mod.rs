@@ -10,7 +10,9 @@
 //!
 //! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 pub mod dividends;
+pub mod fx;
 pub mod market;
 
 pub use dividends::*;
+pub use fx::*;
 pub use market::*;
