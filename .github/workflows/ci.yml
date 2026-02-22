@@ -33,6 +33,7 @@ jobs:
           -A clippy::missing_safety_doc
           -A clippy::excessive_precision
           -A dead_code
+          -A unused_imports
           -A unused_unsafe
 
   test:
