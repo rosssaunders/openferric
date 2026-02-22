@@ -4,6 +4,8 @@
 //! - `var`: historical/parametric VaR and ES,
 //! - `portfolio` + `sensitivities`: position aggregation, finite-difference Greeks, scenario
 //!   explain, and lightweight SIMM/FRTB-style charge aggregation,
+//! - `scenarios`: scenario-definition, market-diff, and stress testing engine with
+//!   attribution tables,
 //! - `xva`, `fva`, `mva`, `kva`, `wrong_way_risk`: valuation adjustments and WWR models.
 //!
 //! It is intentionally a facade: domain logic lives in submodules, while this file defines the
@@ -13,6 +15,7 @@ pub mod fva;
 pub mod kva;
 pub mod mva;
 pub mod portfolio;
+pub mod scenarios;
 pub mod sensitivities;
 pub mod var;
 pub mod wrong_way_risk;
@@ -24,6 +27,7 @@ pub use kva::{
 };
 pub use mva::{SimmMargin, SimmRiskClass, mva_from_profile};
 pub use portfolio::{AggregatedGreeks, Portfolio, Position};
+pub use scenarios::*;
 pub use sensitivities::*;
 pub use var::{
     cornish_fisher_var, cornish_fisher_var_from_pnl, delta_gamma_normal_var, delta_normal_var,
