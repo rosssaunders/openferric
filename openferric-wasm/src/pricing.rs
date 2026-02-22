@@ -2,8 +2,9 @@ use wasm_bindgen::prelude::*;
 
 use openferric::core::types::{BarrierDirection, BarrierStyle, OptionType};
 use openferric::greeks::black_scholes_merton_greeks;
+use openferric::math::{normal_cdf, normal_pdf};
 use openferric::pricing::barrier::barrier_price_closed_form_with_carry_and_rebate;
-use openferric::pricing::european::black_scholes_price;
+use openferric::pricing::european::{black_76_price, black_scholes_price};
 use openferric::vol::implied::implied_vol;
 
 /// Black-Scholes European option price.
@@ -67,6 +68,51 @@ pub fn bsm_greeks_wasm(
     vec![g.delta, g.gamma, g.vega, g.theta, g.rho, g.vanna, g.volga]
 }
 
+#[inline]
+fn black76_greeks_7(
+    option_type: OptionType,
+    forward: f64,
+    strike: f64,
+    rate: f64,
+    vol: f64,
+    expiry: f64,
+) -> [f64; 7] {
+    if forward <= 0.0 || strike <= 0.0 || vol <= 0.0 || expiry <= 0.0 {
+        return [0.0; 7];
+    }
+
+    let sqrt_t = expiry.sqrt();
+    let sig_sqrt_t = vol * sqrt_t;
+    let d1 = ((forward / strike).ln() + 0.5 * vol * vol * expiry) / sig_sqrt_t;
+    let d2 = d1 - sig_sqrt_t;
+
+    let df = (-rate * expiry).exp();
+    let nd1 = normal_cdf(d1);
+    let nd2 = normal_cdf(d2);
+    let pdf_d1 = normal_pdf(d1);
+
+    let call = df * (forward * nd1 - strike * nd2);
+    let put = call - df * (forward - strike);
+    let price = match option_type {
+        OptionType::Call => call,
+        OptionType::Put => put,
+    };
+
+    let delta = match option_type {
+        OptionType::Call => df * nd1,
+        OptionType::Put => df * (nd1 - 1.0),
+    };
+    let gamma = df * pdf_d1 / (forward * vol * sqrt_t);
+    let vega = df * forward * pdf_d1 * sqrt_t;
+    let theta = rate.mul_add(price, -(df * forward * pdf_d1 * vol / (2.0 * sqrt_t)));
+    // Rho here is dV/dr with forward held fixed.
+    let rho = -expiry * price;
+    let vanna = -df * pdf_d1 * d2 / vol;
+    let volga = vega * d1 * d2 / vol;
+
+    [delta, gamma, vega, theta, rho, vanna, volga]
+}
+
 /// Batch Black-Scholes pricing: one WASM call for N options.
 ///
 /// All input slices must have the same length.  `is_calls` uses `1` = call,
@@ -103,6 +149,48 @@ pub fn bs_price_batch_wasm(
         out.push(black_scholes_price(
             ot,
             s_adj,
+            strikes[i],
+            rates[i],
+            vols[i],
+            maturities[i],
+        ));
+    }
+    out
+}
+
+/// Batch Black-76 pricing: one WASM call for N options.
+///
+/// All input slices must have the same length. `is_calls` uses `1` = call,
+/// `0` = put (wasm-bindgen cannot pass `&[bool]`).
+/// Returns a `Vec<f64>` of prices in the same order.
+#[wasm_bindgen]
+pub fn black76_price_batch_wasm(
+    forwards: &[f64],
+    strikes: &[f64],
+    rates: &[f64],
+    vols: &[f64],
+    maturities: &[f64],
+    is_calls: &[u8],
+) -> Vec<f64> {
+    let n = forwards.len();
+    debug_assert!(
+        n == strikes.len()
+            && n == rates.len()
+            && n == vols.len()
+            && n == maturities.len()
+            && n == is_calls.len()
+    );
+
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let ot = if is_calls[i] != 0 {
+            OptionType::Call
+        } else {
+            OptionType::Put
+        };
+        out.push(black_76_price(
+            ot,
+            forwards[i],
             strikes[i],
             rates[i],
             vols[i],
@@ -161,6 +249,45 @@ pub fn bsm_greeks_batch_wasm(
         out.push(g.rho);
         out.push(g.vanna);
         out.push(g.volga);
+    }
+    out
+}
+
+/// Batch Black-76 Greeks: one WASM call for N options.
+///
+/// All input slices must have the same length. `is_calls` uses `1` = call,
+/// `0` = put (wasm-bindgen cannot pass `&[bool]`).
+/// Returns a flat `Vec<f64>` of 7 values per option:
+/// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times.
+///
+/// `delta` is forward delta (`dV/dF`), consistent with Deribit convention.
+#[wasm_bindgen]
+pub fn black76_greeks_batch_wasm(
+    forwards: &[f64],
+    strikes: &[f64],
+    rates: &[f64],
+    vols: &[f64],
+    expiries: &[f64],
+    is_calls: &[u8],
+) -> Vec<f64> {
+    let n = forwards.len();
+    debug_assert!(
+        n == strikes.len()
+            && n == rates.len()
+            && n == vols.len()
+            && n == expiries.len()
+            && n == is_calls.len()
+    );
+
+    let mut out = Vec::with_capacity(n * 7);
+    for i in 0..n {
+        let ot = if is_calls[i] != 0 {
+            OptionType::Call
+        } else {
+            OptionType::Put
+        };
+        let g = black76_greeks_7(ot, forwards[i], strikes[i], rates[i], vols[i], expiries[i]);
+        out.extend_from_slice(&g);
     }
     out
 }
@@ -352,6 +479,69 @@ mod tests {
         for i in 0..7 {
             assert!((batch[i] - single[i]).abs() < TOL);
         }
+    }
+
+    // -- black76_price_batch_wasm --
+
+    #[test]
+    fn black76_price_batch_matches_bsm_q_eq_r() {
+        let forwards = [100.0, 105.0];
+        let strikes = [100.0, 110.0];
+        let rates = [0.05, 0.03];
+        let vols = [0.20, 0.35];
+        let mats = [1.0, 0.75];
+        let calls = [1u8, 0u8];
+
+        let black =
+            black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls);
+        let bsm = bs_price_batch_wasm(
+            &forwards,
+            &strikes,
+            &rates,
+            &rates,
+            &vols,
+            &mats,
+            &calls,
+        );
+
+        assert_eq!(black.len(), bsm.len());
+        for i in 0..black.len() {
+            assert!((black[i] - bsm[i]).abs() < TOL);
+        }
+    }
+
+    // -- black76_greeks_batch_wasm --
+
+    #[test]
+    fn black76_greeks_batch_matches_bsm_q_eq_r() {
+        let forwards = [100.0];
+        let strikes = [100.0];
+        let rates = [0.05];
+        let vols = [0.20];
+        let expiries = [1.0];
+        let calls = [1u8];
+
+        let black =
+            black76_greeks_batch_wasm(&forwards, &strikes, &rates, &vols, &expiries, &calls);
+        let bsm = bsm_greeks_batch_wasm(
+            &forwards,
+            &strikes,
+            &rates,
+            &rates,
+            &vols,
+            &expiries,
+            &calls,
+        );
+
+        assert_eq!(black.len(), 7);
+        assert_eq!(bsm.len(), 7);
+        // Delta/gamma/vega/vanna/volga align with BSM when q = r and S = F.
+        // Theta/rho are convention-sensitive because Black-76 keeps F fixed.
+        for i in [0usize, 1usize, 2usize, 5usize, 6usize] {
+            assert!((black[i] - bsm[i]).abs() < TOL);
+        }
+        assert!(black[3].is_finite());
+        assert!(black[4].is_finite());
     }
 
     // -- barrier_price --
