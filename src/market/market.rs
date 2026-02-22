@@ -14,6 +14,8 @@ use std::any::Any;
 
 use crate::core::PricingError;
 
+use super::dividends::DividendSchedule;
+
 /// Clone support for boxed volatility surface trait objects.
 pub trait VolSurfaceClone {
     /// Clones the concrete surface behind the trait object.
@@ -204,6 +206,9 @@ pub struct Market {
     pub rate: f64,
     /// Continuously compounded dividend yield.
     pub dividend_yield: f64,
+    /// Deterministic discrete dividend schedule.
+    #[serde(default)]
+    pub dividend_schedule: DividendSchedule,
     /// Volatility source.
     pub vol: VolSource,
     /// Optional date string for bindings/interoperability.
@@ -235,6 +240,54 @@ impl Market {
         self.dividend_yield
     }
 
+    /// Returns deterministic discrete dividend schedule.
+    #[inline]
+    pub fn dividends(&self) -> &DividendSchedule {
+        &self.dividend_schedule
+    }
+
+    /// Returns `true` if the market carries a non-empty discrete schedule.
+    #[inline]
+    pub fn has_discrete_dividends(&self) -> bool {
+        !self.dividend_schedule.is_empty()
+    }
+
+    /// Forward price at maturity under continuous yield + discrete schedule.
+    #[inline]
+    pub fn forward_price(&self, maturity: f64) -> f64 {
+        self.dividend_schedule
+            .forward_price(self.spot, self.rate, self.dividend_yield, maturity)
+    }
+
+    /// Prepaid-forward equivalent spot at maturity.
+    #[inline]
+    pub fn prepaid_forward_spot(&self, maturity: f64) -> f64 {
+        self.dividend_schedule.prepaid_forward_spot(
+            self.spot,
+            self.rate,
+            self.dividend_yield,
+            maturity,
+        )
+    }
+
+    /// Effective continuous dividend yield equivalent at maturity.
+    #[inline]
+    pub fn effective_dividend_yield(&self, maturity: f64) -> f64 {
+        self.dividend_schedule.effective_dividend_yield(
+            self.spot,
+            self.rate,
+            self.dividend_yield,
+            maturity,
+        )
+    }
+
+    /// Escrowed spot adjustment using discrete dividends only (`q=0`).
+    #[inline]
+    pub fn escrowed_spot_adjustment(&self, maturity: f64) -> f64 {
+        self.dividend_schedule
+            .escrowed_spot_adjustment(self.spot, self.rate, maturity)
+    }
+
     /// Resolves volatility for strike and expiry.
     #[inline]
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
@@ -254,6 +307,7 @@ pub struct MarketBuilder {
     spot: Option<f64>,
     rate: Option<f64>,
     dividend_yield: Option<f64>,
+    dividend_schedule: Option<DividendSchedule>,
     flat_vol: Option<f64>,
     surface: Option<Box<dyn VolSurface>>,
     reference_date: Option<String>,
@@ -278,6 +332,13 @@ impl MarketBuilder {
     #[inline]
     pub fn dividend_yield(mut self, dividend_yield: f64) -> Self {
         self.dividend_yield = Some(dividend_yield);
+        self
+    }
+
+    /// Sets the deterministic discrete dividend schedule.
+    #[inline]
+    pub fn dividend_schedule(mut self, dividend_schedule: DividendSchedule) -> Self {
+        self.dividend_schedule = Some(dividend_schedule);
         self
     }
 
@@ -315,6 +376,10 @@ impl MarketBuilder {
 
         let rate = self.rate.unwrap_or(0.0);
         let dividend_yield = self.dividend_yield.unwrap_or(0.0);
+        let dividend_schedule = self.dividend_schedule.unwrap_or_default();
+        dividend_schedule
+            .validate()
+            .map_err(PricingError::InvalidInput)?;
 
         let vol = if let Some(surface) = self.surface {
             let any_surface = surface.as_ref() as &dyn Any;
@@ -342,6 +407,7 @@ impl MarketBuilder {
             spot,
             rate,
             dividend_yield,
+            dividend_schedule,
             vol,
             reference_date: self.reference_date,
         })

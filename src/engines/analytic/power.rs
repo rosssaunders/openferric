@@ -129,13 +129,14 @@ impl PricingEngine<PowerOption> for PowerOptionEngine {
                 "market volatility must be >= 0".to_string(),
             ));
         }
+        let q = market.effective_dividend_yield(instrument.expiry.max(1.0e-12));
 
         let price = power_option_price(
             instrument.option_type,
             market.spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            q,
             vol,
             instrument.alpha,
             instrument.expiry,
@@ -144,7 +145,7 @@ impl PricingEngine<PowerOption> for PowerOptionEngine {
         let pv_forward = market.spot.powf(instrument.alpha)
             * (((instrument.alpha - 1.0)
                 * (0.5 * instrument.alpha * vol).mul_add(vol, market.rate)
-                - instrument.alpha * market.dividend_yield)
+                - instrument.alpha * q)
                 * instrument.expiry)
                 .exp();
 

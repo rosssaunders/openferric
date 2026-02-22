@@ -140,6 +140,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
         let n_s = self.space_steps;
         let s_max = self.s_max_multiplier * instrument.strike;
         let ds = s_max / n_s as f64;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
         // CFL stability: dt <= ds^2 / (sigma^2 * s_max^2)
         let dt_nominal = instrument.expiry / n_t as f64;
@@ -174,7 +175,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
         let mut coeff_c = vec![0.0_f64; n_s + 1];
         let ds_sq = ds * ds;
         let half_vol_sq = 0.5 * vol * vol;
-        let half_drift_ds = (market.rate - market.dividend_yield) / (2.0 * ds);
+        let half_drift_ds = (market.rate - effective_dividend_yield) / (2.0 * ds);
         for i in 1..n_s {
             let s = i as f64 * ds;
             let alpha = half_vol_sq * s * s / ds_sq;
@@ -194,7 +195,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 is_american,
                 instrument.strike,
                 market.rate,
-                market.dividend_yield,
+                effective_dividend_yield,
                 s_max,
                 tau_new,
             );

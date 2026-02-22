@@ -169,7 +169,7 @@ impl MonteCarloGreeksEngine {
         }
 
         let rate = market.rate;
-        let dividend = market.dividend_yield;
+        let dividend = market.effective_dividend_yield(maturity);
         let drift = (rate - dividend - 0.5 * vol * vol) * maturity;
         let sig_sqrt_t = vol * maturity.sqrt();
         let discount = (-rate * maturity).exp();

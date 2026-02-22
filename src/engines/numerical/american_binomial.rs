@@ -138,7 +138,8 @@ impl PricingEngine<VanillaOption> for AmericanBinomialEngine {
         let dt = instrument.expiry / self.steps as f64;
         let u = (vol * dt.sqrt()).exp();
         let d = 1.0 / u;
-        let growth = ((market.rate - market.dividend_yield) * dt).exp();
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let growth = ((market.rate - effective_dividend_yield) * dt).exp();
         let p = (growth - d) / (u - d);
         if !(0.0..=1.0).contains(&p) || !p.is_finite() {
             return Err(PricingError::NumericalError(

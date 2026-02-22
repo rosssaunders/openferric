@@ -17,11 +17,11 @@ use crate::core::{
     PricingResult, StrikeType,
 };
 use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
-use crate::market::Market;
+use crate::market::{DividendSchedule, Market};
 use crate::math::arena::PricingArena;
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
 use crate::math::fast_rng::{FastRngKind, Xoshiro256PlusPlus, uniform_open01};
-use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine};
+use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine, PathGenerator};
 use crate::models::Gbm;
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
 use crate::pricing::european::black_scholes_price;
@@ -119,6 +119,61 @@ fn average_for_observations(
     }
 }
 
+#[derive(Debug, Clone)]
+struct DiscreteDividendGbmPathGenerator {
+    base: GbmPathGenerator,
+    schedule: DividendSchedule,
+}
+
+impl DiscreteDividendGbmPathGenerator {
+    fn new(base: GbmPathGenerator, schedule: DividendSchedule) -> Self {
+        Self { base, schedule }
+    }
+}
+
+impl PathGenerator for DiscreteDividendGbmPathGenerator {
+    fn steps(&self) -> usize {
+        self.base.steps
+    }
+
+    fn generate_from_normals(&self, normals_1: &[f64], normals_2: &[f64]) -> Vec<f64> {
+        let mut path = vec![0.0_f64; self.base.steps + 1];
+        self.generate_into(normals_1, normals_2, &mut path);
+        path
+    }
+
+    fn generate_into(&self, normals_1: &[f64], _normals_2: &[f64], out: &mut [f64]) {
+        let dt = self.base.maturity / self.base.steps as f64;
+        let sqrt_dt = dt.sqrt();
+        let drift = (self.base.model.mu - 0.5 * self.base.model.sigma * self.base.model.sigma) * dt;
+        let diffusion = self.base.model.sigma * sqrt_dt;
+
+        let mut s = self.base.s0;
+        out[0] = s;
+
+        let events = self.schedule.events();
+        let mut ev_idx = 0usize;
+        let maturity = self.base.maturity;
+
+        for (j, &z) in normals_1.iter().enumerate().take(self.base.steps) {
+            s *= diffusion.mul_add(z, drift).exp();
+            let t = (j + 1) as f64 * dt;
+            while ev_idx < events.len()
+                && events[ev_idx].time <= maturity + 1.0e-12
+                && events[ev_idx].time <= t + 1.0e-12
+            {
+                s = events[ev_idx].apply_jump(s);
+                ev_idx += 1;
+            }
+            out[j + 1] = s;
+        }
+    }
+
+    fn num_normal_streams(&self) -> usize {
+        1
+    }
+}
+
 const ARENA_MC_SEED: u64 = 42;
 
 /// Sequential European vanilla Monte Carlo pricer reusing a pre-allocated arena.
@@ -131,7 +186,7 @@ pub fn mc_european_with_arena(
     instrument: &VanillaOption,
     market: &Market,
     n_paths: usize,
-    _n_steps: usize,
+    n_steps: usize,
     arena: &mut PricingArena,
 ) -> PricingResult {
     if n_paths == 0 {
@@ -159,6 +214,16 @@ pub fn mc_european_with_arena(
             greeks: None,
             diagnostics: crate::core::Diagnostics::new(),
         };
+    }
+
+    if market.has_discrete_dividends() {
+        let engine = MonteCarloPricingEngine::new(n_paths, n_steps.max(1), ARENA_MC_SEED);
+        return engine.price(instrument, market).unwrap_or(PricingResult {
+            price: f64::NAN,
+            stderr: None,
+            greeks: None,
+            diagnostics: crate::core::Diagnostics::new(),
+        });
     }
 
     let vol = market.vol_for(instrument.strike, instrument.expiry);
@@ -386,6 +451,9 @@ impl MonteCarloInstrument for VanillaOption {
         if !matches!(self.exercise, ExerciseStyle::European) {
             return None;
         }
+        if market.has_discrete_dividends() {
+            return None;
+        }
 
         let expected_discounted = black_scholes_price_with_dividend(
             self.option_type,
@@ -471,6 +539,9 @@ impl MonteCarloInstrument for AsianOption {
         if self.asian.averaging != Averaging::Arithmetic
             || self.asian.strike_type != StrikeType::Fixed
         {
+            return None;
+        }
+        if market.has_discrete_dividends() {
             return None;
         }
 
@@ -689,7 +760,7 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
         if !self.reproducible {
             engine = engine.with_randomized_streams();
         }
-        if self.control_variate {
+        if self.control_variate && !market.has_discrete_dividends() {
             let expected_discounted = geometric_asian_discrete_fixed_closed_form(
                 instrument.option_type,
                 market.spot,
@@ -721,19 +792,39 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
         }
 
         let discount = (-market.rate * maturity).exp();
-        let (price, stderr) = engine.run(
-            &generator,
-            |path| {
-                let arithmetic_avg = average_for_observations(
-                    path,
-                    maturity,
-                    &instrument.asian.observation_times,
-                    Averaging::Arithmetic,
-                );
-                vanilla_payoff(instrument.option_type, arithmetic_avg, instrument.strike)
-            },
-            discount,
-        );
+        let (price, stderr) = if market.has_discrete_dividends() {
+            let generator = DiscreteDividendGbmPathGenerator::new(
+                generator.clone(),
+                market.dividend_schedule.clone(),
+            );
+            engine.run(
+                &generator,
+                |path| {
+                    let arithmetic_avg = average_for_observations(
+                        path,
+                        maturity,
+                        &instrument.asian.observation_times,
+                        Averaging::Arithmetic,
+                    );
+                    vanilla_payoff(instrument.option_type, arithmetic_avg, instrument.strike)
+                },
+                discount,
+            )
+        } else {
+            engine.run(
+                &generator,
+                |path| {
+                    let arithmetic_avg = average_for_observations(
+                        path,
+                        maturity,
+                        &instrument.asian.observation_times,
+                        Averaging::Arithmetic,
+                    );
+                    vanilla_payoff(instrument.option_type, arithmetic_avg, instrument.strike)
+                },
+                discount,
+            )
+        };
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::NumPaths, self.paths as f64);
@@ -824,11 +915,23 @@ where
         };
 
         let discount_factor = (-market.rate * maturity).exp();
-        let (price, stderr) = engine.run(
-            &generator,
-            |path| instrument.payoff_from_path(path),
-            discount_factor,
-        );
+        let (price, stderr) = if market.has_discrete_dividends() {
+            let generator = DiscreteDividendGbmPathGenerator::new(
+                generator.clone(),
+                market.dividend_schedule.clone(),
+            );
+            engine.run(
+                &generator,
+                |path| instrument.payoff_from_path(path),
+                discount_factor,
+            )
+        } else {
+            engine.run(
+                &generator,
+                |path| instrument.payoff_from_path(path),
+                discount_factor,
+            )
+        };
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::NumPaths, self.num_paths as f64);

@@ -182,6 +182,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
         let dt = instrument.expiry / n_t as f64;
         let s_max = self.s_max_multiplier * instrument.strike;
         let ds = s_max / n_s as f64;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
         let bermudan_flags = match &instrument.exercise {
@@ -207,7 +208,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
         let inv_ds2 = 1.0 / (ds * ds);
         let half_vol_sq = 0.5 * vol * vol;
         let inv_2ds = 1.0 / (2.0 * ds);
-        let drift = market.rate - market.dividend_yield;
+        let drift = market.rate - effective_dividend_yield;
         for k in 0..interior_n {
             let i = k + 1;
             let s = i as f64 * ds;
@@ -244,7 +245,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 is_american,
                 instrument.strike,
                 market.rate,
-                market.dividend_yield,
+                effective_dividend_yield,
                 s_max,
                 tau_new,
             );

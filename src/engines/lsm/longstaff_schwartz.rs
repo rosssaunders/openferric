@@ -195,7 +195,8 @@ impl LongstaffSchwartzEngine {
     ) -> Result<(Vec<f64>, usize), PricingError> {
         let dt = instrument.expiry / self.num_steps as f64;
         let sqrt_dt = dt.sqrt();
-        let drift_rn = market.rate - market.dividend_yield;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let drift_rn = market.rate - effective_dividend_yield;
         let raw_stride = self.num_steps + 1;
         let stride = (raw_stride + 7) & !7;
         let mut paths = vec![0.0_f64; self.num_paths * stride];
@@ -452,7 +453,8 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         }
 
         let dt = instrument.expiry / self.num_steps as f64;
-        let drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * dt;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let drift = (market.rate - effective_dividend_yield - 0.5 * vol * vol) * dt;
         let step_vol = vol * dt.sqrt();
         let disc = (-market.rate * dt).exp();
 
@@ -654,7 +656,8 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
         }
 
         let dt = instrument.expiry / self.num_steps as f64;
-        let drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * dt;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let drift = (market.rate - effective_dividend_yield - 0.5 * vol * vol) * dt;
         let step_vol = vol * dt.sqrt();
         let discount = (-market.rate * instrument.expiry).exp();
 

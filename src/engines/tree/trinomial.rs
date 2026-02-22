@@ -82,7 +82,8 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         let u = (vol * (2.0 * dt).sqrt()).exp();
         let d = 1.0 / u;
 
-        let nu = market.rate - market.dividend_yield;
+        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let nu = market.rate - effective_dividend_yield;
         let a = (nu * dt / 2.0).exp();
         let b = (vol * (dt / 2.0).sqrt()).exp();
         let denom = b - 1.0 / b;

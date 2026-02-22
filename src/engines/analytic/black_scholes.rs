@@ -324,12 +324,18 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             });
         }
 
+        let (spot, dividend_yield) = if market.has_discrete_dividends() {
+            (market.prepaid_forward_spot(instrument.expiry), 0.0)
+        } else {
+            (market.spot, market.dividend_yield)
+        };
+
         let (price, greeks, d1, d2) = bs_price_greeks_with_dividend(
             instrument.option_type,
-            market.spot,
+            spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            dividend_yield,
             vol,
             instrument.expiry,
         );
@@ -366,21 +372,27 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             ));
         }
 
+        let (spot, dividend_yield) = if market.has_discrete_dividends() {
+            (market.prepaid_forward_spot(instrument.expiry), 0.0)
+        } else {
+            (market.spot, market.dividend_yield)
+        };
+
         let (price, greeks) = black_scholes_price_greeks_aad(
             instrument.option_type,
-            market.spot,
+            spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            dividend_yield,
             vol,
             instrument.expiry,
         );
         let (d1, d2) = if instrument.expiry > 0.0 && vol > 0.0 {
             d1_d2(
-                market.spot,
+                spot,
                 instrument.strike,
                 market.rate,
-                market.dividend_yield,
+                dividend_yield,
                 vol,
                 instrument.expiry,
             )

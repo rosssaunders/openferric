@@ -135,6 +135,7 @@ pub fn mc_european_pathwise_aad(
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
     let mut grad_sum = [0.0_f64; 4];
+    let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
     for i in 0..samples {
         let seed = resolve_stream_seed(engine.seed, i, engine.reproducible);
@@ -150,7 +151,7 @@ pub fn mc_european_pathwise_aad(
             instrument.strike,
             market.spot,
             market.rate,
-            market.dividend_yield,
+            effective_dividend_yield,
             vol,
             instrument.expiry,
             &normals,
@@ -167,7 +168,7 @@ pub fn mc_european_pathwise_aad(
                 instrument.strike,
                 market.spot,
                 market.rate,
-                market.dividend_yield,
+                effective_dividend_yield,
                 vol,
                 instrument.expiry,
                 &normals,

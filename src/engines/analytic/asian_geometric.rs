@@ -57,7 +57,7 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
             market.spot,
             instrument.strike,
             market.rate,
-            market.dividend_yield,
+            market.effective_dividend_yield(instrument.expiry),
             vol,
             &instrument.asian.observation_times,
         );
