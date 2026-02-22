@@ -534,7 +534,7 @@
       analysis: {
         panels: ['greeks', 'forwardvol', 'volcone', 'volchange'],
         build(dv) {
-          dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap' });
+          dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap (Black-76)' });
           dv.addPanel({ id: 'forwardvol', component: 'forwardvol', title: 'Forward Vol',
             position: { referencePanel: 'greeks', direction: 'right' } });
           dv.addPanel({ id: 'volcone', component: 'volcone', title: 'Vol Cone',
@@ -839,9 +839,9 @@
       init(params) {
         this._el.innerHTML =
           '<div class="panel-head">'
-          + '<div class="panel-title">Greeks Heatmap</div>'
+          + '<div class="panel-title">Greeks Heatmap (Black-76)</div>'
           + '<div class="toolbar greeks-tabs">'
-          + '<button class="tab-btn active" data-greek="delta">Delta</button>'
+          + '<button class="tab-btn active" data-greek="delta" title="Black-76 forward delta">Fwd Delta</button>'
           + '<button class="tab-btn" data-greek="gamma">Gamma</button>'
           + '<button class="tab-btn" data-greek="vega">Vega</button>'
           + '<button class="tab-btn" data-greek="theta">Theta</button>'
@@ -1182,7 +1182,7 @@
           + '<div class="strategy-legs">'
           + '<table><thead><tr><th>C/P</th><th>strike</th><th>expiry</th><th>qty</th><th>IV</th><th>price</th><th></th></tr></thead><tbody></tbody></table>'
           + '<div class="net-greeks">'
-          + '<div class="k">delta</div><div class="v sg-delta">--</div>'
+          + '<div class="k">fwd delta</div><div class="v sg-delta">--</div>'
           + '<div class="k">gamma</div><div class="v sg-gamma">--</div>'
           + '<div class="k">vega</div><div class="v sg-vega">--</div>'
           + '<div class="k">theta</div><div class="v sg-theta">--</div>'
@@ -1583,7 +1583,7 @@
       sel.value = activeExpiry;
     }
 
-    // --- Greeks Heatmap ---
+    // --- Black-76 Greeks Heatmap ---
     function renderGreeks(data) {
       const div = panels.greeks ? panels.greeks.chartDiv : null;
       if (!div || !data) return;
@@ -2426,7 +2426,7 @@
         position: { referencePanel: 'surface', direction: 'right' } });
       dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
         position: { referencePanel: 'surface', direction: 'below' } });
-      dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap',
+      dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap (Black-76)',
         position: { referencePanel: 'volchange', direction: 'below' } });
       dv.addPanel({ id: 'term', component: 'term', title: 'Term Structure',
         position: { referencePanel: 'smile', direction: 'below' } });

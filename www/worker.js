@@ -286,8 +286,8 @@ function computeGreeksData(slices, packed, spotPrice) {
   const gIvs = wasm.batch_slice_iv(packed.headers, packed.params,
     new Float64Array(gKVals), new Uint32Array(gSliceIdx));
 
-  // Batch greeks via bsm_greeks_batch_wasm
-  const bSpots = [], bStrikes = [], bRates = [], bDivs = [], bVols = [], bExpiries = [], bCalls = [];
+  // Batch Greeks via black76_greeks_batch_wasm (forward delta convention)
+  const bForwards = [], bStrikes = [], bRates = [], bVols = [], bExpiries = [], bCalls = [];
   const validMap = []; // maps batch index -> { sliceIdx, strikeIdx }
   let gIdx = 0;
   for (let si = 0; si < slices.length; si++) {
@@ -299,11 +299,10 @@ function computeGreeksData(slices, packed, spotPrice) {
         validMap.push(null);
         continue;
       }
-      validMap.push({ batchIdx: bSpots.length, sliceIdx: si, strikeIdx: sti });
-      bSpots.push(spotPrice);
+      validMap.push({ batchIdx: bForwards.length, sliceIdx: si, strikeIdx: sti });
+      bForwards.push(sl.forward);
       bStrikes.push(strike);
       bRates.push(0.05);
-      bDivs.push(0.0);
       bVols.push(iv / 100);
       bExpiries.push(sl.T);
       bCalls.push(1); // call for greeks display
@@ -311,10 +310,10 @@ function computeGreeksData(slices, packed, spotPrice) {
   }
 
   let greeksFlat = null;
-  if (bSpots.length > 0) {
-    greeksFlat = wasm.bsm_greeks_batch_wasm(
-      new Float64Array(bSpots), new Float64Array(bStrikes),
-      new Float64Array(bRates), new Float64Array(bDivs),
+  if (bForwards.length > 0) {
+    greeksFlat = wasm.black76_greeks_batch_wasm(
+      new Float64Array(bForwards), new Float64Array(bStrikes),
+      new Float64Array(bRates),
       new Float64Array(bVols), new Float64Array(bExpiries),
       new Uint8Array(bCalls)
     );
@@ -372,7 +371,7 @@ function computeScannerData(slices, packed, chain, spotPrice) {
 
   // Collect pricing requests
   const pricingRequests = [];
-  const bSpots = [], bStrikes = [], bRates = [], bDivs = [], bVols = [], bMats = [], bCalls = [];
+  const bForwards = [], bStrikes = [], bRates = [], bVols = [], bMats = [], bCalls = [];
 
   for (let pi = 0; pi < preItems.length; pi++) {
     const { name, q, sl } = preItems[pi];
@@ -385,20 +384,20 @@ function computeScannerData(slices, packed, chain, spotPrice) {
     const marketMid = isLinear ? q.mark_price : q.mark_price * spotPrice;
     const callFlag = q.isCall ? 1 : 0;
 
-    const theoIdx = bSpots.length;
-    bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
-    bDivs.push(0.0); bVols.push(modelSigma); bMats.push(sl.T); bCalls.push(callFlag);
+    const theoIdx = bForwards.length;
+    bForwards.push(sl.forward); bStrikes.push(q.strike); bRates.push(0.05);
+    bVols.push(modelSigma); bMats.push(sl.T); bCalls.push(callFlag);
 
-    const bidIdx = q.bid_iv > 0 ? bSpots.length : -1;
+    const bidIdx = q.bid_iv > 0 ? bForwards.length : -1;
     if (bidIdx >= 0) {
-      bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
-      bDivs.push(0.0); bVols.push(q.bid_iv); bMats.push(sl.T); bCalls.push(callFlag);
+      bForwards.push(sl.forward); bStrikes.push(q.strike); bRates.push(0.05);
+      bVols.push(q.bid_iv); bMats.push(sl.T); bCalls.push(callFlag);
     }
 
-    const askIdx = q.ask_iv > 0 ? bSpots.length : -1;
+    const askIdx = q.ask_iv > 0 ? bForwards.length : -1;
     if (askIdx >= 0) {
-      bSpots.push(spotPrice); bStrikes.push(q.strike); bRates.push(0.05);
-      bDivs.push(0.0); bVols.push(q.ask_iv); bMats.push(sl.T); bCalls.push(callFlag);
+      bForwards.push(sl.forward); bStrikes.push(q.strike); bRates.push(0.05);
+      bVols.push(q.ask_iv); bMats.push(sl.T); bCalls.push(callFlag);
     }
 
     pricingRequests.push({ name, expiryCode: sl.expiryCode, T: sl.T,
@@ -406,11 +405,11 @@ function computeScannerData(slices, packed, chain, spotPrice) {
       marketMid, theoIdx, bidIdx, askIdx });
   }
 
-  // Single batch BS pricing call
-  const prices = bSpots.length > 0
-    ? wasm.bs_price_batch_wasm(
-        new Float64Array(bSpots), new Float64Array(bStrikes),
-        new Float64Array(bRates), new Float64Array(bDivs),
+  // Single batch Black-76 pricing call
+  const prices = bForwards.length > 0
+    ? wasm.black76_price_batch_wasm(
+        new Float64Array(bForwards), new Float64Array(bStrikes),
+        new Float64Array(bRates),
         new Float64Array(bVols), new Float64Array(bMats),
         new Uint8Array(bCalls))
     : [];
@@ -548,14 +547,14 @@ self.onmessage = function(e) {
     const spotLow = spotPrice * 0.7, spotHigh = spotPrice * 1.3;
     const spotAxis = [];
     for (let i = 0; i < nSpots; i++) spotAxis.push(spotLow + (spotHigh - spotLow) * i / (nSpots - 1));
-    const eSp = [], eK = [], eR = [], eD = [], eV = [], eT = [], eC = [];
+    const eFw = [], eK = [], eR = [], eV = [], eT = [], eC = [];
     for (const leg of legs) {
-      eSp.push(spotPrice); eK.push(leg.strike); eR.push(0.05); eD.push(0.0);
+      eFw.push(spotPrice); eK.push(leg.strike); eR.push(0.05);
       eV.push(leg.iv); eT.push(leg.T); eC.push(leg.isCall ? 1 : 0);
     }
-    const entryPrices = wasm.bs_price_batch_wasm(
-      new Float64Array(eSp), new Float64Array(eK), new Float64Array(eR),
-      new Float64Array(eD), new Float64Array(eV), new Float64Array(eT), new Uint8Array(eC));
+    const entryPrices = wasm.black76_price_batch_wasm(
+      new Float64Array(eFw), new Float64Array(eK), new Float64Array(eR),
+      new Float64Array(eV), new Float64Array(eT), new Uint8Array(eC));
     let totalCost = 0;
     for (let i = 0; i < legs.length; i++) totalCost += legs[i].quantity * entryPrices[i];
     const pnlAtExpiry = Array.from(wasm.strategy_intrinsic_pnl_wasm(
@@ -566,31 +565,31 @@ self.onmessage = function(e) {
       totalCost));
     let pnlBeforeExpiry = null;
     if (spotShock !== 0 || volShock !== 0 || timeShock !== 0) {
-      const bSp = [], bK = [], bR = [], bD = [], bV = [], bT = [], bC = [];
+      const bFw = [], bK = [], bR = [], bV = [], bT = [], bC = [];
       for (const s of spotAxis) {
         for (const leg of legs) {
-          bSp.push(s); bK.push(leg.strike); bR.push(0.05); bD.push(0.0);
+          bFw.push(s); bK.push(leg.strike); bR.push(0.05);
           bV.push(Math.max(0.01, leg.iv + volShock)); bT.push(Math.max(1/365, leg.T + timeShock));
           bC.push(leg.isCall ? 1 : 0);
         }
       }
-      const bp = wasm.bs_price_batch_wasm(
-        new Float64Array(bSp), new Float64Array(bK), new Float64Array(bR),
-        new Float64Array(bD), new Float64Array(bV), new Float64Array(bT), new Uint8Array(bC));
+      const bp = wasm.black76_price_batch_wasm(
+        new Float64Array(bFw), new Float64Array(bK), new Float64Array(bR),
+        new Float64Array(bV), new Float64Array(bT), new Uint8Array(bC));
       pnlBeforeExpiry = spotAxis.map((_, si) => {
         let pnl = 0;
         for (let li = 0; li < legs.length; li++) pnl += legs[li].quantity * bp[si * legs.length + li];
         return pnl - totalCost;
       });
     }
-    const gSp = [], gK = [], gR = [], gD = [], gV = [], gT = [], gC = [];
+    const gFw = [], gK = [], gR = [], gV = [], gT = [], gC = [];
     for (const leg of legs) {
-      gSp.push(spotPrice); gK.push(leg.strike); gR.push(0.05); gD.push(0.0);
+      gFw.push(spotPrice); gK.push(leg.strike); gR.push(0.05);
       gV.push(leg.iv); gT.push(leg.T); gC.push(leg.isCall ? 1 : 0);
     }
-    const greeks = wasm.bsm_greeks_batch_wasm(
-      new Float64Array(gSp), new Float64Array(gK), new Float64Array(gR),
-      new Float64Array(gD), new Float64Array(gV), new Float64Array(gT), new Uint8Array(gC));
+    const greeks = wasm.black76_greeks_batch_wasm(
+      new Float64Array(gFw), new Float64Array(gK), new Float64Array(gR),
+      new Float64Array(gV), new Float64Array(gT), new Uint8Array(gC));
     const netGreeks = [0, 0, 0, 0];
     for (let i = 0; i < legs.length; i++) {
       netGreeks[0] += legs[i].quantity * greeks[i * 7 + 0];
