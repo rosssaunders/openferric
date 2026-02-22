@@ -1,3 +1,7 @@
+//! Risk analytics for Xva.
+//!
+//! Module openferric::risk::xva provides portfolio-level measures and adjustments.
+
 use crate::credit::SurvivalCurve;
 use crate::rates::YieldCurve;
 

@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Variance Swap.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use std::cmp::Ordering;
 
 use crate::core::{PricingEngine, PricingError, PricingResult};

@@ -1,3 +1,7 @@
+//! Volatility analytics for Local Vol.
+//!
+//! Module openferric::vol::local_vol provides smile/surface construction or volatility inversion utilities.
+
 use crate::pricing::OptionType;
 use crate::pricing::european::black_76_price;
 

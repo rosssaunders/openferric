@@ -1,4 +1,11 @@
+//! Yield-curve primitives and simple bootstrap helpers.
+//!
+//! Curve interpolation is log-linear in discount factors, which corresponds
+//! to linear interpolation of continuously-compounded zero rates.
+
 /// Discount-factor term structure keyed by maturity tenor in years.
+///
+/// Tenors are interpreted as year fractions from valuation date.
 #[derive(Debug, Clone, PartialEq)]
 pub struct YieldCurve {
     /// Curve nodes as `(tenor, discount_factor)`.
@@ -7,6 +14,16 @@ pub struct YieldCurve {
 
 impl YieldCurve {
     /// Creates a curve from unsorted discount-factor nodes.
+    ///
+    /// Invalid nodes (`tenor <= 0` or `discount_factor <= 0`) are dropped.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::rates::YieldCurve;
+    ///
+    /// let curve = YieldCurve::new(vec![(2.0, 0.90), (1.0, 0.95)]);
+    /// assert_eq!(curve.tenors[0].0, 1.0);
+    /// ```
     pub fn new(mut tenors: Vec<(f64, f64)>) -> Self {
         tenors.retain(|(t, df)| *t > 0.0 && *df > 0.0);
         tenors.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -14,11 +31,26 @@ impl YieldCurve {
     }
 
     /// Returns discount factor at tenor `t` using log-linear interpolation.
+    ///
+    /// # Numerical notes
+    /// - `t <= 0` returns `1.0`.
+    /// - For extrapolation beyond the last node, the last segment slope is reused.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::rates::YieldCurve;
+    ///
+    /// let curve = YieldCurve::new(vec![(1.0, 0.95), (2.0, 0.90)]);
+    /// let df = curve.discount_factor(1.5);
+    /// assert!(df < 0.95 && df > 0.90);
+    /// ```
     pub fn discount_factor(&self, t: f64) -> f64 {
         discount_factor_from_points(&self.tenors, t)
     }
 
     /// Returns continuously-compounded zero rate at tenor `t`.
+    ///
+    /// Uses `z(t) = -ln(DF(t))/t`.
     pub fn zero_rate(&self, t: f64) -> f64 {
         if t <= 0.0 {
             return 0.0;
@@ -27,6 +59,20 @@ impl YieldCurve {
     }
 
     /// Returns continuously-compounded forward rate between `t1` and `t2`.
+    ///
+    /// Uses `f(t1,t2) = ln(DF(t1)/DF(t2)) / (t2-t1)`.
+    ///
+    /// # Panics
+    /// Panics when `t2 <= t1`.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::rates::YieldCurve;
+    ///
+    /// let curve = YieldCurve::new(vec![(1.0, 0.95), (2.0, 0.90)]);
+    /// let fwd = curve.forward_rate(1.0, 2.0);
+    /// assert!(fwd.is_finite());
+    /// ```
     pub fn forward_rate(&self, t1: f64, t2: f64) -> f64 {
         assert!(t2 > t1, "t2 must be greater than t1");
         (self.discount_factor(t1) / self.discount_factor(t2)).ln() / (t2 - t1)
@@ -38,6 +84,8 @@ pub struct YieldCurveBuilder;
 
 impl YieldCurveBuilder {
     /// Builds a curve from simple deposit rates `(tenor, rate)`.
+    ///
+    /// Uses simple-compounding conversion `DF = 1 / (1 + rT)`.
     pub fn from_deposits(deposits: &[(f64, f64)]) -> YieldCurve {
         let points = deposits
             .iter()
@@ -48,6 +96,18 @@ impl YieldCurveBuilder {
     }
 
     /// Bootstraps discount factors from par swap rates `(tenor, fixed_rate)`.
+    ///
+    /// This assumes standard fixed-leg accrual on a regular payment grid and
+    /// solves discount factors sequentially (Hull, swap bootstrapping chapter).
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::rates::YieldCurveBuilder;
+    ///
+    /// let swaps = vec![(1.0, 0.03), (2.0, 0.032), (3.0, 0.034)];
+    /// let curve = YieldCurveBuilder::from_swap_rates(&swaps, 2);
+    /// assert_eq!(curve.tenors.len(), 3);
+    /// ```
     pub fn from_swap_rates(swap_rates: &[(f64, f64)], frequency: usize) -> YieldCurve {
         assert!(frequency > 0, "frequency must be > 0");
 

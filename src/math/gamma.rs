@@ -1,3 +1,7 @@
+//! Numerical utilities for Gamma.
+//!
+//! Supports stable and performant computation used by analytics and simulation engines.
+
 // Lanczos approximation for the gamma function.
 // Ported from statrs (MIT license), based on:
 // "An Analysis of the Lanczos Gamma Approximation", Glendon Ralph Pugh, 2004 p. 116

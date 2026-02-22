@@ -1,3 +1,7 @@
+//! FFT-based pricing utilities for Carr Madan.
+//!
+//! Provides transform-domain pricing building blocks used by Carr-Madan/FRFT workflows.
+
 use std::f64::consts::PI;
 
 use num_complex::Complex;

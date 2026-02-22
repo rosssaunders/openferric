@@ -1,3 +1,7 @@
+//! PDE solver components for Crank Nicolson.
+//!
+//! Implements finite-difference stepping and boundary handling for option pricing PDEs.
+
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;

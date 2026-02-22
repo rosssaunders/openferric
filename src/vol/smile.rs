@@ -1,3 +1,7 @@
+//! Volatility analytics for Smile.
+//!
+//! Module openferric::vol::smile provides smile/surface construction or volatility inversion utilities.
+
 use crate::core::OptionType;
 use crate::math::{CubicSpline, normal_cdf, normal_inv_cdf, normal_pdf};
 use crate::pricing::european::black_scholes_price;

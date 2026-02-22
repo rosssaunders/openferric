@@ -1,3 +1,7 @@
+//! Instrument definition for Digital contracts.
+//!
+//! Module openferric::instruments::digital contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Cash-or-nothing digital option.

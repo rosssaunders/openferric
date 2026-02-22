@@ -1,3 +1,7 @@
+//! PyO3 bindings exposing OpenFerric APIs to Python.
+//!
+//! Enabled with the python Cargo feature.
+
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use pyo3::prelude::*;

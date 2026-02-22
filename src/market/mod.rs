@@ -19,7 +19,11 @@ where
 
 /// Volatility surface abstraction used by pricing engines.
 pub trait VolSurface: std::fmt::Debug + Send + Sync + VolSurfaceClone {
-    /// Returns implied volatility for a given strike and expiry.
+    /// Returns Black-implied volatility for a given strike and expiry.
+    ///
+    /// `strike` is in underlying price units, `expiry` is a year fraction.
+    /// Implementations should return non-negative finite values; engines may reject
+    /// invalid outputs.
     fn vol(&self, strike: f64, expiry: f64) -> f64;
 }
 
@@ -46,6 +50,14 @@ pub enum VolSource {
 
 impl VolSource {
     /// Returns a volatility value for the requested strike and expiry.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::market::VolSource;
+    ///
+    /// let vol = VolSource::Flat(0.25);
+    /// assert_eq!(vol.vol(100.0, 1.0), 0.25);
+    /// ```
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
         match self {
             Self::Flat(v) => *v,
@@ -71,6 +83,21 @@ pub struct Market {
 
 impl Market {
     /// Starts a market builder.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::market::Market;
+    ///
+    /// let market = Market::builder()
+    ///     .spot(100.0)
+    ///     .rate(0.03)
+    ///     .dividend_yield(0.01)
+    ///     .flat_vol(0.20)
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(market.spot(), 100.0);
+    /// ```
     #[inline]
     pub fn builder() -> MarketBuilder {
         MarketBuilder::default()
@@ -95,6 +122,8 @@ impl Market {
     }
 
     /// Resolves volatility for strike and expiry.
+    ///
+    /// Equivalent to [`Market::vol_for`].
     #[inline]
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
         self.vol_for(strike, expiry)
@@ -149,6 +178,31 @@ impl MarketBuilder {
     }
 
     /// Sets a surface volatility source.
+    ///
+    /// This overrides any previously configured flat volatility.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::market::{Market, VolSurface};
+    ///
+    /// #[derive(Debug, Clone)]
+    /// struct FlatSurface(f64);
+    ///
+    /// impl VolSurface for FlatSurface {
+    ///     fn vol(&self, _strike: f64, _expiry: f64) -> f64 {
+    ///         self.0
+    ///     }
+    /// }
+    ///
+    /// let market = Market::builder()
+    ///     .spot(100.0)
+    ///     .rate(0.02)
+    ///     .vol_surface(Box::new(FlatSurface(0.18)))
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(market.vol_for(90.0, 2.0), 0.18);
+    /// ```
     pub fn vol_surface(mut self, surface: Box<dyn VolSurface>) -> Self {
         self.surface = Some(surface);
         self.flat_vol = None;
@@ -162,6 +216,10 @@ impl MarketBuilder {
     }
 
     /// Validates and builds a [`Market`].
+    ///
+    /// # Errors
+    /// Returns [`PricingError::InvalidInput`]
+    /// when required fields are missing or when spot/flat-vol are non-positive.
     pub fn build(self) -> Result<Market, PricingError> {
         let spot = self
             .spot

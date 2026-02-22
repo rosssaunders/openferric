@@ -1,3 +1,7 @@
+//! Instrument definition for Rainbow contracts.
+//!
+//! Module openferric::instruments::rainbow contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 fn validate_common(

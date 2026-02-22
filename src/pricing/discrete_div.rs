@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Discrete Div products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::core::OptionType;
 use crate::pricing::european::black_scholes_price;
 

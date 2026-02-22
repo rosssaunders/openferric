@@ -1,3 +1,7 @@
+//! Volatility analytics for Mixture.
+//!
+//! Module openferric::vol::mixture provides smile/surface construction or volatility inversion utilities.
+
 use nalgebra::{DMatrix, DVector};
 
 use crate::core::OptionType;

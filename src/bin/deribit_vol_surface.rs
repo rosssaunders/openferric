@@ -1,3 +1,7 @@
+//! Command-line entry point for Deribit Vol Surface workflows.
+//!
+//! This binary wires OpenFerric models and engines into an executable utility.
+
 #[cfg(feature = "deribit")]
 mod app {
     use chrono::NaiveDate;

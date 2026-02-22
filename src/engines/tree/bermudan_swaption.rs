@@ -1,3 +1,7 @@
+//! Tree-based pricing routines for Bermudan Swaption.
+//!
+//! Supports lattice valuation and early-exercise logic for path-dependent contracts.
+
 use crate::models::HullWhite;
 use crate::rates::{Swaption, YieldCurve};
 

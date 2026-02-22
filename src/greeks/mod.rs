@@ -1,3 +1,7 @@
+//! Greeks and sensitivity analytics.
+//!
+//! Provides finite-difference and model-based sensitivity estimators for option portfolios.
+
 use crate::math::{normal_cdf, normal_pdf};
 use crate::pricing::OptionType;
 

@@ -29,7 +29,34 @@ pub trait Instrument: std::fmt::Debug {
 
 /// Pricing engine abstraction over an instrument type.
 pub trait PricingEngine<I: Instrument> {
-    /// Prices an instrument under the provided market state.
+    /// Prices `instrument` under the provided market state.
+    ///
+    /// Returns a [`PricingResult`] containing present value, optional uncertainty,
+    /// optional Greeks, and engine diagnostics.
+    ///
+    /// # Errors
+    /// Returns [`PricingError`] for invalid instrument/market inputs, missing data,
+    /// or numerical failure/non-convergence.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::PricingEngine;
+    /// use openferric::engines::analytic::BlackScholesEngine;
+    /// use openferric::instruments::VanillaOption;
+    /// use openferric::market::Market;
+    ///
+    /// let option = VanillaOption::european_call(100.0, 1.0);
+    /// let market = Market::builder()
+    ///     .spot(100.0)
+    ///     .rate(0.05)
+    ///     .dividend_yield(0.0)
+    ///     .flat_vol(0.2)
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// let result = BlackScholesEngine::new().price(&option, &market).unwrap();
+    /// assert!(result.price > 0.0);
+    /// ```
     fn price(&self, instrument: &I, market: &Market) -> Result<PricingResult, PricingError>;
 }
 
@@ -176,6 +203,7 @@ pub struct Diagnostics {
 impl Diagnostics {
     pub const CAPACITY: usize = 8;
 
+    /// Creates an empty diagnostics container.
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -191,6 +219,22 @@ impl Diagnostics {
         self.len() == 0
     }
 
+    /// Inserts or updates a diagnostics scalar.
+    ///
+    /// Returns the previous value if the key already existed.
+    ///
+    /// # Panics
+    /// Panics if the key is unsupported or if capacity is exceeded.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::Diagnostics;
+    ///
+    /// let mut d = Diagnostics::new();
+    /// assert_eq!(d.insert("d1", 0.42), None);
+    /// assert_eq!(d.insert("d1", 0.50), Some(0.42));
+    /// assert_eq!(d.get("d1"), Some(&0.50));
+    /// ```
     #[inline]
     pub fn insert(&mut self, key: &'static str, value: f64) -> Option<f64> {
         let key = DiagKey::from_str(key).unwrap_or_else(|| {
@@ -228,6 +272,7 @@ impl Diagnostics {
             .find_map(|(entry_key, value)| (*entry_key == key).then_some(value))
     }
 
+    /// Returns `true` if a supported key is present.
     #[inline]
     pub fn contains_key(&self, key: &str) -> bool {
         DiagKey::from_str(key)
@@ -235,6 +280,17 @@ impl Diagnostics {
             .is_some()
     }
 
+    /// Returns a diagnostics value by key.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::Diagnostics;
+    ///
+    /// let mut d = Diagnostics::new();
+    /// d.insert("vol", 0.22);
+    /// assert_eq!(d.get("vol"), Some(&0.22));
+    /// assert_eq!(d.get("missing"), None);
+    /// ```
     #[inline]
     pub fn get(&self, key: &str) -> Option<&f64> {
         let key = DiagKey::from_str(key)?;
@@ -248,6 +304,33 @@ impl Diagnostics {
 }
 
 /// Unified engine result payload.
+///
+/// `price` is present value in instrument currency as of valuation time.
+/// `stderr` is typically populated by simulation engines only.
+/// `greeks` and `diagnostics` are engine-dependent.
+///
+/// # Examples
+/// ```
+/// use openferric::core::{Diagnostics, Greeks, PricingResult};
+///
+/// let mut diagnostics = Diagnostics::new();
+/// diagnostics.insert("d1", 0.12);
+///
+/// let result = PricingResult {
+///     price: 10.0,
+///     stderr: Some(0.05),
+///     greeks: Some(Greeks {
+///         delta: 0.5,
+///         gamma: 0.02,
+///         vega: 30.0,
+///         theta: -4.0,
+///         rho: 45.0,
+///     }),
+///     diagnostics,
+/// };
+///
+/// assert_eq!(result.price, 10.0);
+/// ```
 #[derive(Debug, Clone)]
 pub struct PricingResult {
     /// Present value.

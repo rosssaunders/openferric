@@ -1,3 +1,7 @@
+//! Instrument definition for Spread contracts.
+//!
+//! Module openferric::instruments::spread contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, PricingError};
 
 /// Two-asset spread option input bundle.

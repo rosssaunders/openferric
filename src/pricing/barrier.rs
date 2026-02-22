@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Barrier products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::core::types::OptionType;
 use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};

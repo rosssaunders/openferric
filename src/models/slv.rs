@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Slv dynamics.
+//!
+//! Module openferric::models::slv provides model equations and related calibration/simulation helpers.
+
 use crate::core::{Diagnostics, PricingError, PricingResult};
 use crate::engines::monte_carlo::MonteCarloInstrument;
 use crate::market::Market;

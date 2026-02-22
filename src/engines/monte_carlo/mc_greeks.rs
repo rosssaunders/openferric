@@ -1,3 +1,7 @@
+//! Monte Carlo engine components for Mc Greeks.
+//!
+//! Includes path simulation, estimators, and variance-reduction support.
+
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 

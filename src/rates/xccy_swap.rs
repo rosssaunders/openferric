@@ -1,3 +1,7 @@
+//! Rates analytics for Xccy Swap.
+//!
+//! Module openferric::rates::xccy_swap contains pricing and conventions for fixed-income instruments.
+
 use crate::rates::YieldCurve;
 
 /// Cross-currency swap: fixed leg in currency 1 vs floating leg in currency 2.

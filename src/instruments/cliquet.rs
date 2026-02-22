@@ -1,3 +1,7 @@
+//! Instrument definition for Cliquet contracts.
+//!
+//! Module openferric::instruments::cliquet contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 use crate::math::normal_cdf;
 

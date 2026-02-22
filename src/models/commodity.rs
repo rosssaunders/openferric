@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Commodity dynamics.
+//!
+//! Module openferric::models::commodity provides model equations and related calibration/simulation helpers.
+
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};

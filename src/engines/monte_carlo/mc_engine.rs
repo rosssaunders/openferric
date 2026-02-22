@@ -1,3 +1,7 @@
+//! Monte Carlo engine components for Mc Engine.
+//!
+//! Includes path simulation, estimators, and variance-reduction support.
+
 use std::sync::Arc;
 
 use crate::core::{

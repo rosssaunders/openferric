@@ -1,3 +1,7 @@
+//! Numerical utilities for Sobol.
+//!
+//! Supports stable and performant computation used by analytics and simulation engines.
+
 const INV_U64_RANGE: f64 = 1.0 / 18_446_744_073_709_551_616.0;
 pub const SOBOL_MAX_DIMENSIONS: usize = 21_201;
 

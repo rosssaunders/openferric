@@ -1,3 +1,7 @@
+//! Rates analytics for Cms.
+//!
+//! Module openferric::rates::cms contains pricing and conventions for fixed-income instruments.
+
 /// CMS (Constant Maturity Swap) spread options.
 ///
 /// References:

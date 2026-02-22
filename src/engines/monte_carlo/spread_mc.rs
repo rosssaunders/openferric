@@ -1,3 +1,7 @@
+//! Monte Carlo engine components for Spread Mc.
+//!
+//! Includes path simulation, estimators, and variance-reduction support.
+
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 

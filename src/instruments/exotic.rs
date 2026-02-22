@@ -1,3 +1,7 @@
+//! Instrument definition for Exotic contracts.
+//!
+//! Module openferric::instruments::exotic contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Floating-strike lookback option.

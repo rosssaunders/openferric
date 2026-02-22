@@ -1,3 +1,7 @@
+//! Instrument definition for Asian contracts.
+//!
+//! Module openferric::instruments::asian contains payoff parameters and validation logic.
+
 use crate::core::{AsianSpec, Instrument, OptionType, PricingError};
 
 /// Asian option instrument.

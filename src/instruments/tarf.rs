@@ -1,3 +1,7 @@
+//! Instrument definition for Tarf contracts.
+//!
+//! Module openferric::instruments::tarf contains payoff parameters and validation logic.
+
 /// Target Accrual Redemption Forward (TARF) instrument definition.
 ///
 /// A TARF accumulates forward purchases at periodic fixing dates.

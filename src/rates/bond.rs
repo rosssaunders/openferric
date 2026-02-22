@@ -1,3 +1,7 @@
+//! Rates analytics for Bond.
+//!
+//! Module openferric::rates::bond contains pricing and conventions for fixed-income instruments.
+
 use crate::rates::{DayCountConvention, YieldCurve};
 
 /// Plain fixed-rate bond.

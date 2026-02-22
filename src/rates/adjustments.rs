@@ -1,3 +1,7 @@
+//! Rates analytics for Adjustments.
+//!
+//! Module openferric::rates::adjustments contains pricing and conventions for fixed-income instruments.
+
 /// Convexity adjustment between futures and forward rates:
 ///
 /// `futures_rate ~= forward_rate + 0.5 * sigma^2 * T1 * T2`

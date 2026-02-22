@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Short Rate dynamics.
+//!
+//! Module openferric::models::short_rate provides model equations and related calibration/simulation helpers.
+
 use crate::rates::YieldCurve;
 
 /// Vasicek short-rate model: `dr = a(b-r)dt + sigma dW`.

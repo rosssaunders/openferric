@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Basket products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::core::{Greeks, PricingError, PricingResult};
 use crate::instruments::{BasketOption, BasketType};
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};

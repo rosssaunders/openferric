@@ -1,3 +1,7 @@
+//! Least-squares Monte Carlo components for Longstaff Schwartz.
+//!
+//! These routines support regression-based early exercise valuation.
+
 use nalgebra::{DMatrix, DVector};
 use rand::SeedableRng;
 use rand::rngs::StdRng;

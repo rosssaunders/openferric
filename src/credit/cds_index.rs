@@ -1,3 +1,7 @@
+//! Credit analytics for Cds Index.
+//!
+//! Module openferric::credit::cds_index provides pricing helpers and model utilities for credit products.
+
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 

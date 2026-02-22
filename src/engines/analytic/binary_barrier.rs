@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Binary Barrier.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{BarrierDirection, BarrierStyle, OptionType, PricingError};
 use crate::pricing::barrier::barrier_price_closed_form_with_carry_and_rebate;
 

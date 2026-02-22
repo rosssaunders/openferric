@@ -1,3 +1,8 @@
+//! Black implied-volatility inversion routines.
+//!
+//! Primary path uses a Jaeckel-style normalized implied-vol solver with fallback to
+//! Newton + bisection. See Peter Jaeckel, "Let's Be Rational" (2015).
+
 use crate::math::normal_pdf;
 use crate::pricing::OptionType;
 use crate::pricing::european::black_scholes_price;
@@ -6,6 +11,25 @@ use crate::vol::jaeckel::implied_vol_jaeckel;
 use rand::RngExt;
 use std::f64::consts::PI;
 
+/// Heuristic initial guess for implied volatility.
+///
+/// Inputs use Black-Scholes notation:
+/// `s` spot, `k` strike, `r` continuously-compounded rate, `t` expiry in years.
+/// `market_price` is option premium in currency units.
+///
+/// The guess is shaped by time value and log-moneyness to reduce Newton iterations.
+///
+/// # Numerical notes
+/// The output is clamped to `[1e-4, 5.0]`.
+///
+/// # Examples
+/// ```
+/// use openferric::pricing::OptionType;
+/// use openferric::vol::implied::lets_be_rational_initial_guess;
+///
+/// let guess = lets_be_rational_initial_guess(OptionType::Call, 100.0, 100.0, 0.02, 1.0, 8.0);
+/// assert!(guess > 0.0);
+/// ```
 pub fn lets_be_rational_initial_guess(
     option_type: OptionType,
     s: f64,
@@ -34,6 +58,37 @@ pub fn lets_be_rational_initial_guess(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Computes Black implied volatility from market option price.
+///
+/// Parameters:
+/// - `option_type`: call/put flag
+/// - `s`, `k`, `r`, `t`: Black-Scholes state and maturity
+/// - `market_price`: observed premium
+/// - `tol`: target absolute pricing error
+/// - `max_iter`: Newton iteration cap before fallback
+///
+/// # Returns
+/// Implied volatility as a non-negative scalar.
+///
+/// # Errors
+/// Returns `Err` if inputs are non-finite, violate positivity constraints,
+/// or if price is outside no-arbitrage bounds.
+///
+/// # Numerical stability
+/// - Returns `0.0` when price is effectively intrinsic.
+/// - Attempts a Jaeckel solver path first; falls back to Newton + bisection.
+///
+/// # Examples
+/// ```
+/// use openferric::pricing::OptionType;
+/// use openferric::pricing::european::black_scholes_price;
+/// use openferric::vol::implied::implied_vol;
+///
+/// let sigma = 0.25;
+/// let price = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.03, sigma, 1.0);
+/// let iv = implied_vol(OptionType::Call, 100.0, 100.0, 0.03, 1.0, price, 1e-12, 64).unwrap();
+/// assert!((iv - sigma).abs() < 1e-8);
+/// ```
 pub fn implied_vol(
     option_type: OptionType,
     s: f64,
@@ -98,6 +153,26 @@ pub fn implied_vol(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Newton-Raphson implied-vol solver with robust bisection fallback.
+///
+/// This is a direct inversion of Black-Scholes price using vega for Newton steps.
+///
+/// # Limitations
+/// Newton can stagnate when vega is tiny (deep ITM/OTM short-dated options);
+/// in that case the implementation falls back to bisection.
+///
+/// # Examples
+/// ```
+/// use openferric::pricing::OptionType;
+/// use openferric::pricing::european::black_scholes_price;
+/// use openferric::vol::implied::implied_vol_newton;
+///
+/// let sigma = 0.35;
+/// let price = black_scholes_price(OptionType::Put, 100.0, 110.0, 0.01, sigma, 0.75);
+/// let iv = implied_vol_newton(OptionType::Put, 100.0, 110.0, 0.01, 0.75, price, 1e-12, 100)
+///     .unwrap();
+/// assert!((iv - sigma).abs() < 1e-7);
+/// ```
 pub fn implied_vol_newton(
     option_type: OptionType,
     s: f64,

@@ -1,3 +1,7 @@
+//! Credit analytics for Cdo.
+//!
+//! Module openferric::credit::cdo provides pricing helpers and model utilities for credit products.
+
 use crate::math::{gauss_legendre_integrate, normal_cdf, normal_inv_cdf, normal_pdf};
 
 /// Synthetic CDO tranche definition.

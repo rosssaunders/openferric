@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Real Option products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::core::PricingError;
 use crate::instruments::real_option::{
     AbandonmentOption, DeferInvestmentOption, DiscreteCashFlow, ExpandOption,

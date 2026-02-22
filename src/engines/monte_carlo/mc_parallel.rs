@@ -1,3 +1,7 @@
+//! Monte Carlo engine components for Mc Parallel.
+//!
+//! Includes path simulation, estimators, and variance-reduction support.
+
 use rayon::prelude::*;
 
 use crate::core::{ExerciseStyle, OptionType, PricingResult};

@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Asian Geometric.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{Averaging, PricingEngine, PricingError, PricingResult, StrikeType};
 use crate::instruments::asian::AsianOption;
 use crate::market::Market;

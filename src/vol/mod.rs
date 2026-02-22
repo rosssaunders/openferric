@@ -1,3 +1,7 @@
+//! Volatility model calibration and interpolation utilities.
+//!
+//! Includes implied-vol inversion, smile/surface parameterizations, and arbitrage-aware smoothing.
+
 pub mod andreasen_huge;
 pub mod builder;
 pub mod fengler;

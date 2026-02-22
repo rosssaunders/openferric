@@ -1,3 +1,7 @@
+//! Instrument definition for Fx contracts.
+//!
+//! Module openferric::instruments::fx contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// European FX option parameters for Garman-Kohlhagen pricing.

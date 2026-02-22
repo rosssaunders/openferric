@@ -1,3 +1,7 @@
+//! Rates analytics for Multi Curve.
+//!
+//! Module openferric::rates::multi_curve contains pricing and conventions for fixed-income instruments.
+
 /// Multi-curve framework for post-2008 interest rate modeling.
 ///
 /// Separates discounting (OIS) from forwarding (IBOR/SOFR tenor curves).

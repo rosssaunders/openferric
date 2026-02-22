@@ -1,3 +1,7 @@
+//! Credit analytics for Copula.
+//!
+//! Module openferric::credit::copula provides pricing helpers and model utilities for credit products.
+
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 

@@ -1,6 +1,27 @@
+//! Instrument definition for Vanilla contracts.
+//!
+//! Module openferric::instruments::vanilla contains payoff parameters and validation logic.
+
 use crate::core::{ExerciseStyle, Instrument, OptionType, PricingError};
 
-/// Vanilla option instrument.
+/// Vanilla option contract.
+///
+/// This is the canonical input for Black-Scholes/Black-76 style engines:
+/// strike `K`, expiry `T`, option side, and exercise rights.
+///
+/// # Examples
+/// ```
+/// use openferric::core::{ExerciseStyle, OptionType};
+/// use openferric::instruments::VanillaOption;
+///
+/// let option = VanillaOption {
+///     option_type: OptionType::Call,
+///     strike: 100.0,
+///     expiry: 1.0,
+///     exercise: ExerciseStyle::European,
+/// };
+/// assert!(option.validate().is_ok());
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct VanillaOption {
     /// Call or put.
@@ -15,6 +36,18 @@ pub struct VanillaOption {
 
 impl VanillaOption {
     /// Builds a European call option.
+    ///
+    /// `strike` and `expiry` are interpreted in spot units and year fractions.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::{ExerciseStyle, OptionType};
+    /// use openferric::instruments::VanillaOption;
+    ///
+    /// let call = VanillaOption::european_call(100.0, 1.0);
+    /// assert_eq!(call.option_type, OptionType::Call);
+    /// assert!(matches!(call.exercise, ExerciseStyle::European));
+    /// ```
     pub fn european_call(strike: f64, expiry: f64) -> Self {
         Self {
             option_type: OptionType::Call,
@@ -25,6 +58,15 @@ impl VanillaOption {
     }
 
     /// Builds a European put option.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::OptionType;
+    /// use openferric::instruments::VanillaOption;
+    ///
+    /// let put = VanillaOption::european_put(95.0, 0.5);
+    /// assert_eq!(put.option_type, OptionType::Put);
+    /// ```
     pub fn european_put(strike: f64, expiry: f64) -> Self {
         Self {
             option_type: OptionType::Put,
@@ -45,6 +87,15 @@ impl VanillaOption {
     }
 
     /// Builds an American put option.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::ExerciseStyle;
+    /// use openferric::instruments::VanillaOption;
+    ///
+    /// let put = VanillaOption::american_put(100.0, 2.0);
+    /// assert!(matches!(put.exercise, ExerciseStyle::American));
+    /// ```
     pub fn american_put(strike: f64, expiry: f64) -> Self {
         Self {
             option_type: OptionType::Put,
@@ -55,6 +106,29 @@ impl VanillaOption {
     }
 
     /// Validates instrument fields.
+    ///
+    /// # Errors
+    /// Returns [`PricingError::InvalidInput`] when:
+    /// - `strike <= 0`
+    /// - `expiry < 0`
+    /// - Bermudan exercise dates are empty or outside `(0, expiry]`
+    ///
+    /// # Numerical notes
+    /// `expiry == 0` is accepted to support immediate-expiry intrinsic-value pricing.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::{ExerciseStyle, OptionType};
+    /// use openferric::instruments::VanillaOption;
+    ///
+    /// let bermudan = VanillaOption {
+    ///     option_type: OptionType::Call,
+    ///     strike: 100.0,
+    ///     expiry: 1.0,
+    ///     exercise: ExerciseStyle::Bermudan { dates: vec![0.5, 1.0] },
+    /// };
+    /// assert!(bermudan.validate().is_ok());
+    /// ```
     pub fn validate(&self) -> Result<(), PricingError> {
         if self.strike <= 0.0 {
             return Err(PricingError::InvalidInput(

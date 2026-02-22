@@ -1,3 +1,8 @@
+//! Day-count conventions for fixed-income accrual calculations.
+//!
+//! Supports common market conventions used for coupon accrual and discounting
+//! (Hull, fixed-income chapters; ISDA 2006 definitions for ACT/ACT variants).
+
 use chrono::{Datelike, NaiveDate};
 
 /// Supported day-count conventions for fixed-income instruments.
@@ -16,6 +21,44 @@ pub enum DayCountConvention {
 }
 
 /// Computes year fraction between two dates under a day-count convention.
+///
+/// `start` and `end` are calendar dates. If `start > end`, this function
+/// returns the negative of the reversed interval.
+///
+/// # References
+/// - ISDA day-count definitions (ACT/ACT ISDA)
+/// - 30/360 US and 30E/360 market conventions
+///
+/// # Examples
+/// ```
+/// use chrono::NaiveDate;
+/// use openferric::rates::{DayCountConvention, year_fraction};
+///
+/// let start = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+/// let end = NaiveDate::from_ymd_opt(2025, 7, 1).unwrap();
+///
+/// let yf = year_fraction(start, end, DayCountConvention::Act365Fixed);
+/// assert!((yf - 181.0 / 365.0).abs() < 1e-12);
+/// ```
+///
+/// ```
+/// use chrono::NaiveDate;
+/// use openferric::rates::{DayCountConvention, year_fraction};
+///
+/// let start = NaiveDate::from_ymd_opt(2025, 1, 31).unwrap();
+/// let end = NaiveDate::from_ymd_opt(2025, 2, 28).unwrap();
+/// let yf = year_fraction(start, end, DayCountConvention::Thirty360);
+/// assert!((yf - 28.0 / 360.0).abs() < 1e-12);
+/// ```
+///
+/// ```
+/// use chrono::NaiveDate;
+/// use openferric::rates::{DayCountConvention, year_fraction};
+///
+/// let start = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+/// let end = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+/// assert!(year_fraction(start, end, DayCountConvention::Act360) < 0.0);
+/// ```
 pub fn year_fraction(start: NaiveDate, end: NaiveDate, convention: DayCountConvention) -> f64 {
     if start == end {
         return 0.0;

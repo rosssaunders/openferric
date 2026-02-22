@@ -1,3 +1,7 @@
+//! Command-line entry point for Tmp Fft Check workflows.
+//!
+//! This binary wires OpenFerric models and engines into an executable utility.
+
 use openferric::core::PricingEngine;
 use openferric::engines::analytic::HestonEngine;
 use openferric::engines::fft::{

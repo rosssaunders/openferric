@@ -1,3 +1,7 @@
+//! Credit analytics for Survival Curve.
+//!
+//! Module openferric::credit::survival_curve provides pricing helpers and model utilities for credit products.
+
 use crate::rates::YieldCurve;
 
 #[cfg(test)]

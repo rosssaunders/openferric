@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Autocallable products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use std::collections::BTreeMap;
 
 use crate::core::{Greeks, PricingError, PricingResult};

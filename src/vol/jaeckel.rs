@@ -1,3 +1,7 @@
+//! Volatility analytics for Jaeckel.
+//!
+//! Module openferric::vol::jaeckel provides smile/surface construction or volatility inversion utilities.
+
 use crate::core::PricingError;
 use crate::math::{normal_cdf, normal_inv_cdf, normal_pdf};
 

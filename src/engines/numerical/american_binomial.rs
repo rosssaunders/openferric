@@ -1,3 +1,7 @@
+//! Numerical pricing routines for American Binomial.
+//!
+//! Uses discretization methods where no stable closed-form solution is available.
+
 use std::sync::{Arc, Mutex};
 
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};

@@ -161,7 +161,7 @@ impl MbsPassThrough {
 
     /// Option-Adjusted Spread via Newton's method.
     /// `market_price` is the dollar price, `base_yields` is a flat or term-structure
-    /// of monthly discount rates. For simplicity we use base_yields[0] as the flat rate.
+    /// of monthly discount rates. For simplicity we use `base_yields[0]` as the flat rate.
     pub fn oas(&self, market_price: f64, base_yields: &[f64]) -> f64 {
         let base_rate = if base_yields.is_empty() { 0.0 } else { base_yields[0] };
         // Find spread s such that price(base_rate + s) = market_price

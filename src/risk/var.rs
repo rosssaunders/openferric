@@ -1,3 +1,7 @@
+//! Risk analytics for Var.
+//!
+//! Module openferric::risk::var provides portfolio-level measures and adjustments.
+
 use crate::math::{normal_inv_cdf, normal_pdf};
 
 const TRADING_DAYS_PER_YEAR: f64 = 252.0;

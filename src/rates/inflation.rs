@@ -1,3 +1,7 @@
+//! Rates analytics for Inflation.
+//!
+//! Module openferric::rates::inflation contains pricing and conventions for fixed-income instruments.
+
 use crate::rates::YieldCurve;
 
 /// Inflation curve represented by CPI growth ratios `CPI(t)/CPI(0)`.

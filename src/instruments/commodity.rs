@@ -1,3 +1,7 @@
+//! Instrument definition for Commodity contracts.
+//!
+//! Module openferric::instruments::commodity contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 use crate::engines::analytic::{black76_price, kirk_spread_price};
 use crate::instruments::{FuturesOption, SpreadOption};

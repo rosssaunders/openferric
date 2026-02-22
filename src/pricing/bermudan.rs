@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Bermudan products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::pricing::OptionType;
 use nalgebra::{DMatrix, DVector};
 use rand::SeedableRng;

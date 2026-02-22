@@ -1,3 +1,7 @@
+//! Tree-based pricing routines for Swing.
+//!
+//! Supports lattice valuation and early-exercise logic for path-dependent contracts.
+
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::swing::SwingOption;
 use crate::market::Market;

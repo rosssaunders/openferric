@@ -1,3 +1,7 @@
+//! Rates analytics for Capfloor.
+//!
+//! Module openferric::rates::capfloor contains pricing and conventions for fixed-income instruments.
+
 use chrono::NaiveDate;
 
 use crate::math::normal_cdf;

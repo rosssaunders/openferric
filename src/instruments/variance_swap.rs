@@ -1,3 +1,7 @@
+//! Instrument definition for Variance Swap contracts.
+//!
+//! Module openferric::instruments::variance_swap contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, PricingError};
 
 /// Option quote used for variance/volatility swap replication.

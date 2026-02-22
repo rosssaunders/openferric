@@ -1,3 +1,7 @@
+//! Legacy pricing routines for European products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::math::{normal_cdf, normal_pdf};
 use crate::pricing::OptionType;
 

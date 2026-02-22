@@ -1,3 +1,7 @@
+//! Instrument definition for Double Barrier contracts.
+//!
+//! Module openferric::instruments::double_barrier contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Double-barrier knock behavior.

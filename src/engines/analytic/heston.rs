@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Heston.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use std::f64::consts::PI;
 
 use num_complex::Complex64;

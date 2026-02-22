@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Variance Gamma dynamics.
+//!
+//! Module openferric::models::variance_gamma provides model equations and related calibration/simulation helpers.
+
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

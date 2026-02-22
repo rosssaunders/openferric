@@ -1,3 +1,7 @@
+//! Instrument definition for Black76 contracts.
+//!
+//! Module openferric::instruments::black76 contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// European option on a forward/futures price for Black-76 style models.

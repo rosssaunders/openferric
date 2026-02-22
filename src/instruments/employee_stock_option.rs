@@ -1,3 +1,7 @@
+//! Instrument definition for Employee Stock Option contracts.
+//!
+//! Module openferric::instruments::employee_stock_option contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Employee stock option valued with a binomial tree and Hull-White style assumptions.

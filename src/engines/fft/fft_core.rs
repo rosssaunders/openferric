@@ -1,3 +1,7 @@
+//! FFT-based pricing utilities for Fft Core.
+//!
+//! Provides transform-domain pricing building blocks used by Carr-Madan/FRFT workflows.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

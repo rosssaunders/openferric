@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Barrier Analytic.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::barrier::BarrierOption;
 use crate::market::Market;

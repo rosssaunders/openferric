@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Double Barrier.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use std::f64::consts::PI;
 
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};

@@ -1,3 +1,7 @@
+//! Instrument definition for Power contracts.
+//!
+//! Module openferric::instruments::power contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Power option with payoff `max(sign * (S^alpha - K), 0)` where sign is +1 (call), -1 (put).

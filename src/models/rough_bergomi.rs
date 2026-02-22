@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Rough Bergomi dynamics.
+//!
+//! Module openferric::models::rough_bergomi provides model equations and related calibration/simulation helpers.
+
 use crate::core::{Diagnostics, PricingResult};
 use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::pricing::OptionType;

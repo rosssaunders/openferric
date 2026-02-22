@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Black76.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::black76::FuturesOption;
 use crate::market::Market;

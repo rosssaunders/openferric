@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Lmm dynamics.
+//!
+//! Module openferric::models::lmm provides model equations and related calibration/simulation helpers.
+
 use crate::math::normal_cdf;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

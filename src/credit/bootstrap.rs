@@ -1,3 +1,7 @@
+//! Credit analytics for Bootstrap.
+//!
+//! Module openferric::credit::bootstrap provides pricing helpers and model utilities for credit products.
+
 use crate::rates::YieldCurve;
 
 use super::{cds::Cds, survival_curve::SurvivalCurve};

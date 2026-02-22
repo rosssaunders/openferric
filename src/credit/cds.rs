@@ -1,3 +1,7 @@
+//! Credit analytics for Cds.
+//!
+//! Module openferric::credit::cds provides pricing helpers and model utilities for credit products.
+
 use crate::rates::YieldCurve;
 
 use super::survival_curve::SurvivalCurve;

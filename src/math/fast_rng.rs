@@ -1,3 +1,7 @@
+//! Numerical utilities for Fast Rng.
+//!
+//! Supports stable and performant computation used by analytics and simulation engines.
+
 use rand::rngs::{StdRng, ThreadRng};
 use rand::{RngExt, SeedableRng};
 

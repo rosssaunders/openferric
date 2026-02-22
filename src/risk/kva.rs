@@ -1,3 +1,7 @@
+//! Risk analytics for Kva.
+//!
+//! Module openferric::risk::kva provides portfolio-level measures and adjustments.
+
 /// Capital Valuation Adjustment (KVA).
 ///
 /// KVA = cost of holding regulatory capital against derivative exposures.

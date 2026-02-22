@@ -1,3 +1,7 @@
+//! Risk analytics for Portfolio.
+//!
+//! Module openferric::risk::portfolio provides portfolio-level measures and adjustments.
+
 use crate::core::Greeks;
 
 /// Aggregated portfolio Greeks.

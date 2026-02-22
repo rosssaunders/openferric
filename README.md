@@ -7,6 +7,8 @@
 [![Tests](https://img.shields.io/badge/tests-366%20passing-brightgreen)](#testing)
 [![Lines](https://img.shields.io/badge/lines-40K%2B-blue)](#)
 
+API docs: <https://rosssaunders.github.io/openferric/openferric/>
+
 ---
 
 ## Highlights

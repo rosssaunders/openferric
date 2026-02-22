@@ -1,4 +1,11 @@
+//! Core domain types for OpenFerric.
+//!
+//! Module openferric::core::types defines shared enums/structs used by engines and instruments.
+
 /// Plain-vanilla option side.
+///
+/// This selects whether payoff is call-like (`max(S-K, 0)`) or put-like (`max(K-S, 0)`),
+/// following the sign conventions used in Hull, Ch. 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionType {
     /// Call option payoff profile.
@@ -8,7 +15,18 @@ pub enum OptionType {
 }
 
 impl OptionType {
-    /// Returns +1.0 for calls and -1.0 for puts.
+    /// Returns `+1.0` for calls and `-1.0` for puts.
+    ///
+    /// This is useful for branch-free formulas where payoff direction is represented
+    /// by a scalar multiplier.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::core::OptionType;
+    ///
+    /// assert_eq!(OptionType::Call.sign(), 1.0);
+    /// assert_eq!(OptionType::Put.sign(), -1.0);
+    /// ```
     #[inline]
     pub fn sign(self) -> f64 {
         match self {
@@ -19,6 +37,9 @@ impl OptionType {
 }
 
 /// Exercise rights for an option contract.
+///
+/// `Bermudan { dates }` dates are year fractions from valuation time and should
+/// lie in `(0, expiry]` at instrument-validation time.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExerciseStyle {
     /// Exercise only at expiry.
@@ -48,6 +69,23 @@ pub enum BarrierStyle {
 }
 
 /// Barrier contract parameters.
+///
+/// Used by barrier engines implementing one-touch knock-in/out logic
+/// (see Haug, *The Complete Guide to Option Pricing Formulas*, barrier chapter).
+///
+/// # Examples
+/// ```
+/// use openferric::core::{BarrierDirection, BarrierSpec, BarrierStyle};
+///
+/// let spec = BarrierSpec {
+///     direction: BarrierDirection::Up,
+///     style: BarrierStyle::Out,
+///     level: 120.0,
+///     rebate: 0.0,
+/// };
+///
+/// assert_eq!(spec.level, 120.0);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct BarrierSpec {
     /// Barrier direction.
@@ -79,6 +117,22 @@ pub enum StrikeType {
 }
 
 /// Asian option contract parameters.
+///
+/// Observation times are year fractions from valuation time. Engines typically
+/// assume strictly increasing times and may reject empty schedules.
+///
+/// # Examples
+/// ```
+/// use openferric::core::{AsianSpec, Averaging, StrikeType};
+///
+/// let asian = AsianSpec {
+///     averaging: Averaging::Arithmetic,
+///     strike_type: StrikeType::Fixed,
+///     observation_times: vec![0.25, 0.5, 0.75, 1.0],
+/// };
+///
+/// assert_eq!(asian.observation_times.len(), 4);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsianSpec {
     /// Averaging method.

@@ -1,3 +1,7 @@
+//! Tree-based pricing routines for Convertible.
+//!
+//! Supports lattice valuation and early-exercise logic for path-dependent contracts.
+
 use crate::core::{Greeks, PricingEngine, PricingError, PricingResult};
 use crate::instruments::convertible::ConvertibleBond;
 use crate::market::Market;

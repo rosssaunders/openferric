@@ -1,3 +1,7 @@
+//! Credit analytics for Isda.
+//!
+//! Module openferric::credit::isda provides pricing helpers and model utilities for credit products.
+
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 
 use crate::rates::{DayCountConvention, year_fraction};

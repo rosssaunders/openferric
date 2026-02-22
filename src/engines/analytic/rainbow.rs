@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Rainbow.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::rainbow::{
     BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption,

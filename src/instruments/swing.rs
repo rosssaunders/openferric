@@ -1,3 +1,7 @@
+//! Instrument definition for Swing contracts.
+//!
+//! Module openferric::instruments::swing contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, PricingError};
 
 /// Multi-exercise swing option commonly used in energy contracts.

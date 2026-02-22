@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Hjm dynamics.
+//!
+//! Module openferric::models::hjm provides model equations and related calibration/simulation helpers.
+
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};

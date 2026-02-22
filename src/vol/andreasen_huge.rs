@@ -295,7 +295,7 @@ fn step_implicit(
     let mut lower = vec![0.0; n];
     let mut diag = vec![1.0; n];
     let mut upper = vec![0.0; n];
-    let mut rhs = prev.to_vec();
+    let rhs = prev.to_vec();
 
     for j in 1..n - 1 {
         let k = grid[j];

@@ -1,3 +1,7 @@
+//! Instrument definition for Convertible contracts.
+//!
+//! Module openferric::instruments::convertible contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, PricingError};
 
 /// Convertible bond with optional issuer call and holder put features.

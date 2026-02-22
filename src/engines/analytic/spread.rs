@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Spread.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;

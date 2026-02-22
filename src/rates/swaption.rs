@@ -1,3 +1,7 @@
+//! Rates analytics for Swaption.
+//!
+//! Module openferric::rates::swaption contains pricing and conventions for fixed-income instruments.
+
 use crate::math::normal_cdf;
 use crate::rates::YieldCurve;
 

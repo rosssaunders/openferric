@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Asian products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;

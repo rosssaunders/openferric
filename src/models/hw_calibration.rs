@@ -1,3 +1,7 @@
+//! Stochastic model implementation for Hw Calibration dynamics.
+//!
+//! Module openferric::models::hw_calibration provides model equations and related calibration/simulation helpers.
+
 use crate::math::normal_cdf;
 
 /// Market ATM swaption volatility quote `(expiry, tenor, market_vol)`.

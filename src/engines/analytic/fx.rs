@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Fx.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::fx::FxOption;
 use crate::market::Market;

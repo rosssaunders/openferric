@@ -41,7 +41,7 @@ impl CdsOption {
             } else {
                 (k - f).max(0.0)
             };
-            return self.notional * risky_annuity * intrinsic;
+            return self.notional * risky_annuity * discount_factor * intrinsic;
         }
 
         if f <= 0.0 || k <= 0.0 {
@@ -60,7 +60,7 @@ impl CdsOption {
             k * normal_cdf(-d2) - f * normal_cdf(-d1)
         };
 
-        self.notional * risky_annuity * undiscounted
+        self.notional * risky_annuity * discount_factor * undiscounted
     }
 }
 

@@ -1,3 +1,7 @@
+//! Stochastic process models used by OpenFerric engines.
+//!
+//! Covers equity, rates, commodity, and jump-process dynamics plus calibration helpers.
+
 pub mod cgmy;
 pub mod commodity;
 pub mod hjm;

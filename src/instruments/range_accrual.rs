@@ -1,3 +1,7 @@
+//! Instrument definition for Range Accrual contracts.
+//!
+//! Module openferric::instruments::range_accrual contains payoff parameters and validation logic.
+
 /// Range accrual note instrument definition.
 ///
 /// A range accrual pays a coupon that accrues on each day the reference rate

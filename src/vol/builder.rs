@@ -1,3 +1,7 @@
+//! Volatility analytics for Builder.
+//!
+//! Module openferric::vol::builder provides smile/surface construction or volatility inversion utilities.
+
 use crate::math::CubicSpline;
 use crate::pricing::OptionType;
 use crate::vol::implied::implied_vol;

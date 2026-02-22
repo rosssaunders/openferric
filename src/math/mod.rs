@@ -1,3 +1,7 @@
+//! Numerical math helpers shared across pricing engines.
+//!
+//! Includes probability transforms, interpolation, random sequences, and SIMD accelerators.
+
 use std::f64::consts::PI;
 
 pub mod arena;

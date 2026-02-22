@@ -1,3 +1,7 @@
+//! Instrument definition for Basket contracts.
+//!
+//! Module openferric::instruments::basket contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, PricingError};
 
 /// Basket payoff definition.

@@ -1,3 +1,10 @@
+//! Closed-form Black-Scholes-Merton pricing and Greeks.
+//!
+//! Implements European vanilla formulas under lognormal diffusion
+//! (Hull, Ch. 15) with continuous dividend yield `q`.
+//! Formulas are written in numerically robust branches for `T -> 0`
+//! and `sigma -> 0`.
+
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
@@ -8,7 +15,15 @@ use crate::math::{normal_cdf, normal_pdf};
 pub struct BlackScholesEngine;
 
 impl BlackScholesEngine {
-    /// Creates a Black-Scholes engine instance.
+    /// Creates a stateless Black-Scholes engine instance.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::engines::analytic::BlackScholesEngine;
+    ///
+    /// let engine = BlackScholesEngine::new();
+    /// let _ = engine;
+    /// ```
     pub fn new() -> Self {
         Self
     }
@@ -47,6 +62,30 @@ fn d1_d2(
     (d1, d1 - sig_sqrt_t)
 }
 
+/// Black-Scholes-Merton price for a European vanilla option.
+///
+/// Parameters follow standard notation:
+/// - `spot` = current underlying level `S_0`
+/// - `strike` = strike `K`
+/// - `rate` = continuously-compounded risk-free rate `r`
+/// - `dividend_yield` = continuous carry/dividend yield `q`
+/// - `vol` = lognormal volatility `sigma`
+/// - `expiry` = year fraction to maturity `T`
+///
+/// Uses the closed-form equations in Hull, Ch. 15.
+///
+/// # Numerical stability
+/// - Returns intrinsic payoff when `expiry <= 0`.
+/// - Returns discounted intrinsic forward value when `vol <= 0`.
+///
+/// # Examples
+/// ```
+/// use openferric::core::OptionType;
+/// use openferric::engines::analytic::black_scholes::bs_price;
+///
+/// let call = bs_price(OptionType::Call, 100.0, 100.0, 0.05, 0.0, 0.20, 1.0);
+/// assert!((call - 10.4506).abs() < 1e-3);
+/// ```
 #[inline]
 pub fn bs_price(
     option_type: OptionType,
@@ -57,6 +96,7 @@ pub fn bs_price(
     vol: f64,
     expiry: f64,
 ) -> f64 {
+    // Edge handling for expiry/volatility degeneracies.
     if expiry <= 0.0 {
         return intrinsic(option_type, spot, strike);
     }
@@ -89,6 +129,21 @@ pub fn bs_price(
     }
 }
 
+/// Spot delta `dV/dS` under Black-Scholes-Merton.
+///
+/// Reference: Hull, Ch. 15.
+///
+/// # Edge cases
+/// Returns `0.0` when `expiry <= 0` or `vol <= 0`.
+///
+/// # Examples
+/// ```
+/// use openferric::core::OptionType;
+/// use openferric::engines::analytic::black_scholes::bs_delta;
+///
+/// let d = bs_delta(OptionType::Call, 100.0, 100.0, 0.05, 0.0, 0.2, 1.0);
+/// assert!(d > 0.5 && d < 0.7);
+/// ```
 #[inline]
 pub fn bs_delta(
     option_type: OptionType,
@@ -110,6 +165,19 @@ pub fn bs_delta(
     }
 }
 
+/// Spot gamma `d^2V/dS^2` under Black-Scholes-Merton.
+///
+/// # Numerical stability
+/// Returns `0.0` when `spot <= 0`, `expiry <= 0`, or `vol <= 0` to avoid
+/// singular behavior as denominator terms vanish.
+///
+/// # Examples
+/// ```
+/// use openferric::engines::analytic::black_scholes::bs_gamma;
+///
+/// let g = bs_gamma(100.0, 100.0, 0.03, 0.0, 0.2, 1.0);
+/// assert!(g > 0.0);
+/// ```
 #[inline]
 pub fn bs_gamma(
     spot: f64,
@@ -127,6 +195,18 @@ pub fn bs_gamma(
     df_q * norm_pdf(d1) / (spot * vol * expiry.sqrt())
 }
 
+/// Black-Scholes vega `dV/dsigma`.
+///
+/// Vega is quoted per unit volatility (e.g., `0.01` vol points corresponds
+/// to `vega * 0.01` price change).
+///
+/// # Examples
+/// ```
+/// use openferric::engines::analytic::black_scholes::bs_vega;
+///
+/// let v = bs_vega(100.0, 100.0, 0.01, 0.0, 0.2, 1.0);
+/// assert!(v > 0.0);
+/// ```
 #[inline]
 pub fn bs_vega(
     spot: f64,
@@ -144,6 +224,13 @@ pub fn bs_vega(
     spot * df_q * norm_pdf(d1) * expiry.sqrt()
 }
 
+/// Calendar theta `dV/dT` in annualized units.
+///
+/// Reference: Hull, Ch. 15 sign conventions.
+///
+/// # Limitations
+/// Theta here is with respect to increasing maturity `T` (not day-decay),
+/// so users should negate and scale if they need daily carry convention.
 #[inline]
 pub fn bs_theta(
     option_type: OptionType,
@@ -175,6 +262,16 @@ pub fn bs_theta(
     }
 }
 
+/// Interest-rate rho `dV/dr` under Black-Scholes-Merton.
+///
+/// # Examples
+/// ```
+/// use openferric::core::OptionType;
+/// use openferric::engines::analytic::black_scholes::bs_rho;
+///
+/// let rho = bs_rho(OptionType::Call, 100.0, 100.0, 0.02, 0.0, 0.25, 1.0);
+/// assert!(rho > 0.0);
+/// ```
 #[inline]
 pub fn bs_rho(
     option_type: OptionType,
@@ -195,7 +292,6 @@ pub fn bs_rho(
         OptionType::Put => -strike * expiry * df_r * norm_cdf(-d2),
     }
 }
-
 #[inline]
 fn bs_price_greeks_with_dividend(
     option_type: OptionType,
@@ -289,6 +385,23 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
 }
 
 /// One-liner convenience wrapper for Black-Scholes pricing.
+///
+/// Equivalent to constructing a [`VanillaOption`] with European exercise,
+/// creating a [`Market`] with flat volatility, and invoking
+/// [`BlackScholesEngine::price`].
+///
+/// # Errors
+/// Returns [`PricingError`] for invalid inputs (for example non-positive
+/// spot/volatility through market validation).
+///
+/// # Examples
+/// ```
+/// use openferric::core::OptionType;
+/// use openferric::engines::analytic::black_scholes;
+///
+/// let price = black_scholes(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0).unwrap();
+/// assert!((price - 10.4506).abs() < 1e-3);
+/// ```
 pub fn black_scholes(
     option_type: OptionType,
     spot: f64,

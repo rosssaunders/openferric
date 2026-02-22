@@ -1,3 +1,7 @@
+//! Risk analytics for Fva.
+//!
+//! Module openferric::risk::fva provides portfolio-level measures and adjustments.
+
 /// Funding Valuation Adjustment (FVA).
 ///
 /// FVA captures the cost/benefit of funding uncollateralized derivative exposures.

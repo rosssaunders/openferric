@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Digital.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::digital::{AssetOrNothingOption, CashOrNothingOption, GapOption};
 use crate::market::Market;

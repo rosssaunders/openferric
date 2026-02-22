@@ -1,5 +1,14 @@
+//! SABR smile model and calibration helpers.
+//!
+//! Implements Hagan et al. (2002) lognormal implied-vol approximation
+//! (equation family around Eq. 2.17a) with bounded parameter projection.
+
 use nalgebra::{DMatrix, DVector};
 
+/// SABR parameters `(alpha, beta, rho, nu)`.
+///
+/// Dynamics (under forward measure) are:
+/// `dF = alpha * F^beta dW1`, `dalpha = nu * alpha dW2`, `corr(dW1,dW2)=rho`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SabrParams {
     pub alpha: f64,
@@ -9,6 +18,29 @@ pub struct SabrParams {
 }
 
 impl SabrParams {
+    /// Hagan lognormal SABR implied volatility approximation.
+    ///
+    /// # Parameters
+    /// - `f`: forward level
+    /// - `k`: strike
+    /// - `t`: expiry in years
+    ///
+    /// # Numerical stability
+    /// - Clamps model parameters into admissible ranges.
+    /// - Uses a series expansion for `z/x(z)` near ATM (`z -> 0`).
+    /// - Returns `0.0` for non-positive inputs.
+    ///
+    /// # References
+    /// Hagan, Kumar, Lesniewski, Woodward (2002), Eq. 2.17a and nearby terms.
+    ///
+    /// # Examples
+    /// ```
+    /// use openferric::vol::sabr::SabrParams;
+    ///
+    /// let p = SabrParams { alpha: 0.2, beta: 0.5, rho: -0.2, nu: 0.4 };
+    /// let vol = p.implied_vol(0.03, 0.03, 2.0);
+    /// assert!(vol > 0.0);
+    /// ```
     pub fn implied_vol(&self, f: f64, k: f64, t: f64) -> f64 {
         if t <= 0.0 || f <= 0.0 || k <= 0.0 {
             return 0.0;
@@ -191,6 +223,37 @@ fn lm_refine(
     (p, obj)
 }
 
+/// Calibrates SABR parameters to market smile quotes.
+///
+/// Minimizes mean squared error between model and market implied volatilities,
+/// with `beta` held fixed.
+///
+/// # Parameters
+/// - `forward`: forward level
+/// - `strikes`: strike grid
+/// - `market_vols`: market implied vols at the same strikes
+/// - `t`: expiry in years
+/// - `beta`: fixed CEV exponent in `[0, 1]`
+///
+/// # Edge cases
+/// Returns a projected default parameter set when inputs are invalid or empty.
+///
+/// # Examples
+/// ```
+/// use openferric::vol::sabr::{SabrParams, fit_sabr};
+///
+/// let true_params = SabrParams { alpha: 0.2, beta: 0.5, rho: -0.3, nu: 0.6 };
+/// let forward = 0.03;
+/// let strikes = vec![0.02, 0.025, 0.03, 0.035, 0.04];
+/// let t = 2.0;
+/// let vols: Vec<f64> = strikes
+///     .iter()
+///     .map(|&k| true_params.implied_vol(forward, k, t))
+///     .collect();
+///
+/// let fit = fit_sabr(forward, &strikes, &vols, t, 0.5);
+/// assert!(fit.alpha > 0.0);
+/// ```
 pub fn fit_sabr(
     forward: f64,
     strikes: &[f64],

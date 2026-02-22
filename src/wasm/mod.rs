@@ -1,3 +1,7 @@
+//! WebAssembly bindings for browser integrations.
+//!
+//! Enabled with the wasm feature for web-facing demos and dashboards.
+
 use wasm_bindgen::prelude::*;
 
 use crate::core::types::{BarrierDirection, BarrierStyle, OptionType};

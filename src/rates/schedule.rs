@@ -1,3 +1,7 @@
+//! Rates analytics for Schedule.
+//!
+//! Module openferric::rates::schedule contains pricing and conventions for fixed-income instruments.
+
 use chrono::{Datelike, NaiveDate};
 
 /// Payment frequency for coupon schedules.

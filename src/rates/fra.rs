@@ -1,3 +1,7 @@
+//! Rates analytics for Fra.
+//!
+//! Module openferric::rates::fra contains pricing and conventions for fixed-income instruments.
+
 use chrono::NaiveDate;
 
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};

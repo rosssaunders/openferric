@@ -1,3 +1,7 @@
+//! Legacy product-centric pricing entry points.
+//!
+//! These wrappers provide compatibility with older direct pricing APIs.
+
 pub mod american;
 pub mod asian;
 pub mod autocallable;

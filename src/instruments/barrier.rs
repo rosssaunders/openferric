@@ -1,3 +1,7 @@
+//! Instrument definition for Barrier contracts.
+//!
+//! Module openferric::instruments::barrier contains payoff parameters and validation logic.
+
 use crate::core::{
     BarrierDirection, BarrierSpec, BarrierStyle, Instrument, OptionType, PricingError,
 };

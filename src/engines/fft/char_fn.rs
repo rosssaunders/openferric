@@ -1,3 +1,7 @@
+//! FFT-based pricing utilities for Char Fn.
+//!
+//! Provides transform-domain pricing building blocks used by Carr-Madan/FRFT workflows.
+
 use num_complex::Complex;
 
 use crate::math::gamma::gamma;

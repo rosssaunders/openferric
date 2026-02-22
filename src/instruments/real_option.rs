@@ -1,3 +1,7 @@
+//! Instrument definition for Real Option contracts.
+//!
+//! Module openferric::instruments::real_option contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, PricingError};
 
 /// Discrete project cash flow paid at a given year fraction.

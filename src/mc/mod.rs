@@ -1,3 +1,7 @@
+//! Legacy Monte Carlo pricer compatibility module.
+//!
+//! Retained for existing users while newer APIs live under openferric::engines::monte_carlo.
+
 use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::models::{Gbm, Heston};
 #[cfg(feature = "parallel")]

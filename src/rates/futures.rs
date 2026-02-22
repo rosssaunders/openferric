@@ -1,3 +1,7 @@
+//! Rates analytics for Futures.
+//!
+//! Module openferric::rates::futures contains pricing and conventions for fixed-income instruments.
+
 /// Cost-of-carry futures contract.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Future {

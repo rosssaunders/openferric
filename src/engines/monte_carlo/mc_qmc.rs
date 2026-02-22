@@ -1,3 +1,7 @@
+//! Monte Carlo engine components for Mc Qmc.
+//!
+//! Includes path simulation, estimators, and variance-reduction support.
+
 use crate::core::{ExerciseStyle, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;

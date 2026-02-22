@@ -1,3 +1,7 @@
+//! Risk analytics for Mva.
+//!
+//! Module openferric::risk::mva provides portfolio-level measures and adjustments.
+
 /// Margin Valuation Adjustment (MVA).
 ///
 /// MVA = cost of posting initial margin over the life of the trade.

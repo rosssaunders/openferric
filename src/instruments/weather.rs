@@ -1,3 +1,7 @@
+//! Instrument definition for Weather contracts.
+//!
+//! Module openferric::instruments::weather contains payoff parameters and validation logic.
+
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Degree-day index type.

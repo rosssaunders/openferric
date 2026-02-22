@@ -1,3 +1,7 @@
+//! Volatility analytics for Surface.
+//!
+//! Module openferric::vol::surface provides smile/surface construction or volatility inversion utilities.
+
 use crate::math::CubicSpline;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

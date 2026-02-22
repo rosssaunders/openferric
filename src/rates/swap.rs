@@ -1,9 +1,16 @@
+//! Rates analytics for Swap.
+//!
+//! Module openferric::rates::swap contains pricing and conventions for fixed-income instruments.
+
 use chrono::NaiveDate;
 
 use crate::rates::schedule::{Frequency, generate_schedule};
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 
 /// Plain-vanilla fixed-for-floating interest-rate swap.
+///
+/// Sign convention: [`InterestRateSwap::npv`] returns receiver-float/payer-fixed NPV.
+/// Formulas follow standard single-curve textbook valuation (Hull, Ch. 7 style setup).
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterestRateSwap {
     pub notional: f64,
@@ -24,6 +31,8 @@ impl InterestRateSwap {
     }
 
     /// PV of the fixed leg as discounted coupon cashflows.
+    ///
+    /// Each coupon is `notional * fixed_rate * accrual`, discounted with `curve`.
     pub fn fixed_leg_pv(&self, curve: &YieldCurve) -> f64 {
         let schedule = generate_schedule(self.start_date, self.end_date, self.fixed_freq);
         if schedule.len() < 2 {
@@ -46,6 +55,9 @@ impl InterestRateSwap {
     }
 
     /// PV of the floating leg as discounted forward coupons.
+    ///
+    /// Forward rates are extracted from the same curve via
+    /// `ln(DF(t1)/DF(t2))/(t2-t1)`.
     pub fn float_leg_pv(&self, curve: &YieldCurve) -> f64 {
         let schedule = generate_schedule(self.start_date, self.end_date, self.float_freq);
         if schedule.len() < 2 {
@@ -74,6 +86,27 @@ impl InterestRateSwap {
     }
 
     /// NPV for a receiver-float / payer-fixed swap.
+    ///
+    /// # Examples
+    /// ```
+    /// use chrono::NaiveDate;
+    /// use openferric::rates::{DayCountConvention, Frequency, InterestRateSwap, YieldCurve};
+    ///
+    /// let swap = InterestRateSwap::builder()
+    ///     .notional(1_000_000.0)
+    ///     .fixed_rate(0.03)
+    ///     .start_date(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap())
+    ///     .end_date(NaiveDate::from_ymd_opt(2030, 1, 1).unwrap())
+    ///     .fixed_freq(Frequency::Annual)
+    ///     .float_freq(Frequency::Quarterly)
+    ///     .fixed_day_count(DayCountConvention::Act365Fixed)
+    ///     .float_day_count(DayCountConvention::Act360)
+    ///     .build();
+    ///
+    /// let curve = YieldCurve::new(vec![(1.0, 0.97), (3.0, 0.91), (5.0, 0.85)]);
+    /// let npv = swap.npv(&curve);
+    /// assert!(npv.is_finite());
+    /// ```
     pub fn npv(&self, curve: &YieldCurve) -> f64 {
         self.float_leg_pv(curve) - self.fixed_leg_pv(curve)
     }
@@ -88,6 +121,8 @@ impl InterestRateSwap {
     }
 
     /// One-basis-point parallel curve-shift sensitivity.
+    ///
+    /// Returns `NPV(z+1bp) - NPV(z)`.
     pub fn dv01(&self, curve: &YieldCurve) -> f64 {
         let bumped_curve = bump_curve_parallel(curve, 1.0e-4);
         self.npv(&bumped_curve) - self.npv(curve)

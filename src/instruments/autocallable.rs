@@ -1,3 +1,7 @@
+//! Instrument definition for Autocallable contracts.
+//!
+//! Module openferric::instruments::autocallable contains payoff parameters and validation logic.
+
 use std::collections::BTreeSet;
 
 use crate::core::{Instrument, PricingError};

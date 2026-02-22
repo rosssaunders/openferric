@@ -1,3 +1,7 @@
+//! Rates analytics for Ois.
+//!
+//! Module openferric::rates::ois contains pricing and conventions for fixed-income instruments.
+
 use crate::rates::YieldCurve;
 
 /// Overnight index swap: fixed leg vs overnight floating leg.

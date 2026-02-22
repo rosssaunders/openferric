@@ -1,3 +1,7 @@
+//! Legacy pricing routines for Range Accrual products.
+//!
+//! Kept for backward compatibility with historical product-focused APIs.
+
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};

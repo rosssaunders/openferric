@@ -1,3 +1,7 @@
+//! Tree-based pricing routines for Two Asset Tree.
+//!
+//! Supports lattice valuation and early-exercise logic for path-dependent contracts.
+
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::instruments::rainbow::{BestOfTwoCallOption, WorstOfTwoCallOption};

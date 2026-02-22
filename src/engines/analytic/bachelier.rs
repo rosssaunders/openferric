@@ -1,3 +1,7 @@
+//! Closed-form analytic pricing routines for Bachelier.
+//!
+//! This module implements formulas and sensitivities used by fast deterministic engines.
+
 use crate::core::{Greeks, OptionType, PricingError};
 use crate::math::{normal_cdf, normal_pdf};
 
