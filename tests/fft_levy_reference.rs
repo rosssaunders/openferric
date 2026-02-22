@@ -106,7 +106,7 @@ fn quantlib_vg_set1_selected_strikes() {
     let params = CarrMadanParams::high_resolution();
 
     let strikes = vec![5550.0, 5800.0, 6000.0, 6200.0, 6500.0];
-    let expected = vec![955.1637, 799.6303, 687.2032, 585.6379, 453.4700];
+    let expected = [955.1637, 799.6303, 687.2032, 585.6379, 453.4700];
 
     let prices = carr_madan_fft_strikes(&cf, rate, maturity, spot, &strikes, params)
         .expect("FFT pricing failed");
@@ -140,7 +140,7 @@ fn quantlib_vg_set2_selected_strikes() {
     let params = CarrMadanParams::high_resolution();
 
     let strikes = vec![5550.0, 5800.0, 6000.0, 6200.0, 6500.0];
-    let expected = vec![732.8705, 570.5068, 457.9064, 361.1102, 244.6552];
+    let expected = [732.8705, 570.5068, 457.9064, 361.1102, 244.6552];
 
     let prices = carr_madan_fft_strikes(&cf, rate, maturity, spot, &strikes, params)
         .expect("FFT pricing failed");

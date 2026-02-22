@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn heston_price_put_reference() {
         let price = heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, false);
-        assert!((price - 17.055270961270109).abs() < 0.05);
+        assert!((price - 17.055_270_961_270_11).abs() < 0.05);
     }
 
     #[test]

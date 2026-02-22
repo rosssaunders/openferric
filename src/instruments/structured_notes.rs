@@ -1447,10 +1447,10 @@ mod tests {
         };
 
         let low = note
-            .price_with_projected_cms_rates(&vec![0.01; 2], &curve)
+            .price_with_projected_cms_rates(&[0.01; 2], &curve)
             .unwrap();
         let high = note
-            .price_with_projected_cms_rates(&vec![0.04; 2], &curve)
+            .price_with_projected_cms_rates(&[0.04; 2], &curve)
             .unwrap();
 
         assert!(high > low);

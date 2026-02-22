@@ -2,8 +2,6 @@
 mod simd_tests {
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
-    #[cfg(feature = "simd")]
-    use std::arch::x86_64::*;
 
     use openferric::core::OptionType;
     use openferric::engines::analytic::{bs_greeks_batch, bs_price_batch, normal_cdf_batch_approx};
@@ -139,19 +137,6 @@ mod simd_tests {
                 assert!((theta[i] - th_ref).abs() <= 1e-6);
             }
         }
-    }
-
-    #[cfg(feature = "simd")]
-    #[inline]
-    fn ordered_bits(x: f64) -> i64 {
-        let bits = x.to_bits() as i64;
-        if bits < 0 { i64::MIN - bits } else { bits }
-    }
-
-    #[cfg(feature = "simd")]
-    #[inline]
-    fn ulp_diff(a: f64, b: f64) -> u64 {
-        ordered_bits(a).abs_diff(ordered_bits(b))
     }
 
     #[cfg(feature = "simd")]

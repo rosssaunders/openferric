@@ -247,6 +247,6 @@ mod tests {
         assert_eq!(first.price, second.price);
 
         let guard = shared.lock().unwrap_or_else(|poison| poison.into_inner());
-        assert!(guard.tree_buffer.len() >= steps + 1);
+        assert!(guard.tree_buffer.len() > steps);
     }
 }

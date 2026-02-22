@@ -574,8 +574,8 @@ fn implied_convenience_yield_at_cost_of_carry_forward() {
     let r = 0.04;
     let u = 0.02;
     let y_input = 0.03;
-    let t = 2.0;
-    let f = s * ((r + u - y_input) * t as f64).exp();
+    let t = 2.0_f64;
+    let f = s * ((r + u - y_input) * t).exp();
 
     let y_recovered = implied_convenience_yield(s, f, r, u, t).unwrap();
     assert!(

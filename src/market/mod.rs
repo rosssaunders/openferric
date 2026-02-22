@@ -11,6 +11,7 @@
 //! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 pub mod dividends;
 pub mod fx;
+#[allow(clippy::module_inception)]
 pub mod market;
 
 pub use dividends::*;

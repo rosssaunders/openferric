@@ -636,14 +636,13 @@ fn validate_correlation_matrix(
         ));
     }
 
-    for i in 0..n_assets {
-        if (corr_matrix[i][i] - 1.0).abs() > 1.0e-10 {
+    for (i, row_i) in corr_matrix.iter().enumerate().take(n_assets) {
+        if (row_i[i] - 1.0).abs() > 1.0e-10 {
             return Err(PricingError::InvalidInput(
                 "autocallable correlation matrix diagonal must be 1".to_string(),
             ));
         }
-        for j in 0..n_assets {
-            let rho = corr_matrix[i][j];
+        for (j, rho) in row_i.iter().copied().enumerate().take(n_assets) {
             if !(-1.0..=1.0).contains(&rho) {
                 return Err(PricingError::InvalidInput(
                     "autocallable correlation entries must be in [-1, 1]".to_string(),
@@ -682,8 +681,8 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     for i in 0..n {
         for j in 0..=i {
             let mut sum = matrix[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
+            for (&lik, &ljk) in l[i].iter().zip(l[j].iter()).take(j) {
+                sum -= lik * ljk;
             }
 
             if i == j {

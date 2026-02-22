@@ -17,18 +17,13 @@ use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
 pub type Xoshiro256Rng = Xoshiro256PlusPlus;
 pub type Pcg64Rng = Pcg64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FastRngKind {
+    #[default]
     Xoshiro256PlusPlus,
     Pcg64,
     ThreadRng,
     StdRng,
-}
-
-impl Default for FastRngKind {
-    fn default() -> Self {
-        Self::Xoshiro256PlusPlus
-    }
 }
 
 #[derive(Debug, Clone)]

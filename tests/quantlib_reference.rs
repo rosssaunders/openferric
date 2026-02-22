@@ -1669,12 +1669,12 @@ fn heston_alan_lewis_cases() -> (f64, f64, f64, f64, f64, f64, f64, f64, f64, Ve
         HestonCase {
             option_type: OptionType::Call,
             strike: 90.0,
-            expected: 20.933349000596710,
+            expected: 20.933_349_000_596_71,
         },
         HestonCase {
             option_type: OptionType::Put,
             strike: 100.0,
-            expected: 17.055270961270109,
+            expected: 17.055_270_961_270_11,
         },
         HestonCase {
             option_type: OptionType::Call,
@@ -1684,7 +1684,7 @@ fn heston_alan_lewis_cases() -> (f64, f64, f64, f64, f64, f64, f64, f64, f64, Ve
         HestonCase {
             option_type: OptionType::Put,
             strike: 110.0,
-            expected: 23.017825898442801,
+            expected: 23.017_825_898_442_8,
         },
         HestonCase {
             option_type: OptionType::Call,

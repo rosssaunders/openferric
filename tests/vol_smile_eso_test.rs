@@ -15,7 +15,7 @@ fn sticky_strike_smile_is_monotone_in_equity_skew_wings() {
     let expiry = 1.0;
 
     let strikes = vec![70.0, 80.0, 90.0, 100.0, 110.0, 120.0, 130.0];
-    let vols = vec![0.34, 0.30, 0.26, 0.22, 0.20, 0.19, 0.18];
+    let vols = [0.34, 0.30, 0.26, 0.22, 0.20, 0.19, 0.18];
 
     let quotes: Vec<MarketOptionQuote> = strikes
         .iter()

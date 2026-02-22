@@ -1249,7 +1249,7 @@ fn bootstrap_and_reprice_round_trip() {
     );
 
     // Compute fair spreads at pillar maturities
-    let maturities = vec![1.0, 3.0, 5.0, 7.0, 10.0];
+    let maturities = [1.0, 3.0, 5.0, 7.0, 10.0];
     let quotes: Vec<(f64, f64)> = maturities
         .iter()
         .map(|&m| {

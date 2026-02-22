@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use openferric::core::OptionType;
 use openferric::core::PricingEngine;
 use openferric::engines::monte_carlo::{
@@ -11,9 +11,10 @@ use openferric::math::fast_norm::fast_norm_cdf;
 use openferric::math::fast_rng::{FastRngKind, Pcg64Rng, Xoshiro256Rng};
 use openferric::pricing::european::black_scholes_price;
 use rand::rngs::StdRng;
-use rand::{Rng, RngExt, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::ThreadPoolBuilder;
 use statrs::distribution::{ContinuousCDF, Normal};
+use std::hint::black_box;
 
 fn benchmark_market() -> Market {
     Market::builder()

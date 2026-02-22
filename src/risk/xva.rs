@@ -4,8 +4,8 @@
 //! - a discount curve,
 //! - counterparty and own survival curves,
 //! - LGD assumptions,
-//! and computes unilateral CVA/DVA by integrating discounted expected exposure against
-//! default-probability increments over a time grid.
+//! - and computes unilateral CVA/DVA by integrating discounted expected exposure against
+//!   default-probability increments over a time grid.
 //!
 //! Implemented relations:
 //! - `CVA = -LGD * sum_t DF(t) * EE(t) * dPD_cpty(t)`
