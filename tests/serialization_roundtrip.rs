@@ -7,24 +7,26 @@ use openferric::core::{
 use openferric::credit::SurvivalCurve;
 use openferric::instruments::{
     AbandonmentOption, AsianOption, AssetOrNothingOption, Autocallable, BarrierOption,
-    BasketOption, BasketType, BermudanOption, BestOfTwoCallOption, CashOrNothingOption,
-    CatastropheBond, ChooserOption, CliquetOption, CommodityForward, CommodityFutures,
-    CommodityOption, CommoditySpreadOption, CompoundOption, ConstantCpr, ConvertibleBond,
-    DeferInvestmentOption, DegreeDayType, DiscreteCashFlow, DoubleBarrierOption, DoubleBarrierType,
-    DualRangeAccrual, EmployeeStockOption, ExoticOption, ExpandOption, ForwardStartOption,
-    FuturesOption, FxOption, GapOption, LookbackFixedOption, LookbackFloatingOption, MbsCashflow,
-    MbsPassThrough, PhoenixAutocallable, Portfolio, PowerOption, PrepaymentModel, PsaModel,
-    QuantoOption, RangeAccrual, RealOptionBinomialSpec, RealOptionInstrument, SpreadOption,
-    SwingOption, Tarf, TarfType, Trade, TradeInstrument, TradeMetadata, TwoAssetCorrelationOption,
-    VanillaOption, VarianceOptionQuote, VarianceSwap, VolatilitySwap, WeatherOption, WeatherSwap,
-    WorstOfTwoCallOption,
+    BasketOption, BasketType, BermudanOption, BestOfTwoCallOption, CallableRangeAccrualNote,
+    CallableRateNote, CashOrNothingOption, CatastropheBond, ChooserOption, CliquetOption,
+    CmsLinkedNote, CommodityForward, CommodityFutures, CommodityOption, CommoditySpreadOption,
+    CompoundOption, ConstantCpr, ConvertibleBond, CouponScheduleBuilder, DeferInvestmentOption,
+    DegreeDayType, DiscreteCashFlow, DoubleBarrierOption, DoubleBarrierType, DualRangeAccrual,
+    EmployeeStockOption, ExerciseSchedule, ExoticOption, ExpandOption, ForwardStartOption,
+    FuturesOption, FxOption, GapOption, InverseFloaterNote, LookbackFixedOption,
+    LookbackFloatingOption, MbsCashflow, MbsPassThrough, PhoenixAutocallable, Portfolio,
+    PowerOption, PrepaymentModel, PsaModel, QuantoOption, RangeAccrual, RealOptionBinomialSpec,
+    RealOptionInstrument, SnowballNote, SpreadOption, StructuredCoupon, SwingOption, Tarf,
+    TarfType, TargetRedemptionNote, Trade, TradeInstrument, TradeMetadata,
+    TwoAssetCorrelationOption, VanillaOption, VarianceOptionQuote, VarianceSwap, VolatilitySwap,
+    WeatherOption, WeatherSwap, WorstOfTwoCallOption,
 };
 use openferric::market::{
     CreditCurveSnapshot, ForwardCurveSnapshot, Market, MarketSnapshot, SampledVolSurface, VolSource,
 };
 use openferric::math::interpolation::ExtrapolationMode;
 use openferric::rates::{
-    YieldCurve, YieldCurveInterpolationMethod, YieldCurveInterpolationSettings,
+    Frequency, YieldCurve, YieldCurveInterpolationMethod, YieldCurveInterpolationSettings,
 };
 use openferric::vol::surface::{SviParams, VolSurface as ParametricVolSurface};
 use serde::Serialize;
@@ -361,6 +363,94 @@ fn sample_trade_instruments() -> Vec<TradeInstrument> {
             upper_bound: 0.01,
             fixing_times: vec![0.25, 0.5, 0.75, 1.0],
             payment_time: 1.0,
+        }),
+        TradeInstrument::CallableRateNote(CallableRateNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            call_price: 1_000_000.0,
+            maturity: 2.0,
+            coupon_schedule: CouponScheduleBuilder::new(0.0, 2.0, Frequency::SemiAnnual)
+                .expect("callable schedule builder")
+                .build_fixed(0.045)
+                .expect("callable fixed schedule"),
+            exercise_schedule: ExerciseSchedule::new(vec![1.0, 1.5], 0.0)
+                .expect("callable exercise"),
+        }),
+        TradeInstrument::CallableRangeAccrualNote(
+            CallableRangeAccrualNote::new(
+                1_000_000.0,
+                2.0,
+                Frequency::SemiAnnual,
+                0.05,
+                0.0,
+                0.01,
+                0.05,
+                1_000_000.0,
+                ExerciseSchedule::new(vec![1.0, 1.5], 0.0).expect("callable ra exercise"),
+            )
+            .expect("callable range accrual note"),
+        ),
+        TradeInstrument::TargetRedemptionNote(TargetRedemptionNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            target_coupon: 30_000.0,
+            coupon_schedule: CouponScheduleBuilder::new(0.0, 2.0, Frequency::SemiAnnual)
+                .expect("tarn schedule builder")
+                .build_fixed(0.0)
+                .expect("tarn schedule"),
+            spread: 0.02,
+            floor: Some(0.0),
+            cap: Some(0.08),
+        }),
+        TradeInstrument::SnowballNote(SnowballNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            initial_coupon: 0.02,
+            spread: 0.01,
+            floor: Some(0.0),
+            cap: Some(0.1),
+            coupon_schedule: CouponScheduleBuilder::new(0.0, 1.0, Frequency::Quarterly)
+                .expect("snowball schedule builder")
+                .build_fixed(0.0)
+                .expect("snowball schedule"),
+        }),
+        TradeInstrument::InverseFloaterNote(InverseFloaterNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            fixed_rate: 0.07,
+            leverage: 2.0,
+            floor: Some(0.0),
+            cap: Some(0.12),
+            coupon_schedule: CouponScheduleBuilder::new(0.0, 2.0, Frequency::SemiAnnual)
+                .expect("inverse schedule builder")
+                .build_structured(StructuredCoupon::InverseFloater {
+                    fixed_rate: 0.07,
+                    leverage: 2.0,
+                    floor: Some(0.0),
+                    cap: Some(0.12),
+                })
+                .expect("inverse schedule"),
+        }),
+        TradeInstrument::CmsLinkedNote(CmsLinkedNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            multiplier: 1.0,
+            spread: 0.001,
+            cms_tenor: 5.0,
+            swap_payment_frequency: Frequency::Annual,
+            floor: Some(0.0),
+            cap: Some(0.12),
+            coupon_schedule: CouponScheduleBuilder::new(0.0, 2.0, Frequency::SemiAnnual)
+                .expect("cms schedule builder")
+                .build_structured(StructuredCoupon::CmsLinked {
+                    multiplier: 1.0,
+                    spread: 0.001,
+                    cms_tenor: 5.0,
+                    swap_payment_frequency: Frequency::Annual,
+                    floor: Some(0.0),
+                    cap: Some(0.12),
+                })
+                .expect("cms schedule"),
         }),
         TradeInstrument::DeferInvestmentOption(DeferInvestmentOption {
             model: common_real_model.clone(),

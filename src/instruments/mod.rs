@@ -30,6 +30,7 @@ pub mod rainbow;
 pub mod range_accrual;
 pub mod real_option;
 pub mod spread;
+pub mod structured_notes;
 pub mod swing;
 pub mod tarf;
 pub mod vanilla;
@@ -62,6 +63,11 @@ pub use real_option::{
     RealOptionBinomialSpec, RealOptionInstrument,
 };
 pub use spread::SpreadOption;
+pub use structured_notes::{
+    CallableRangeAccrualNote, CallableRateNote, CmsLinkedNote, CouponPeriod, CouponScheduleBuilder,
+    CouponType, ExerciseSchedule, InverseFloaterNote, SnowballNote, StructuredCoupon,
+    TargetRedemptionNote,
+};
 pub use swing::SwingOption;
 pub use tarf::{Tarf, TarfType};
 pub use vanilla::VanillaOption;
@@ -122,6 +128,12 @@ pub enum TradeInstrument {
     AbandonmentOption(AbandonmentOption),
     RealOptionInstrument(RealOptionInstrument),
     SpreadOption(SpreadOption),
+    CallableRateNote(CallableRateNote),
+    CallableRangeAccrualNote(CallableRangeAccrualNote),
+    TargetRedemptionNote(TargetRedemptionNote),
+    SnowballNote(SnowballNote),
+    InverseFloaterNote(InverseFloaterNote),
+    CmsLinkedNote(CmsLinkedNote),
     SwingOption(SwingOption),
     Tarf(Tarf),
     VanillaOption(VanillaOption),
