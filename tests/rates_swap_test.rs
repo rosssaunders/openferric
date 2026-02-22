@@ -2,8 +2,8 @@ use approx::assert_relative_eq;
 use chrono::NaiveDate;
 
 use openferric::rates::{
-    DayCountConvention, ForwardRateAgreement, Frequency, InterestRateSwap, SwapBuilder, YieldCurve,
-    year_fraction,
+    BusinessDayConvention, Calendar, DayCountConvention, ForwardRateAgreement, Frequency,
+    InterestRateSwap, RollConvention, StubConvention, SwapBuilder, YieldCurve, year_fraction,
 };
 
 fn flat_curve_continuous(rate: f64, max_tenor_years: u32) -> YieldCurve {
@@ -99,4 +99,29 @@ fn fra_forward_rate_matches_curve_forward_rate() {
         curve.forward_rate(0.0, tau),
         epsilon = 1.0e-12
     );
+}
+
+#[test]
+fn swap_builder_accepts_calendar_stub_and_roll_conventions() {
+    let curve = flat_curve_continuous(0.03, 10);
+    let start = NaiveDate::from_ymd_opt(2025, 1, 31).unwrap();
+    let end = NaiveDate::from_ymd_opt(2028, 7, 20).unwrap();
+
+    let swap = SwapBuilder::default()
+        .notional(1_000_000.0)
+        .fixed_rate(0.03)
+        .start_date(start)
+        .end_date(end)
+        .fixed_freq(Frequency::Quarterly)
+        .float_freq(Frequency::Quarterly)
+        .calendar(Calendar::joint(vec![Calendar::nyc(), Calendar::london()]))
+        .business_day_convention(BusinessDayConvention::ModifiedFollowing)
+        .stub_convention(StubConvention::LongBack)
+        .roll_convention(RollConvention::EndOfMonth)
+        .fixed_day_count(DayCountConvention::Act360)
+        .float_day_count(DayCountConvention::Act360)
+        .build();
+
+    let npv = swap.npv(&curve);
+    assert!(npv.is_finite());
 }
