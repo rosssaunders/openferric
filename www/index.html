@@ -101,6 +101,39 @@
       text-transform: uppercase;
       color: var(--muted);
     }
+    .panel-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .panel-info-btn {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid rgba(142,161,184,0.45);
+      background: rgba(13,20,29,0.75);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 120ms linear, color 120ms linear, background 120ms linear;
+    }
+    .panel-info-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(47,178,255,0.12);
+    }
+    .panel-info-btn:focus-visible {
+      outline: 1px solid var(--accent);
+      outline-offset: 1px;
+    }
     .chart-area {
       flex: 1;
       min-height: 0;
@@ -360,6 +393,123 @@
       min-height: 12px;
       font-size: 10px;
       color: var(--muted);
+    }
+
+    /* ---- Panel Info Modal ---- */
+    body.panel-info-open { overflow: hidden; }
+    .panel-info-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 4000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(3,7,12,0.72);
+      padding: 20px;
+    }
+    .panel-info-modal-backdrop.open { display: flex; }
+    .panel-info-modal {
+      width: min(860px, 92vw);
+      max-height: 88vh;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--panel) 94%, black);
+      box-shadow: 0 20px 48px rgba(0,0,0,0.55);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-info-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(142,161,184,0.2);
+      background: rgba(0,0,0,0.2);
+    }
+    .panel-info-head h2 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--fg);
+    }
+    .panel-info-close {
+      font-size: 10px;
+      padding: 2px 7px;
+    }
+    .panel-info-content {
+      overflow: auto;
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .panel-info-live {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px 10px;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(142,161,184,0.22);
+      background: rgba(9,14,21,0.72);
+      font-size: 10px;
+    }
+    .panel-info-live-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      line-height: 1.35;
+    }
+    .panel-info-live-item .k {
+      color: var(--muted);
+      text-transform: lowercase;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .panel-info-live-item .v {
+      color: var(--fg);
+      font-family: var(--mono);
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .panel-info-section {
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      padding: 8px 9px;
+      background: rgba(0,0,0,0.2);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .panel-info-section h3 {
+      margin: 0 0 6px 0;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .panel-info-section p {
+      margin: 0;
+      color: var(--fg);
+    }
+    .panel-info-list {
+      margin: 0;
+      padding-left: 16px;
+      display: grid;
+      gap: 3px;
+      color: var(--fg);
+    }
+    .panel-info-code {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: #b9d3f0;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 780px) {
+      .panel-info-modal { width: 96vw; max-height: 92vh; }
+      .panel-info-live { grid-template-columns: 1fr; }
     }
   </style>
   <script type="importmap">
@@ -1053,6 +1203,721 @@
     }
 
     // =====================================================================
+    //  Per-panel info registry + modal
+    // =====================================================================
+    const InfoRegistry = Object.freeze({
+      surface: {
+        title: '3D Vol Surface',
+        summary: 'Fitted IV surface with live market points across maturity and strike coordinates.',
+        inputs: [
+          'calibratedSlices (per-expiry fitted params + market points)',
+          'surfaceConfig.conventions.stickyRule (delta/strike/moneyness)',
+          'surfaceConfig common caps (vol floor/cap) and selected model',
+        ],
+        outputs: [
+          '3D fitted surface trace (grid)',
+          '3D market scatter trace',
+          'x-axis remapping (delta proxy, strike, or moneyness)',
+        ],
+        computation: [
+          'worker computes iv_grid on a 15-point k-grid per expiry',
+          'sticky delta mode derives x-grid from black76 greeks batch',
+          'main thread renders Plotly scene with stable uirevision',
+        ],
+        data_sources: [
+          'Deribit option markprice stream and REST seed',
+          'WASM calibration output from worker',
+        ],
+        refresh_cadence: 'Warmup cycles 1-5 every cycle, then every 5th render cycle.',
+        assumptions: [
+          'forward per expiry approximated from quote underlying prices',
+          'fixed rate input for Black-76 helper calls in the worker',
+        ],
+        caveats: [
+          'surface updates are tiered to manage CPU/GPU load',
+          'interactive camera motion can defer redraw until interaction settles',
+        ],
+        code_ref: [
+          'www/worker.js :: computeSurfaceData',
+          'www/index.html :: renderSurface',
+        ],
+      },
+      volchange: {
+        title: 'IV Change Heatmap',
+        summary: 'Snapshot-to-snapshot market IV delta map by expiry and strike.',
+        inputs: [
+          'current calibratedSlices market IV points',
+          'prevIvMap from prior compute-result',
+        ],
+        outputs: [
+          '2D heatmap of IV change (vol points)',
+        ],
+        computation: [
+          'strike grid is subsampled for readability',
+          'each cell is current market IV minus previous market IV',
+        ],
+        data_sources: [
+          'worker compute-result calibratedSlices',
+          'main thread retained previous IV map',
+        ],
+        refresh_cadence: 'Every compute-result cycle.',
+        assumptions: [
+          'matching key is expiryCode|strike between snapshots',
+        ],
+        caveats: [
+          'new strikes/expiries appear as zero delta until second observation',
+        ],
+        code_ref: [
+          'www/index.html :: applyComputeResult',
+          'www/index.html :: renderVolChange',
+        ],
+      },
+      smile: {
+        title: 'Smile Slice',
+        summary: 'Selected expiry smile with market points, fitted curve, and optional bid/ask band.',
+        inputs: [
+          'activeExpiry selection',
+          'selected expiry points (market, fitted, bid, ask, k)',
+          'surfaceConfig.conventions.stickyRule',
+        ],
+        outputs: [
+          'smile chart for one expiry',
+          'bid/ask ribbon when bid/ask IV is available',
+        ],
+        computation: [
+          'x-axis transformed as strike, K/F, or delta proxy',
+          'fitted IV comes from worker diagnostics output',
+        ],
+        data_sources: [
+          'worker compute-result calibratedSlices',
+          'UI expiry selector state',
+        ],
+        refresh_cadence: 'Every compute-result cycle and on expiry selector changes.',
+        assumptions: [
+          'delta x-axis uses logistic proxy from k rather than exact greeks',
+        ],
+        caveats: [
+          'no render when selected expiry disappears or has no points',
+        ],
+        code_ref: [
+          'www/index.html :: renderSmile',
+          'www/index.html :: ensureExpirySelection',
+        ],
+      },
+      greeks: {
+        title: 'Greeks Heatmap',
+        summary: 'Strike-expiry heatmap for selected Black-76 Greek.',
+        inputs: [
+          'activeGreek tab (delta/gamma/vega/theta)',
+          'sampled strikes and expiry labels from worker',
+          'surface-fitted IVs from batch lookup',
+        ],
+        outputs: [
+          '2D heatmap of selected Greek',
+        ],
+        computation: [
+          'worker runs batch_slice_iv then black76_greeks_batch_wasm',
+          'main thread maps activeGreek to colorscale and plots heatmap',
+        ],
+        data_sources: [
+          'worker compute-result.greeks',
+        ],
+        refresh_cadence: 'Warmup cycles 1-5 every cycle, then every 2nd render cycle.',
+        assumptions: [
+          'Black-76 forward convention with static rate input',
+        ],
+        caveats: [
+          'strike domain is sampled when chain is dense',
+        ],
+        code_ref: [
+          'www/worker.js :: computeGreeksData',
+          'www/index.html :: renderGreeks',
+        ],
+      },
+      term: {
+        title: 'Term Structure',
+        summary: 'ATM IV term line with RR25/BF25 overlays and realized-vol reference.',
+        inputs: [
+          'per-expiry ATM IV and diagnostics',
+          'termRr25 and termBf25 arrays from worker frame cache',
+          'realizedVol from worker',
+        ],
+        outputs: [
+          'ATM, RR25, BF25 term traces',
+          'realized-vol horizontal reference line',
+        ],
+        computation: [
+          'worker term_structure_batch_wasm computes ATM + 25d metrics',
+          'main thread composes multi-axis Plotly traces',
+        ],
+        data_sources: [
+          'worker compute-result frame cache',
+        ],
+        refresh_cadence: 'Every compute-result cycle.',
+        assumptions: [
+          'expiries are sorted by worker using time-to-expiry T',
+        ],
+        caveats: [
+          'empty when no calibrated slices pass quality filters',
+        ],
+        code_ref: [
+          'www/worker.js :: computeFrameCache',
+          'www/index.html :: renderTerm',
+        ],
+      },
+      metrics: {
+        title: 'Metrics & Diagnostics',
+        summary: 'Operational diagnostics plus per-expiry fit-quality table.',
+        inputs: [
+          'spotPrice, chain size, ticksPerSec, calibTimeUs',
+          'calibratedSlices diagnostics fields (RMSE/skew/kurt/n)',
+          'worker d25 and atmIv arrays',
+        ],
+        outputs: [
+          'headline metrics grid',
+          'expiry diagnostics table with RR25/BF25 reconstruction',
+        ],
+        computation: [
+          'RR25/BF25 reconstructed from worker 25d call/put IV values',
+          'table rows regenerated each compute-result',
+        ],
+        data_sources: [
+          'worker compute-result and local streaming state',
+        ],
+        refresh_cadence: 'Every compute-result cycle.',
+        assumptions: [
+          'diagnostics are based on worker-calibrated slice stats',
+        ],
+        caveats: [
+          'view is descriptive; no additional numerical solving in main thread',
+        ],
+        code_ref: [
+          'www/index.html :: renderMetrics',
+          'www/worker.js :: runCalibration',
+        ],
+      },
+      scanner: {
+        title: 'Mispricing Scanner',
+        summary: 'Model-vs-market IV and price edge scanner with heatmap and ranked table.',
+        inputs: [
+          'edgeThreshold, edgeSideFilter, minMaturity filters',
+          'worker scanner payload (heatmap + edge rows)',
+        ],
+        outputs: [
+          'IV-edge heatmap',
+          'top-ranked option edge table with buy/sell flags',
+        ],
+        computation: [
+          'worker batches model IV lookup and Black-76 pricing',
+          'table applies local filters and ranks by absolute IV edge',
+        ],
+        data_sources: [
+          'worker compute-result.scanner',
+          'live Deribit option stream via worker calibration pipeline',
+        ],
+        refresh_cadence: 'Warmup cycles 1-5 every cycle, then every 3rd render cycle; table can re-filter instantly client-side.',
+        assumptions: [
+          'market mid is mark price (or mark*spot for inverse quotes) in scanner logic',
+        ],
+        caveats: [
+          'signals are model-relative and not execution guarantees',
+          'stale scanner payload can persist between heavy recompute intervals',
+        ],
+        code_ref: [
+          'www/worker.js :: computeScannerData',
+          'www/index.html :: renderScanner',
+        ],
+      },
+      forwardvol: {
+        title: 'Forward Volatility',
+        summary: 'Forward-vol term pairs and forward-skew slices derived from adjacent expiries.',
+        inputs: [
+          'worker forwardVol payload',
+          'panel tab selection (term/skew)',
+        ],
+        outputs: [
+          'forward vs spot vol comparison',
+          'forward skew traces over k-points',
+        ],
+        computation: [
+          'worker forward_vol_grid_wasm computes pairwise forward vols/skews',
+          'main thread renders term or skew view from cached payload',
+        ],
+        data_sources: [
+          'worker compute-result.forwardVol',
+        ],
+        refresh_cadence: 'Warmup cycles 1-5 every cycle, then every 3rd render cycle.',
+        assumptions: [
+          'requires at least two valid calibrated expiries',
+        ],
+        caveats: [
+          'panel remains unchanged when no fresh forwardVol payload is available',
+        ],
+        code_ref: [
+          'www/worker.js :: computeForwardVolData',
+          'www/index.html :: renderForwardVol',
+        ],
+      },
+      funding: {
+        title: 'Funding & Basis',
+        summary: 'Perpetual funding history plus options basis and carry views.',
+        inputs: [
+          'fundingState (WS perpetual updates + REST funding history)',
+          'calibratedSlices forwards and spotPrice',
+          'panel tab selection (funding/basis/carry)',
+        ],
+        outputs: [
+          'funding-rate time series',
+          'basis bars and annualized carry curve',
+        ],
+        computation: [
+          'funding tab plots REST history with live mark updates',
+          'basis/carry derived from forward-spot relationships',
+        ],
+        data_sources: [
+          'Deribit get_funding_rate_history REST',
+          'Deribit perpetual WS channel',
+          'worker-calibrated forwards via calibratedSlices',
+        ],
+        refresh_cadence: 'Funding WS updates near real-time; history fetched on boot/currency switch.',
+        assumptions: [
+          'perpetual instrument for active currency represents funding signal',
+        ],
+        caveats: [
+          'history fetch can fail offline; live tab values still update from WS when connected',
+        ],
+        code_ref: [
+          'www/index.html :: fetchFundingHistory',
+          'www/index.html :: renderFunding',
+          'www/index.html :: handlePerpetualMessage',
+        ],
+      },
+      tradeflow: {
+        title: 'Trade Flow',
+        summary: 'Recent option tape, strike-expiry volume map, and large-trade monitor.',
+        inputs: [
+          'Deribit trade channel events',
+          'tradeFlow aggregated state',
+          'panel tab selection (tape/heatmap/large)',
+        ],
+        outputs: [
+          'recent trade tape rows',
+          'session volume heatmap',
+          'large trade table and flow metrics',
+        ],
+        computation: [
+          'trade events aggregate by expiry/strike/type',
+          'large-trade detection uses rolling median notional heuristic',
+        ],
+        data_sources: [
+          'Deribit trades.option WS channel',
+        ],
+        refresh_cadence: 'Event-driven with ~500ms throttled redraw.',
+        assumptions: [
+          'notional estimated as amount * index/spot proxy',
+        ],
+        caveats: [
+          'large-trade heuristic is relative to recent local sample',
+        ],
+        code_ref: [
+          'www/index.html :: handleTradeMessage',
+          'www/index.html :: renderTradeFlow',
+        ],
+      },
+      volcone: {
+        title: 'Vol Cone & IV Rank',
+        summary: 'Historical realized-vol percentile cone with front ATM IV rank overlays.',
+        inputs: [
+          'historicalVolData from Deribit',
+          'front expiry ATM IV from calibratedSlices',
+          'worker realizedVol via frame cache',
+          'lookback window selector',
+        ],
+        outputs: [
+          'vol cone percentile bands and current realized-vol trace',
+          'IV Rank / IV Percentile / ATM IV / 30d RVol metrics',
+        ],
+        computation: [
+          'historical vol series filtered by lookback then percentile-bucketed',
+          'IV rank and percentile derived from filtered historical distribution',
+        ],
+        data_sources: [
+          'Deribit get_historical_volatility REST',
+          'worker compute-result real-time realizedVol',
+        ],
+        refresh_cadence: 'Historical data fetched on boot/currency switch/lookback changes; ATM metrics update each compute-result.',
+        assumptions: [
+          'historical volatility endpoint reflects base asset behavior for active product',
+        ],
+        caveats: [
+          'cone unavailable offline until cached historical data exists in memory',
+        ],
+        code_ref: [
+          'www/index.html :: fetchHistoricalVol',
+          'www/index.html :: renderVolCone',
+        ],
+      },
+      strategy: {
+        title: 'Strategy Builder',
+        summary: 'Interactive multi-leg payoff and net-greek sandbox with spot/vol/time shocks.',
+        inputs: [
+          'strategyLegs (strike, expiry, quantity, iv, type)',
+          'spotPrice and shock sliders',
+          'worker strategy-compute payload',
+        ],
+        outputs: [
+          'P&L at expiry and shocked P&L curves',
+          'net forward-delta/gamma/vega/theta metrics',
+        ],
+        computation: [
+          'worker prices entry via black76_price_batch_wasm',
+          'expiry intrinsic payoff via strategy_intrinsic_pnl_wasm',
+          'optional shocked pre-expiry repricing and net Greeks aggregation',
+        ],
+        data_sources: [
+          'worker strategy-result responses',
+          'local strategy editor state',
+        ],
+        refresh_cadence: 'On leg edits, template actions, and slider input events.',
+        assumptions: [
+          'current leg IVs sourced from front slice ATM approximation when templated',
+        ],
+        caveats: [
+          'scenario engine is illustrative; transaction costs and liquidity are excluded',
+        ],
+        code_ref: [
+          'www/index.html :: triggerStrategyCompute',
+          'www/worker.js :: strategy-compute handler',
+          'www/index.html :: renderStrategyPayoff',
+        ],
+      },
+      surfacecfg: {
+        title: 'Surface Config',
+        summary: 'Model/mode controls and advanced calibration configuration pushed into the worker.',
+        inputs: [
+          'UI control selections and edits',
+          'persisted localStorage config payload',
+          'active model/currency context',
+        ],
+        outputs: [
+          'surfaceConfig state and worker config-update messages',
+          'manual/hybrid parameter table and advanced model controls',
+        ],
+        computation: [
+          'input sanitation and bounds enforcement happen before worker dispatch',
+          'config mutations can trigger recalibration schedule',
+        ],
+        data_sources: [
+          'localStorage surface config snapshot',
+          'in-memory UI state',
+        ],
+        refresh_cadence: 'Immediate on user interaction; persisted on each mutation.',
+        assumptions: [
+          'selected model controls match WASM model parameter conventions',
+        ],
+        caveats: [
+          'invalid imported JSON is rejected and not applied',
+        ],
+        code_ref: [
+          'www/index.html :: sanitizeSurfaceConfig',
+          'www/index.html :: renderSurfaceConfigPanel',
+          'www/worker.js :: sanitizeSurfaceConfig',
+        ],
+      },
+    });
+
+    const INFO_FIELD_ORDER = [
+      'summary',
+      'inputs',
+      'outputs',
+      'computation',
+      'data_sources',
+      'refresh_cadence',
+      'assumptions',
+      'caveats',
+      'code_ref',
+    ];
+    const INFO_FIELD_LABELS = {
+      summary: 'Summary',
+      inputs: 'Inputs',
+      outputs: 'Outputs',
+      computation: 'Computation',
+      data_sources: 'Data Sources',
+      refresh_cadence: 'Refresh Cadence',
+      assumptions: 'Assumptions',
+      caveats: 'Caveats',
+      code_ref: 'Code Reference',
+    };
+
+    function stableStringify(value) {
+      if (value === null || typeof value !== 'object') return JSON.stringify(value);
+      if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+      const keys = Object.keys(value).sort();
+      return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
+    }
+
+    function fnv1aHash(text) {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return h.toString(16).padStart(8, '0');
+    }
+
+    function formatPanelTime(ts) {
+      return Number.isFinite(ts) ? new Date(ts).toLocaleString() : '--';
+    }
+
+    function formatFixed(value, digits) {
+      return Number.isFinite(value) ? value.toFixed(digits) : '--';
+    }
+
+    function surfaceConfigHash() {
+      try {
+        return 'fnv1a:' + fnv1aHash(stableStringify(surfaceConfig || {}));
+      } catch (e) {
+        return 'n/a';
+      }
+    }
+
+    function collectPanelLiveValues(panelKey) {
+      const globals = [
+        { k: 'current model', v: String(activeModel || '--').toUpperCase() },
+        { k: 'active currency', v: activeCurrency || '--' },
+        { k: 'surface mode', v: surfaceConfig?.mode || '--' },
+        { k: 'surface config hash', v: surfaceConfigHash() },
+        { k: 'surface config timestamp', v: formatPanelTime(surfaceConfig?.timestamp) },
+        { k: 'worker status', v: workerReady ? 'ready' : 'initializing' },
+        { k: 'render cycle', v: String(Number.isFinite(renderCycle) ? renderCycle : 0) },
+      ];
+
+      const specifics = [];
+      if (panelKey === 'surface') {
+        specifics.push(
+          { k: 'spot', v: spotPrice > 0 ? '$' + pFmt.format(spotPrice) : '--' },
+          { k: 'sticky rule', v: surfaceConfig?.conventions?.stickyRule || '--' },
+          { k: 'slice count', v: String(calibratedSlices.length) },
+          { k: 'surface grid', v: lastSurfaceData ? `${lastSurfaceData.tGrid.length}x${lastSurfaceData.gridN}` : '--' }
+        );
+      } else if (panelKey === 'volchange') {
+        specifics.push(
+          { k: 'tracked IV points', v: String(prevIvMap.size) },
+          { k: 'slice count', v: String(calibratedSlices.length) }
+        );
+      } else if (panelKey === 'smile') {
+        const sl = calibratedSlices.find((s) => s.expiryCode === activeExpiry);
+        specifics.push(
+          { k: 'active expiry', v: activeExpiry || '--' },
+          { k: 'points in expiry', v: sl ? String(sl.points.length) : '--' },
+          { k: 'sticky rule', v: surfaceConfig?.conventions?.stickyRule || '--' }
+        );
+      } else if (panelKey === 'greeks') {
+        specifics.push(
+          { k: 'active greek', v: activeGreek || '--' },
+          { k: 'expiry buckets', v: lastGreeksData ? String(lastGreeksData.expLabels.length) : '--' },
+          { k: 'strike buckets', v: lastGreeksData ? String(lastGreeksData.sampledStrikes.length) : '--' }
+        );
+      } else if (panelKey === 'term') {
+        specifics.push(
+          { k: 'expiries', v: String(calibratedSlices.length) },
+          { k: 'realized vol', v: frameCache && Number.isFinite(frameCache.realizedVol) ? formatFixed(frameCache.realizedVol, 2) + '%' : '--' }
+        );
+      } else if (panelKey === 'metrics') {
+        specifics.push(
+          { k: 'quotes in chain', v: String(chain.size) },
+          { k: 'ticks/sec', v: ticksPerSec > 0 ? formatFixed(ticksPerSec, 1) : '--' },
+          { k: 'last calib', v: calibTimeUs > 0 ? calibTimeUs + ' us' : '--' }
+        );
+      } else if (panelKey === 'scanner') {
+        specifics.push(
+          { k: 'min edge', v: formatFixed(edgeThreshold, 1) + ' vol' },
+          { k: 'side filter', v: edgeSideFilter || '--' },
+          { k: 'min maturity', v: minMaturity > 0 ? String(minMaturity) + 'd' : 'all' },
+          { k: 'candidate rows', v: lastScannerData ? String(lastScannerData.edges.length) : '--' }
+        );
+      } else if (panelKey === 'forwardvol') {
+        specifics.push(
+          { k: 'active tab', v: panels.forwardvol ? panels.forwardvol.activeTab : '--' },
+          { k: 'forward pairs', v: lastForwardVolData ? String(lastForwardVolData.labels.length) : '--' }
+        );
+      } else if (panelKey === 'funding') {
+        specifics.push(
+          { k: 'active tab', v: panels.funding ? panels.funding.activeTab : '--' },
+          { k: 'funding rate', v: Number.isFinite(fundingState.currentRate) ? (fundingState.currentRate * 100).toFixed(4) + '%' : '--' },
+          { k: 'perp/index', v: Number.isFinite(fundingState.perpPrice) && Number.isFinite(fundingState.indexPrice) ? `${pFmt.format(fundingState.perpPrice)} / ${pFmt.format(fundingState.indexPrice)}` : '--' }
+        );
+      } else if (panelKey === 'tradeflow') {
+        specifics.push(
+          { k: 'active tab', v: panels.tradeflow ? panels.tradeflow.activeTab : '--' },
+          { k: 'tape size', v: String(tradeFlow.tape.length) },
+          { k: 'large trades', v: String(tradeFlow.largeTrades.length) }
+        );
+      } else if (panelKey === 'volcone') {
+        specifics.push(
+          { k: 'lookback', v: String(volConeLookback) + 'd' },
+          { k: 'historical points', v: historicalVolData ? String(historicalVolData.length) : '--' },
+          { k: 'front ATM IV', v: calibratedSlices.length > 0 ? formatFixed(calibratedSlices[0].atmVol, 1) + '%' : '--' }
+        );
+      } else if (panelKey === 'strategy') {
+        specifics.push(
+          { k: 'legs', v: String(strategyLegs.length) },
+          { k: 'spot shock', v: panels.strategy ? panels.strategy.slSpot.value + '%' : '--' },
+          { k: 'vol shock', v: panels.strategy ? panels.strategy.slVol.value : '--' },
+          { k: 'time shock', v: panels.strategy ? panels.strategy.slTime.value + 'd' : '--' },
+          { k: 'net delta', v: lastStrategyResult && Number.isFinite(lastStrategyResult.netGreeks?.[0]) ? formatFixed(lastStrategyResult.netGreeks[0], 4) : '--' }
+        );
+      } else if (panelKey === 'surfacecfg') {
+        specifics.push(
+          { k: 'fit weighting', v: surfaceConfig?.calibration?.fitWeighting || '--' },
+          { k: 'sticky rule', v: surfaceConfig?.conventions?.stickyRule || '--' },
+          { k: 'config source', v: surfaceConfig?.source || '--' }
+        );
+      }
+
+      return [...globals, ...specifics].filter((item) => item && item.k && item.v !== undefined && item.v !== null);
+    }
+
+    const panelInfoModalState = {
+      backdrop: null,
+      title: null,
+      liveWrap: null,
+      detailsWrap: null,
+      closeBtn: null,
+      panelKey: '',
+      escapeBound: false,
+    };
+
+    function closePanelInfoModal() {
+      if (!panelInfoModalState.backdrop) return;
+      panelInfoModalState.backdrop.classList.remove('open');
+      document.body.classList.remove('panel-info-open');
+      panelInfoModalState.panelKey = '';
+    }
+
+    function ensurePanelInfoModal() {
+      if (panelInfoModalState.backdrop) return;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'panel-info-modal-backdrop';
+      backdrop.innerHTML = ''
+        + '<div class="panel-info-modal" role="dialog" aria-modal="true" aria-label="Panel info">'
+        + '<div class="panel-info-head">'
+        + '<h2 class="panel-info-title">Panel Info</h2>'
+        + '<button type="button" class="tab-btn panel-info-close">Close</button>'
+        + '</div>'
+        + '<div class="panel-info-content">'
+        + '<div class="panel-info-live"></div>'
+        + '<div class="panel-info-details"></div>'
+        + '</div>'
+        + '</div>';
+      document.body.appendChild(backdrop);
+
+      panelInfoModalState.backdrop = backdrop;
+      panelInfoModalState.title = backdrop.querySelector('.panel-info-title');
+      panelInfoModalState.liveWrap = backdrop.querySelector('.panel-info-live');
+      panelInfoModalState.detailsWrap = backdrop.querySelector('.panel-info-details');
+      panelInfoModalState.closeBtn = backdrop.querySelector('.panel-info-close');
+
+      backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) closePanelInfoModal();
+      });
+      panelInfoModalState.closeBtn.addEventListener('click', closePanelInfoModal);
+
+      if (!panelInfoModalState.escapeBound) {
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && panelInfoModalState.backdrop && panelInfoModalState.backdrop.classList.contains('open')) {
+            closePanelInfoModal();
+          }
+        });
+        panelInfoModalState.escapeBound = true;
+      }
+    }
+
+    function renderPanelInfoField(container, key, rawValue) {
+      const section = document.createElement('section');
+      section.className = 'panel-info-section';
+      const heading = document.createElement('h3');
+      heading.textContent = INFO_FIELD_LABELS[key] || key;
+      section.appendChild(heading);
+
+      if (Array.isArray(rawValue)) {
+        const ul = document.createElement('ul');
+        ul.className = 'panel-info-list';
+        for (const item of rawValue) {
+          const li = document.createElement('li');
+          li.textContent = String(item);
+          if (key === 'code_ref') li.classList.add('panel-info-code');
+          ul.appendChild(li);
+        }
+        section.appendChild(ul);
+      } else {
+        const p = document.createElement('p');
+        p.textContent = rawValue === undefined || rawValue === null || rawValue === '' ? '--' : String(rawValue);
+        if (key === 'code_ref') p.classList.add('panel-info-code');
+        section.appendChild(p);
+      }
+
+      container.appendChild(section);
+    }
+
+    function openPanelInfoModal(panelKey) {
+      const info = InfoRegistry[panelKey];
+      if (!info) return;
+      ensurePanelInfoModal();
+
+      panelInfoModalState.panelKey = panelKey;
+      panelInfoModalState.title.textContent = info.title || panelKey;
+
+      const liveRows = collectPanelLiveValues(panelKey);
+      panelInfoModalState.liveWrap.innerHTML = '';
+      for (const row of liveRows) {
+        const item = document.createElement('div');
+        item.className = 'panel-info-live-item';
+        item.innerHTML = '<span class="k"></span><span class="v"></span>';
+        item.querySelector('.k').textContent = row.k;
+        item.querySelector('.v').textContent = String(row.v);
+        panelInfoModalState.liveWrap.appendChild(item);
+      }
+
+      panelInfoModalState.detailsWrap.innerHTML = '';
+      for (const key of INFO_FIELD_ORDER) {
+        renderPanelInfoField(panelInfoModalState.detailsWrap, key, info[key]);
+      }
+
+      panelInfoModalState.backdrop.classList.add('open');
+      document.body.classList.add('panel-info-open');
+    }
+
+    function attachPanelInfoButton(rootEl, panelKey) {
+      if (!rootEl || !panelKey || !InfoRegistry[panelKey]) return;
+      const head = rootEl.querySelector('.panel-head');
+      if (!head || head.querySelector('.panel-info-btn')) return;
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'panel-info-btn';
+      btn.textContent = 'i';
+      btn.setAttribute('aria-label', 'Open panel info');
+      btn.title = 'Panel info';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openPanelInfoModal(panelKey);
+      });
+
+      const title = head.querySelector('.panel-title');
+      if (title) {
+        const wrap = document.createElement('div');
+        wrap.className = 'panel-title-wrap';
+        head.insertBefore(wrap, title);
+        wrap.appendChild(title);
+        wrap.appendChild(btn);
+      } else {
+        head.insertBefore(btn, head.firstChild);
+      }
+    }
+
+    // =====================================================================
     //  Panel Component Classes (Dockview vanilla API)
     // =====================================================================
     const panels = {};
@@ -1159,6 +2024,7 @@
         this.modelAdvanced = this._el.querySelector('.cfg-model-advanced');
         this.msgEl = this._el.querySelector('.cfg-msg');
         panels.surfacecfg = this;
+        attachPanelInfoButton(this._el, 'surfacecfg');
 
         this.modeSel.addEventListener('change', (e) => {
           mutateSurfaceConfig((cfg) => { cfg.mode = e.target.value; }, { source: 'ui-mode' });
@@ -1265,6 +2131,7 @@
         this.titleEl = this._el.querySelector('.panel-title');
         this.chartDiv = this._el.querySelector('.chart-area');
         panels.surface = this;
+        attachPanelInfoButton(this._el, 'surface');
         surfaceInitialized = false;
         zoomTarget = null;
         zoomCurrent = null;
@@ -1294,6 +2161,7 @@
           + '<div class="chart-area"></div>';
         this.chartDiv = this._el.querySelector('.chart-area');
         panels.volchange = this;
+        attachPanelInfoButton(this._el, 'volchange');
         this._resizeObs = new ResizeObserver(() => {
           if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
         });
@@ -1324,6 +2192,7 @@
         this.chartDiv = this._el.querySelector('.chart-area');
         this.expirySelect = this._el.querySelector('.expiry-select');
         panels.smile = this;
+        attachPanelInfoButton(this._el, 'smile');
         this.expirySelect.addEventListener('change', (e) => {
           activeExpiry = e.target.value;
           renderSmile();
@@ -1360,6 +2229,7 @@
         this.chartDiv = this._el.querySelector('.chart-area');
         this.tabContainer = this._el.querySelector('.greeks-tabs');
         panels.greeks = this;
+        attachPanelInfoButton(this._el, 'greeks');
         this.tabContainer.addEventListener('click', (e) => {
           const btn = e.target.closest('.tab-btn');
           if (!btn) return;
@@ -1396,6 +2266,7 @@
           + '<div class="chart-area"></div>';
         this.chartDiv = this._el.querySelector('.chart-area');
         panels.term = this;
+        attachPanelInfoButton(this._el, 'term');
         this._resizeObs = new ResizeObserver(() => {
           if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
         });
@@ -1440,6 +2311,7 @@
         this.mRvol = this._el.querySelector('.m-rvol');
         this.skewTbody = this._el.querySelector('tbody');
         panels.metrics = this;
+        attachPanelInfoButton(this._el, 'metrics');
       }
       dispose() { delete panels.metrics; }
     }
@@ -1496,6 +2368,7 @@
         this.heatmapDiv = this._el.querySelector('.scanner-heatmap');
         this.edgeTbody = this._el.querySelector('.scanner-table-wrap tbody');
         panels.scanner = this;
+        attachPanelInfoButton(this._el, 'scanner');
         this._el.querySelector('.edge-threshold').addEventListener('change', (e) => {
           edgeThreshold = parseFloat(e.target.value);
           pushWorkerConfig({ edgeThreshold });
@@ -1539,6 +2412,7 @@
         this.chartDiv = this._el.querySelector('.chart-area');
         this.activeTab = 'term';
         panels.forwardvol = this;
+        attachPanelInfoButton(this._el, 'forwardvol');
         this._el.querySelector('.toolbar').addEventListener('click', (e) => {
           const btn = e.target.closest('.tab-btn'); if (!btn) return;
           this._el.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1574,6 +2448,7 @@
         this.fPerp = this._el.querySelector('.f-perp');
         this.fIndex = this._el.querySelector('.f-index');
         panels.funding = this;
+        attachPanelInfoButton(this._el, 'funding');
         this._el.querySelector('.toolbar').addEventListener('click', (e) => {
           const btn = e.target.closest('.tab-btn'); if (!btn) return;
           this._el.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1617,6 +2492,7 @@
         this.tfNotional = this._el.querySelector('.tf-notional');
         this.activeTab = 'tape';
         panels.tradeflow = this;
+        attachPanelInfoButton(this._el, 'tradeflow');
         this._el.querySelector('.toolbar').addEventListener('click', (e) => {
           const btn = e.target.closest('.tab-btn'); if (!btn) return;
           this._el.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1658,6 +2534,7 @@
         this.vcAtmiv = this._el.querySelector('.vc-atmiv');
         this.vcRvol = this._el.querySelector('.vc-rvol');
         panels.volcone = this;
+        attachPanelInfoButton(this._el, 'volcone');
         this._el.querySelector('.volcone-lookback').addEventListener('change', (e) => {
           volConeLookback = parseInt(e.target.value); fetchHistoricalVol();
         });
@@ -1715,6 +2592,7 @@
         this.slVolVal = this._el.querySelector('.sl-vol-val');
         this.slTimeVal = this._el.querySelector('.sl-time-val');
         panels.strategy = this;
+        attachPanelInfoButton(this._el, 'strategy');
         this._el.querySelector('.template-btns').addEventListener('click', (e) => {
           const btn = e.target.closest('[data-tmpl]'); if (!btn) return;
           applyStrategyTemplate(btn.dataset.tmpl);
