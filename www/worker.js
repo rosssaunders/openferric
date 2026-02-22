@@ -151,6 +151,13 @@ function sanitizeSurfaceConfig(raw) {
 }
 
 let surfaceConfig = defaultSurfaceConfig();
+let latestPricingContext = {
+  slices: [],
+  packed: null,
+  chain: new Map(),
+  spotPrice: NaN,
+  timestamp: 0,
+};
 
 // ---------------------------------------------------------------------------
 //  Pure helpers (copied from index.html — no DOM dependency)
@@ -978,6 +985,409 @@ function computeForwardVolData(slices, packed) {
   return { labels, spotVols, fwdVols, skewTraces, kPoints };
 }
 
+function pickSliceByExpiry(slices, expiryCode) {
+  if (!Array.isArray(slices) || slices.length === 0) return { slice: null, sliceIdx: -1 };
+  if (typeof expiryCode === 'string' && expiryCode.length > 0) {
+    const idx = slices.findIndex((s) => s.expiryCode === expiryCode);
+    if (idx >= 0) return { slice: slices[idx], sliceIdx: idx };
+  }
+  return { slice: slices[0], sliceIdx: 0 };
+}
+
+function lookupModelIvPct(packed, sliceIdx, strike, forward) {
+  if (!packed || !packed.headers || !packed.params) return NaN;
+  if (!Number.isFinite(sliceIdx) || sliceIdx < 0) return NaN;
+  if (!Number.isFinite(strike) || strike <= 0 || !Number.isFinite(forward) || forward <= 0) return NaN;
+  const kArr = wasm.log_moneyness_batch_wasm(
+    new Float64Array([strike]),
+    new Float64Array([forward])
+  );
+  if (!kArr || kArr.length === 0 || !Number.isFinite(kArr[0])) return NaN;
+  const ivArr = wasm.batch_slice_iv(
+    packed.headers,
+    packed.params,
+    new Float64Array([kArr[0]]),
+    new Uint32Array([sliceIdx])
+  );
+  if (!ivArr || ivArr.length === 0) return NaN;
+  return Number.isFinite(ivArr[0]) ? ivArr[0] : NaN;
+}
+
+function nearestMarketQuote(chain, expiryCode, strike, isCall) {
+  if (!chain || typeof chain.forEach !== 'function') return null;
+  let best = null;
+  let bestDist = Infinity;
+  chain.forEach((q, name) => {
+    if (!q || q.expiryCode !== expiryCode) return;
+    if (!!q.isCall !== !!isCall) return;
+    if (!Number.isFinite(q.strike) || q.strike <= 0) return;
+    const dist = Math.abs(q.strike - strike);
+    if (dist < bestDist) {
+      best = { name, ...q };
+      bestDist = dist;
+    }
+  });
+  return best;
+}
+
+function barrierDirectionFromType(barrierType) {
+  return String(barrierType || '').startsWith('down') ? 'down' : 'up';
+}
+
+function barrierTypeForProduct(productType, barrierType) {
+  const dir = barrierDirectionFromType(barrierType);
+  if (productType === 'barrier-ki' || productType === 'one-touch') return `${dir}-in`;
+  if (productType === 'barrier-ko' || productType === 'no-touch') return `${dir}-out`;
+  if (barrierType === 'up-in' || barrierType === 'up-out' || barrierType === 'down-in' || barrierType === 'down-out') {
+    return barrierType;
+  }
+  return `${dir}-out`;
+}
+
+function monitoringFactor(monitoring, isOutStyle) {
+  if (monitoring === 'weekly') return isOutStyle ? 1.02 : 0.98;
+  if (monitoring === 'daily') return isOutStyle ? 1.01 : 0.99;
+  return 1.0;
+}
+
+function digitalCashOrNothingPrice(spot, strike, rate, divYield, sigma, T, cash) {
+  const eps = Math.max(0.25, strike * 0.0025);
+  const cLow = wasm.bs_price(
+    spot,
+    Math.max(1e-8, strike - eps),
+    rate,
+    divYield,
+    sigma,
+    T,
+    true
+  );
+  const cHigh = wasm.bs_price(
+    spot,
+    strike + eps,
+    rate,
+    divYield,
+    sigma,
+    T,
+    true
+  );
+  if (!Number.isFinite(cLow) || !Number.isFinite(cHigh)) return NaN;
+  const unitCashDigital = (cLow - cHigh) / (2 * eps);
+  return Math.max(0, cash * unitCashDigital);
+}
+
+function priceTicketUnit(params) {
+  const {
+    productType,
+    spot,
+    strike,
+    barrierLevel,
+    barrierType,
+    rebate,
+    monitoring,
+    rate,
+    divYield,
+    sigma,
+    T,
+  } = params;
+
+  if (!(Number.isFinite(spot) && spot > 0 && Number.isFinite(strike) && strike > 0 && Number.isFinite(T) && T > 0)) {
+    return NaN;
+  }
+  if (!Number.isFinite(sigma) || sigma <= 0) return NaN;
+
+  const vanilla = wasm.bs_price(spot, strike, rate, divYield, sigma, T, true);
+  if (!Number.isFinite(vanilla) || vanilla < 0) return NaN;
+
+  if (productType === 'digital') {
+    return digitalCashOrNothingPrice(spot, strike, rate, divYield, sigma, T, Math.max(0, rebate));
+  }
+
+  const outType = `${barrierDirectionFromType(barrierType)}-out`;
+  const outPx = wasm.barrier_price(
+    spot,
+    strike,
+    barrierLevel,
+    rate,
+    divYield,
+    sigma,
+    T,
+    outType,
+    true
+  );
+  const outSafe = Number.isFinite(outPx) ? Math.max(0, outPx) : 0;
+  const inSafe = Math.max(0, vanilla - outSafe);
+  const touchProb = vanilla > 1e-12 ? clamp(inSafe / vanilla, 0, 1) : 0;
+  const noTouchProb = 1 - touchProb;
+  const df = Math.exp(-rate * T);
+
+  if (productType === 'one-touch') {
+    return Math.max(0, Math.max(0, rebate) * df * touchProb);
+  }
+  if (productType === 'no-touch') {
+    return Math.max(0, Math.max(0, rebate) * df * noTouchProb);
+  }
+
+  const resolvedBarrierType = barrierTypeForProduct(productType, barrierType);
+  const barrierPx = wasm.barrier_price(
+    spot,
+    strike,
+    barrierLevel,
+    rate,
+    divYield,
+    sigma,
+    T,
+    resolvedBarrierType,
+    true
+  );
+  if (!Number.isFinite(barrierPx)) return NaN;
+  const isOutStyle = resolvedBarrierType.endsWith('-out');
+  const rebateProb = isOutStyle ? touchProb : noTouchProb;
+  const rebatePv = Math.max(0, rebate) * df * rebateProb;
+  const adjusted = Math.max(0, barrierPx + rebatePv);
+  return adjusted * monitoringFactor(monitoring, isOutStyle);
+}
+
+function computePricerResult(payload) {
+  const requestId = Number.isFinite(payload?.requestId) ? payload.requestId : 0;
+  const ticket = payload?.ticket || {};
+  const slices = latestPricingContext.slices || [];
+  const packed = latestPricingContext.packed;
+  const chain = latestPricingContext.chain;
+  const spotPrice = latestPricingContext.spotPrice;
+
+  if (!slices || slices.length === 0 || !packed || !(spotPrice > 0)) {
+    return { requestId, error: 'surface not ready' };
+  }
+
+  const { slice, sliceIdx } = pickSliceByExpiry(slices, ticket.expiryCode);
+  if (!slice || sliceIdx < 0) return { requestId, error: 'expiry unavailable' };
+
+  const strike = Math.max(1e-8, finiteOr(Number(ticket.strike), slice.forward || spotPrice));
+  const barrierLevel = Math.max(1e-8, finiteOr(Number(ticket.barrierLevel), strike));
+  const rebate = Math.max(0, finiteOr(Number(ticket.rebate), 0));
+  const notional = Math.max(1e-8, finiteOr(Number(ticket.notional), 1));
+  const monitoring = ticket.monitoring === 'daily' || ticket.monitoring === 'weekly' ? ticket.monitoring : 'continuous';
+  const productType = (
+    ticket.productType === 'barrier-ko'
+    || ticket.productType === 'barrier-ki'
+    || ticket.productType === 'digital'
+    || ticket.productType === 'one-touch'
+    || ticket.productType === 'no-touch'
+  ) ? ticket.productType : 'barrier-ko';
+  const marketLinkage = (
+    ticket.marketLinkage === 'frozen'
+    || ticket.marketLinkage === 'manual'
+  ) ? ticket.marketLinkage : 'live';
+  const barrierType = (
+    ticket.barrierType === 'up-in'
+    || ticket.barrierType === 'up-out'
+    || ticket.barrierType === 'down-in'
+    || ticket.barrierType === 'down-out'
+  ) ? ticket.barrierType : 'up-out';
+
+  const forward = finiteOr(Number(slice.forward), spotPrice);
+  const T = Math.max(1 / 365, finiteOr(Number(slice.T), 30 / 365));
+  const rate = 0.05;
+  const ratio = (spotPrice > 0 && forward > 0) ? (forward / spotPrice) : 1;
+  const carryUsed = T > 0 ? (ratio - 1) / T : 0;
+  const divYield = (spotPrice > 0 && forward > 0 && T > 0) ? (rate - Math.log(forward / spotPrice) / T) : 0;
+
+  const modelIvLivePct = lookupModelIvPct(packed, sliceIdx, strike, forward);
+  let modelIvPct = modelIvLivePct;
+  if (marketLinkage === 'frozen' && Number.isFinite(Number(ticket?.frozenContext?.modelIvPct))) {
+    modelIvPct = Number(ticket.frozenContext.modelIvPct);
+  } else if (marketLinkage === 'manual' && Number.isFinite(Number(ticket.manualIvPct))) {
+    modelIvPct = Number(ticket.manualIvPct);
+  }
+  if (!Number.isFinite(modelIvPct) || modelIvPct <= 0) modelIvPct = finiteOr(slice.atmVol, 50);
+  const sigma = Math.max(1e-4, modelIvPct / 100);
+
+  const unitPrice = priceTicketUnit({
+    productType,
+    spot: spotPrice,
+    strike,
+    barrierLevel,
+    barrierType,
+    rebate,
+    monitoring,
+    rate,
+    divYield,
+    sigma,
+    T,
+  });
+  if (!Number.isFinite(unitPrice)) return { requestId, error: 'pricing failed' };
+
+  const premium = unitPrice * notional;
+  const ivEq = wasm.bs_implied_vol(
+    unitPrice,
+    spotPrice,
+    strike,
+    rate,
+    divYield,
+    T,
+    true
+  );
+  const ivEqSafe = (Number.isFinite(ivEq) && ivEq > 0) ? ivEq : sigma;
+  const greeks = wasm.bsm_greeks_wasm(
+    spotPrice,
+    strike,
+    rate,
+    divYield,
+    ivEqSafe,
+    T,
+    true
+  );
+  const delta = Number.isFinite(greeks?.[0]) ? greeks[0] * notional : NaN;
+  const gamma = Number.isFinite(greeks?.[1]) ? greeks[1] * notional : NaN;
+  const vega = Number.isFinite(greeks?.[2]) ? greeks[2] * notional : NaN;
+  const theta = Number.isFinite(greeks?.[3]) ? greeks[3] * notional : NaN;
+  const vanna = Number.isFinite(greeks?.[5]) ? greeks[5] * notional : NaN;
+  const volga = Number.isFinite(greeks?.[6]) ? greeks[6] * notional : NaN;
+
+  const marketQuote = nearestMarketQuote(chain, slice.expiryCode, strike, true);
+  let marketMid = NaN;
+  let marketIvPct = NaN;
+  let bidPrice = NaN;
+  let askPrice = NaN;
+  if (marketQuote) {
+    marketMid = isLinear ? marketQuote.mark_price : marketQuote.mark_price * spotPrice;
+    marketIvPct = Number.isFinite(marketQuote.mark_iv) ? marketQuote.mark_iv * 100 : NaN;
+    const vols = [];
+    if (Number.isFinite(marketQuote.bid_iv) && marketQuote.bid_iv > 0) vols.push(marketQuote.bid_iv);
+    if (Number.isFinite(marketQuote.ask_iv) && marketQuote.ask_iv > 0) vols.push(marketQuote.ask_iv);
+    if (vols.length > 0) {
+      const priceArr = wasm.black76_price_batch_wasm(
+        new Float64Array(vols.map(() => forward)),
+        new Float64Array(vols.map(() => strike)),
+        new Float64Array(vols.map(() => rate)),
+        new Float64Array(vols),
+        new Float64Array(vols.map(() => T)),
+        new Uint8Array(vols.map(() => 1))
+      );
+      if (vols.length === 1) {
+        if (Number.isFinite(marketQuote.bid_iv) && marketQuote.bid_iv > 0) bidPrice = priceArr[0];
+        else askPrice = priceArr[0];
+      } else {
+        bidPrice = priceArr[0];
+        askPrice = priceArr[1];
+      }
+    }
+  }
+
+  const baseParams = {
+    productType,
+    spot: spotPrice,
+    strike,
+    barrierLevel,
+    barrierType,
+    rebate,
+    monitoring,
+    rate,
+    divYield,
+    sigma,
+    T,
+  };
+  const scenarioRows = [];
+  const addScenario = (dimension, bumpLabel, nextParams) => {
+    const scenarioPx = priceTicketUnit(nextParams);
+    if (!Number.isFinite(scenarioPx)) return;
+    scenarioRows.push({
+      dimension,
+      bump: bumpLabel,
+      premium: scenarioPx * notional,
+      pnl: (scenarioPx - unitPrice) * notional,
+    });
+  };
+  addScenario('base', '0', baseParams);
+
+  for (const bump of [-0.05, -0.025, 0.025, 0.05]) {
+    addScenario('strike', `${(bump * 100).toFixed(1)}%`, {
+      ...baseParams,
+      strike: Math.max(1e-8, strike * (1 + bump)),
+    });
+  }
+  for (const bump of [-0.05, -0.025, 0.025, 0.05]) {
+    const s = Math.max(1e-8, spotPrice * (1 + bump));
+    const fwd = Math.max(1e-8, forward * (1 + bump));
+    const q = (s > 0 && fwd > 0) ? (rate - Math.log(fwd / s) / T) : divYield;
+    addScenario('spot', `${(bump * 100).toFixed(1)}%`, {
+      ...baseParams,
+      spot: s,
+      divYield: q,
+    });
+  }
+  for (const bumpVolPct of [-5, -2.5, 2.5, 5]) {
+    addScenario('vol', `${bumpVolPct > 0 ? '+' : ''}${bumpVolPct.toFixed(1)} vol`, {
+      ...baseParams,
+      sigma: Math.max(1e-4, sigma + bumpVolPct / 100),
+    });
+  }
+  for (const bumpDays of [-7, -14, -30]) {
+    const nextT = Math.max(1 / 365, T + bumpDays / 365);
+    addScenario('time', `${bumpDays}d`, {
+      ...baseParams,
+      T: nextT,
+    });
+  }
+
+  return {
+    requestId,
+    asOfTs: Date.now(),
+    ticket: {
+      asset: typeof ticket.asset === 'string' ? ticket.asset : surfaceConfig.asset,
+      notional,
+      settlementCcy: typeof ticket.settlementCcy === 'string' ? ticket.settlementCcy : 'USD',
+      expiryCode: slice.expiryCode,
+      strike,
+      barrierLevel,
+      barrierType,
+      rebate,
+      monitoring,
+      marketLinkage,
+      productType,
+      manualIvPct: Number.isFinite(Number(ticket.manualIvPct)) ? Number(ticket.manualIvPct) : NaN,
+    },
+    modelOutput: {
+      premium,
+      impliedVolEquivalentPct: Number.isFinite(ivEq) ? ivEq * 100 : NaN,
+      delta,
+      gamma,
+      vega,
+      vanna,
+      volga,
+      theta,
+      timeToExpiryYears: T,
+      carryUsedPct: carryUsed * 100,
+      modelIvPct,
+      surfaceIvLivePct: modelIvLivePct,
+    },
+    marketComparison: {
+      marketInstrument: marketQuote ? marketQuote.name : '',
+      marketMid,
+      marketIvPct,
+      bidPrice,
+      askPrice,
+      modelPrice: unitPrice,
+      priceDiff: Number.isFinite(marketMid) ? (unitPrice - marketMid) : NaN,
+      volDiffPctPts: (Number.isFinite(ivEq) && Number.isFinite(marketIvPct))
+        ? ((ivEq * 100) - marketIvPct)
+        : NaN,
+    },
+    scenarioLadder: scenarioRows,
+    frozenContext: {
+      modelIvPct,
+      forward,
+      spotPrice,
+      T,
+    },
+    surfaceConfigMeta: {
+      mode: surfaceConfig?.mode || 'calibrated',
+      model: surfaceConfig?.model || activeModel,
+      stickyRule: surfaceConfig?.conventions?.stickyRule || 'delta',
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 //  Message handler
 // ---------------------------------------------------------------------------
@@ -1056,6 +1466,13 @@ self.onmessage = function(e) {
     return;
   }
 
+  if (type === 'pricer-compute') {
+    if (!wasmReady) return;
+    const result = computePricerResult(payload || {});
+    self.postMessage({ type: 'pricer-result', payload: result });
+    return;
+  }
+
   if (type === 'market-update') {
     if (!wasmReady) return;
 
@@ -1068,6 +1485,13 @@ self.onmessage = function(e) {
     const calibTimeUs = Math.round((performance.now() - t0) * 1000);
 
     if (slices.length === 0) {
+      latestPricingContext = {
+        slices: [],
+        packed: null,
+        chain,
+        spotPrice,
+        timestamp: Date.now(),
+      };
       self.postMessage({ type: 'compute-result', payload: {
         calibratedSlices: slices, calibTimeUs,
         realizedVol: NaN,
@@ -1080,6 +1504,13 @@ self.onmessage = function(e) {
 
     // 2. Frame cache (always needed)
     const fc = computeFrameCache(slices);
+    latestPricingContext = {
+      slices,
+      packed: fc ? fc.packed : null,
+      chain,
+      spotPrice,
+      timestamp: Date.now(),
+    };
     const d25 = fc ? Array.from(fc.d25) : null;
     const atmIv = fc ? Array.from(fc.atmIv) : null;
 

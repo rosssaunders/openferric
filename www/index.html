@@ -282,6 +282,116 @@
     .funding-metrics .k { color: var(--muted); }
     .funding-metrics .v { font-family: var(--mono); text-align: right; }
 
+    /* ---- OTC Pricer ---- */
+    .pricer-wrap {
+      display: grid;
+      grid-template-columns: minmax(270px, 0.95fr) minmax(320px, 1.35fr);
+      gap: 8px;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .pricer-col {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .pricer-card {
+      border: 1px solid rgba(142,161,184,0.2);
+      border-radius: 6px;
+      padding: 6px;
+      background: rgba(0,0,0,0.2);
+      font-size: 10px;
+    }
+    .pricer-card h4 {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0 0 5px 0;
+    }
+    .pricer-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px 8px;
+      align-items: center;
+    }
+    .pricer-grid label {
+      color: var(--muted);
+      text-transform: lowercase;
+    }
+    .pricer-grid select,
+    .pricer-grid input[type="number"],
+    .pricer-grid input[type="text"] {
+      width: 100%;
+      background: #0d141d;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+    .pricer-radio-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .pricer-radio-row .tab-btn {
+      font-size: 10px;
+      padding: 2px 7px;
+    }
+    .pricer-kv {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
+      gap: 3px 8px;
+      font-size: 10px;
+    }
+    .pricer-kv .k { color: var(--muted); text-transform: lowercase; }
+    .pricer-kv .v { text-align: right; font-family: var(--mono); }
+    .pricer-table-wrap {
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid rgba(142,161,184,0.12);
+      border-radius: 4px;
+      padding: 0 4px;
+    }
+    .pricer-table-wrap th {
+      position: sticky;
+      top: 0;
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      z-index: 1;
+    }
+    .pricer-snapshots {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 120px;
+      overflow: auto;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+    .pricer-snapshots .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px solid rgba(142,161,184,0.12);
+      padding-bottom: 2px;
+    }
+    .pricer-msg {
+      min-height: 12px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    @media (max-width: 1080px) {
+      .pricer-wrap {
+        grid-template-columns: 1fr;
+      }
+    }
+
     /* ---- Dockview theme overrides ---- */
     .dockview-theme-abyss {
       --dv-group-view-background-color: var(--panel);
@@ -561,6 +671,7 @@
       <button class="tab-btn" data-view="analysis">Analysis</button>
       <button class="tab-btn" data-view="scanner">Scanner</button>
       <button class="tab-btn" data-view="trading">Trading</button>
+      <button class="tab-btn" data-view="pricer">Pricer</button>
       <button class="tab-btn" data-view="all">All</button>
     </div>
     <button id="reset-layout" class="tab-btn" title="Reset panel layout to default">Reset Layout</button>
@@ -744,6 +855,24 @@
     const strategyLegs = [];
     let lastStrategyResult = null;
     let lastForwardVolData = null;
+    const pricerSnapshots = [];
+    let lastPricerResult = null;
+    let pricerFrozenContext = null;
+    let pricerRequestSeq = 0;
+    const pricerTicket = {
+      asset: activeCurrency,
+      notional: 1000000,
+      settlementCcy: 'USD',
+      expiryCode: '',
+      strike: NaN,
+      barrierLevel: NaN,
+      barrierType: 'up-out',
+      rebate: 0,
+      monitoring: 'continuous',
+      marketLinkage: 'live',
+      manualIvPct: NaN,
+      productType: 'barrier-ko',
+    };
 
     // =====================================================================
     //  Surface Config State
@@ -1004,8 +1133,18 @@
             position: { referencePanel: 'funding', direction: 'right' } });
         },
       },
+      pricer: {
+        panels: ['pricer', 'surfacecfg', 'scanner'],
+        build(dv) {
+          dv.addPanel({ id: 'pricer', component: 'pricer', title: 'OTC Exotic Pricer' });
+          dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
+            position: { referencePanel: 'pricer', direction: 'right' } });
+          dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
+            position: { referencePanel: 'pricer', direction: 'below' } });
+        },
+      },
       all: {
-        panels: ['surface','volchange','smile','greeks','term','forwardvol','metrics','funding','volcone','scanner','tradeflow','strategy','surfacecfg'],
+        panels: ['surface','volchange','smile','greeks','term','forwardvol','metrics','funding','volcone','scanner','tradeflow','strategy','pricer','surfacecfg'],
         build: null, // uses createDefaultLayout
       },
     };
@@ -1042,6 +1181,8 @@
       lastGreeksData = null;
       lastScannerData = null;
       lastForwardVolData = null;
+      lastPricerResult = null;
+      pricerFrozenContext = null;
       surfaceInitialized = false;
       // Purge all Plotly charts so panels show blank until new model results arrive
       for (const key of Object.keys(panels)) {
@@ -1098,6 +1239,15 @@
       fundingState.currentRate = NaN; fundingState.perpPrice = NaN;
       fundingState.indexPrice = NaN; fundingState.history.length = 0;
       strategyLegs.length = 0;
+      lastPricerResult = null;
+      pricerFrozenContext = null;
+      pricerSnapshots.length = 0;
+      pricerRequestSeq = 0;
+      pricerTicket.asset = activeCurrency;
+      pricerTicket.expiryCode = '';
+      pricerTicket.strike = NaN;
+      pricerTicket.barrierLevel = NaN;
+      pricerTicket.manualIvPct = NaN;
 
       // Purge all Plotly charts so they reinitialize cleanly
       for (const key of Object.keys(panels)) {
@@ -1591,6 +1741,44 @@
           'www/index.html :: renderStrategyPayoff',
         ],
       },
+      pricer: {
+        title: 'OTC Exotic Pricer',
+        summary: 'Ticket-driven exotic pricer with model outputs, market comparison, and scenario ladder.',
+        inputs: [
+          'ticket fields (asset/notional/expiry/strike/barrier/rebate/monitoring/linkage)',
+          'active calibrated surface + chain in worker context',
+          'selected product family (Barrier KO/KI, Digital, One-touch/No-touch)',
+        ],
+        outputs: [
+          'premium + implied-vol equivalent + full risk vector',
+          'model vs market mid comparison with bid/ask context',
+          'scenario ladder with strike/spot/vol/time bumps',
+          'pricing snapshots and JSON quote export',
+        ],
+        computation: [
+          'worker resolves model IV from active surface via batch_slice_iv',
+          'pricing uses WASM primitives (barrier/BS/greeks/implied vol)',
+          'scenario ladder reprices shocked tickets in worker',
+        ],
+        data_sources: [
+          'worker latest market-update context',
+          'surfaceConfig state from #95 controls (mode/model/sticky)',
+        ],
+        refresh_cadence: 'On ticket changes and optionally on each market update when linkage is live.',
+        assumptions: [
+          'Black-Scholes equivalents used for some risk projections',
+          'single-underlier call orientation for current ticket profile',
+        ],
+        caveats: [
+          'touch/no-touch legs are proxy-calibrated from available barrier primitives',
+          'frozen linkage uses last captured snapshot context',
+        ],
+        code_ref: [
+          'www/worker.js :: pricer-compute handler',
+          'www/index.html :: triggerPricerCompute',
+          'www/index.html :: renderPricerPanelData',
+        ],
+      },
       surfacecfg: {
         title: 'Surface Config',
         summary: 'Model/mode controls and advanced calibration configuration pushed into the worker.',
@@ -1766,6 +1954,14 @@
           { k: 'vol shock', v: panels.strategy ? panels.strategy.slVol.value : '--' },
           { k: 'time shock', v: panels.strategy ? panels.strategy.slTime.value + 'd' : '--' },
           { k: 'net delta', v: lastStrategyResult && Number.isFinite(lastStrategyResult.netGreeks?.[0]) ? formatFixed(lastStrategyResult.netGreeks[0], 4) : '--' }
+        );
+      } else if (panelKey === 'pricer') {
+        specifics.push(
+          { k: 'product', v: pricerTicket.productType || '--' },
+          { k: 'expiry', v: pricerTicket.expiryCode || '--' },
+          { k: 'linkage', v: pricerTicket.marketLinkage || '--' },
+          { k: 'premium', v: lastPricerResult && Number.isFinite(lastPricerResult?.modelOutput?.premium) ? '$' + pFmt.format(lastPricerResult.modelOutput.premium) : '--' },
+          { k: 'snapshots', v: String(pricerSnapshots.length) }
         );
       } else if (panelKey === 'surfacecfg') {
         specifics.push(
@@ -2617,6 +2813,164 @@
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.strategy; }
     }
 
+    class PricerPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = `
+          <div class="panel-head">
+            <div class="panel-title">OTC Exotic Pricer</div>
+            <div class="toolbar">
+              <button class="tab-btn" data-action="freeze">Freeze Snapshot</button>
+              <button class="tab-btn" data-action="export">Export JSON</button>
+            </div>
+          </div>
+          <div class="pricer-wrap">
+            <div class="pricer-col">
+              <section class="pricer-card">
+                <h4>Ticket Builder</h4>
+                <div class="pricer-grid">
+                  <label for="pr-asset">asset</label>
+                  <input id="pr-asset" type="text" data-field="asset">
+                  <label for="pr-notional">notional</label>
+                  <input id="pr-notional" type="number" min="1" step="1000" data-field="notional">
+                  <label for="pr-settle">settlement ccy</label>
+                  <select id="pr-settle" data-field="settlementCcy">
+                    <option value="USD">USD</option>
+                    <option value="USDC">USDC</option>
+                    <option value="BTC">BTC</option>
+                    <option value="ETH">ETH</option>
+                  </select>
+                  <label for="pr-expiry">expiry</label>
+                  <select id="pr-expiry" data-field="expiryCode"></select>
+                  <label for="pr-strike">strike</label>
+                  <input id="pr-strike" type="number" min="0.0001" step="10" data-field="strike">
+                  <label for="pr-barrier-level">barrier level</label>
+                  <input id="pr-barrier-level" type="number" min="0.0001" step="10" data-field="barrierLevel">
+                  <label for="pr-barrier-type">barrier type</label>
+                  <select id="pr-barrier-type" data-field="barrierType">
+                    <option value="up-in">up-in</option>
+                    <option value="up-out">up-out</option>
+                    <option value="down-in">down-in</option>
+                    <option value="down-out">down-out</option>
+                  </select>
+                  <label for="pr-rebate">rebate</label>
+                  <input id="pr-rebate" type="number" min="0" step="0.01" data-field="rebate">
+                  <label for="pr-monitor">monitoring</label>
+                  <select id="pr-monitor" data-field="monitoring">
+                    <option value="continuous">continuous</option>
+                    <option value="daily">daily</option>
+                    <option value="weekly">weekly</option>
+                  </select>
+                  <label for="pr-linkage">market linkage</label>
+                  <select id="pr-linkage" data-field="marketLinkage">
+                    <option value="live">live</option>
+                    <option value="frozen">frozen</option>
+                    <option value="manual">manual override</option>
+                  </select>
+                  <label for="pr-manual-iv">manual IV (%)</label>
+                  <input id="pr-manual-iv" type="number" min="0.01" max="500" step="0.1" data-field="manualIvPct">
+                </div>
+              </section>
+              <section class="pricer-card">
+                <h4>Product Selector</h4>
+                <div class="pricer-radio-row">
+                  <button class="tab-btn active" data-product="barrier-ko">Barrier KO</button>
+                  <button class="tab-btn" data-product="barrier-ki">Barrier KI</button>
+                  <button class="tab-btn" data-product="digital">Digital</button>
+                  <button class="tab-btn" data-product="one-touch">One-touch</button>
+                  <button class="tab-btn" data-product="no-touch">No-touch</button>
+                </div>
+              </section>
+              <section class="pricer-card">
+                <h4>Snapshot</h4>
+                <div class="pricer-snapshots pr-snapshots"></div>
+                <div class="pricer-msg pr-msg"></div>
+              </section>
+            </div>
+            <div class="pricer-col">
+              <section class="pricer-card">
+                <h4>Model Output</h4>
+                <div class="pricer-kv pr-model"></div>
+              </section>
+              <section class="pricer-card">
+                <h4>Market Comparison</h4>
+                <div class="pricer-kv pr-market"></div>
+              </section>
+              <section class="pricer-card">
+                <h4>Scenario Ladder</h4>
+                <div class="pricer-table-wrap">
+                  <table>
+                    <thead><tr><th>bucket</th><th>bump</th><th>premium</th><th>pnl</th></tr></thead>
+                    <tbody class="pr-scenario-body"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
+        `;
+        this.assetInput = this._el.querySelector('#pr-asset');
+        this.notionalInput = this._el.querySelector('#pr-notional');
+        this.settleSel = this._el.querySelector('#pr-settle');
+        this.expirySel = this._el.querySelector('#pr-expiry');
+        this.strikeInput = this._el.querySelector('#pr-strike');
+        this.barrierInput = this._el.querySelector('#pr-barrier-level');
+        this.barrierTypeSel = this._el.querySelector('#pr-barrier-type');
+        this.rebateInput = this._el.querySelector('#pr-rebate');
+        this.monitorSel = this._el.querySelector('#pr-monitor');
+        this.linkageSel = this._el.querySelector('#pr-linkage');
+        this.manualIvInput = this._el.querySelector('#pr-manual-iv');
+        this.productBtns = this._el.querySelectorAll('[data-product]');
+        this.modelWrap = this._el.querySelector('.pr-model');
+        this.marketWrap = this._el.querySelector('.pr-market');
+        this.scenarioBody = this._el.querySelector('.pr-scenario-body');
+        this.snapshotWrap = this._el.querySelector('.pr-snapshots');
+        this.msgEl = this._el.querySelector('.pr-msg');
+        this.assetInput.readOnly = true;
+
+        panels.pricer = this;
+        attachPanelInfoButton(this._el, 'pricer');
+
+        this._el.querySelector('.toolbar').addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-action]');
+          if (!btn) return;
+          if (btn.dataset.action === 'freeze') capturePricerSnapshot();
+          if (btn.dataset.action === 'export') exportPricerSnapshotJson();
+        });
+
+        this._el.querySelectorAll('[data-field]').forEach((el) => {
+          el.addEventListener('change', (e) => {
+            applyPricerFieldChange(e.target.dataset.field, e.target.value);
+          });
+        });
+        this._el.querySelector('.pricer-radio-row').addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-product]');
+          if (!btn) return;
+          pricerTicket.productType = btn.dataset.product;
+          this.productBtns.forEach((node) => node.classList.toggle('active', node.dataset.product === pricerTicket.productType));
+          triggerPricerCompute('product');
+        });
+        this._resizeObs = new ResizeObserver(() => {});
+        this._resizeObs.observe(this._el);
+        renderPricerPanelData(lastPricerResult);
+        triggerPricerCompute('panel-init');
+      }
+      setMessage(text) {
+        if (!this.msgEl) return;
+        this.msgEl.textContent = text || '';
+        clearTimeout(this._msgTimer);
+        if (text) this._msgTimer = setTimeout(() => { this.msgEl.textContent = ''; }, 2500);
+      }
+      dispose() {
+        clearTimeout(this._msgTimer);
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.pricer;
+      }
+    }
+
     function exportSurfaceConfigJson() {
       const payload = deepClone(surfaceConfig);
       payload.timestamp = Date.now();
@@ -2772,6 +3126,12 @@
         lastStrategyResult = e.data.payload;
         requestAnimationFrame(() => renderStrategyPayoff(e.data.payload));
       }
+      if (e.data.type === 'pricer-result') {
+        const payload = e.data.payload || {};
+        if (Number.isFinite(payload.requestId) && payload.requestId < pricerRequestSeq) return;
+        lastPricerResult = payload;
+        requestAnimationFrame(() => renderPricerPanelData(payload));
+      }
     }
 
     function applyComputeResult(r) {
@@ -2849,6 +3209,10 @@
         if (lastForwardVolData) renderForwardVol();
         renderFunding();
         renderVolCone();
+        if (panels.pricer) {
+          renderPricerPanelData(lastPricerResult);
+          if (pricerTicket.marketLinkage === 'live') triggerPricerCompute('market');
+        }
       });
     }
 
@@ -3693,6 +4057,222 @@
     }
 
     // =====================================================================
+    //  OTC Exotic Pricer
+    // =====================================================================
+    function formatPricerNumber(value, digits = 2) {
+      return Number.isFinite(value) ? Number(value).toFixed(digits) : '--';
+    }
+
+    function nearestSliceStrike(slice, target) {
+      if (!slice || !Array.isArray(slice.points) || slice.points.length === 0) return target;
+      let best = slice.points[0].strike;
+      let bestDist = Math.abs(best - target);
+      for (const pt of slice.points) {
+        const dist = Math.abs(pt.strike - target);
+        if (dist < bestDist) { best = pt.strike; bestDist = dist; }
+      }
+      return best;
+    }
+
+    function ensurePricerTicketDefaults() {
+      pricerTicket.asset = activeCurrency;
+      if (!pricerTicket.settlementCcy) pricerTicket.settlementCcy = currencyConfig.isLinear ? 'USDC' : 'USD';
+      const expiries = calibratedSlices.map((s) => s.expiryCode);
+      if (expiries.length === 0) return;
+      if (!pricerTicket.expiryCode || !expiries.includes(pricerTicket.expiryCode)) {
+        pricerTicket.expiryCode = expiries[0];
+      }
+      const slice = calibratedSlices.find((s) => s.expiryCode === pricerTicket.expiryCode) || calibratedSlices[0];
+      const fallbackStrike = nearestSliceStrike(slice, spotPrice > 0 ? spotPrice : (slice ? slice.forward : 100));
+      if (!(Number.isFinite(pricerTicket.strike) && pricerTicket.strike > 0)) {
+        pricerTicket.strike = fallbackStrike;
+      }
+      if (!(Number.isFinite(pricerTicket.barrierLevel) && pricerTicket.barrierLevel > 0)) {
+        const down = String(pricerTicket.barrierType || '').startsWith('down');
+        pricerTicket.barrierLevel = pricerTicket.strike * (down ? 0.9 : 1.1);
+      }
+      if (!Number.isFinite(pricerTicket.manualIvPct) || pricerTicket.manualIvPct <= 0) {
+        pricerTicket.manualIvPct = slice ? slice.atmVol : 50;
+      }
+      if (!Number.isFinite(pricerTicket.notional) || pricerTicket.notional <= 0) pricerTicket.notional = 1000000;
+      if (!Number.isFinite(pricerTicket.rebate) || pricerTicket.rebate < 0) pricerTicket.rebate = 0;
+    }
+
+    function applyPricerFieldChange(field, rawValue) {
+      if (!field) return;
+      if (field === 'notional' || field === 'strike' || field === 'barrierLevel' || field === 'rebate' || field === 'manualIvPct') {
+        const parsed = parseFloat(rawValue);
+        if (!Number.isFinite(parsed)) return;
+        pricerTicket[field] = parsed;
+      } else {
+        pricerTicket[field] = rawValue;
+      }
+      if (field === 'marketLinkage' && pricerTicket.marketLinkage === 'frozen' && !pricerFrozenContext && lastPricerResult?.frozenContext) {
+        pricerFrozenContext = deepClone(lastPricerResult.frozenContext);
+      }
+      triggerPricerCompute('ticket');
+    }
+
+    function triggerPricerCompute(reason = 'ui') {
+      if (!workerReady) return;
+      ensurePricerTicketDefaults();
+      if (calibratedSlices.length === 0) return;
+      const ticketPayload = deepClone(pricerTicket);
+      if (ticketPayload.marketLinkage === 'frozen' && pricerFrozenContext) {
+        ticketPayload.frozenContext = deepClone(pricerFrozenContext);
+      }
+      pricerRequestSeq += 1;
+      computeWorker.postMessage({
+        type: 'pricer-compute',
+        payload: { requestId: pricerRequestSeq, reason, ticket: ticketPayload },
+      });
+    }
+
+    function capturePricerSnapshot() {
+      if (!lastPricerResult || lastPricerResult.error) {
+        if (panels.pricer) panels.pricer.setMessage('no pricing result to snapshot');
+        return;
+      }
+      const snap = {
+        timestamp: Date.now(),
+        ticket: deepClone(pricerTicket),
+        quote: deepClone(lastPricerResult),
+      };
+      pricerSnapshots.unshift(snap);
+      if (pricerSnapshots.length > 30) pricerSnapshots.length = 30;
+      if (lastPricerResult.frozenContext) pricerFrozenContext = deepClone(lastPricerResult.frozenContext);
+      pricerTicket.marketLinkage = 'frozen';
+      renderPricerPanelData(lastPricerResult);
+      if (panels.pricer) panels.pricer.setMessage('snapshot captured');
+      triggerPricerCompute('freeze');
+    }
+
+    function exportPricerSnapshotJson() {
+      const payload = pricerSnapshots[0] || (lastPricerResult ? {
+        timestamp: Date.now(),
+        ticket: deepClone(pricerTicket),
+        quote: deepClone(lastPricerResult),
+      } : null);
+      if (!payload) {
+        if (panels.pricer) panels.pricer.setMessage('no quote to export');
+        return;
+      }
+      const json = JSON.stringify(payload, null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(json)
+          .then(() => { if (panels.pricer) panels.pricer.setMessage('quote JSON copied'); })
+          .catch(() => {
+            window.prompt('Copy Pricer Quote JSON', json);
+            if (panels.pricer) panels.pricer.setMessage('clipboard unavailable, shown in prompt');
+          });
+      } else {
+        window.prompt('Copy Pricer Quote JSON', json);
+        if (panels.pricer) panels.pricer.setMessage('clipboard unavailable, shown in prompt');
+      }
+    }
+
+    function renderPricerPanelData(result) {
+      const p = panels.pricer;
+      if (!p) return;
+      ensurePricerTicketDefaults();
+      const expiries = calibratedSlices.map((s) => s.expiryCode);
+      const prevExp = p.expirySel.value;
+      p.expirySel.innerHTML = '';
+      for (const ex of expiries) {
+        const opt = document.createElement('option');
+        opt.value = ex;
+        opt.textContent = ex;
+        p.expirySel.appendChild(opt);
+      }
+      if (expiries.includes(pricerTicket.expiryCode)) p.expirySel.value = pricerTicket.expiryCode;
+      else if (prevExp && expiries.includes(prevExp)) {
+        p.expirySel.value = prevExp;
+        pricerTicket.expiryCode = prevExp;
+      } else if (expiries.length > 0) {
+        p.expirySel.value = expiries[0];
+        pricerTicket.expiryCode = expiries[0];
+      }
+      p.assetInput.value = pricerTicket.asset || activeCurrency;
+      p.notionalInput.value = String(pricerTicket.notional);
+      p.settleSel.value = pricerTicket.settlementCcy || 'USD';
+      p.strikeInput.value = String(pricerTicket.strike);
+      p.barrierInput.value = String(pricerTicket.barrierLevel);
+      p.barrierTypeSel.value = pricerTicket.barrierType || 'up-out';
+      p.rebateInput.value = String(pricerTicket.rebate);
+      p.monitorSel.value = pricerTicket.monitoring || 'continuous';
+      p.linkageSel.value = pricerTicket.marketLinkage || 'live';
+      p.manualIvInput.value = Number.isFinite(pricerTicket.manualIvPct) ? String(pricerTicket.manualIvPct) : '';
+      p.manualIvInput.disabled = pricerTicket.marketLinkage !== 'manual';
+      p.productBtns.forEach((node) => node.classList.toggle('active', node.dataset.product === pricerTicket.productType));
+
+      const modelRows = [];
+      const marketRows = [];
+      if (result && !result.error && result.modelOutput) {
+        const mo = result.modelOutput;
+        modelRows.push(
+          { k: 'premium', v: '$' + pFmt.format(mo.premium) },
+          { k: 'implied vol eq', v: Number.isFinite(mo.impliedVolEquivalentPct) ? formatPricerNumber(mo.impliedVolEquivalentPct, 2) + '%' : '--' },
+          { k: 'delta', v: formatPricerNumber(mo.delta, 4) },
+          { k: 'gamma', v: formatPricerNumber(mo.gamma, 6) },
+          { k: 'vega', v: formatPricerNumber(mo.vega, 2) },
+          { k: 'vanna', v: formatPricerNumber(mo.vanna, 4) },
+          { k: 'volga', v: formatPricerNumber(mo.volga, 4) },
+          { k: 'theta', v: formatPricerNumber(mo.theta, 2) },
+          { k: 'time to expiry', v: formatPricerNumber(mo.timeToExpiryYears * 365, 1) + 'd' },
+          { k: 'carry used', v: formatPricerNumber(mo.carryUsedPct, 2) + '%' }
+        );
+      } else {
+        modelRows.push({ k: 'premium', v: '--' });
+      }
+      p.modelWrap.innerHTML = modelRows.map((row) =>
+        `<div class="k">${row.k}</div><div class="v">${row.v}</div>`
+      ).join('');
+
+      if (result && !result.error && result.marketComparison) {
+        const mc = result.marketComparison;
+        marketRows.push(
+          { k: 'instrument', v: mc.marketInstrument || '--' },
+          { k: 'model price', v: Number.isFinite(mc.modelPrice) ? '$' + pFmt.format(mc.modelPrice) : '--' },
+          { k: 'market mid', v: Number.isFinite(mc.marketMid) ? '$' + pFmt.format(mc.marketMid) : '--' },
+          { k: 'price diff', v: Number.isFinite(mc.priceDiff) ? (mc.priceDiff >= 0 ? '+' : '') + pFmt.format(mc.priceDiff) : '--' },
+          { k: 'vol diff', v: Number.isFinite(mc.volDiffPctPts) ? (mc.volDiffPctPts >= 0 ? '+' : '') + formatPricerNumber(mc.volDiffPctPts, 2) + ' vol' : '--' },
+          { k: 'bid / ask', v: `${Number.isFinite(mc.bidPrice) ? pFmt.format(mc.bidPrice) : '-'} / ${Number.isFinite(mc.askPrice) ? pFmt.format(mc.askPrice) : '-'}` }
+        );
+      } else {
+        marketRows.push({ k: 'market mid', v: '--' });
+      }
+      p.marketWrap.innerHTML = marketRows.map((row) =>
+        `<div class="k">${row.k}</div><div class="v">${row.v}</div>`
+      ).join('');
+
+      p.scenarioBody.innerHTML = '';
+      const ladder = (result && !result.error && Array.isArray(result.scenarioLadder)) ? result.scenarioLadder : [];
+      for (const row of ladder) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${row.dimension}</td>`
+          + `<td>${row.bump}</td>`
+          + `<td>${Number.isFinite(row.premium) ? pFmt.format(row.premium) : '--'}</td>`
+          + `<td>${Number.isFinite(row.pnl) ? ((row.pnl >= 0 ? '+' : '') + pFmt.format(row.pnl)) : '--'}</td>`;
+        p.scenarioBody.appendChild(tr);
+      }
+
+      p.snapshotWrap.innerHTML = '';
+      if (pricerSnapshots.length === 0) {
+        p.snapshotWrap.innerHTML = '<div class="row"><span>no snapshots</span><span>--</span></div>';
+      } else {
+        for (const snap of pricerSnapshots.slice(0, 8)) {
+          const row = document.createElement('div');
+          row.className = 'row';
+          const premium = snap.quote?.modelOutput?.premium;
+          row.innerHTML = `<span>${new Date(snap.timestamp).toLocaleTimeString()}</span><span>${Number.isFinite(premium) ? '$' + pFmt.format(premium) : '--'}</span>`;
+          p.snapshotWrap.appendChild(row);
+        }
+      }
+
+      if (result && result.error) p.setMessage(result.error);
+    }
+
+    // =====================================================================
     //  View Switching
     // =====================================================================
     function switchView(viewName) {
@@ -3756,6 +4336,7 @@
         if (panels.volcone) renderVolCone();
         if (panels.tradeflow) renderTradeFlow();
         if (lastStrategyResult && panels.strategy) renderStrategyPayoff(lastStrategyResult);
+        if (panels.pricer) renderPricerPanelData(lastPricerResult);
         if (panels.surfacecfg) renderSurfaceConfigPanel();
       });
     }
@@ -3987,6 +4568,8 @@
         position: { referencePanel: 'scanner' } });
       dv.addPanel({ id: 'strategy', component: 'strategy', title: 'Strategy Builder',
         position: { referencePanel: 'scanner' } });
+      dv.addPanel({ id: 'pricer', component: 'pricer', title: 'OTC Exotic Pricer',
+        position: { referencePanel: 'strategy' } });
     }
 
     const dockviewContainer = document.getElementById('dockview');
@@ -4006,6 +4589,7 @@
           case 'tradeflow': return new TradeFlowPanel();
           case 'volcone': return new VolConePanel();
           case 'strategy': return new StrategyPanel();
+          case 'pricer': return new PricerPanel();
           default: {
             const el = document.createElement('div');
             el.className = 'dock-content';
