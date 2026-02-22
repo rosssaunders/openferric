@@ -5,8 +5,9 @@ use openferric::core::OptionType;
 use openferric::engines::analytic::{black76_greeks, black76_price};
 use openferric::instruments::{CommodityForward, CommodityOption, CommoditySpreadOption};
 use openferric::models::{
-    CommodityForwardCurve, FuturesQuote, SchwartzOneFactor, SchwartzSmithTwoFactor,
-    implied_convenience_yield,
+    CommodityForwardCurve, CommoditySeasonalityModel, ForwardInterpolation, FuturesQuote,
+    SchwartzOneFactor, SchwartzSmithTwoFactor, SeasonalityMode, TwoFactorCommodityProcess,
+    TwoFactorSpreadModel, implied_convenience_yield,
 };
 
 // ---------------------------------------------------------------------------
@@ -1142,4 +1143,122 @@ fn black76_deep_otm_call_near_zero() {
 
     let price = black76_price(OptionType::Call, forward, strike, r, vol, t).unwrap();
     assert!(price < 1e-6, "deep OTM call should be near zero: {}", price);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #64 acceptance criteria
+// ---------------------------------------------------------------------------
+
+#[test]
+fn forward_curve_reproduces_futures_at_contract_dates() {
+    let quotes = vec![
+        FuturesQuote {
+            maturity: 1.0 / 12.0,
+            price: 2.90,
+        },
+        FuturesQuote {
+            maturity: 2.0 / 12.0,
+            price: 2.95,
+        },
+        FuturesQuote {
+            maturity: 3.0 / 12.0,
+            price: 3.05,
+        },
+        FuturesQuote {
+            maturity: 4.0 / 12.0,
+            price: 3.15,
+        },
+        FuturesQuote {
+            maturity: 6.0 / 12.0,
+            price: 3.30,
+        },
+    ];
+
+    for method in [
+        ForwardInterpolation::PiecewiseFlat,
+        ForwardInterpolation::Linear,
+        ForwardInterpolation::CubicSpline,
+    ] {
+        let curve = CommodityForwardCurve::from_futures_quotes_with_interpolation(&quotes, method)
+            .expect("curve should build");
+        for q in &quotes {
+            let fitted = curve.forward(q.maturity);
+            assert!(
+                (fitted - q.price).abs() < 1.0e-12,
+                "method {:?} should match futures exactly at T={}: got {}, expected {}",
+                method,
+                q.maturity,
+                fitted,
+                q.price
+            );
+        }
+    }
+}
+
+#[test]
+fn seasonal_model_captures_nat_gas_winter_summer_pattern() {
+    let seasonality = CommoditySeasonalityModel::natural_gas_winter_summer(
+        SeasonalityMode::Multiplicative,
+        1.20,
+        0.85,
+        1.0,
+    )
+    .unwrap();
+
+    let winter = seasonality.apply(100.0, 1).unwrap();
+    let shoulder = seasonality.apply(100.0, 4).unwrap();
+    let summer = seasonality.apply(100.0, 7).unwrap();
+
+    assert!(
+        winter > shoulder && shoulder > summer,
+        "expected winter > shoulder > summer, got winter={} shoulder={} summer={}",
+        winter,
+        shoulder,
+        summer
+    );
+}
+
+#[test]
+fn kirk_spread_matches_two_factor_mc_within_two_percent() {
+    let spread = CommoditySpreadOption::crack_spread(
+        OptionType::Call,
+        95.0,
+        88.0,
+        2.0,
+        2.0,
+        1.0,
+        0.34,
+        0.27,
+        0.58,
+        0.03,
+        1.0,
+        1.0,
+    );
+
+    let kirk = spread.price_kirk().unwrap();
+
+    let model = TwoFactorSpreadModel {
+        leg_1: TwoFactorCommodityProcess {
+            kappa_fast: 2.5,
+            sigma_fast: 0.22,
+            sigma_slow: 0.26,
+        },
+        leg_2: TwoFactorCommodityProcess {
+            kappa_fast: 2.2,
+            sigma_fast: 0.18,
+            sigma_slow: 0.20,
+        },
+        rho_fast: 0.60,
+        rho_slow: 0.56,
+    };
+
+    let (mc, _stderr) = spread.price_two_factor_mc(&model, 400_000, 101).unwrap();
+    let rel_err = ((mc - kirk) / kirk).abs();
+    assert!(
+        rel_err <= 0.02,
+        "Kirk vs 2-factor MC mismatch exceeds 2%: kirk={} mc={} rel_err={}",
+        kirk,
+        mc,
+        rel_err
+    );
 }
