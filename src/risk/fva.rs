@@ -88,10 +88,7 @@ pub fn fva_from_profile(
 /// Compute funding exposure from raw exposure paths with CSA collateral.
 ///
 /// Returns the average uncollateralized exposure at each time step.
-pub fn funding_exposure_profile(
-    exposure_paths: &[Vec<f64>],
-    csa: &CsaTerms,
-) -> Vec<f64> {
+pub fn funding_exposure_profile(exposure_paths: &[Vec<f64>], csa: &CsaTerms) -> Vec<f64> {
     if exposure_paths.is_empty() {
         return Vec::new();
     }
@@ -128,22 +125,24 @@ mod tests {
         let times = vec![0.25, 0.5, 0.75, 1.0];
         let funding_exposure = vec![100.0, 80.0, 60.0, 40.0];
         let funding_spread = vec![0.01; 4];
-        let discount_curve = YieldCurve::new(
-            times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect(),
-        );
+        let discount_curve =
+            YieldCurve::new(times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect());
 
         let fva = fva_from_profile(&times, &funding_exposure, &funding_spread, &discount_curve);
-        assert!(fva < 0.0, "FVA should be negative (cost) for positive exposure");
+        assert!(
+            fva < 0.0,
+            "FVA should be negative (cost) for positive exposure"
+        );
         assert!(fva.is_finite());
     }
 
     #[test]
     fn funding_exposure_uncollateralized_equals_positive_mtm() {
-        let paths = vec![
-            vec![10.0, -5.0, 20.0],
-            vec![-10.0, 5.0, 40.0],
-        ];
-        let csa = CsaTerms { collateralized: false, ..Default::default() };
+        let paths = vec![vec![10.0, -5.0, 20.0], vec![-10.0, 5.0, 40.0]];
+        let csa = CsaTerms {
+            collateralized: false,
+            ..Default::default()
+        };
         let profile = funding_exposure_profile(&paths, &csa);
         assert_eq!(profile.len(), 3);
         // t=0: avg(max(10,0), max(-10,0)) = avg(10, 0) = 5
@@ -153,8 +152,15 @@ mod tests {
     #[test]
     fn collateralized_reduces_funding_exposure() {
         let paths = vec![vec![100.0; 4]];
-        let uncoll = CsaTerms { collateralized: false, ..Default::default() };
-        let coll = CsaTerms { collateralized: true, threshold: 0.0, ..Default::default() };
+        let uncoll = CsaTerms {
+            collateralized: false,
+            ..Default::default()
+        };
+        let coll = CsaTerms {
+            collateralized: true,
+            threshold: 0.0,
+            ..Default::default()
+        };
 
         let p_uncoll = funding_exposure_profile(&paths, &uncoll);
         let p_coll = funding_exposure_profile(&paths, &coll);

@@ -142,7 +142,8 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
                 // SIMD backward induction when available.
                 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
                 {
-                    if i >= 3 && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                    if i >= 3 && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
+                    {
                         // SAFETY: Guarded by runtime CPU feature detection.
                         unsafe { binomial_backward_avx2(&mut values, i, disc_p, disc_1mp) };
                     } else {

@@ -65,9 +65,7 @@ impl Nig {
         // omega = delta * (sqrt(alpha^2 - (beta+1)^2) - sqrt(alpha^2 - beta^2))
         let beta_plus_1 = self.beta + 1.0;
         if beta_plus_1.abs() >= self.alpha {
-            return Err(
-                "NIG martingale condition requires |beta + 1| < alpha".to_string(),
-            );
+            return Err("NIG martingale condition requires |beta + 1| < alpha".to_string());
         }
         let gb1 = (self.alpha * self.alpha - beta_plus_1 * beta_plus_1).sqrt();
         Ok(self.delta * (gb1 - gb))
@@ -198,10 +196,7 @@ mod tests {
             .unwrap();
         for (k, p) in &prices {
             assert!(*p > 0.0, "price at strike {k} should be > 0, got {p}");
-            assert!(
-                *p < 100.0,
-                "price at strike {k} should be < spot, got {p}"
-            );
+            assert!(*p < 100.0, "price at strike {k} should be < spot, got {p}");
         }
     }
 

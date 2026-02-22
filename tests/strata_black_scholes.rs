@@ -143,55 +143,155 @@ struct PriceCase {
 fn representative_cases() -> Vec<PriceCase> {
     vec![
         // Corner: lowest strike, lowest vol, lowest rate
-        PriceCase { strike_idx: 0, vol_idx: 0, rate_idx: 0 },
+        PriceCase {
+            strike_idx: 0,
+            vol_idx: 0,
+            rate_idx: 0,
+        },
         // Corner: lowest strike, lowest vol, highest rate
-        PriceCase { strike_idx: 0, vol_idx: 0, rate_idx: 6 },
+        PriceCase {
+            strike_idx: 0,
+            vol_idx: 0,
+            rate_idx: 6,
+        },
         // Corner: lowest strike, highest vol, lowest rate
-        PriceCase { strike_idx: 0, vol_idx: 6, rate_idx: 0 },
+        PriceCase {
+            strike_idx: 0,
+            vol_idx: 6,
+            rate_idx: 0,
+        },
         // Corner: lowest strike, highest vol, highest rate
-        PriceCase { strike_idx: 0, vol_idx: 6, rate_idx: 6 },
+        PriceCase {
+            strike_idx: 0,
+            vol_idx: 6,
+            rate_idx: 6,
+        },
         // Corner: highest strike, lowest vol, lowest rate
-        PriceCase { strike_idx: 8, vol_idx: 0, rate_idx: 0 },
+        PriceCase {
+            strike_idx: 8,
+            vol_idx: 0,
+            rate_idx: 0,
+        },
         // Corner: highest strike, lowest vol, highest rate
-        PriceCase { strike_idx: 8, vol_idx: 0, rate_idx: 6 },
+        PriceCase {
+            strike_idx: 8,
+            vol_idx: 0,
+            rate_idx: 6,
+        },
         // Corner: highest strike, highest vol, lowest rate
-        PriceCase { strike_idx: 8, vol_idx: 6, rate_idx: 0 },
+        PriceCase {
+            strike_idx: 8,
+            vol_idx: 6,
+            rate_idx: 0,
+        },
         // Corner: highest strike, highest vol, highest rate
-        PriceCase { strike_idx: 8, vol_idx: 6, rate_idx: 6 },
+        PriceCase {
+            strike_idx: 8,
+            vol_idx: 6,
+            rate_idx: 6,
+        },
         // ATM strike (100), mid vol (0.2), mid rate (0.008)
-        PriceCase { strike_idx: 3, vol_idx: 3, rate_idx: 3 },
+        PriceCase {
+            strike_idx: 3,
+            vol_idx: 3,
+            rate_idx: 3,
+        },
         // ATM strike, low vol, zero rate
-        PriceCase { strike_idx: 3, vol_idx: 0, rate_idx: 2 },
+        PriceCase {
+            strike_idx: 3,
+            vol_idx: 0,
+            rate_idx: 2,
+        },
         // ATM strike, high vol, zero rate
-        PriceCase { strike_idx: 3, vol_idx: 6, rate_idx: 2 },
+        PriceCase {
+            strike_idx: 3,
+            vol_idx: 6,
+            rate_idx: 2,
+        },
         // ITM call (K=85), mid vol (0.15), positive rate (0.032)
-        PriceCase { strike_idx: 0, vol_idx: 2, rate_idx: 4 },
+        PriceCase {
+            strike_idx: 0,
+            vol_idx: 2,
+            rate_idx: 4,
+        },
         // OTM call (K=150), mid vol (0.15), positive rate (0.032)
-        PriceCase { strike_idx: 7, vol_idx: 2, rate_idx: 4 },
+        PriceCase {
+            strike_idx: 7,
+            vol_idx: 2,
+            rate_idx: 4,
+        },
         // Deep OTM (K=250), mid vol (0.3), negative rate
-        PriceCase { strike_idx: 8, vol_idx: 4, rate_idx: 0 },
+        PriceCase {
+            strike_idx: 8,
+            vol_idx: 4,
+            rate_idx: 0,
+        },
         // K=108, vol=0.5, rate=0.062
-        PriceCase { strike_idx: 5, vol_idx: 5, rate_idx: 5 },
+        PriceCase {
+            strike_idx: 5,
+            vol_idx: 5,
+            rate_idx: 5,
+        },
         // K=120, vol=0.3, rate=0
-        PriceCase { strike_idx: 6, vol_idx: 4, rate_idx: 2 },
+        PriceCase {
+            strike_idx: 6,
+            vol_idx: 4,
+            rate_idx: 2,
+        },
         // K=95, vol=0.12, rate=-0.005
-        PriceCase { strike_idx: 2, vol_idx: 1, rate_idx: 1 },
+        PriceCase {
+            strike_idx: 2,
+            vol_idx: 1,
+            rate_idx: 1,
+        },
         // K=103, vol=0.8, rate=0.1
-        PriceCase { strike_idx: 4, vol_idx: 6, rate_idx: 6 },
+        PriceCase {
+            strike_idx: 4,
+            vol_idx: 6,
+            rate_idx: 6,
+        },
         // K=90, vol=0.5, rate=-0.01
-        PriceCase { strike_idx: 1, vol_idx: 5, rate_idx: 0 },
+        PriceCase {
+            strike_idx: 1,
+            vol_idx: 5,
+            rate_idx: 0,
+        },
         // K=100, vol=0.1, rate=0.1
-        PriceCase { strike_idx: 3, vol_idx: 0, rate_idx: 6 },
+        PriceCase {
+            strike_idx: 3,
+            vol_idx: 0,
+            rate_idx: 6,
+        },
         // K=85, vol=0.3, rate=0.062
-        PriceCase { strike_idx: 0, vol_idx: 4, rate_idx: 5 },
+        PriceCase {
+            strike_idx: 0,
+            vol_idx: 4,
+            rate_idx: 5,
+        },
         // K=250, vol=0.2, rate=0.008
-        PriceCase { strike_idx: 8, vol_idx: 3, rate_idx: 3 },
+        PriceCase {
+            strike_idx: 8,
+            vol_idx: 3,
+            rate_idx: 3,
+        },
         // K=150, vol=0.8, rate=0
-        PriceCase { strike_idx: 7, vol_idx: 6, rate_idx: 2 },
+        PriceCase {
+            strike_idx: 7,
+            vol_idx: 6,
+            rate_idx: 2,
+        },
         // K=108, vol=0.1, rate=0.032
-        PriceCase { strike_idx: 5, vol_idx: 0, rate_idx: 4 },
+        PriceCase {
+            strike_idx: 5,
+            vol_idx: 0,
+            rate_idx: 4,
+        },
         // K=120, vol=0.12, rate=0.008
-        PriceCase { strike_idx: 6, vol_idx: 1, rate_idx: 3 },
+        PriceCase {
+            strike_idx: 6,
+            vol_idx: 1,
+            rate_idx: 3,
+        },
     ]
 }
 
@@ -218,11 +318,7 @@ fn strata_call_prices_representative_subset() {
         );
 
         // Also check relative error is extremely small
-        assert_relative_eq!(
-            price,
-            expected,
-            epsilon = 1e-4,
-        );
+        assert_relative_eq!(price, expected, epsilon = 1e-4,);
     }
 }
 
@@ -329,7 +425,8 @@ fn strata_greeks_delta_finite_diff() {
             assert_relative_eq!(
                 delta_analytic,
                 delta_fd,
-                max_relative = GREEK_REL_TOL, epsilon = GREEK_ABS_TOL,
+                max_relative = GREEK_REL_TOL,
+                epsilon = GREEK_ABS_TOL,
             );
         }
     }
@@ -358,7 +455,8 @@ fn strata_greeks_gamma_finite_diff() {
         assert_relative_eq!(
             gamma_analytic,
             gamma_fd,
-            max_relative = GREEK_REL_TOL, epsilon = GREEK_ABS_TOL,
+            max_relative = GREEK_REL_TOL,
+            epsilon = GREEK_ABS_TOL,
         );
     }
 }
@@ -384,7 +482,8 @@ fn strata_greeks_vega_finite_diff() {
         assert_relative_eq!(
             vega_analytic,
             vega_fd,
-            max_relative = GREEK_REL_TOL, epsilon = GREEK_ABS_TOL,
+            max_relative = GREEK_REL_TOL,
+            epsilon = GREEK_ABS_TOL,
         );
     }
 }
@@ -415,7 +514,8 @@ fn strata_greeks_theta_finite_diff() {
             assert_relative_eq!(
                 theta_analytic,
                 -dp_dt,
-                max_relative = GREEK_REL_TOL, epsilon = GREEK_ABS_TOL,
+                max_relative = GREEK_REL_TOL,
+                epsilon = GREEK_ABS_TOL,
             );
         }
     }
@@ -444,7 +544,8 @@ fn strata_greeks_rho_finite_diff() {
             assert_relative_eq!(
                 rho_analytic,
                 rho_fd,
-                max_relative = GREEK_REL_TOL, epsilon = GREEK_ABS_TOL,
+                max_relative = GREEK_REL_TOL,
+                epsilon = GREEK_ABS_TOL,
             );
         }
     }

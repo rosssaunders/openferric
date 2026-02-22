@@ -10,9 +10,7 @@
 use approx::assert_relative_eq;
 use chrono::NaiveDate;
 
-use openferric::rates::{
-    DayCountConvention, ForwardRateAgreement, YieldCurve, YieldCurveBuilder,
-};
+use openferric::rates::{DayCountConvention, ForwardRateAgreement, YieldCurve, YieldCurveBuilder};
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -42,11 +40,7 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
 /// method returns a sensible continuously-compounded rate.
 #[test]
 fn fra_forward_rate_from_deposit_curve() {
-    let deposits = vec![
-        (0.25, 0.01),
-        (0.50, 0.02),
-        (0.75, 0.03),
-    ];
+    let deposits = vec![(0.25, 0.01), (0.50, 0.02), (0.75, 0.03)];
     let curve = YieldCurveBuilder::from_deposits(&deposits);
 
     // FRA for the 6M period (start = now, end = 6M from now)
@@ -125,14 +119,20 @@ fn fra_npv_sign_consistency() {
         fixed_rate: fwd - 0.01,
         ..fra_probe
     };
-    assert!(fra_low.npv(&curve) > 0.0, "NPV should be positive when fixed < forward");
+    assert!(
+        fra_low.npv(&curve) > 0.0,
+        "NPV should be positive when fixed < forward"
+    );
 
     // Fixed rate above forward → negative NPV
     let fra_high = ForwardRateAgreement {
         fixed_rate: fwd + 0.01,
         ..fra_probe
     };
-    assert!(fra_high.npv(&curve) < 0.0, "NPV should be negative when fixed > forward");
+    assert!(
+        fra_high.npv(&curve) < 0.0,
+        "NPV should be negative when fixed > forward"
+    );
 }
 
 // ── NPV formula verification ────────────────────────────────────────────────
@@ -160,11 +160,7 @@ fn fra_npv_formula_verification() {
     let df = curve.discount_factor(tau);
     let expected_npv = 1_000_000.0 * (fwd - fixed_rate) * tau * df;
 
-    assert_relative_eq!(
-        fra.npv(&curve),
-        expected_npv,
-        epsilon = 1.0e-6,
-    );
+    assert_relative_eq!(fra.npv(&curve), expected_npv, epsilon = 1.0e-6,);
 }
 
 // ── Notional scaling ────────────────────────────────────────────────────────
@@ -190,11 +186,7 @@ fn fra_npv_scales_with_notional() {
         ..fra1
     };
 
-    assert_relative_eq!(
-        fra2.npv(&curve),
-        2.0 * fra1.npv(&curve),
-        epsilon = 1.0e-10,
-    );
+    assert_relative_eq!(fra2.npv(&curve), 2.0 * fra1.npv(&curve), epsilon = 1.0e-10,);
 }
 
 // ── Day count convention effect ─────────────────────────────────────────────
@@ -298,19 +290,14 @@ fn fra_multiple_conventions_positive_forward() {
 /// forward rates.
 #[test]
 fn fra_forward_rate_increases_on_upward_sloping_curve() {
-    let deposits = vec![
-        (0.25, 0.03),
-        (0.50, 0.04),
-        (1.00, 0.05),
-        (2.00, 0.06),
-    ];
+    let deposits = vec![(0.25, 0.03), (0.50, 0.04), (1.00, 0.05), (2.00, 0.06)];
     let curve = YieldCurveBuilder::from_deposits(&deposits);
 
     let base = d(2024, 1, 1);
     let periods = [
-        (d(2024, 1, 1), d(2024, 4, 1)),   // ~3M
-        (d(2024, 1, 1), d(2024, 7, 1)),   // ~6M
-        (d(2024, 1, 1), d(2025, 1, 1)),   // ~1Y
+        (d(2024, 1, 1), d(2024, 4, 1)), // ~3M
+        (d(2024, 1, 1), d(2024, 7, 1)), // ~6M
+        (d(2024, 1, 1), d(2025, 1, 1)), // ~1Y
     ];
 
     let mut prev_fwd = 0.0;

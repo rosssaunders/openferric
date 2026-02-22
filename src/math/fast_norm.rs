@@ -35,7 +35,8 @@ pub fn hart_norm_cdf(x: f64) -> f64 {
 
     let z = x.abs();
     let t = 1.0 / P.mul_add(z, 1.0);
-    let poly = A5.mul_add(t, A4)
+    let poly = A5
+        .mul_add(t, A4)
         .mul_add(t, A3)
         .mul_add(t, A2)
         .mul_add(t, A1)
@@ -96,17 +97,44 @@ pub fn beasley_springer_moro_inv_cdf(p: f64) -> f64 {
 
     if p < P_LOW {
         let q = (-2.0 * p.ln()).sqrt();
-        C[0].mul_add(q, C[1]).mul_add(q, C[2]).mul_add(q, C[3]).mul_add(q, C[4]).mul_add(q, C[5])
-            / D[0].mul_add(q, D[1]).mul_add(q, D[2]).mul_add(q, D[3]).mul_add(q, 1.0)
+        C[0].mul_add(q, C[1])
+            .mul_add(q, C[2])
+            .mul_add(q, C[3])
+            .mul_add(q, C[4])
+            .mul_add(q, C[5])
+            / D[0]
+                .mul_add(q, D[1])
+                .mul_add(q, D[2])
+                .mul_add(q, D[3])
+                .mul_add(q, 1.0)
     } else if p <= P_HIGH {
         let q = p - 0.5;
         let r = q * q;
-        A[0].mul_add(r, A[1]).mul_add(r, A[2]).mul_add(r, A[3]).mul_add(r, A[4]).mul_add(r, A[5]) * q
-            / B[0].mul_add(r, B[1]).mul_add(r, B[2]).mul_add(r, B[3]).mul_add(r, B[4]).mul_add(r, 1.0)
+        A[0].mul_add(r, A[1])
+            .mul_add(r, A[2])
+            .mul_add(r, A[3])
+            .mul_add(r, A[4])
+            .mul_add(r, A[5])
+            * q
+            / B[0]
+                .mul_add(r, B[1])
+                .mul_add(r, B[2])
+                .mul_add(r, B[3])
+                .mul_add(r, B[4])
+                .mul_add(r, 1.0)
     } else {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
-        -C[0].mul_add(q, C[1]).mul_add(q, C[2]).mul_add(q, C[3]).mul_add(q, C[4]).mul_add(q, C[5])
-            / D[0].mul_add(q, D[1]).mul_add(q, D[2]).mul_add(q, D[3]).mul_add(q, 1.0)
+        -C[0]
+            .mul_add(q, C[1])
+            .mul_add(q, C[2])
+            .mul_add(q, C[3])
+            .mul_add(q, C[4])
+            .mul_add(q, C[5])
+            / D[0]
+                .mul_add(q, D[1])
+                .mul_add(q, D[2])
+                .mul_add(q, D[3])
+                .mul_add(q, 1.0)
     }
 }
 

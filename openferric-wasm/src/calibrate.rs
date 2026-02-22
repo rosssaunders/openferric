@@ -5,9 +5,7 @@
 //! diagnostics in a single call. The filtering thresholds are tuned for
 //! Deribit market data and do not belong in the core library.
 
-use openferric::vol::slice::{
-    slice_fit_diagnostics, MODEL_SABR, MODEL_SVI, MODEL_VV,
-};
+use openferric::vol::slice::{MODEL_SABR, MODEL_SVI, MODEL_VV, slice_fit_diagnostics};
 use openferric::vol::surface::SviParams;
 
 /// Calibrate a vol slice from raw market quotes.
@@ -162,7 +160,13 @@ pub fn calibrate_slice(
             };
             let result = openferric::vol::surface::calibrate_svi(&points, init, 3000, 0.002);
             // Scale a and b by T (SVI parameterizes total variance)
-            vec![result.a * t, result.b * t, result.rho, result.m, result.sigma]
+            vec![
+                result.a * t,
+                result.b * t,
+                result.rho,
+                result.m,
+                result.sigma,
+            ]
         }
         MODEL_SABR => {
             let cal_strikes: Vec<f64> = filtered.iter().map(|&i| all_quotes[i].strike).collect();
@@ -285,8 +289,9 @@ mod tests {
         let ask_ivs: Vec<f64> = mark_ivs.iter().map(|&iv| iv * 1.05).collect();
         let ois: Vec<f64> = vec![100.0; strikes.len()];
 
-        let result =
-            calibrate_slice(&strikes, &mark_ivs, &bid_ivs, &ask_ivs, &ois, forward, t, MODEL_SVI);
+        let result = calibrate_slice(
+            &strikes, &mark_ivs, &bid_ivs, &ask_ivs, &ois, forward, t, MODEL_SVI,
+        );
 
         assert!(result.len() > 4);
         let n_pts = result[0] as usize;
@@ -338,8 +343,9 @@ mod tests {
         let ask_ivs: Vec<f64> = mark_ivs.iter().map(|&iv| iv * 1.05).collect();
         let ois: Vec<f64> = vec![100.0; strikes.len()];
 
-        let result =
-            calibrate_slice(&strikes, &mark_ivs, &bid_ivs, &ask_ivs, &ois, forward, t, MODEL_VV);
+        let result = calibrate_slice(
+            &strikes, &mark_ivs, &bid_ivs, &ask_ivs, &ois, forward, t, MODEL_VV,
+        );
         let n_pts = result[0] as usize;
         assert!(n_pts > 0);
         assert_eq!(result[1] as u8, MODEL_VV);

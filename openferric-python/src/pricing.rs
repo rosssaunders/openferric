@@ -94,7 +94,17 @@ pub fn py_barrier_price(
     };
 
     barrier_price_closed_form_with_carry_and_rebate(
-        option_type, style, direction, spot, strike, barrier, rate, div_yield, vol, expiry, rebate,
+        option_type,
+        style,
+        direction,
+        spot,
+        strike,
+        barrier,
+        rate,
+        div_yield,
+        vol,
+        expiry,
+        rebate,
     )
 }
 
@@ -156,7 +166,15 @@ pub fn py_heston_price(
         return f64::NAN;
     }
 
-    option_price_from_call(option_type, call_price, spot, strike, rate, div_yield, expiry)
+    option_price_from_call(
+        option_type,
+        call_price,
+        spot,
+        strike,
+        rate,
+        div_yield,
+        expiry,
+    )
 }
 
 #[pyfunction]

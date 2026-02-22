@@ -154,9 +154,8 @@ mod tests {
         let times = vec![0.5, 1.0, 1.5, 2.0];
         let expected_im = vec![50_000.0; 4];
         let funding_spread = vec![0.005; 4];
-        let discount_curve = YieldCurve::new(
-            times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect(),
-        );
+        let discount_curve =
+            YieldCurve::new(times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect());
         let mva = mva_from_profile(&times, &expected_im, &funding_spread, &discount_curve);
         assert!(mva < 0.0);
         assert!(mva.is_finite());

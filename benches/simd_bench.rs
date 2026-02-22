@@ -1,11 +1,11 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use openferric::core::OptionType;
 use openferric::engines::analytic::{bs_price_batch, normal_cdf_batch_approx};
 use openferric::engines::monte_carlo::{mc_european_call_soa, mc_european_call_soa_scalar};
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use openferric::math::simd_math::{exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 use openferric::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
-use openferric::core::OptionType;
 use openferric::pricing::european::black_scholes_price;
 use statrs::distribution::{ContinuousCDF, Normal};
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]

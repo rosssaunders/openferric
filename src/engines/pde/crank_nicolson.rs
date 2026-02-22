@@ -278,11 +278,18 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             // SIMD path when available, otherwise scalar FMA.
             #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             {
-                if interior_n >= 4 && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                if interior_n >= 4
+                    && is_x86_feature_detected!("avx2")
+                    && is_x86_feature_detected!("fma")
+                {
                     unsafe {
                         pde_rhs_avx2(
-                            &rhs_lower, &rhs_diag, &rhs_upper,
-                            &values, &mut rhs_buf, interior_n,
+                            &rhs_lower,
+                            &rhs_diag,
+                            &rhs_upper,
+                            &values,
+                            &mut rhs_buf,
+                            interior_n,
                         );
                     }
                 } else {
@@ -398,11 +405,12 @@ unsafe fn pde_rhs_avx2(
             let u = _mm256_loadu_pd(upper.as_ptr().add(k));
 
             let v_lo = _mm256_loadu_pd(values.as_ptr().add(i - 1)); // values[k..k+4]
-            let v_mid = _mm256_loadu_pd(values.as_ptr().add(i));    // values[k+1..k+5]
+            let v_mid = _mm256_loadu_pd(values.as_ptr().add(i)); // values[k+1..k+5]
             let v_hi = _mm256_loadu_pd(values.as_ptr().add(i + 1)); // values[k+2..k+6]
 
             // rhs[k] = diag[k] * v_mid + lower[k] * v_lo + upper[k] * v_hi
-            let result = _mm256_fmadd_pd(d, v_mid, _mm256_fmadd_pd(l, v_lo, _mm256_mul_pd(u, v_hi)));
+            let result =
+                _mm256_fmadd_pd(d, v_mid, _mm256_fmadd_pd(l, v_lo, _mm256_mul_pd(u, v_hi)));
             _mm256_storeu_pd(rhs.as_mut_ptr().add(k), result);
         }
         k += 4;

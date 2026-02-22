@@ -66,9 +66,8 @@ fn bs_price_with_dividend(
 
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 =
-        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-            / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-rate * expiry).exp();

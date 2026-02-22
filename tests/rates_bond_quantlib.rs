@@ -46,11 +46,7 @@ fn fixed_coupon_bond_par_pricing() {
             day_count: DayCountConvention::Act365Fixed,
         };
 
-        assert_relative_eq!(
-            bond.dirty_price(&curve),
-            100.0,
-            epsilon = 1.0e-6,
-        );
+        assert_relative_eq!(bond.dirty_price(&curve), 100.0, epsilon = 1.0e-6,);
     }
 }
 
@@ -144,11 +140,7 @@ fn fixed_coupon_bond_cached_values() {
             day_count: DayCountConvention::Act365Fixed,
         };
         let price = bond.dirty_price(&curve);
-        assert_relative_eq!(
-            price,
-            case.expected_dirty_price,
-            epsilon = case.tolerance,
-        );
+        assert_relative_eq!(price, case.expected_dirty_price, epsilon = case.tolerance,);
     }
 }
 
@@ -175,13 +167,12 @@ fn zero_coupon_bond_cached_values() {
         // so price = 100 * (1 + r)^(-t).
         let price = bond.dirty_price(&curve);
         let expected = 100.0 * (1.0 + rate).powf(-maturity);
-        assert_relative_eq!(
-            price,
-            expected,
-            epsilon = 1.0e-6,
-        );
+        assert_relative_eq!(price, expected, epsilon = 1.0e-6,);
         // Must be below par for positive rates
-        assert!(price < 100.0, "Zero-coupon bond must price below par for r > 0");
+        assert!(
+            price < 100.0,
+            "Zero-coupon bond must price below par for r > 0"
+        );
     }
 }
 
@@ -200,11 +191,7 @@ fn ytm_par_bond_equals_coupon_rate() {
             day_count: DayCountConvention::Act365Fixed,
         };
         let ytm = bond.ytm(100.0);
-        assert_relative_eq!(
-            ytm,
-            coupon,
-            epsilon = 1.0e-8,
-        );
+        assert_relative_eq!(ytm, coupon, epsilon = 1.0e-8,);
     }
 }
 
@@ -248,11 +235,7 @@ fn duration_zero_coupon_bond_equals_maturity() {
             maturity,
             day_count: DayCountConvention::Act365Fixed,
         };
-        assert_relative_eq!(
-            bond.duration(&curve),
-            maturity,
-            epsilon = 1.0e-10,
-        );
+        assert_relative_eq!(bond.duration(&curve), maturity, epsilon = 1.0e-10,);
     }
 }
 

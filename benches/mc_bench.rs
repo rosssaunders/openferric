@@ -68,24 +68,20 @@ fn bench_mc_convergence_study(c: &mut Criterion) {
     let market = benchmark_market();
     let option = VanillaOption::european_call(100.0, 1.0);
     let mut group = c.benchmark_group("mc_convergence_study");
-    
+
     // Test convergence with different path counts
     let path_counts = [1_000, 5_000, 10_000, 50_000];
 
     for paths in path_counts.iter() {
         let engine = MonteCarloPricingEngine::new(*paths, 252, 42);
-        group.bench_with_input(
-            BenchmarkId::from_parameter(paths), 
-            paths, 
-            |b, _| {
-                b.iter(|| {
-                    let result = engine
-                        .price(black_box(&option), black_box(&market))
-                        .expect("pricing should succeed");
-                    black_box((result.price, result.stderr))
-                })
-            }
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(paths), paths, |b, _| {
+            b.iter(|| {
+                let result = engine
+                    .price(black_box(&option), black_box(&market))
+                    .expect("pricing should succeed");
+                black_box((result.price, result.stderr))
+            })
+        });
     }
 
     group.finish();
@@ -96,10 +92,10 @@ fn bench_mc_put_call_parity(c: &mut Criterion) {
     let call_option = VanillaOption::european_call(100.0, 1.0);
     let put_option = VanillaOption::european_put(100.0, 1.0);
     let paths = 50_000;
-    
+
     let engine = MonteCarloPricingEngine::new(paths, 252, 42);
     let mut group = c.benchmark_group("mc_put_call_parity");
-    
+
     group.bench_function("call", |b| {
         b.iter(|| {
             let px = engine
@@ -109,7 +105,7 @@ fn bench_mc_put_call_parity(c: &mut Criterion) {
             black_box(px)
         })
     });
-    
+
     group.bench_function("put", |b| {
         b.iter(|| {
             let px = engine

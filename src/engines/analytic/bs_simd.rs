@@ -26,7 +26,8 @@ pub fn normal_cdf_approx(x: f64) -> f64 {
 
     let z = x.abs();
     let t = 1.0 / P.mul_add(z, 1.0);
-    let poly = A5.mul_add(t, A4)
+    let poly = A5
+        .mul_add(t, A4)
         .mul_add(t, A3)
         .mul_add(t, A2)
         .mul_add(t, A1)
@@ -196,7 +197,11 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
     let call = s_df_q * normal_cdf_approx(d1) - k_df_r * normal_cdf_approx(d2);
-    if is_call { call } else { call - s_df_q + k_df_r }
+    if is_call {
+        call
+    } else {
+        call - s_df_q + k_df_r
+    }
 }
 
 #[inline]
@@ -478,10 +483,7 @@ mod avx2_impl {
             let s_df_q = _mm256_mul_pd(s, df_q_v);
             let k_df_r = _mm256_mul_pd(k, df_r_v);
 
-            let call = _mm256_sub_pd(
-                _mm256_mul_pd(s_df_q, nd1),
-                _mm256_mul_pd(k_df_r, nd2),
-            );
+            let call = _mm256_sub_pd(_mm256_mul_pd(s_df_q, nd1), _mm256_mul_pd(k_df_r, nd2));
 
             let result = if is_call {
                 call

@@ -1,7 +1,7 @@
 use openferric::engines::fft::{
     BlackScholesCharFn, CarrMadanParams, HestonCharFn, carr_madan_fft, carr_madan_fft_complex,
-    carr_madan_fft_greeks, carr_madan_fft_strikes, carr_madan_price_at_strikes,
-    heston_price_fft, interpolate_strike_prices,
+    carr_madan_fft_greeks, carr_madan_fft_strikes, carr_madan_price_at_strikes, heston_price_fft,
+    interpolate_strike_prices,
 };
 use openferric::models::VarianceGamma;
 use openferric::pricing::OptionType;

@@ -45,9 +45,8 @@ fn bs_price_scalar_reference(
     }
 
     let sig_sqrt_t = vol * expiry.sqrt();
-    let d1 =
-        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-            / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
     // Compute call, derive put via put-call parity to halve CDF evaluations.
     let nd1 = normal_cdf(d1);

@@ -30,12 +30,7 @@ impl CdsOption {
     /// * `vol` - implied volatility of the CDS spread
     /// * `risky_annuity` - spot RPV01 (present-value) of the underlying CDS,
     ///   i.e. already discounted to today
-    pub fn black_price(
-        &self,
-        forward_spread: f64,
-        vol: f64,
-        risky_annuity: f64,
-    ) -> f64 {
+    pub fn black_price(&self, forward_spread: f64, vol: f64, risky_annuity: f64) -> f64 {
         if self.option_expiry <= 0.0 || vol < 0.0 || risky_annuity <= 0.0 {
             return 0.0;
         }
@@ -178,10 +173,7 @@ mod tests {
 
         let p = payer.black_price(forward, vol, rpv01);
         let r = receiver.black_price(forward, vol, rpv01);
-        assert!(
-            (p - r).abs() < 1e-8,
-            "ATM payer ({p}) != receiver ({r})"
-        );
+        assert!((p - r).abs() < 1e-8, "ATM payer ({p}) != receiver ({r})");
     }
 
     #[test]

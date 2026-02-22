@@ -145,7 +145,9 @@ fn strata_down_in_call_k100() {
     assert!(
         (px - PRICE_DI[0]).abs() < TOL,
         "DI Call K=100: expected {} got {} diff {}",
-        PRICE_DI[0], px, (px - PRICE_DI[0]).abs()
+        PRICE_DI[0],
+        px,
+        (px - PRICE_DI[0]).abs()
     );
 }
 
@@ -156,7 +158,9 @@ fn strata_down_in_put_k100() {
     assert!(
         (px - PRICE_DI[1]).abs() < TOL,
         "DI Put K=100: expected {} got {} diff {}",
-        PRICE_DI[1], px, (px - PRICE_DI[1]).abs()
+        PRICE_DI[1],
+        px,
+        (px - PRICE_DI[1]).abs()
     );
 }
 
@@ -167,7 +171,9 @@ fn strata_down_in_call_k120() {
     assert!(
         (px - PRICE_DI[2]).abs() < TOL,
         "DI Call K=120: expected {} got {} diff {}",
-        PRICE_DI[2], px, (px - PRICE_DI[2]).abs()
+        PRICE_DI[2],
+        px,
+        (px - PRICE_DI[2]).abs()
     );
 }
 
@@ -178,7 +184,9 @@ fn strata_down_in_put_k120() {
     assert!(
         (px - PRICE_DI[3]).abs() < TOL,
         "DI Put K=120: expected {} got {} diff {}",
-        PRICE_DI[3], px, (px - PRICE_DI[3]).abs()
+        PRICE_DI[3],
+        px,
+        (px - PRICE_DI[3]).abs()
     );
 }
 
@@ -189,7 +197,9 @@ fn strata_down_in_call_k85() {
     assert!(
         (px - PRICE_DI[4]).abs() < TOL,
         "DI Call K=85: expected {} got {} diff {}",
-        PRICE_DI[4], px, (px - PRICE_DI[4]).abs()
+        PRICE_DI[4],
+        px,
+        (px - PRICE_DI[4]).abs()
     );
 }
 
@@ -200,7 +210,9 @@ fn strata_down_in_put_k85() {
     assert!(
         (px - PRICE_DI[5]).abs() < TOL,
         "DI Put K=85: expected {} got {} diff {}",
-        PRICE_DI[5], px, (px - PRICE_DI[5]).abs()
+        PRICE_DI[5],
+        px,
+        (px - PRICE_DI[5]).abs()
     );
 }
 
@@ -213,7 +225,9 @@ fn strata_down_out_call_k100() {
     assert!(
         (px - PRICE_DO[0]).abs() < TOL,
         "DO Call K=100: expected {} got {} diff {}",
-        PRICE_DO[0], px, (px - PRICE_DO[0]).abs()
+        PRICE_DO[0],
+        px,
+        (px - PRICE_DO[0]).abs()
     );
 }
 
@@ -224,7 +238,9 @@ fn strata_down_out_put_k100() {
     assert!(
         (px - PRICE_DO[1]).abs() < TOL,
         "DO Put K=100: expected {} got {} diff {}",
-        PRICE_DO[1], px, (px - PRICE_DO[1]).abs()
+        PRICE_DO[1],
+        px,
+        (px - PRICE_DO[1]).abs()
     );
 }
 
@@ -235,7 +251,9 @@ fn strata_down_out_call_k120() {
     assert!(
         (px - PRICE_DO[2]).abs() < TOL,
         "DO Call K=120: expected {} got {} diff {}",
-        PRICE_DO[2], px, (px - PRICE_DO[2]).abs()
+        PRICE_DO[2],
+        px,
+        (px - PRICE_DO[2]).abs()
     );
 }
 
@@ -246,7 +264,9 @@ fn strata_down_out_put_k120() {
     assert!(
         (px - PRICE_DO[3]).abs() < TOL,
         "DO Put K=120: expected {} got {} diff {}",
-        PRICE_DO[3], px, (px - PRICE_DO[3]).abs()
+        PRICE_DO[3],
+        px,
+        (px - PRICE_DO[3]).abs()
     );
 }
 
@@ -257,7 +277,9 @@ fn strata_down_out_call_k85() {
     assert!(
         (px - PRICE_DO[4]).abs() < TOL,
         "DO Call K=85: expected {} got {} diff {}",
-        PRICE_DO[4], px, (px - PRICE_DO[4]).abs()
+        PRICE_DO[4],
+        px,
+        (px - PRICE_DO[4]).abs()
     );
 }
 
@@ -268,7 +290,9 @@ fn strata_down_out_put_k85() {
     assert!(
         (px - PRICE_DO[5]).abs() < TOL,
         "DO Put K=85: expected {} got {} diff {}",
-        PRICE_DO[5], px, (px - PRICE_DO[5]).abs()
+        PRICE_DO[5],
+        px,
+        (px - PRICE_DO[5]).abs()
     );
 }
 
@@ -281,7 +305,9 @@ fn strata_up_in_call_k100() {
     assert!(
         (px - PRICE_UI[0]).abs() < TOL,
         "UI Call K=100: expected {} got {} diff {}",
-        PRICE_UI[0], px, (px - PRICE_UI[0]).abs()
+        PRICE_UI[0],
+        px,
+        (px - PRICE_UI[0]).abs()
     );
 }
 
@@ -292,7 +318,9 @@ fn strata_up_in_put_k100() {
     assert!(
         (px - PRICE_UI[1]).abs() < TOL,
         "UI Put K=100: expected {} got {} diff {}",
-        PRICE_UI[1], px, (px - PRICE_UI[1]).abs()
+        PRICE_UI[1],
+        px,
+        (px - PRICE_UI[1]).abs()
     );
 }
 
@@ -303,7 +331,9 @@ fn strata_up_in_call_k120() {
     assert!(
         (px - PRICE_UI[2]).abs() < TOL,
         "UI Call K=120: expected {} got {} diff {}",
-        PRICE_UI[2], px, (px - PRICE_UI[2]).abs()
+        PRICE_UI[2],
+        px,
+        (px - PRICE_UI[2]).abs()
     );
 }
 
@@ -314,7 +344,9 @@ fn strata_up_in_put_k120() {
     assert!(
         (px - PRICE_UI[3]).abs() < TOL,
         "UI Put K=120: expected {} got {} diff {}",
-        PRICE_UI[3], px, (px - PRICE_UI[3]).abs()
+        PRICE_UI[3],
+        px,
+        (px - PRICE_UI[3]).abs()
     );
 }
 
@@ -325,7 +357,9 @@ fn strata_up_in_call_k85() {
     assert!(
         (px - PRICE_UI[4]).abs() < TOL,
         "UI Call K=85: expected {} got {} diff {}",
-        PRICE_UI[4], px, (px - PRICE_UI[4]).abs()
+        PRICE_UI[4],
+        px,
+        (px - PRICE_UI[4]).abs()
     );
 }
 
@@ -336,7 +370,9 @@ fn strata_up_in_put_k85() {
     assert!(
         (px - PRICE_UI[5]).abs() < TOL,
         "UI Put K=85: expected {} got {} diff {}",
-        PRICE_UI[5], px, (px - PRICE_UI[5]).abs()
+        PRICE_UI[5],
+        px,
+        (px - PRICE_UI[5]).abs()
     );
 }
 
@@ -349,7 +385,9 @@ fn strata_up_out_call_k100() {
     assert!(
         (px - PRICE_UO[0]).abs() < TOL,
         "UO Call K=100: expected {} got {} diff {}",
-        PRICE_UO[0], px, (px - PRICE_UO[0]).abs()
+        PRICE_UO[0],
+        px,
+        (px - PRICE_UO[0]).abs()
     );
 }
 
@@ -360,7 +398,9 @@ fn strata_up_out_put_k100() {
     assert!(
         (px - PRICE_UO[1]).abs() < TOL,
         "UO Put K=100: expected {} got {} diff {}",
-        PRICE_UO[1], px, (px - PRICE_UO[1]).abs()
+        PRICE_UO[1],
+        px,
+        (px - PRICE_UO[1]).abs()
     );
 }
 
@@ -371,7 +411,9 @@ fn strata_up_out_call_k120() {
     assert!(
         (px - PRICE_UO[2]).abs() < TOL,
         "UO Call K=120: expected {} got {} diff {}",
-        PRICE_UO[2], px, (px - PRICE_UO[2]).abs()
+        PRICE_UO[2],
+        px,
+        (px - PRICE_UO[2]).abs()
     );
 }
 
@@ -382,7 +424,9 @@ fn strata_up_out_put_k120() {
     assert!(
         (px - PRICE_UO[3]).abs() < TOL,
         "UO Put K=120: expected {} got {} diff {}",
-        PRICE_UO[3], px, (px - PRICE_UO[3]).abs()
+        PRICE_UO[3],
+        px,
+        (px - PRICE_UO[3]).abs()
     );
 }
 
@@ -393,7 +437,9 @@ fn strata_up_out_call_k85() {
     assert!(
         (px - PRICE_UO[4]).abs() < TOL,
         "UO Call K=85: expected {} got {} diff {}",
-        PRICE_UO[4], px, (px - PRICE_UO[4]).abs()
+        PRICE_UO[4],
+        px,
+        (px - PRICE_UO[4]).abs()
     );
 }
 
@@ -404,7 +450,9 @@ fn strata_up_out_put_k85() {
     assert!(
         (px - PRICE_UO[5]).abs() < TOL,
         "UO Put K=85: expected {} got {} diff {}",
-        PRICE_UO[5], px, (px - PRICE_UO[5]).abs()
+        PRICE_UO[5],
+        px,
+        (px - PRICE_UO[5]).abs()
     );
 }
 
@@ -483,7 +531,14 @@ fn parity_check(option_type: OptionType, strike: f64, barrier_level: f64, direct
     assert!(
         diff < PARITY_TOL,
         "in-out parity failed for {} {:?} K={} barrier={}: in={} out={} vanilla={} diff={}",
-        direction, option_type, strike, barrier_level, in_px, out_px, vanilla_px, diff
+        direction,
+        option_type,
+        strike,
+        barrier_level,
+        in_px,
+        out_px,
+        vanilla_px,
+        diff
     );
 }
 

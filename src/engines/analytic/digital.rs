@@ -36,8 +36,8 @@ fn d1_d2(
 ) -> (f64, f64) {
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 =
-        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
     (d1, d2)
 }
@@ -229,7 +229,9 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
         // Compute N(d1), N(d2) once; derive put via N(-d) = 1 - N(d).
         let nd1 = normal_cdf(d1);
         let nd2 = normal_cdf(d2);
-        let call = market.spot.mul_add(df_q * nd1, -(instrument.payoff_strike * df_r * nd2));
+        let call = market
+            .spot
+            .mul_add(df_q * nd1, -(instrument.payoff_strike * df_r * nd2));
         let price = match instrument.option_type {
             OptionType::Call => call,
             OptionType::Put => call - market.spot * df_q + instrument.payoff_strike * df_r,

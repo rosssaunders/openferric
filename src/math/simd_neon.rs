@@ -151,7 +151,10 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     // t1 = w * (lg2 + w * (lg4 + w * lg6))
     let t1 = vmulq_f64(w, vfmaq_f64(lg2, w, vfmaq_f64(lg4, w, lg6)));
     // t2 = z * (lg1 + w * (lg3 + w * (lg5 + w * lg7)))
-    let t2 = vmulq_f64(z, vfmaq_f64(lg1, w, vfmaq_f64(lg3, w, vfmaq_f64(lg5, w, lg7))));
+    let t2 = vmulq_f64(
+        z,
+        vfmaq_f64(lg1, w, vfmaq_f64(lg3, w, vfmaq_f64(lg5, w, lg7))),
+    );
     let r = vaddq_f64(t1, t2);
 
     let half = vdupq_n_f64(0.5);

@@ -59,7 +59,8 @@ fn black_scholes_call_with_dividend(
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * t) / sig_sqrt_t;
+    let d1 =
+        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * t) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     spot.mul_add(
@@ -199,18 +200,14 @@ pub fn two_asset_correlation_price(
     let df_r = (-option.r * option.t).exp();
 
     let price = match option.option_type {
-        OptionType::Call => {
-            option.s1.mul_add(
-                df_q1 * bivariate_normal_cdf(d1, e1_tilted, option.rho),
-                -(option.k1 * df_r * bivariate_normal_cdf(d2, e2, option.rho)),
-            )
-        }
-        OptionType::Put => {
-            option.k1.mul_add(
-                df_r * bivariate_normal_cdf(-d2, -e2, option.rho),
-                -(option.s1 * df_q1 * bivariate_normal_cdf(-d1, -e1_tilted, option.rho)),
-            )
-        }
+        OptionType::Call => option.s1.mul_add(
+            df_q1 * bivariate_normal_cdf(d1, e1_tilted, option.rho),
+            -(option.k1 * df_r * bivariate_normal_cdf(d2, e2, option.rho)),
+        ),
+        OptionType::Put => option.k1.mul_add(
+            df_r * bivariate_normal_cdf(-d2, -e2, option.rho),
+            -(option.s1 * df_q1 * bivariate_normal_cdf(-d1, -e1_tilted, option.rho)),
+        ),
     };
 
     Ok(price.max(0.0))

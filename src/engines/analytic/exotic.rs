@@ -120,8 +120,8 @@ fn bs_price_with_dividend(
 
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 =
-        ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry) / sig_sqrt_t;
+    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_r = (-rate * expiry).exp();
@@ -214,7 +214,11 @@ fn floating_lookback_call_formula(
     let phi = vol_sq / (2.0 * carry);
 
     spot.mul_add(df_q * normal_cdf(a1), -(s_min * df_r * normal_cdf(a2)))
-        + spot * df_r * phi * y.exp().mul_add(normal_cdf(-a3), -((carry * expiry).exp() * normal_cdf(-a1)))
+        + spot
+            * df_r
+            * phi
+            * y.exp()
+                .mul_add(normal_cdf(-a3), -((carry * expiry).exp() * normal_cdf(-a1)))
 }
 
 #[inline]
@@ -252,7 +256,9 @@ fn floating_lookback_put_formula(
         + spot
             * df_r
             * phi
-            * (carry * expiry).exp().mul_add(normal_cdf(b1), -(y.exp() * normal_cdf(b3)))
+            * (carry * expiry)
+                .exp()
+                .mul_add(normal_cdf(b1), -(y.exp() * normal_cdf(b3)))
 }
 
 #[inline]
@@ -358,7 +364,8 @@ fn fixed_lookback_call_formula(
         let e3 = e1 - shift;
         let power = (spot / s_max).powf(power_exp);
 
-        df_r * (s_max - strike) + spot.mul_add(df_q * normal_cdf(e1), -(s_max * df_r * normal_cdf(e2)))
+        df_r * (s_max - strike)
+            + spot.mul_add(df_q * normal_cdf(e1), -(s_max * df_r * normal_cdf(e2)))
             + correction_scale * carry_term.mul_add(normal_cdf(e1), -(power * normal_cdf(e3)))
     }
 }
@@ -408,7 +415,8 @@ fn fixed_lookback_put_formula(
         let f3 = -f1 + shift;
         let power = (spot / s_min).powf(power_exp);
 
-        df_r * (strike - s_min) + s_min.mul_add(df_r * normal_cdf(-f2), -(spot * df_q * normal_cdf(-f1)))
+        df_r * (strike - s_min)
+            + s_min.mul_add(df_r * normal_cdf(-f2), -(spot * df_q * normal_cdf(-f1)))
             + correction_scale * power.mul_add(normal_cdf(f3), -(carry_term * normal_cdf(-f1)))
     }
 }
@@ -443,7 +451,10 @@ fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
         + (0.5 * vol).mul_add(vol, market.rate - market.dividend_yield) * spec.choose_time)
         / (vol * spec.choose_time.sqrt());
 
-    put.mul_add((-market.dividend_yield * tau).exp() * normal_cdf(-d1_choose), call)
+    put.mul_add(
+        (-market.dividend_yield * tau).exp() * normal_cdf(-d1_choose),
+        call,
+    )
 }
 
 #[inline]
@@ -457,11 +468,12 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
     }
 
     // Quanto drift adjustment under domestic measure: mu_adj = rf - q - rho * vol * fx_vol
-    let mu_adj = (-spec.asset_fx_corr * spec.fx_vol).mul_add(vol, spec.foreign_rate - market.dividend_yield);
+    let mu_adj =
+        (-spec.asset_fx_corr * spec.fx_vol).mul_add(vol, spec.foreign_rate - market.dividend_yield);
     let sqrt_t = spec.expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 =
-        ((market.spot / spec.strike).ln() + (0.5 * vol).mul_add(vol, mu_adj) * spec.expiry) / sig_sqrt_t;
+    let d1 = ((market.spot / spec.strike).ln() + (0.5 * vol).mul_add(vol, mu_adj) * spec.expiry)
+        / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
 
     let df_dom = (-market.rate * spec.expiry).exp();
@@ -470,7 +482,9 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
     // Compute call, derive put via put-call parity to halve CDF evaluations.
     let nd1 = normal_cdf(d1);
     let nd2 = normal_cdf(d2);
-    let call = market.spot.mul_add(carry_discounted * nd1, -(spec.strike * df_dom * nd2));
+    let call = market
+        .spot
+        .mul_add(carry_discounted * nd1, -(spec.strike * df_dom * nd2));
     let foreign_price = match spec.option_type {
         OptionType::Call => call,
         OptionType::Put => call - market.spot * carry_discounted + spec.strike * df_dom,

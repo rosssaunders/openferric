@@ -170,8 +170,24 @@ pub fn tarf_delta(
     seed: u64,
     bump: f64,
 ) -> Result<f64, String> {
-    let p_up = tarf_mc_price(tarf, spot * (1.0 + bump), rate, dividend_yield, vol, num_paths, seed)?;
-    let p_down = tarf_mc_price(tarf, spot * (1.0 - bump), rate, dividend_yield, vol, num_paths, seed)?;
+    let p_up = tarf_mc_price(
+        tarf,
+        spot * (1.0 + bump),
+        rate,
+        dividend_yield,
+        vol,
+        num_paths,
+        seed,
+    )?;
+    let p_down = tarf_mc_price(
+        tarf,
+        spot * (1.0 - bump),
+        rate,
+        dividend_yield,
+        vol,
+        num_paths,
+        seed,
+    )?;
     Ok((p_up.price - p_down.price) / (2.0 * spot * bump))
 }
 
@@ -186,8 +202,24 @@ pub fn tarf_vega(
     seed: u64,
     bump: f64,
 ) -> Result<f64, String> {
-    let p_up = tarf_mc_price(tarf, spot, rate, dividend_yield, vol + bump, num_paths, seed)?;
-    let p_down = tarf_mc_price(tarf, spot, rate, dividend_yield, vol - bump, num_paths, seed)?;
+    let p_up = tarf_mc_price(
+        tarf,
+        spot,
+        rate,
+        dividend_yield,
+        vol + bump,
+        num_paths,
+        seed,
+    )?;
+    let p_down = tarf_mc_price(
+        tarf,
+        spot,
+        rate,
+        dividend_yield,
+        vol - bump,
+        num_paths,
+        seed,
+    )?;
     Ok((p_up.price - p_down.price) / (2.0 * bump))
 }
 
@@ -199,11 +231,11 @@ mod tests {
         // Weekly fixings for 1 year
         let fixing_times: Vec<f64> = (1..=52).map(|w| w as f64 / 52.0).collect();
         Tarf::standard(
-            100.0,    // strike
-            1000.0,   // notional per fixing
-            120.0,    // KO barrier
-            50000.0,  // target profit
-            2.0,      // 2x downside leverage
+            100.0,   // strike
+            1000.0,  // notional per fixing
+            120.0,   // KO barrier
+            50000.0, // target profit
+            2.0,     // 2x downside leverage
             fixing_times,
         )
     }

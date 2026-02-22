@@ -349,11 +349,7 @@ pub fn term_structure_batch(slice_headers: &[f64], slice_params: &[f64]) -> Vec<
 /// `[spotVol%, fwdVol%, fwdSkew_k0%, fwdSkew_k1%, ..., fwdSkew_kN%]`
 ///
 /// Returns NaN for invalid pairs (dT <= 0 or negative variance).
-pub fn forward_vol_grid(
-    slice_headers: &[f64],
-    slice_params: &[f64],
-    k_points: &[f64],
-) -> Vec<f64> {
+pub fn forward_vol_grid(slice_headers: &[f64], slice_params: &[f64], k_points: &[f64]) -> Vec<f64> {
     let n_slices = slice_headers.len() / 4;
     if n_slices < 2 {
         return Vec::new();
@@ -551,8 +547,14 @@ mod tests {
     fn test_iv_grid_multi_slice() {
         // Two SVI slices with different expiries
         let headers = vec![
-            MODEL_SVI as f64, 0.25, 100.0, 0.0, // slice 0
-            MODEL_SVI as f64, 1.0, 100.0, 5.0, // slice 1
+            MODEL_SVI as f64,
+            0.25,
+            100.0,
+            0.0, // slice 0
+            MODEL_SVI as f64,
+            1.0,
+            100.0,
+            5.0, // slice 1
         ];
         let params = vec![
             0.04, 0.4, -0.4, 0.0, 0.5, // slice 0
@@ -581,8 +583,14 @@ mod tests {
     fn test_forward_vol_grid() {
         // Use same SVI shape but higher `a` for slice 1 so total variance increases with T
         let headers = vec![
-            MODEL_SVI as f64, 0.25, 100.0, 0.0,
-            MODEL_SVI as f64, 1.0, 100.0, 5.0,
+            MODEL_SVI as f64,
+            0.25,
+            100.0,
+            0.0,
+            MODEL_SVI as f64,
+            1.0,
+            100.0,
+            5.0,
         ];
         let params = vec![
             0.01, 0.2, -0.4, 0.0, 0.3, // slice 0: low variance at T=0.25
@@ -648,7 +656,8 @@ mod tests {
             .collect();
         let strikes: Vec<f64> = ks.iter().map(|&k| forward * k.exp()).collect();
 
-        let result = slice_fit_diagnostics(MODEL_SVI, &params, t, forward, &ks, &market_ivs, &strikes);
+        let result =
+            slice_fit_diagnostics(MODEL_SVI, &params, t, forward, &ks, &market_ivs, &strikes);
         assert!(result.len() >= 3 + ks.len());
         let rmse = result[0];
         assert!(rmse < 1e-10); // perfect fit
@@ -715,5 +724,4 @@ mod tests {
         assert!(realized_vol(&[0.01], 252.0).is_nan());
         assert!(realized_vol(&[], 252.0).is_nan());
     }
-
 }

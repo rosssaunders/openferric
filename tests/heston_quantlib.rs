@@ -136,7 +136,7 @@ fn heston_quantlib_cached_reference_values() {
             fixture.rho,
             fixture.maturity,
         )[0]
-            .1;
+        .1;
         let expected_call = fixture.expected_put_call[idx].1;
         // QuantLib cached entries are from a broader model-validation table;
         // keep tolerance loose enough for 32-point quadrature and rounded fixtures.

@@ -153,9 +153,11 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
         let bermudan_flags = match &instrument.exercise {
-            ExerciseStyle::Bermudan { dates } => {
-                Some(bermudan_exercise_steps(dates, instrument.expiry, actual_steps))
-            }
+            ExerciseStyle::Bermudan { dates } => Some(bermudan_exercise_steps(
+                dates,
+                instrument.expiry,
+                actual_steps,
+            )),
             _ => None,
         };
 

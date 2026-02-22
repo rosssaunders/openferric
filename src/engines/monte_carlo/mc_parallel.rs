@@ -76,15 +76,25 @@ fn simulate_chunk_exact(
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             return unsafe {
                 simulate_chunk_exact_avx2(
-                    option_type, strike, spot0, total_drift, total_diffusion,
-                    n_paths, chunk_seed,
+                    option_type,
+                    strike,
+                    spot0,
+                    total_drift,
+                    total_diffusion,
+                    n_paths,
+                    chunk_seed,
                 )
             };
         }
     }
     simulate_chunk_exact_scalar(
-        option_type, strike, spot0, total_drift, total_diffusion,
-        n_paths, chunk_seed,
+        option_type,
+        strike,
+        spot0,
+        total_drift,
+        total_diffusion,
+        n_paths,
+        chunk_seed,
     )
 }
 
@@ -132,8 +142,7 @@ fn simulate_chunk_exact_scalar(
         let p7 = payoff(option_type, s7, strike);
 
         sum += p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7;
-        sum_sq += p0 * p0 + p1 * p1 + p2 * p2 + p3 * p3
-                + p4 * p4 + p5 * p5 + p6 * p6 + p7 * p7;
+        sum_sq += p0 * p0 + p1 * p1 + p2 * p2 + p3 * p3 + p4 * p4 + p5 * p5 + p6 * p6 + p7 * p7;
         remaining -= 8;
     }
     while remaining > 0 {
@@ -161,9 +170,9 @@ unsafe fn simulate_chunk_exact_avx2(
     n_paths: usize,
     chunk_seed: u64,
 ) -> (f64, f64, usize) {
-    use std::arch::x86_64::*;
-    use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4};
     use crate::math::fast_rng::Xoshiro256PlusPlus;
+    use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4};
+    use std::arch::x86_64::*;
 
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(chunk_seed);
     let mut sum = 0.0_f64;
@@ -238,8 +247,10 @@ unsafe fn simulate_chunk_exact_avx2(
     }
 
     // Scalar tail
-    let mut fast_rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus,
-        chunk_seed.wrapping_add(0x1234_5678));
+    let mut fast_rng = FastRng::from_seed(
+        FastRngKind::Xoshiro256PlusPlus,
+        chunk_seed.wrapping_add(0x1234_5678),
+    );
     for _ in 0..remaining {
         let z = sample_standard_normal(&mut fast_rng);
         let s = spot0 * total_diffusion.mul_add(z, total_drift).exp();
@@ -310,7 +321,8 @@ pub fn mc_european_parallel(
         .par_iter()
         .enumerate()
         .map(|(i, &chunk)| {
-            let chunk_seed = base_seed.wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
+            let chunk_seed =
+                base_seed.wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
             simulate_chunk_exact(
                 instrument.option_type,
                 instrument.strike,

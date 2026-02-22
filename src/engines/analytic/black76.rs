@@ -59,8 +59,10 @@ fn black76_price_greeks(option: &FuturesOption) -> (f64, Greeks, f64, f64) {
     };
     let gamma = df * pdf_d1 / (option.forward * option.vol * sqrt_t);
     let vega = df * option.forward * pdf_d1 * sqrt_t;
-    let theta =
-        option.r.mul_add(price, -(df * option.forward * pdf_d1 * option.vol / (2.0 * sqrt_t)));
+    let theta = option.r.mul_add(
+        price,
+        -(df * option.forward * pdf_d1 * option.vol / (2.0 * sqrt_t)),
+    );
 
     // Sensitivity to r for fixed forward input.
     let rho = -option.t * price;

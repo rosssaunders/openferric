@@ -62,8 +62,10 @@ fn swaption_cached_value_payer_5y_into_10y() {
     assert_relative_eq!(annuity, 5.977, epsilon = 0.01);
 
     // Price should be in a reasonable range for 1M notional
-    assert!(price > 10_000.0 && price < 50_000.0,
-        "Price {price} out of expected range for OTM payer swaption");
+    assert!(
+        price > 10_000.0 && price < 50_000.0,
+        "Price {price} out of expected range for OTM payer swaption"
+    );
 }
 
 /// ATM swaption: strike = forward rate.
@@ -180,11 +182,7 @@ fn swaption_put_call_parity() {
         let parity_rhs = payer.notional * annuity * (fwd - strike);
         let parity_lhs = payer_price - recv_price;
 
-        assert_relative_eq!(
-            parity_lhs,
-            parity_rhs,
-            epsilon = 1.0,
-        );
+        assert_relative_eq!(parity_lhs, parity_rhs, epsilon = 1.0,);
     }
 }
 
@@ -208,11 +206,7 @@ fn swaption_implied_vol_round_trip() {
         let price = swaption.price(&curve, vol);
         let recovered_vol = swaption.implied_vol(price, &curve);
 
-        assert_relative_eq!(
-            recovered_vol,
-            vol,
-            epsilon = 1.0e-4,
-        );
+        assert_relative_eq!(recovered_vol, vol, epsilon = 1.0e-4,);
     }
 }
 

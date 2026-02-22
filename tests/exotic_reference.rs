@@ -30,10 +30,7 @@ fn make_market(spot: f64, rate: f64, dividend_yield: f64, vol: f64) -> Market {
 
 fn price_exotic(option: ExoticOption, market: &Market) -> f64 {
     let engine = ExoticAnalyticEngine::new();
-    engine
-        .price(&option, market)
-        .expect("pricing failed")
-        .price
+    engine.price(&option, market).expect("pricing failed").price
 }
 
 // =======================================================================
@@ -210,10 +207,7 @@ fn chooser_positive_and_exceeds_straddle_discount() {
 
     // Chooser must be positive and bounded
     assert!(price > 0.0, "Chooser must be positive: got {price}");
-    assert!(
-        price < spot,
-        "Chooser must be < spot: got {price}"
-    );
+    assert!(price < spot, "Chooser must be < spot: got {price}");
 }
 
 // =======================================================================

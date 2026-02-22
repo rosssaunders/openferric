@@ -214,8 +214,7 @@ impl PricingEngine<VanillaOption> for HopscotchEngine {
                 let i = k + 1;
                 if (i + n) % 2 != 0 {
                     let rhs = values[i]
-                        + dt * (a_coeff[k] * next_values[i - 1]
-                            + c_coeff[k] * next_values[i + 1]);
+                        + dt * (a_coeff[k] * next_values[i - 1] + c_coeff[k] * next_values[i + 1]);
                     next_values[i] = rhs / (1.0 - dt * b_coeff[k]);
                 }
             }

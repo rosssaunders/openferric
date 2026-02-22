@@ -69,7 +69,9 @@ fn garman_kohlhagen_price_greeks(option: &FxOption) -> (f64, FxGreeks, f64, f64)
     let pdf_d1 = normal_pdf(d1);
 
     // Compute call price, derive put via put-call parity.
-    let call = option.spot_fx.mul_add(df_f * nd1, -(option.strike_fx * df_d * nd2));
+    let call = option
+        .spot_fx
+        .mul_add(df_f * nd1, -(option.strike_fx * df_d * nd2));
     let price = match option.option_type {
         OptionType::Call => call,
         OptionType::Put => call - option.spot_fx * df_f + option.strike_fx * df_d,
@@ -85,13 +87,11 @@ fn garman_kohlhagen_price_greeks(option: &FxOption) -> (f64, FxGreeks, f64, f64)
     let theta_common = -option.spot_fx * df_f * pdf_d1 * option.vol / (2.0 * sqrt_t);
     let theta = match option.option_type {
         OptionType::Call => {
-            theta_common
-                + option.foreign_rate * option.spot_fx * df_f * nd1
+            theta_common + option.foreign_rate * option.spot_fx * df_f * nd1
                 - option.domestic_rate * option.strike_fx * df_d * nd2
         }
         OptionType::Put => {
-            theta_common
-                - option.foreign_rate * option.spot_fx * df_f * (1.0 - nd1)
+            theta_common - option.foreign_rate * option.spot_fx * df_f * (1.0 - nd1)
                 + option.domestic_rate * option.strike_fx * df_d * (1.0 - nd2)
         }
     };

@@ -69,10 +69,7 @@ fn svi_set_b_total_variance_positive() {
     for i in -20..=20 {
         let k = i as f64 * 0.1;
         let w = SET_B.total_variance(k);
-        assert!(
-            w > 0.0,
-            "SVI set B w({k}) = {w} must be > 0"
-        );
+        assert!(w > 0.0, "SVI set B w({k}) = {w} must be > 0");
     }
 }
 
@@ -92,7 +89,8 @@ const VOGT: SviParams = SviParams {
 fn svi_vogt_atm_total_variance() {
     let w = VOGT.total_variance(0.0);
     let expected = -0.0410
-        + 0.1331 * (0.3060 * (0.0 - 0.3586) + ((0.0 - 0.3586_f64).powi(2) + 0.4153 * 0.4153).sqrt());
+        + 0.1331
+            * (0.3060 * (0.0 - 0.3586) + ((0.0 - 0.3586_f64).powi(2) + 0.4153 * 0.4153).sqrt());
     let err = (w - expected).abs();
     assert!(
         err < 1e-10,
@@ -136,10 +134,7 @@ fn svi_calibration_round_trip_set_a() {
         .sum::<f64>()
         / points.len() as f64;
 
-    assert!(
-        mse < 1e-6,
-        "SVI calibration MSE={mse}, expected < 1e-6"
-    );
+    assert!(mse < 1e-6, "SVI calibration MSE={mse}, expected < 1e-6");
 }
 
 #[test]
@@ -249,8 +244,8 @@ fn vol_surface_monotone_total_variance_across_expiry() {
         sigma: 0.30,
     };
 
-    let surface = VolSurface::new(vec![(0.25, p_short), (2.0, p_long)], 100.0)
-        .expect("surface build failed");
+    let surface =
+        VolSurface::new(vec![(0.25, p_short), (2.0, p_long)], 100.0).expect("surface build failed");
 
     // At ATM (K=100), total variance should increase with time
     let v1 = surface.vol(100.0, 0.25);

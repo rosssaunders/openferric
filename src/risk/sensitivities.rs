@@ -182,7 +182,11 @@ pub struct QuoteVolSurface {
 
 impl QuoteVolSurface {
     /// Build from sorted strikes/expiries and a rectangular quote matrix.
-    pub fn new(expiries: Vec<f64>, strikes: Vec<f64>, quotes: Vec<Vec<f64>>) -> Result<Self, String> {
+    pub fn new(
+        expiries: Vec<f64>,
+        strikes: Vec<f64>,
+        quotes: Vec<Vec<f64>>,
+    ) -> Result<Self, String> {
         if expiries.is_empty() || strikes.is_empty() {
             return Err("expiries and strikes must be non-empty".to_string());
         }
@@ -198,11 +202,7 @@ impl QuoteVolSurface {
         if strikes.windows(2).any(|w| w[1] <= w[0]) {
             return Err("strikes must be strictly increasing".to_string());
         }
-        if quotes
-            .iter()
-            .flatten()
-            .any(|v| !v.is_finite() || *v <= 0.0)
-        {
+        if quotes.iter().flatten().any(|v| !v.is_finite() || *v <= 0.0) {
             return Err("all vol quotes must be finite and > 0".to_string());
         }
 
@@ -383,13 +383,7 @@ fn curve_state(curve: &YieldCurve, mode: CurveBumpMode) -> Vec<f64> {
         CurveBumpMode::ZeroRate => curve
             .tenors
             .iter()
-            .map(|(t, df)| {
-                if *t > 0.0 {
-                    -df.ln() / t
-                } else {
-                    0.0
-                }
-            })
+            .map(|(t, df)| if *t > 0.0 { -df.ln() / t } else { 0.0 })
             .collect(),
         CurveBumpMode::ParRate => curve_to_par_rates(curve),
         CurveBumpMode::LogDiscount => curve.tenors.iter().map(|(_, df)| df.ln()).collect(),
@@ -494,7 +488,11 @@ where
 }
 
 /// Bucket DV01 by curve pillar.
-pub fn bucket_dv01<P>(curve: &YieldCurve, config: CurveBumpConfig, pricer: P) -> Vec<BucketSensitivity>
+pub fn bucket_dv01<P>(
+    curve: &YieldCurve,
+    config: CurveBumpConfig,
+    pricer: P,
+) -> Vec<BucketSensitivity>
 where
     P: Fn(&YieldCurve) -> f64,
 {
@@ -709,12 +707,19 @@ where
                 / surface.strikes().len() as f64;
             let h = config.bump_size.step(avg);
 
-            let up = surface.bumped(SurfaceBumpMode::PerExpiry { expiry_index: i }, config.bump_size, 1.0);
+            let up = surface.bumped(
+                SurfaceBumpMode::PerExpiry { expiry_index: i },
+                config.bump_size,
+                1.0,
+            );
             let p_up = pricer(&up);
 
             let p_dn = if config.differencing == DifferencingScheme::Central {
-                let dn =
-                    surface.bumped(SurfaceBumpMode::PerExpiry { expiry_index: i }, config.bump_size, -1.0);
+                let dn = surface.bumped(
+                    SurfaceBumpMode::PerExpiry { expiry_index: i },
+                    config.bump_size,
+                    -1.0,
+                );
                 Some(pricer(&dn))
             } else {
                 None
@@ -883,7 +888,9 @@ where
             let val = match differencing {
                 DifferencingScheme::Forward => (s_up[i] - state0[i]) / h,
                 DifferencingScheme::Central => {
-                    let sd = s_dn.as_ref().expect("central differencing requires down state");
+                    let sd = s_dn
+                        .as_ref()
+                        .expect("central differencing requires down state");
                     (s_up[i] - sd[i]) / (2.0 * h)
                 }
             };
@@ -934,7 +941,11 @@ pub fn map_risk_class(label: &str) -> RegulatoryRiskClass {
     let key = label.to_ascii_lowercase();
     if key.contains("fx") || key.contains("ccy") || key.contains("usd/") || key.contains("eur/") {
         RegulatoryRiskClass::FX
-    } else if key.contains("eq") || key.contains("equity") || key.contains("stock") || key.contains("index") {
+    } else if key.contains("eq")
+        || key.contains("equity")
+        || key.contains("stock")
+        || key.contains("index")
+    {
         RegulatoryRiskClass::EQ
     } else if key.contains("comm")
         || key.contains("commodity")
@@ -989,7 +1000,11 @@ impl SensitivityRecord {
         CrifRecord {
             portfolio_id: self.portfolio_id.clone(),
             trade_id: self.trade_id.clone(),
-            risk_type: format!("Risk_{}{}", self.risk_class.as_str(), self.measure.as_crif_suffix()),
+            risk_type: format!(
+                "Risk_{}{}",
+                self.risk_class.as_str(),
+                self.measure.as_crif_suffix()
+            ),
             qualifier: self.qualifier.clone(),
             bucket: self.bucket.clone(),
             label1: self.label1.clone(),
@@ -1329,7 +1344,14 @@ fn trade_components<I>(
     let theta = position.quantity * position.greeks.theta * scenario.horizon_years;
     let rho = position.quantity * position.greeks.rho * scenario.rate_shock_abs;
 
-    (delta, gamma, vega, theta, rho, delta + gamma + vega + theta + rho)
+    (
+        delta,
+        gamma,
+        vega,
+        theta,
+        rho,
+        delta + gamma + vega + theta + rho,
+    )
 }
 
 /// PnL explain (`theta + delta + gamma + vega + rho + unexplained`).
@@ -1481,7 +1503,10 @@ mod tests {
 
     #[test]
     fn gamma_ladder_and_cross_gamma_match_quadratic_model() {
-        let curve = YieldCurve::new(vec![(1.0, (-0.01_f64).exp()), (2.0, (-0.02_f64 * 2.0).exp())]);
+        let curve = YieldCurve::new(vec![
+            (1.0, (-0.01_f64).exp()),
+            (2.0, (-0.02_f64 * 2.0).exp()),
+        ]);
         let cfg = CurveBumpConfig::default();
 
         let pricer = |c: &YieldCurve| {
@@ -1665,7 +1690,14 @@ mod tests {
         assert!(q2.total > q1.total);
     }
 
-    fn position(delta: f64, gamma: f64, vega: f64, theta: f64, rho: f64, quantity: f64) -> Position<&'static str> {
+    fn position(
+        delta: f64,
+        gamma: f64,
+        vega: f64,
+        theta: f64,
+        rho: f64,
+        quantity: f64,
+    ) -> Position<&'static str> {
         Position::new(
             "trade",
             quantity,

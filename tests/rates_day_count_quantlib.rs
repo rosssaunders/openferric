@@ -31,25 +31,19 @@ fn act_act_isda_quantlib_reference_values() {
         (d(2004, 1, 1), d(2004, 3, 1), 60.0 / 366.0),
         // Cross-year: 2003 (non-leap) → 2004 (leap)
         // Nov 1 → Jan 1: 61 days in 2003; Jan 1 → May 1: 121 days in 2004
-        (d(2003, 11, 1), d(2004, 5, 1),
-            61.0 / 365.0 + 121.0 / 366.0),
+        (d(2003, 11, 1), d(2004, 5, 1), 61.0 / 365.0 + 121.0 / 366.0),
         // Full non-leap year
         (d(2001, 1, 1), d(2002, 1, 1), 1.0),
         // Full leap year
         (d(2004, 1, 1), d(2005, 1, 1), 1.0),
         // Cross-year: non-leap into leap
         // Jun 15 → Jan 1: 200 days in 2003; Jan 1 → Mar 15: 74 days in 2004
-        (d(2003, 6, 15), d(2004, 3, 15),
-            200.0 / 365.0 + 74.0 / 366.0),
+        (d(2003, 6, 15), d(2004, 3, 15), 200.0 / 365.0 + 74.0 / 366.0),
     ];
 
     for (i, (start, end, expected)) in cases.iter().enumerate() {
         let actual = year_fraction(*start, *end, DayCountConvention::ActActISDA);
-        assert_relative_eq!(
-            actual,
-            *expected,
-            epsilon = 1.0e-12,
-        );
+        assert_relative_eq!(actual, *expected, epsilon = 1.0e-12,);
         // Verify antisymmetry: reversing dates negates the fraction
         let reversed = year_fraction(*end, *start, DayCountConvention::ActActISDA);
         assert_relative_eq!(reversed, -expected, epsilon = 1.0e-12);
@@ -101,11 +95,7 @@ fn thirty_360_bond_basis_quantlib_reference_values() {
 
     for (i, (start, end, _expected_days, expected_frac)) in cases.iter().enumerate() {
         let actual = year_fraction(*start, *end, DayCountConvention::Thirty360);
-        assert_relative_eq!(
-            actual,
-            *expected_frac,
-            epsilon = 1.0e-12,
-        );
+        assert_relative_eq!(actual, *expected_frac, epsilon = 1.0e-12,);
         let _ = i;
     }
 }
@@ -145,11 +135,7 @@ fn thirty_e_360_eurobond_quantlib_reference_values() {
 
     for (i, (start, end, _expected_days, expected_frac)) in cases.iter().enumerate() {
         let actual = year_fraction(*start, *end, DayCountConvention::ThirtyE360);
-        assert_relative_eq!(
-            actual,
-            *expected_frac,
-            epsilon = 1.0e-12,
-        );
+        assert_relative_eq!(actual, *expected_frac, epsilon = 1.0e-12,);
         let _ = i;
     }
 }

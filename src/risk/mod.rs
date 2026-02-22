@@ -18,7 +18,7 @@ pub mod var;
 pub mod wrong_way_risk;
 pub mod xva;
 
-pub use fva::{CsaTerms, fva_from_profile, funding_exposure_profile};
+pub use fva::{CsaTerms, funding_exposure_profile, fva_from_profile};
 pub use kva::{
     SaCcrAssetClass, kva_from_profile, netting_set_exposure, regulatory_capital, sa_ccr_ead,
 };

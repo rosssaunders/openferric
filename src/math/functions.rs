@@ -12,9 +12,7 @@
 use std::f64::consts::PI;
 use std::sync::LazyLock;
 
-use crate::math::fast_norm::{
-    beasley_springer_moro_inv_cdf, fast_norm_pdf, hart_norm_cdf,
-};
+use crate::math::fast_norm::{beasley_springer_moro_inv_cdf, fast_norm_pdf, hart_norm_cdf};
 
 #[derive(Debug, Clone, PartialEq)]
 /// Errors returned by iterative/root-finding math helpers.
