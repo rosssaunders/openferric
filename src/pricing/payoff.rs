@@ -1,6 +1,14 @@
-//! Strategy intrinsic PnL computation.
+//! Module `pricing::payoff`.
 //!
-//! Pure Rust payoff evaluation with no WASM dependency.
+//! Implements payoff workflows with concrete routines such as `strategy_intrinsic_pnl`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Primary API surface: free functions `strategy_intrinsic_pnl`.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 
 /// Strategy intrinsic PnL at expiry for a set of option legs across a spot axis.
 ///

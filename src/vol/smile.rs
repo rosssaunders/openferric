@@ -1,3 +1,14 @@
+//! Module `vol::smile`.
+//!
+//! Implements smile workflows with concrete routines such as `sabr_alpha_from_atm_vol`, `sabr_smile_from_atm`, `vanna_volga_price`, `shift_smile_for_spot_move`.
+//!
+//! References: Hagan et al. (2002), Hull (11th ed.) Ch. 18, SABR asymptotic volatility formula around Eq. (A.69).
+//!
+//! Key types and purpose: `SmileDynamics`, `SmileSlice`, `StickyStrikeSmile`, `StickyDeltaSmile`, `VannaVolgaQuote` define the core data contracts for this module.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::core::OptionType;
 use crate::math::{CubicSpline, normal_cdf, normal_inv_cdf, normal_pdf};
 use crate::pricing::european::black_scholes_price;

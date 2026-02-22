@@ -1,3 +1,14 @@
+//! Module `models::variance_gamma`.
+//!
+//! Implements variance gamma abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Madan, Carr, Chang (1998), Hull (11th ed.) Ch. 19, VG characteristic exponent forms around Eq. (2.9).
+//!
+//! Key types and purpose: `VarianceGamma` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

@@ -1,6 +1,20 @@
+//! Module `rates::day_count`.
+//!
+//! Implements day count workflows with concrete routines such as `year_fraction`.
+//!
+//! References: Hull (11th ed.) Ch. 4, 6, and 7; Brigo and Mercurio (2006), curve and accrual identities around Eq. (4.2) and Eq. (7.1).
+//!
+//! Key types and purpose: `DayCountConvention` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
 use chrono::{Datelike, NaiveDate};
 
 /// Supported day-count conventions for fixed-income instruments.
+///
+/// Conventions follow standard market definitions used in coupon accrual and
+/// curve construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DayCountConvention {
     /// Actual day count over a 360-day year.
@@ -16,6 +30,37 @@ pub enum DayCountConvention {
 }
 
 /// Computes year fraction between two dates under a day-count convention.
+///
+/// Parameters:
+/// - `start`, `end`: accrual period boundaries.
+/// - `convention`: day-count algorithm.
+///
+/// Edge cases:
+/// - If `start == end`, returns `0.0`.
+/// - If `start > end`, the result is negative and antisymmetric.
+///
+/// # Examples
+/// ```rust
+/// use chrono::NaiveDate;
+/// use openferric::rates::{DayCountConvention, year_fraction};
+///
+/// let s = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+/// let e = NaiveDate::from_ymd_opt(2025, 7, 1).unwrap();
+/// let yf = year_fraction(s, e, DayCountConvention::Act360);
+/// assert!(yf > 0.49 && yf < 0.51);
+/// ```
+///
+/// ```rust
+/// use chrono::NaiveDate;
+/// use openferric::rates::{DayCountConvention, year_fraction};
+///
+/// let s = NaiveDate::from_ymd_opt(2025, 3, 1).unwrap();
+/// let e = NaiveDate::from_ymd_opt(2025, 3, 15).unwrap();
+/// assert_eq!(
+///     year_fraction(s, e, DayCountConvention::Act365Fixed),
+///     -year_fraction(e, s, DayCountConvention::Act365Fixed)
+/// );
+/// ```
 pub fn year_fraction(start: NaiveDate, end: NaiveDate, convention: DayCountConvention) -> f64 {
     if start == end {
         return 0.0;

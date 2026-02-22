@@ -1,18 +1,14 @@
-//! CGMY tempered stable process for heavy-tailed asset dynamics.
+//! Module `models::cgmy`.
 //!
-//! The CGMY model (Carr, Geman, Madan, Yor 2002) generalises the Variance-Gamma
-//! process via the fine structure exponent Y, allowing infinite activity and
-//! infinite variation depending on the parameter regime.
+//! Implements cgmy abstractions and re-exports used by adjacent pricing/model modules.
 //!
-//! # Example
-//! ```
-//! use openferric::models::Cgmy;
-//! use openferric::engines::fft::CarrMadanParams;
+//! References: Carr, Geman, Madan, Yor (2002), Hull (11th ed.) Ch. 19, tempered-stable exponent definitions around CGMY Eq. (2.4).
 //!
-//! let cgmy = Cgmy { c: 1.0, g: 5.0, m: 10.0, y: 0.5 };
-//! let prices = cgmy.european_calls_fft(100.0, &[100.0], 0.03, 0.0, 1.0, CarrMadanParams::default()).unwrap();
-//! assert!(prices[0].1 > 0.0);
-//! ```
+//! Key types and purpose: `Cgmy` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 
 use num_complex::Complex;
 use rand::SeedableRng;

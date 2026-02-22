@@ -1,3 +1,14 @@
+//! Module `engines::fft::fft_core`.
+//!
+//! Implements fft core workflows with concrete routines such as `fft_forward`, `fft_inverse`, `fft_forward_real`.
+//!
+//! References: Carr and Madan (1999), Lewis (2001), Hull (11th ed.) Ch. 19, with FFT damping/inversion forms around Eq. (19.8).
+//!
+//! Primary API surface: free functions `fft_forward`, `fft_inverse`, `fft_forward_real`.
+//!
+//! Numerical considerations: choose damping/aliasing controls (alpha, grid spacing, FFT size) to balance truncation error against oscillation near strikes.
+//!
+//! When to use: choose FFT-based routines for dense strike grids under characteristic-function models; use direct quadrature or Monte Carlo for sparse-strike or path-dependent products.
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

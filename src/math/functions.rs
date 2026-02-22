@@ -1,3 +1,14 @@
+//! Module `math::functions`.
+//!
+//! Implements functions workflows with concrete routines such as `normal_pdf`, `branch_free_normal_cdf`, `normal_cdf`, `normal_inv_cdf`.
+//!
+//! References: Abramowitz and Stegun (1964), Moro (1995), Press et al. (2007), approximation formulas around Eq. (7.1.26).
+//!
+//! Key types and purpose: `MathError`, `CubicSpline` define the core data contracts for this module.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 use std::f64::consts::PI;
 use std::sync::LazyLock;
 
@@ -6,6 +17,7 @@ use crate::math::fast_norm::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+/// Errors returned by iterative/root-finding math helpers.
 pub enum MathError {
     NonConvergence,
     ZeroDerivative,
@@ -13,21 +25,49 @@ pub enum MathError {
 }
 
 #[inline(always)]
+/// Standard normal probability density function `phi(x)`.
+///
+/// # Examples
+/// ```rust
+/// use openferric::math::functions::normal_pdf;
+///
+/// let p0 = normal_pdf(0.0);
+/// assert!((p0 - 0.3989).abs() < 1.0e-3);
+/// ```
 pub fn normal_pdf(x: f64) -> f64 {
     fast_norm_pdf(x)
 }
 
 #[inline(always)]
+/// Branch-free approximation for the standard normal CDF.
 pub fn branch_free_normal_cdf(x: f64) -> f64 {
     hart_norm_cdf(x)
 }
 
 #[inline(always)]
+/// Standard normal cumulative distribution function `Phi(x)`.
+///
+/// # Examples
+/// ```rust
+/// use openferric::math::functions::normal_cdf;
+///
+/// assert!((normal_cdf(0.0) - 0.5).abs() < 1.0e-6);
+/// assert!(normal_cdf(1.0) > 0.84);
+/// ```
 pub fn normal_cdf(x: f64) -> f64 {
     branch_free_normal_cdf(x)
 }
 
 /// Inverse of the standard normal CDF.
+///
+/// # Examples
+/// ```rust
+/// use openferric::math::functions::{normal_cdf, normal_inv_cdf};
+///
+/// let z = normal_inv_cdf(0.975);
+/// assert!(z > 1.95 && z < 1.97);
+/// assert!((normal_cdf(z) - 0.975).abs() < 1.0e-3);
+/// ```
 #[inline(always)]
 pub fn normal_inv_cdf(p: f64) -> f64 {
     beasley_springer_moro_inv_cdf(p)
@@ -37,6 +77,16 @@ pub fn normal_inv_cdf(p: f64) -> f64 {
 ///
 /// Uses Plackett's identity with one-dimensional Gauss-Legendre integration:
 /// `Phi2(x,y,rho) = Phi(x)Phi(y) + ∫_0^rho phi2(x,y,r) dr`.
+///
+/// # Examples
+/// ```rust
+/// use openferric::math::functions::bivariate_normal_cdf;
+///
+/// let ind = bivariate_normal_cdf(0.0, 0.0, 0.0);
+/// let pos = bivariate_normal_cdf(0.0, 0.0, 0.8);
+/// assert!((ind - 0.25).abs() < 1.0e-3);
+/// assert!(pos > ind);
+/// ```
 pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
     if x.is_nan() || y.is_nan() || rho.is_nan() {
         return f64::NAN;
@@ -125,6 +175,26 @@ pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
 }
 
 #[inline]
+/// Newton-Raphson root finder with explicit derivative.
+///
+/// Parameters:
+/// - `f`: scalar objective with desired root at `f(x)=0`.
+/// - `df`: first derivative of `f`.
+/// - `x0`: initial guess.
+/// - `tol`: absolute convergence tolerance.
+/// - `max_iter`: hard iteration cap.
+///
+/// Edge cases:
+/// - Returns [`MathError::ZeroDerivative`] if derivative gets too small.
+/// - Returns [`MathError::NonConvergence`] if the iteration cap is hit.
+///
+/// # Examples
+/// ```rust
+/// use openferric::math::functions::newton_raphson;
+///
+/// let root = newton_raphson(|x| x * x - 2.0, |x| 2.0 * x, 1.0, 1.0e-12, 64).unwrap();
+/// assert!((root - 2.0_f64.sqrt()).abs() < 1.0e-9);
+/// ```
 pub fn newton_raphson<F, G>(
     f: F,
     df: G,
@@ -164,6 +234,7 @@ where
 }
 
 #[derive(Debug, Clone)]
+/// Natural cubic spline with clamped extrapolation to end-node values.
 pub struct CubicSpline {
     x: Vec<f64>,
     y: Vec<f64>,
@@ -171,6 +242,16 @@ pub struct CubicSpline {
 }
 
 impl CubicSpline {
+    /// Builds a natural cubic spline from strictly increasing nodes.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use openferric::math::functions::CubicSpline;
+    ///
+    /// let spline = CubicSpline::new(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 0.0]).unwrap();
+    /// let y = spline.interpolate(0.5);
+    /// assert!(y > 0.4 && y < 0.8);
+    /// ```
     pub fn new(x: Vec<f64>, y: Vec<f64>) -> Result<Self, MathError> {
         if x.len() != y.len() || x.len() < 2 {
             return Err(MathError::InvalidInput(

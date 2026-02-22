@@ -1,6 +1,32 @@
+//! Module `rates::adjustments`.
+//!
+//! Implements adjustments workflows with concrete routines such as `futures_forward_convexity_adjustment`, `futures_rate_from_forward`, `forward_rate_from_futures`, `cms_convexity_adjustment`.
+//!
+//! References: Hull (11th ed.) Ch. 4, 6, and 7; Brigo and Mercurio (2006), curve and accrual identities around Eq. (4.2) and Eq. (7.1).
+//!
+//! Primary API surface: free functions `futures_forward_convexity_adjustment`, `futures_rate_from_forward`, `forward_rate_from_futures`, `cms_convexity_adjustment`.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
 /// Convexity adjustment between futures and forward rates:
 ///
 /// `futures_rate ~= forward_rate + 0.5 * sigma^2 * T1 * T2`
+///
+/// Parameters:
+/// - `vol`: annualized rate volatility.
+/// - `t1`, `t2`: relevant horizon times in years.
+///
+/// Edge cases:
+/// - Returns `NaN` for non-finite or negative inputs.
+///
+/// # Examples
+/// ```rust
+/// use openferric::rates::adjustments::futures_forward_convexity_adjustment;
+///
+/// let adj = futures_forward_convexity_adjustment(0.01, 1.0, 1.25);
+/// assert!(adj > 0.0);
+/// ```
 pub fn futures_forward_convexity_adjustment(vol: f64, t1: f64, t2: f64) -> f64 {
     if !vol.is_finite() || !t1.is_finite() || !t2.is_finite() || vol < 0.0 || t1 < 0.0 || t2 < 0.0 {
         return f64::NAN;
@@ -9,6 +35,16 @@ pub fn futures_forward_convexity_adjustment(vol: f64, t1: f64, t2: f64) -> f64 {
 }
 
 /// Converts a forward rate into its convexity-adjusted futures rate.
+///
+/// # Examples
+/// ```rust
+/// use openferric::rates::adjustments::{forward_rate_from_futures, futures_rate_from_forward};
+///
+/// let fwd = 0.03;
+/// let fut = futures_rate_from_forward(fwd, 0.015, 0.5, 1.0);
+/// let fwd_back = forward_rate_from_futures(fut, 0.015, 0.5, 1.0);
+/// assert!((fwd_back - fwd).abs() < 1.0e-12);
+/// ```
 pub fn futures_rate_from_forward(forward_rate: f64, vol: f64, t1: f64, t2: f64) -> f64 {
     if !forward_rate.is_finite() {
         return f64::NAN;
@@ -81,6 +117,14 @@ pub fn timing_adjusted_rate(rate: f64, rate_vol: f64, natural_date: f64, payment
 /// Quanto drift adjustment for rates:
 ///
 /// `drift_adjustment = -rho * sigma_r * sigma_fx`
+///
+/// # Examples
+/// ```rust
+/// use openferric::rates::adjustments::quanto_drift_adjustment;
+///
+/// let adj = quanto_drift_adjustment(0.4, 0.01, 0.12);
+/// assert!((adj + 0.00048).abs() < 1.0e-12);
+/// ```
 pub fn quanto_drift_adjustment(rho: f64, sigma_r: f64, sigma_fx: f64) -> f64 {
     if !rho.is_finite()
         || !sigma_r.is_finite()

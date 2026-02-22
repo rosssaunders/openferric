@@ -1,3 +1,14 @@
+//! Module `vol::local_vol`.
+//!
+//! Implements local vol workflows with concrete routines such as `dupire_local_vol`.
+//!
+//! References: Dupire (1994), Gatheral (2006) Ch. 1, local-vol extraction relation around Dupire Eq. (1.10).
+//!
+//! Key types and purpose: `ImpliedVolSurface`, `DupireLocalVol` define the core data contracts for this module.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::pricing::OptionType;
 use crate::pricing::european::black_76_price;
 

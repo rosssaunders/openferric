@@ -1,7 +1,14 @@
-//! Fengler arbitrage-free smoothing of total implied variance surface.
+//! Module `vol::fengler`.
 //!
-//! Fits natural cubic splines to total variance slices w(k, T) = σ²(k,T) · T,
-//! then checks for butterfly and calendar arbitrage violations.
+//! Implements fengler abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Fengler (2009), Gatheral (2006) Ch. 3, arbitrage-consistent spline conditions around Eq. (3.4).
+//!
+//! Key types and purpose: `FenglerSurface` define the core data contracts for this module.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 
 use crate::math::CubicSpline;
 use crate::vol::ArbitrageViolation;

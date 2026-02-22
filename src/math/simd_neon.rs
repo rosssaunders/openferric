@@ -1,3 +1,14 @@
+//! Module `math::simd_neon`.
+//!
+//! Implements simd neon abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Glasserman (2004) Ch. 5, Joe and Kuo (2008), SIMD and random-sequence implementation details tied to Eq. (5.4).
+//!
+//! Primary API surface: module-level exports and submodule wiring.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 #![cfg(all(feature = "simd", target_arch = "aarch64"))]
 
 //! Shared AArch64 NEON SIMD math utilities for 2-lane `f64` vectors.

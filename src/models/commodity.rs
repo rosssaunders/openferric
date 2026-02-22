@@ -1,3 +1,14 @@
+//! Module `models::commodity`.
+//!
+//! Implements commodity workflows with concrete routines such as `implied_convenience_yield`, `convenience_yield_from_term_structure`.
+//!
+//! References: Hull (11th ed.) Ch. 31, Schwartz (1997), stochastic-factor SDEs around Eq. (31.6).
+//!
+//! Key types and purpose: `FuturesQuote`, `SchwartzOneFactor`, `SchwartzSmithTwoFactor`, `CommodityForwardCurve` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};

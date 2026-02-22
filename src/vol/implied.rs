@@ -1,3 +1,14 @@
+//! Module `vol::implied`.
+//!
+//! Implements implied workflows with concrete routines such as `lets_be_rational_initial_guess`, `implied_vol`, `implied_vol_newton`.
+//!
+//! References: Jaeckel (2015), Brenner-Subrahmanyam (1988), implied-vol inversion identities around normalized Black Eq. (2.1).
+//!
+//! Primary API surface: free functions `lets_be_rational_initial_guess`, `implied_vol`, `implied_vol_newton`.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::math::normal_pdf;
 use crate::pricing::OptionType;
 use crate::pricing::european::black_scholes_price;
@@ -6,6 +17,19 @@ use crate::vol::jaeckel::implied_vol_jaeckel;
 use rand::RngExt;
 use std::f64::consts::PI;
 
+/// Produces a bounded positive volatility seed from option time value and moneyness.
+///
+/// The formula is inspired by Jaeckel's scaling ideas and is intended as a robust
+/// starting point, not as the final implied volatility.
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::OptionType;
+/// use openferric::vol::implied::lets_be_rational_initial_guess;
+///
+/// let guess = lets_be_rational_initial_guess(OptionType::Call, 100.0, 100.0, 0.01, 1.0, 8.0);
+/// assert!(guess > 0.0 && guess < 5.0);
+/// ```
 pub fn lets_be_rational_initial_guess(
     option_type: OptionType,
     s: f64,
@@ -34,6 +58,34 @@ pub fn lets_be_rational_initial_guess(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Implied volatility solver with a Jaeckel-based primary path and Newton fallback.
+///
+/// Parameters:
+/// - `option_type`: call or put.
+/// - `s`, `k`, `r`, `t`: Black-Scholes market inputs.
+/// - `market_price`: observed option premium.
+/// - `tol`: absolute price tolerance for convergence.
+/// - `max_iter`: maximum Newton iterations before fallback.
+///
+/// Edge cases:
+/// - Returns `Ok(0.0)` when `market_price` is on intrinsic lower bound.
+/// - Returns `Err` for obvious no-arbitrage bound violations.
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::OptionType;
+/// use openferric::pricing::european::black_scholes_price;
+/// use openferric::vol::implied::implied_vol;
+///
+/// let s = 100.0;
+/// let k = 100.0;
+/// let r = 0.01;
+/// let t = 1.0;
+/// let sigma_true = 0.30;
+/// let market = black_scholes_price(OptionType::Call, s, k, r, sigma_true, t);
+/// let sigma = implied_vol(OptionType::Call, s, k, r, t, market, 1.0e-12, 64).unwrap();
+/// assert!((sigma - sigma_true).abs() < 1.0e-6);
+/// ```
 pub fn implied_vol(
     option_type: OptionType,
     s: f64,
@@ -98,6 +150,21 @@ pub fn implied_vol(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Newton-Raphson implied-volatility solver with bisection fallback.
+///
+/// This function is useful when callers explicitly want the Newton path regardless
+/// of the Jaeckel fast-path checks in [`implied_vol`].
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::OptionType;
+/// use openferric::pricing::european::black_scholes_price;
+/// use openferric::vol::implied::implied_vol_newton;
+///
+/// let market = black_scholes_price(OptionType::Put, 100.0, 110.0, 0.02, 0.35, 0.75);
+/// let iv = implied_vol_newton(OptionType::Put, 100.0, 110.0, 0.02, 0.75, market, 1.0e-12, 100).unwrap();
+/// assert!(iv > 0.30 && iv < 0.40);
+/// ```
 pub fn implied_vol_newton(
     option_type: OptionType,
     s: f64,

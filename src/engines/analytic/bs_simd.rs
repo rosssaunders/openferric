@@ -1,4 +1,14 @@
-//! SIMD-accelerated Black-Scholes batch routines with scalar fallback.
+//! Module `engines::analytic::bs_simd`.
+//!
+//! Implements bs simd workflows with concrete routines such as `normal_cdf_approx`, `normal_cdf_batch_approx`, `bs_price_batch`, `bs_greeks_batch`.
+//!
+//! References: Hull (11th ed.) Ch. 13 and Ch. 26, Black-Scholes style formulas around Eq. (13.16)-(13.20), plus instrument-specific papers cited in-code.
+//!
+//! Primary API surface: free functions `normal_cdf_approx`, `normal_cdf_batch_approx`, `bs_price_batch`, `bs_greeks_batch`.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 
 /// Scalar Abramowitz & Stegun 7.1.26 normal CDF approximation.
 ///

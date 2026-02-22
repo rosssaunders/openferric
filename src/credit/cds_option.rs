@@ -1,4 +1,14 @@
-//! CDS options (credit swaptions) priced via Black's model on the CDS spread.
+//! Module `credit::cds_option`.
+//!
+//! Implements cds option workflows with concrete routines such as `risky_annuity`, `fair_spread_from_hazard`.
+//!
+//! References: Hull (11th ed.) Ch. 24-25, O'Kane (2008) Ch. 3, representative cashflow identities as in Eq. (24.7) and Eq. (25.5).
+//!
+//! Key types and purpose: `CdsOption` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use these routines for CDS/tranche and survival-curve workflows; consider structural credit models when capital-structure dynamics are required explicitly.
 
 use crate::math::normal_cdf;
 

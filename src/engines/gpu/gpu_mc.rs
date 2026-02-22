@@ -1,11 +1,14 @@
-//! GPU Monte Carlo pricing engine using wgpu compute shaders.
+//! Module `engines::gpu::gpu_mc`.
 //!
-//! Caches the GPU device/queue/pipeline across invocations to amortize the
-//! substantial adapter-request + shader-compilation cost (~50-200ms) that
-//! previously dominated every pricing call.
+//! Implements gpu mc abstractions and re-exports used by adjacent pricing/model modules.
 //!
-//! Supports both native (sync via `pollster`) and WASM (async via browser
-//! event-loop) targets. The WGSL shader is identical for both.
+//! References: Hull (11th ed.) and standard quantitative-finance references aligned with the concrete algorithms implemented in this module.
+//!
+//! Key types and purpose: `GpuMcResult` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;

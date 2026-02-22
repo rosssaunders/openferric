@@ -1,3 +1,14 @@
+//! Module `rates::cms`.
+//!
+//! Implements cms workflows with concrete routines such as `cms_convexity_adjustment`, `cms_spread_option_mc`, `sabr_cms_convexity_adjustment`.
+//!
+//! References: Hull (11th ed.) Ch. 4, 6, and 7; Brigo and Mercurio (2006), curve and accrual identities around Eq. (4.2) and Eq. (7.1).
+//!
+//! Key types and purpose: `CmsConvexityParams`, `CmsSpreadOptionType`, `CmsSpreadOption`, `CmsSpreadResult` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
 /// CMS (Constant Maturity Swap) spread options.
 ///
 /// References:

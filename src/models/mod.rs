@@ -1,3 +1,14 @@
+//! Module `models::mod`.
+//!
+//! Implements mod abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Primary API surface: module-level exports and submodule wiring.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 pub mod cgmy;
 pub mod commodity;
 pub mod hjm;

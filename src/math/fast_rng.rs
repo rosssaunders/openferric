@@ -1,3 +1,14 @@
+//! Module `math::fast_rng`.
+//!
+//! Implements fast rng workflows with concrete routines such as `fill_normals`, `stream_seed`, `resolve_stream_seed`, `uniform_open01`.
+//!
+//! References: Glasserman (2004) Ch. 5, Joe and Kuo (2008), SIMD and random-sequence implementation details tied to Eq. (5.4).
+//!
+//! Key types and purpose: `Xoshiro256Rng`, `Pcg64Rng`, `FastRngKind`, `Xoshiro256PlusPlus`, `Pcg64` define the core data contracts for this module.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 use rand::rngs::{StdRng, ThreadRng};
 use rand::{RngExt, SeedableRng};
 

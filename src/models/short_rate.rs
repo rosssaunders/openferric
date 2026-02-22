@@ -1,3 +1,14 @@
+//! Module `models::short_rate`.
+//!
+//! Implements short rate abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull and White (1990), Brigo and Mercurio (2006) Ch. 3, short-rate calibration relations around Eq. (3.28).
+//!
+//! Key types and purpose: `Vasicek`, `CIR`, `HullWhite` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use crate::rates::YieldCurve;
 
 /// Vasicek short-rate model: `dr = a(b-r)dt + sigma dW`.

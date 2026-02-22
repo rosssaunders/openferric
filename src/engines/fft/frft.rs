@@ -1,3 +1,14 @@
+//! Module `engines::fft::frft`.
+//!
+//! Implements frft workflows with concrete routines such as `frft`, `carr_madan_frft_grid`, `carr_madan_price_at_strikes`, `carr_madan_price_at_strikes_with_samples`.
+//!
+//! References: Carr and Madan (1999), Lewis (2001), Hull (11th ed.) Ch. 19, with FFT damping/inversion forms around Eq. (19.8).
+//!
+//! Primary API surface: free functions `frft`, `carr_madan_frft_grid`, `carr_madan_price_at_strikes`, `carr_madan_price_at_strikes_with_samples`.
+//!
+//! Numerical considerations: choose damping/aliasing controls (alpha, grid spacing, FFT size) to balance truncation error against oscillation near strikes.
+//!
+//! When to use: choose FFT-based routines for dense strike grids under characteristic-function models; use direct quadrature or Monte Carlo for sparse-strike or path-dependent products.
 use std::f64::consts::PI;
 
 use num_complex::Complex;

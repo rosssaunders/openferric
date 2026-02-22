@@ -1,3 +1,14 @@
+//! Module `engines::analytic::spread`.
+//!
+//! Implements spread workflows with concrete routines such as `margrabe_exchange_price`, `kirk_spread_price`.
+//!
+//! References: Hull (11th ed.) Ch. 13 and Ch. 26, Black-Scholes style formulas around Eq. (13.16)-(13.20), plus instrument-specific papers cited in-code.
+//!
+//! Key types and purpose: `SpreadAnalyticMethod`, `SpreadAnalyticEngine` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;

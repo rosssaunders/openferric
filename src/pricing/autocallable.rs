@@ -1,3 +1,14 @@
+//! Module `pricing::autocallable`.
+//!
+//! Implements autocallable workflows with concrete routines such as `price_autocallable`, `autocallable_sensitivities`, `price_phoenix_autocallable`, `phoenix_autocallable_sensitivities`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `AutocallableSensitivities` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use std::collections::BTreeMap;
 
 use crate::core::{Greeks, PricingError, PricingResult};

@@ -1,3 +1,14 @@
+//! Module `credit::cds_index`.
+//!
+//! Implements cds index workflows with concrete routines such as `first_to_default_spread_copula`.
+//!
+//! References: Hull (11th ed.) Ch. 24-25, O'Kane (2008) Ch. 3, representative cashflow identities as in Eq. (24.7) and Eq. (25.5).
+//!
+//! Key types and purpose: `CdsIndex`, `NthToDefaultBasket` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use these routines for CDS/tranche and survival-curve workflows; consider structural credit models when capital-structure dynamics are required explicitly.
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 

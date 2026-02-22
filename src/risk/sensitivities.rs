@@ -1,15 +1,25 @@
-//! Sensitivities framework for bumped risk, regulatory aggregation, and portfolio explain.
+//! Finite-difference risk sensitivities, reporting transforms, and lightweight risk aggregation.
 //!
-//! The module provides reusable finite-difference tooling for:
-//! - curve and volatility-surface bump ladders,
-//! - Jacobian propagation from market quotes through a bootstrap step,
-//! - SIMM/FRTB-style sensitivity records and aggregated risk charges,
-//! - portfolio PnL explain, scenario PnL, and trade-level contribution.
+//! This module centers on bump-and-reprice utilities across curves, vol surfaces, and spot:
+//! - IR: `parallel_dv01`, `bucket_dv01`, `key_rate_duration`, `gamma_ladder`, `cross_gamma`
+//!   with configurable bump domain (`zero`, `par`, `log-discount`) and differencing stencil.
+//! - Vol: expiry and strike-expiry vegas on [`QuoteVolSurface`].
+//! - Spot: `fx_delta` and `commodity_delta`.
 //!
-//! Methodology references:
-//! - Basel Committee on Banking Supervision, *Minimum capital requirements for market risk*
-//!   (FRTB Standardised Approach, Jan 2019 and subsequent updates).
-//! - ISDA, *SIMM Methodology* and CRIF (Common Risk Interchange Format) conventions.
+//! It also includes higher-level plumbing used in risk production workflows:
+//! - chain-rule Jacobian propagation through bootstraps (`jacobian_via_bootstrap`),
+//! - SIMM/FRTB-style class mapping, CRIF-like CSV serialization, and concentration-aware
+//!   charge aggregation (`compute_risk_charges`),
+//! - scenario P&L explain and per-trade attribution.
+//!
+//! Numerical notes: finite-difference step size and stencil choice control truncation vs.
+//! cancellation error; this module applies positive bump floors to avoid divide-by-zero on
+//! near-zero states/quotes. Central differencing is generally more accurate but doubles
+//! revaluation cost.
+//!
+//! References:
+//! - Glasserman, *Monte Carlo Methods in Financial Engineering* (2004), bump-and-reprice.
+//! - ISDA SIMM methodology and CRIF data conventions (for naming/export semantics).
 
 use std::collections::BTreeMap;
 

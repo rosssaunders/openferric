@@ -1,3 +1,14 @@
+//! Module `pricing::barrier`.
+//!
+//! Implements barrier workflows with concrete routines such as `barrier_price_closed_form_with_carry_and_rebate`, `barrier_price_closed_form`, `barrier_price_mc`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Primary API surface: free functions `barrier_price_closed_form_with_carry_and_rebate`, `barrier_price_closed_form`, `barrier_price_mc`.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use crate::core::types::OptionType;
 use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};

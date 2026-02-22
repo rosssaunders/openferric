@@ -1,4 +1,14 @@
-//! SIMD-friendly Monte Carlo routines using structure-of-arrays (SoA) path layout.
+//! Module `engines::monte_carlo::mc_simd`.
+//!
+//! Implements mc simd workflows with concrete routines such as `simulate_gbm_paths_soa_scalar`, `simulate_gbm_paths_soa`, `mc_european_call_soa_scalar`, `mc_european_call_soa`.
+//!
+//! References: Glasserman (2004), Longstaff and Schwartz (2001), Hull (11th ed.) Ch. 25, Monte Carlo estimators around Eq. (25.1).
+//!
+//! Key types and purpose: `SoaPaths` define the core data contracts for this module.
+//!
+//! Numerical considerations: estimator variance, path count, and random-seed strategy drive confidence intervals; monitor bias from discretization and variance reduction choices.
+//!
+//! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
 
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 

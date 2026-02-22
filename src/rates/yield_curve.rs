@@ -1,4 +1,23 @@
+//! Module `rates::yield_curve`.
+//!
+//! Implements yield curve abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) Ch. 4, 6, and 7; Brigo and Mercurio (2006), curve and accrual identities around Eq. (4.2) and Eq. (7.1).
+//!
+//! Key types and purpose: `YieldCurve`, `YieldCurveBuilder` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
 /// Discount-factor term structure keyed by maturity tenor in years.
+///
+/// # Examples
+/// ```rust
+/// use openferric::rates::YieldCurve;
+///
+/// let yc = YieldCurve::new(vec![(0.5, 0.98), (1.0, 0.95)]);
+/// assert!(yc.discount_factor(0.75) < 1.0);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct YieldCurve {
     /// Curve nodes as `(tenor, discount_factor)`.
@@ -27,6 +46,15 @@ impl YieldCurve {
     }
 
     /// Returns continuously-compounded forward rate between `t1` and `t2`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use openferric::rates::YieldCurve;
+    ///
+    /// let yc = YieldCurve::new(vec![(1.0, 0.95), (2.0, 0.90)]);
+    /// let fwd = yc.forward_rate(1.0, 2.0);
+    /// assert!(fwd > 0.0);
+    /// ```
     pub fn forward_rate(&self, t1: f64, t2: f64) -> f64 {
         assert!(t2 > t1, "t2 must be greater than t1");
         (self.discount_factor(t1) / self.discount_factor(t2)).ln() / (t2 - t1)

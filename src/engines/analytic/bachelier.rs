@@ -1,3 +1,14 @@
+//! Module `engines::analytic::bachelier`.
+//!
+//! Implements bachelier workflows with concrete routines such as `bachelier_price`, `bachelier_greeks`.
+//!
+//! References: Hull (11th ed.) Ch. 13 and Ch. 26, Black-Scholes style formulas around Eq. (13.16)-(13.20), plus instrument-specific papers cited in-code.
+//!
+//! Primary API surface: free functions `bachelier_price`, `bachelier_greeks`.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 use crate::core::{Greeks, OptionType, PricingError};
 use crate::math::{normal_cdf, normal_pdf};
 

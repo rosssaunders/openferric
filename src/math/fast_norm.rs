@@ -1,4 +1,14 @@
-//! Fast approximations for the standard normal CDF and inverse CDF.
+//! Module `math::fast_norm`.
+//!
+//! Implements fast norm workflows with concrete routines such as `fast_norm_pdf`, `hart_norm_cdf`, `beasley_springer_moro_inv_cdf`, `fast_norm_cdf`.
+//!
+//! References: Abramowitz and Stegun (1964), Moro (1995), Press et al. (2007), approximation formulas around Eq. (7.1.26).
+//!
+//! Primary API surface: free functions `fast_norm_pdf`, `hart_norm_cdf`, `beasley_springer_moro_inv_cdf`, `fast_norm_cdf`.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 
 #[inline(always)]
 pub fn fast_norm_pdf(x: f64) -> f64 {

@@ -1,3 +1,20 @@
+//! Capital Valuation Adjustment (KVA) utilities built around simplified SA-CCR quantities.
+//!
+//! Provided components:
+//! - [`SaCcrAssetClass`] supervisory factors.
+//! - [`sa_ccr_ead`] for `EAD = alpha * (RC + PFE)` with a maturity factor.
+//! - [`regulatory_capital`] for standardized `K = RW * EAD * 8%`.
+//! - [`kva_from_profile`] for discounted cost-of-capital integration:
+//!   `KVA = -sum_t hurdle_rate * E[Capital(t)] * DF(t) * dt`.
+//! - [`netting_set_exposure`] for net vs. gross positive-exposure aggregation.
+//!
+//! Numerical notes: this is a pedagogical reduction of Basel capital mechanics. Maturity,
+//! correlations, stress calibrations, and portfolio effects are intentionally simplified.
+//! Integration error is driven by time-grid spacing and interpolation assumptions.
+//!
+//! References:
+//! - Basel Committee, SA-CCR framework (supervisory factors and alpha).
+//! - Green, *XVA: Credit, Funding and Capital Valuation Adjustments* (2015).
 /// Capital Valuation Adjustment (KVA).
 ///
 /// KVA = cost of holding regulatory capital against derivative exposures.

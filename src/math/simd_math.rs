@@ -1,3 +1,14 @@
+//! Module `math::simd_math`.
+//!
+//! Implements simd math abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Glasserman (2004) Ch. 5, Joe and Kuo (2008), SIMD and random-sequence implementation details tied to Eq. (5.4).
+//!
+//! Primary API surface: module-level exports and submodule wiring.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 #![cfg(all(feature = "simd", target_arch = "x86_64"))]
 
 //! Shared AVX2/FMA SIMD math utilities.

@@ -1,3 +1,14 @@
+//! Module `engines::analytic::digital`.
+//!
+//! Implements digital abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) Ch. 13 and Ch. 26, Black-Scholes style formulas around Eq. (13.16)-(13.20), plus instrument-specific papers cited in-code.
+//!
+//! Key types and purpose: `DigitalAnalyticEngine` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::digital::{AssetOrNothingOption, CashOrNothingOption, GapOption};
 use crate::market::Market;

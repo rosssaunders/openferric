@@ -1,3 +1,14 @@
+//! Module `core::types`.
+//!
+//! Implements types abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `OptionType`, `ExerciseStyle`, `BarrierDirection`, `BarrierStyle`, `BarrierSpec` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 /// Plain-vanilla option side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionType {
@@ -9,6 +20,14 @@ pub enum OptionType {
 
 impl OptionType {
     /// Returns +1.0 for calls and -1.0 for puts.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use openferric::core::OptionType;
+    ///
+    /// assert_eq!(OptionType::Call.sign(), 1.0);
+    /// assert_eq!(OptionType::Put.sign(), -1.0);
+    /// ```
     #[inline]
     pub fn sign(self) -> f64 {
         match self {
@@ -48,6 +67,19 @@ pub enum BarrierStyle {
 }
 
 /// Barrier contract parameters.
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::{BarrierDirection, BarrierSpec, BarrierStyle};
+///
+/// let b = BarrierSpec {
+///     direction: BarrierDirection::Down,
+///     style: BarrierStyle::Out,
+///     level: 80.0,
+///     rebate: 2.0,
+/// };
+/// assert_eq!(b.level, 80.0);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct BarrierSpec {
     /// Barrier direction.

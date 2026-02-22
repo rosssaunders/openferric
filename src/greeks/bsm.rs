@@ -1,3 +1,14 @@
+//! Module `greeks::bsm`.
+//!
+//! Implements bsm workflows with concrete routines such as `black_scholes_merton_greeks`, `bump_and_reprice`, `finite_difference_greeks`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `FiniteDifferenceGreeks`, `EuropeanBsmGreeks`, `GenericPricer` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 use crate::math::{normal_cdf, normal_pdf};
 use crate::pricing::OptionType;
 

@@ -1,3 +1,14 @@
+//! Module `engines::pde::crank_nicolson`.
+//!
+//! Implements crank nicolson abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) Ch. 20, Tavella and Randall (2000), finite-difference stencils around Eq. (20.11)-(20.13).
+//!
+//! Key types and purpose: `CrankNicolsonEngine` define the core data contracts for this module.
+//!
+//! Numerical considerations: grid spacing, time-step size, and boundary handling dominate stability/consistency; check monotonicity and CFL-style limits where explicit terms appear.
+//!
+//! When to use: use PDE engines for early-exercise and barrier-style boundary problems in low dimensions; switch to Monte Carlo or trees for high-dimensional state spaces.
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;

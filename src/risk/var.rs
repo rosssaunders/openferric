@@ -1,3 +1,24 @@
+//! Value-at-Risk and Expected-Shortfall estimators for historical and parametric workflows.
+//!
+//! Implemented analytics include:
+//! - historical VaR/ES from empirical P&L quantiles,
+//! - delta-normal VaR with volatility scaling by `sqrt(horizon_days / 252)`,
+//! - delta-gamma VaR via normal moment matching of
+//!   `L ~= -Delta r - 0.5 Gamma r^2`,
+//! - closed-form normal ES,
+//! - Cornish-Fisher VaR (direct moments or moments estimated from P&L).
+//!
+//! The module uses a loss-positive convention (`loss = -pnl`) and returns non-negative
+//! tail metrics.
+//!
+//! Numerical notes: empirical tail metrics are sample-size sensitive (especially high
+//! confidence ES), Cornish-Fisher can be unstable for extreme skew/kurtosis, and all
+//! confidence levels must lie in `(0, 1)`.
+//!
+//! References:
+//! - McNeil, Frey, Embrechts, *Quantitative Risk Management* (2005/2015), VaR/ES theory.
+//! - J.P. Morgan/Reuters, *RiskMetrics Technical Document* (1996), delta-normal practice.
+//! - Cornish and Fisher (1937), quantile expansion.
 use crate::math::{normal_inv_cdf, normal_pdf};
 
 const TRADING_DAYS_PER_YEAR: f64 = 252.0;
@@ -6,6 +27,15 @@ const TRADING_DAYS_PER_YEAR: f64 = 252.0;
 ///
 /// Positive P&L values are profits and negative values are losses.
 /// Returned VaR is a positive loss number.
+///
+/// # Examples
+/// ```rust
+/// use openferric::risk::var::historical_var;
+///
+/// let pnl = [-2.0, -1.0, 0.5, 1.0, -0.2];
+/// let var_95 = historical_var(&pnl, 0.95);
+/// assert!(var_95 >= 0.0);
+/// ```
 pub fn historical_var(pnl: &[f64], confidence: f64) -> f64 {
     validate_inputs(pnl, confidence);
     let mut losses: Vec<f64> = pnl.iter().map(|x| -x).collect();
@@ -13,6 +43,16 @@ pub fn historical_var(pnl: &[f64], confidence: f64) -> f64 {
 }
 
 /// Historical Expected Shortfall (CVaR) from a P&L sample.
+///
+/// # Examples
+/// ```rust
+/// use openferric::risk::var::{historical_expected_shortfall, historical_var};
+///
+/// let pnl = [-3.0, -2.0, -1.0, 0.5, 1.0];
+/// let var_95 = historical_var(&pnl, 0.95);
+/// let es_95 = historical_expected_shortfall(&pnl, 0.95);
+/// assert!(es_95 >= var_95);
+/// ```
 pub fn historical_expected_shortfall(pnl: &[f64], confidence: f64) -> f64 {
     validate_inputs(pnl, confidence);
 
@@ -36,6 +76,14 @@ pub fn historical_expected_shortfall(pnl: &[f64], confidence: f64) -> f64 {
 }
 
 /// Delta-normal parametric VaR.
+///
+/// # Examples
+/// ```rust
+/// use openferric::risk::var::delta_normal_var;
+///
+/// let var_99 = delta_normal_var(1.0, 0.20, 0.99, 1.0);
+/// assert!(var_99 > 0.0);
+/// ```
 pub fn delta_normal_var(
     delta: f64,
     annual_volatility: f64,
@@ -70,6 +118,14 @@ pub fn delta_gamma_normal_var(
 }
 
 /// Closed-form Expected Shortfall for a normal loss distribution.
+///
+/// # Examples
+/// ```rust
+/// use openferric::risk::var::normal_expected_shortfall;
+///
+/// let es = normal_expected_shortfall(0.0, 1.0, 0.99);
+/// assert!(es > 2.0);
+/// ```
 pub fn normal_expected_shortfall(mean_loss: f64, std_dev_loss: f64, confidence: f64) -> f64 {
     assert!(
         (0.0..1.0).contains(&confidence),

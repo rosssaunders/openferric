@@ -1,4 +1,14 @@
-//! x86 FMA-accelerated Black-Scholes kernel with scalar fallback.
+//! Module `engines::analytic::bs_inline`.
+//!
+//! Implements bs inline workflows with concrete routines such as `has_fma_bs_kernel`, `has_fma_bs_kernel`, `bs_price_asm`.
+//!
+//! References: Hull (11th ed.) Ch. 13 and Ch. 26, Black-Scholes style formulas around Eq. (13.16)-(13.20), plus instrument-specific papers cited in-code.
+//!
+//! Primary API surface: free functions `has_fma_bs_kernel`, `has_fma_bs_kernel`, `bs_price_asm`.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 
 use crate::math::normal_cdf;
 

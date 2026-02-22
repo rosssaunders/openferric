@@ -1,3 +1,14 @@
+//! Module `math::gamma`.
+//!
+//! Implements gamma workflows with concrete routines such as `gamma`.
+//!
+//! References: Abramowitz and Stegun (1964), Moro (1995), Press et al. (2007), approximation formulas around Eq. (7.1.26).
+//!
+//! Primary API surface: free functions `gamma`.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 // Lanczos approximation for the gamma function.
 // Ported from statrs (MIT license), based on:
 // "An Analysis of the Lanczos Gamma Approximation", Glendon Ralph Pugh, 2004 p. 116

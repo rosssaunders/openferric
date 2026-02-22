@@ -1,3 +1,14 @@
+//! Module `engines::lsm::longstaff_schwartz`.
+//!
+//! Implements longstaff schwartz abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Glasserman (2004), Longstaff and Schwartz (2001), Hull (11th ed.) Ch. 25, Monte Carlo estimators around Eq. (25.1).
+//!
+//! Key types and purpose: `LongstaffSchwartzEngine` define the core data contracts for this module.
+//!
+//! Numerical considerations: estimator variance, path count, and random-seed strategy drive confidence intervals; monitor bias from discretization and variance reduction choices.
+//!
+//! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
 use nalgebra::{Matrix3, Vector3};
 
 use crate::core::{
