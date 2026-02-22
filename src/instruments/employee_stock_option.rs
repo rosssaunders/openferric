@@ -1,3 +1,14 @@
+//! Module `instruments::employee_stock_option`.
+//!
+//! Implements employee stock option abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `EmployeeStockOption` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these contract types as immutable pricing inputs; pair with engine modules for valuation and risk, rather than embedding valuation logic in instruments.
 use crate::core::{Instrument, OptionType, PricingError};
 
 /// Employee stock option valued with a binomial tree and Hull-White style assumptions.

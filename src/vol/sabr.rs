@@ -1,3 +1,14 @@
+//! Module `vol::sabr`.
+//!
+//! Implements sabr workflows with concrete routines such as `fit_sabr`.
+//!
+//! References: Hagan et al. (2002), Hull (11th ed.) Ch. 18, SABR asymptotic volatility formula around Eq. (A.69).
+//!
+//! Key types and purpose: `SabrParams` define the core data contracts for this module.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use nalgebra::{DMatrix, DVector};
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -1,9 +1,14 @@
-//! Packed-slice IV evaluation and batch operations.
+//! Module `vol::slice`.
 //!
-//! These functions operate on a packed `&[f64]` layout where slice headers
-//! encode `[model_type, T, forward, param_offset]` per slice and params are
-//! concatenated. This module is pure Rust with no WASM dependency, making it
-//! testable with `cargo test` and reusable from Python bindings.
+//! Implements slice workflows with concrete routines such as `eval_iv_pct`, `parse_slice`, `solve_delta_k`, `iv_grid`.
+//!
+//! References: Gatheral (2006), Derman and Kani (1994), static-arbitrage constraints around total variance Eq. (2.2).
+//!
+//! Primary API surface: free functions `eval_iv_pct`, `parse_slice`, `solve_delta_k`, `iv_grid`.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 
 use crate::vol::sabr::SabrParams;
 use crate::vol::surface::SviParams;

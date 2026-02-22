@@ -1,4 +1,14 @@
-//! Reusable pre-allocated buffers for pricing hot paths.
+//! Module `math::arena`.
+//!
+//! Implements arena abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Glasserman (2004) Ch. 5, Joe and Kuo (2008), SIMD and random-sequence implementation details tied to Eq. (5.4).
+//!
+//! Key types and purpose: `PricingArena` define the core data contracts for this module.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 
 /// Shared scratch buffers for repeated pricing calls.
 ///

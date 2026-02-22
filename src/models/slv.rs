@@ -1,3 +1,14 @@
+//! Module `models::slv`.
+//!
+//! Implements slv workflows with concrete routines such as `nadaraya_watson_conditional_mean`, `calibrate_leverage_surface`, `slv_mc_price_checked`, `slv_mc_price`.
+//!
+//! References: Dupire (1994), Guyon and Henry-Labordere (2011), leverage calibration fixed-point iterations around Eq. (7.14).
+//!
+//! Key types and purpose: `SlvParams`, `LeverageSlice`, `LeverageSurface` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use crate::core::{Diagnostics, PricingError, PricingResult};
 use crate::engines::monte_carlo::MonteCarloInstrument;
 use crate::market::Market;

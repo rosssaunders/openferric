@@ -1,3 +1,14 @@
+//! Module `models::hjm`.
+//!
+//! Implements hjm abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Heath, Jarrow, Morton (1992), Brigo and Mercurio (2006) Ch. 6, drift restrictions around HJM Eq. (3.7).
+//!
+//! Key types and purpose: `HjmFactorShape`, `HjmFactor`, `HjmModel` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};

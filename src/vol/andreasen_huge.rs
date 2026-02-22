@@ -1,10 +1,14 @@
-//! Andreasen-Huge piecewise-constant local vol interpolation.
+//! Module `vol::andreasen_huge`.
 //!
-//! Calibrates a piecewise-constant local volatility surface to market quotes
-//! using a 1-D implicit finite-difference scheme stepping in the strike
-//! direction. The resulting surface is arbitrage-free by construction.
+//! Implements andreasen huge abstractions and re-exports used by adjacent pricing/model modules.
 //!
-//! Reference: Andreasen & Huge, "Volatility Interpolation" (Risk, 2011).
+//! References: Andreasen and Huge (2011), Gatheral (2006) Ch. 7, local-vol interpolation constraints around Eq. (7.2).
+//!
+//! Key types and purpose: `AndreasenHugeInterpolation` define the core data contracts for this module.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 
 use crate::pricing::european::black_scholes_price;
 use crate::pricing::OptionType;

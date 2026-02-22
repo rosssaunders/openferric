@@ -1,3 +1,14 @@
+//! Module `credit::cdo`.
+//!
+//! Implements cdo workflows with concrete routines such as `vasicek_portfolio_loss_cdf`.
+//!
+//! References: Hull (11th ed.) Ch. 24-25, O'Kane (2008) Ch. 3, representative cashflow identities as in Eq. (24.7) and Eq. (25.5).
+//!
+//! Key types and purpose: `CdoTranche`, `SyntheticCdo` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use these routines for CDS/tranche and survival-curve workflows; consider structural credit models when capital-structure dynamics are required explicitly.
 use crate::math::{gauss_legendre_integrate, normal_cdf, normal_inv_cdf, normal_pdf};
 
 /// Synthetic CDO tranche definition.

@@ -1,4 +1,14 @@
-//! Core traits, common domain types, and library-wide result/error structures.
+//! Module `core::engine`.
+//!
+//! Implements engine abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `Greeks`, `Instrument`, `PricingEngine`, `DiagKey`, `Diagnostics` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 
 use crate::market::Market;
 

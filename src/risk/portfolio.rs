@@ -1,3 +1,20 @@
+//! Portfolio container and Greek-based scenario P&L aggregation.
+//!
+//! Core types:
+//! - [`Position<I>`]: instrument payload, quantity, Greeks, spot, and implied vol.
+//! - [`Portfolio<I>`]: vector of positions with additive risk aggregation.
+//! - [`AggregatedGreeks`]: compact totals for delta/gamma/vega/theta.
+//!
+//! P&L is approximated with a second-order Greek expansion:
+//! `dV ~= Delta*dS + 0.5*Gamma*dS^2 + Vega*dVol + Theta*dt`,
+//! where `dS = spot * spot_shock_pct` and `dVol = implied_vol * vol_shock_pct`.
+//!
+//! Numerical notes: this is a local approximation around current risk inputs; large shocks,
+//! jump risk, and higher-order terms are not represented. Quantities may be signed, so short
+//! positions naturally invert contributions.
+//!
+//! References:
+//! - Hull, *Options, Futures, and Other Derivatives*, Greek-based P&L approximations.
 use crate::core::Greeks;
 
 /// Aggregated portfolio Greeks.

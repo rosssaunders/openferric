@@ -1,3 +1,14 @@
+//! Module `models::lmm`.
+//!
+//! Implements lmm workflows with concrete routines such as `black_swaption_price`, `initial_swap_rate_annuity`.
+//!
+//! References: Brace, Gatarek, Musiela (1997), Brigo and Mercurio (2006) Ch. 6, lognormal forward-rate dynamics around Eq. (6.16).
+//!
+//! Key types and purpose: `LmmParams`, `LmmModel` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use crate::math::normal_cdf;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

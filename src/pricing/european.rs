@@ -1,3 +1,14 @@
+//! Module `pricing::european`.
+//!
+//! Implements european workflows with concrete routines such as `black_scholes_price`, `black_76_price`, `black_scholes_greeks`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `Greeks` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use crate::engines::analytic::black_scholes::{
     bs_delta, bs_gamma, bs_price, bs_rho, bs_theta, bs_vega,
 };
@@ -5,6 +16,14 @@ use crate::math::normal_cdf;
 use crate::pricing::OptionType;
 
 #[derive(Debug, Clone, Copy)]
+/// First-order and second-order sensitivities for a European option under BSM assumptions.
+///
+/// The fields correspond to:
+/// - `delta = dV/dS`
+/// - `gamma = d²V/dS²`
+/// - `vega = dV/dσ`
+/// - `theta = dV/dt`
+/// - `rho = dV/dr`
 pub struct Greeks {
     pub delta: f64,
     pub gamma: f64,
@@ -13,6 +32,28 @@ pub struct Greeks {
     pub rho: f64,
 }
 
+/// Black-Scholes-Merton spot-option price with zero dividend yield.
+///
+/// Parameters:
+/// - `option_type`: call or put payoff direction.
+/// - `s`: current spot price.
+/// - `k`: strike price.
+/// - `r`: continuously compounded risk-free rate.
+/// - `sigma`: annualized volatility.
+/// - `t`: time to expiry in years.
+///
+/// Edge cases:
+/// - Delegates to kernel logic that handles `t <= 0` or `sigma <= 0` by intrinsic value.
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::OptionType;
+/// use openferric::pricing::european::black_scholes_price;
+///
+/// let call = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
+/// let put = black_scholes_price(OptionType::Put, 100.0, 100.0, 0.05, 0.20, 1.0);
+/// assert!(call > put);
+/// ```
 pub fn black_scholes_price(
     option_type: OptionType,
     s: f64,
@@ -25,6 +66,24 @@ pub fn black_scholes_price(
     bs_price(option_type, s, k, r, 0.0, sigma, t)
 }
 
+/// Black-76 price for options on forwards/futures.
+///
+/// Parameters:
+/// - `f`: forward/futures level.
+/// - other parameters follow the same units as [`black_scholes_price`].
+///
+/// Edge cases:
+/// - Returns discounted intrinsic value when `t <= 0` or `sigma <= 0`.
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::OptionType;
+/// use openferric::pricing::european::black_76_price;
+///
+/// let call = black_76_price(OptionType::Call, 103.0, 100.0, 0.03, 0.18, 1.0);
+/// let put = black_76_price(OptionType::Put, 103.0, 100.0, 0.03, 0.18, 1.0);
+/// assert!(call > 0.0 && put > 0.0);
+/// ```
 pub fn black_76_price(option_type: OptionType, f: f64, k: f64, r: f64, sigma: f64, t: f64) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return (-r * t).exp()
@@ -45,6 +104,18 @@ pub fn black_76_price(option_type: OptionType, f: f64, k: f64, r: f64, sigma: f6
     }
 }
 
+/// Computes Black-Scholes Greeks with zero dividend yield.
+///
+/// Parameters match [`black_scholes_price`].
+///
+/// # Examples
+/// ```rust
+/// use openferric::core::OptionType;
+/// use openferric::pricing::european::black_scholes_greeks;
+///
+/// let g = black_scholes_greeks(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
+/// assert!(g.delta > 0.0 && g.gamma > 0.0 && g.vega > 0.0);
+/// ```
 pub fn black_scholes_greeks(
     option_type: OptionType,
     s: f64,

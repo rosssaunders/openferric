@@ -1,4 +1,14 @@
-//! Credit-risk primitives including survival curves and CDS analytics.
+//! Module `credit::mod`.
+//!
+//! Implements mod abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) Ch. 24-25, O'Kane (2008) Ch. 3, representative cashflow identities as in Eq. (24.7) and Eq. (25.5).
+//!
+//! Primary API surface: module-level exports and submodule wiring.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use these routines for CDS/tranche and survival-curve workflows; consider structural credit models when capital-structure dynamics are required explicitly.
 
 pub mod bootstrap;
 pub mod cdo;

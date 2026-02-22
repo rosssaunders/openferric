@@ -1,3 +1,14 @@
+//! Module `vol::jaeckel`.
+//!
+//! Implements jaeckel workflows with concrete routines such as `normalized_black`, `implied_vol_jaeckel_normalized`, `implied_vol_jaeckel`.
+//!
+//! References: Jaeckel (2015), Brenner-Subrahmanyam (1988), implied-vol inversion identities around normalized Black Eq. (2.1).
+//!
+//! Primary API surface: free functions `normalized_black`, `implied_vol_jaeckel_normalized`, `implied_vol_jaeckel`.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::core::PricingError;
 use crate::math::{normal_cdf, normal_inv_cdf, normal_pdf};
 

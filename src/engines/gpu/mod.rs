@@ -1,8 +1,14 @@
-//! GPU-accelerated Monte Carlo pricing via wgpu compute shaders.
+//! Module `engines::gpu::mod`.
 //!
-//! When enabled via the `gpu` feature flag, this module offloads European
-//! option Monte Carlo simulation to the GPU, achieving massive parallelism
-//! (thousands of concurrent paths) on any Vulkan/Metal/DX12/WebGPU backend.
+//! Implements mod abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Primary API surface: module-level exports and submodule wiring.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
 
 #[cfg(feature = "gpu")]
 mod gpu_mc;

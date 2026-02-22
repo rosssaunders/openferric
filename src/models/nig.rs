@@ -1,18 +1,14 @@
-//! Normal Inverse Gaussian (NIG) process for heavy-tailed asset dynamics.
+//! Module `models::nig`.
 //!
-//! The NIG distribution (Barndorff-Nielsen 1997) provides a flexible model
-//! for asset returns with semi-heavy tails and asymmetry, via subordination
-//! of Brownian motion by an inverse Gaussian process.
+//! Implements nig abstractions and re-exports used by adjacent pricing/model modules.
 //!
-//! # Example
-//! ```
-//! use openferric::models::Nig;
-//! use openferric::engines::fft::CarrMadanParams;
+//! References: Barndorff-Nielsen (1997), Cont and Tankov (2004), Hull (11th ed.) Ch. 19, NIG characteristic forms around Eq. (3.1).
 //!
-//! let nig = Nig { alpha: 15.0, beta: -5.0, delta: 0.5 };
-//! let prices = nig.european_calls_fft(100.0, &[100.0], 0.03, 0.0, 1.0, CarrMadanParams::default()).unwrap();
-//! assert!(prices[0].1 > 0.0);
-//! ```
+//! Key types and purpose: `Nig` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 
 use num_complex::Complex;
 use rand::SeedableRng;

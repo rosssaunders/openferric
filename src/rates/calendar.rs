@@ -1,3 +1,14 @@
+//! Module `rates::calendar`.
+//!
+//! Implements calendar workflows with concrete routines such as `adjust_business_day`, `add_business_days`, `subtract_business_days`, `business_day_count`.
+//!
+//! References: Hull (11th ed.) Ch. 4, 6, and 7; Brigo and Mercurio (2006), curve and accrual identities around Eq. (4.2) and Eq. (7.1).
+//!
+//! Key types and purpose: `Frequency`, `WeekendConvention`, `BusinessDayConvention`, `StubConvention`, `RollConvention` define the core data contracts for this module.
+//!
+//! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
+//!
+//! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::collections::BTreeSet;
 

@@ -1,3 +1,14 @@
+//! Module `engines::fft::char_fn`.
+//!
+//! Implements char fn abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Carr and Madan (1999), Lewis (2001), Hull (11th ed.) Ch. 19, with FFT damping/inversion forms around Eq. (19.8).
+//!
+//! Key types and purpose: `CharacteristicFunction`, `BlackScholesCharFn`, `HestonCharFn`, `VarianceGammaCharFn`, `CgmyCharFn` define the core data contracts for this module.
+//!
+//! Numerical considerations: choose damping/aliasing controls (alpha, grid spacing, FFT size) to balance truncation error against oscillation near strikes.
+//!
+//! When to use: choose FFT-based routines for dense strike grids under characteristic-function models; use direct quadrature or Monte Carlo for sparse-strike or path-dependent products.
 use num_complex::Complex;
 
 use crate::math::gamma::gamma;

@@ -1,3 +1,14 @@
+//! Module `engines::monte_carlo::mc_parallel`.
+//!
+//! Implements mc parallel workflows with concrete routines such as `mc_european_parallel`, `mc_european_sequential`, `mc_greeks_grid_sequential`, `mc_greeks_grid_parallel`.
+//!
+//! References: Glasserman (2004), Longstaff and Schwartz (2001), Hull (11th ed.) Ch. 25, Monte Carlo estimators around Eq. (25.1).
+//!
+//! Key types and purpose: `GreeksGridPoint` define the core data contracts for this module.
+//!
+//! Numerical considerations: estimator variance, path count, and random-seed strategy drive confidence intervals; monitor bias from discretization and variance reduction choices.
+//!
+//! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
 use rayon::prelude::*;
 
 use crate::core::{ExerciseStyle, OptionType, PricingResult};

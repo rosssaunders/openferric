@@ -1,3 +1,26 @@
+//! Deterministic CVA/DVA calculator on precomputed exposure profiles.
+//!
+//! This module provides [`XvaCalculator`], which combines:
+//! - a discount curve,
+//! - counterparty and own survival curves,
+//! - LGD assumptions,
+//! and computes unilateral CVA/DVA by integrating discounted expected exposure against
+//! default-probability increments over a time grid.
+//!
+//! Implemented relations:
+//! - `CVA = -LGD * sum_t DF(t) * EE(t) * dPD_cpty(t)`
+//! - `DVA =  LGD_own * sum_t DF(t) * NEE(t) * dPD_own(t)`
+//!
+//! It also includes path-to-profile helpers (`expected_exposure_profile`,
+//! `negative_expected_exposure_profile`) for Monte Carlo mark-to-market paths.
+//!
+//! Numerical notes: time points must be non-decreasing; repeated or non-forward steps are
+//! skipped in the integration loop. Grid coarseness and path count dominate approximation
+//! error. Signs follow desk convention here (CVA negative, DVA positive).
+//!
+//! References:
+//! - Gregory, *The xVA Challenge* (3rd ed., 2020), CVA/DVA discrete-time approximations.
+//! - Brigo, Morini, Pallavicini, *Counterparty Credit Risk, Collateral and Funding* (2013).
 use crate::credit::SurvivalCurve;
 use crate::rates::YieldCurve;
 

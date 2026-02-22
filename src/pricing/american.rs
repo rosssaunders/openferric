@@ -1,3 +1,14 @@
+//! Module `pricing::american`.
+//!
+//! Implements american workflows with concrete routines such as `crr_binomial_american`, `longstaff_schwartz_american_put`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Primary API surface: free functions `crr_binomial_american`, `longstaff_schwartz_american_put`.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use crate::pricing::OptionType;
 use nalgebra::{DMatrix, DVector};
 use rand::SeedableRng;

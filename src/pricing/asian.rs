@@ -1,3 +1,14 @@
+//! Module `pricing::asian`.
+//!
+//! Implements asian workflows with concrete routines such as `geometric_asian_fixed_closed_form`, `geometric_asian_discrete_fixed_closed_form`, `arithmetic_asian_price_mc`, `geometric_asian_price_mc`.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `AsianStrike` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use crate::math::normal_cdf;
 use crate::mc::{GbmPathGenerator, MonteCarloEngine};
 use crate::models::Gbm;

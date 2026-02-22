@@ -1,3 +1,21 @@
+//! Margin Valuation Adjustment (MVA) with a simplified SIMM-style initial-margin engine.
+//!
+//! Exposed functionality:
+//! - [`SimmMargin`]: single-risk-class IM approximation using weighted sensitivities and a
+//!   constant intra-bucket correlation.
+//! - [`mva_from_profile`]: discounted time integration of funding cost on expected IM:
+//!   `MVA = -sum_t spread(t) * E[IM(t)] * DF(t) * dt`.
+//!
+//! The implementation is intentionally compact and suitable for prototyping or unit tests.
+//! It does not model full SIMM bucket hierarchy, concentration add-ons, or MPOR dynamics.
+//!
+//! Numerical notes: non-monotone time grids effectively skip non-positive `dt` intervals in
+//! the integration loop; results are therefore grid-dependent. Sign convention is funding-cost
+//! negative when spread and IM are positive.
+//!
+//! References:
+//! - Andersen, Pykhtin, Sokol (2017), initial margin and MVA modeling.
+//! - ISDA SIMM methodology documentation (for conceptual alignment).
 /// Margin Valuation Adjustment (MVA).
 ///
 /// MVA = cost of posting initial margin over the life of the trade.

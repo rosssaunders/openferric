@@ -1,4 +1,14 @@
-//! MBS/ABS securitization instruments — prepayment models and pass-through definitions.
+//! Module `instruments::mbs`.
+//!
+//! Implements mbs abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
+//!
+//! Key types and purpose: `PsaModel`, `ConstantCpr`, `PrepaymentModel`, `MbsPassThrough`, `MbsCashflow` define the core data contracts for this module.
+//!
+//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
+//!
+//! When to use: use these contract types as immutable pricing inputs; pair with engine modules for valuation and risk, rather than embedding valuation logic in instruments.
 
 /// PSA (Public Securities Association) prepayment model.
 ///
@@ -161,7 +171,7 @@ impl MbsPassThrough {
 
     /// Option-Adjusted Spread via Newton's method.
     /// `market_price` is the dollar price, `base_yields` is a flat or term-structure
-    /// of monthly discount rates. For simplicity we use base_yields[0] as the flat rate.
+    /// of monthly discount rates. For simplicity we use `base_yields[0]` as the flat rate.
     pub fn oas(&self, market_price: f64, base_yields: &[f64]) -> f64 {
         let base_rate = if base_yields.is_empty() { 0.0 } else { base_yields[0] };
         // Find spread s such that price(base_rate + s) = market_price

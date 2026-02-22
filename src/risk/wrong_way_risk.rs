@@ -1,11 +1,23 @@
-//! Wrong-way risk (WWR) models for CVA adjustment.
+//! Wrong-way-risk (WWR) CVA adjustments from simple regulatory and structural models.
 //!
-//! Wrong-way risk occurs when exposure to a counterparty is positively correlated
-//! with the counterparty's probability of default. Three approaches are provided:
+//! The module exposes three approaches that all return [`WwrResult`]
+//! (`cva_independent`, `cva_wwr`, and `wwr_ratio`):
+//! - [`AlphaWWR`]: Basel-style multiplier (`CVA_wwr = alpha * CVA_independent`).
+//! - [`CopulaWWR`]: Gaussian-copula linkage between exposure and default drivers.
+//! - [`HullWhiteWWR`]: stochastic-intensity model
+//!   `lambda(t) = lambda0 * exp(beta * (S(t)/S(0) - 1))`.
 //!
-//! 1. **Alpha multiplier** (Basel regulatory approach)
-//! 2. **Gaussian copula** (correlation-based Monte Carlo)
-//! 3. **Hull-White credit-equity** (stochastic hazard rate)
+//! The copula and Hull-White variants are Monte Carlo estimators and include discounting and
+//! LGD in per-path CVA contributions.
+//!
+//! Numerical notes: finite-path noise can materially move `wwr_ratio` near 1.0; increase
+//! `num_paths` for stability. The copula implementation uses a lightweight internal RNG and
+//! an approximation to `Phi(.)`, so this module is intended for transparent prototyping rather
+//! than production-grade random number quality.
+//!
+//! References:
+//! - Hull and White (2012), CVA with wrong-way risk modeling ideas.
+//! - Basel Committee, SA-CVA/IMM discussions and supervisory alpha practice.
 
 /// Result of a wrong-way risk calculation.
 #[derive(Debug, Clone, PartialEq)]

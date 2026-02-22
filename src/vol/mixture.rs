@@ -1,3 +1,14 @@
+//! Module `vol::mixture`.
+//!
+//! Implements mixture workflows with concrete routines such as `calibrate_lognormal_mixture`.
+//!
+//! References: Gatheral (2006), Derman and Kani (1994), static-arbitrage constraints around total variance Eq. (2.2).
+//!
+//! Key types and purpose: `LognormalMixture` define the core data contracts for this module.
+//!
+//! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
+//!
+//! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use nalgebra::{DMatrix, DVector};
 
 use crate::core::OptionType;

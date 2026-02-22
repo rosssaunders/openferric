@@ -1,3 +1,21 @@
+//! Funding Valuation Adjustment (FVA) from exposure profiles and simple CSA collateral rules.
+//!
+//! Main workflow:
+//! - derive an average uncollateralized funding exposure profile from simulated MTM paths
+//!   (`funding_exposure_profile`) using [`CsaTerms`] threshold/collateral switches,
+//! - integrate discounted funding spread cost over time (`fva_from_profile`):
+//!   `FVA = -sum_t spread(t) * funding_exposure(t) * DF(t) * dt`.
+//!
+//! The CSA model is intentionally coarse (threshold-style collateral only) and suited for
+//! fast scenario prototyping rather than legal-agreement-complete collateral simulation.
+//!
+//! Numerical notes: profile averaging assumes equal path weights; non-monotone time grids
+//! skip non-positive intervals. Sign convention returns negative values for positive funding
+//! costs, consistent with desk-style valuation adjustments.
+//!
+//! References:
+//! - Green, *XVA: Credit, Funding and Capital Valuation Adjustments* (2015).
+//! - Burgard and Kjaer (2013), PDE/replication perspective on funding adjustments.
 /// Funding Valuation Adjustment (FVA).
 ///
 /// FVA captures the cost/benefit of funding uncollateralized derivative exposures.

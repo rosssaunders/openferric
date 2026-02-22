@@ -1,3 +1,14 @@
+//! Module `models::hw_calibration`.
+//!
+//! Implements hw calibration workflows with concrete routines such as `hw_atm_swaption_vol_approx`, `calibrate_hull_white_params`.
+//!
+//! References: Hull and White (1990), Brigo and Mercurio (2006) Ch. 3, short-rate calibration relations around Eq. (3.28).
+//!
+//! Key types and purpose: `AtmSwaptionVolQuote` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use crate::math::normal_cdf;
 
 /// Market ATM swaption volatility quote `(expiry, tenor, market_vol)`.

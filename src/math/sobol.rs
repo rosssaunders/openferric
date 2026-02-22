@@ -1,3 +1,14 @@
+//! Module `math::sobol`.
+//!
+//! Implements sobol abstractions and re-exports used by adjacent pricing/model modules.
+//!
+//! References: Glasserman (2004) Ch. 5, Joe and Kuo (2008), SIMD and random-sequence implementation details tied to Eq. (5.4).
+//!
+//! Key types and purpose: `SobolSequence` define the core data contracts for this module.
+//!
+//! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
+//!
+//! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 const INV_U64_RANGE: f64 = 1.0 / 18_446_744_073_709_551_616.0;
 const HALF_INV_U64: f64 = 0.5 * INV_U64_RANGE;
 pub const SOBOL_MAX_DIMENSIONS: usize = 21_201;

@@ -1,3 +1,14 @@
+//! Module `engines::fft::carr_madan`.
+//!
+//! Implements carr madan workflows with concrete routines such as `carr_madan_fft`, `carr_madan_fft_complex`, `interpolate_strike_prices`, `carr_madan_fft_strikes`.
+//!
+//! References: Carr and Madan (1999), Lewis (2001), Hull (11th ed.) Ch. 19, with FFT damping/inversion forms around Eq. (19.8).
+//!
+//! Key types and purpose: `CarrMadanParams`, `CarrMadanGreeksPoint`, `CarrMadanContext` define the core data contracts for this module.
+//!
+//! Numerical considerations: choose damping/aliasing controls (alpha, grid spacing, FFT size) to balance truncation error against oscillation near strikes.
+//!
+//! When to use: choose FFT-based routines for dense strike grids under characteristic-function models; use direct quadrature or Monte Carlo for sparse-strike or path-dependent products.
 use std::f64::consts::PI;
 
 use num_complex::Complex;

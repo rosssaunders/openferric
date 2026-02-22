@@ -1,3 +1,14 @@
+//! Module `models::rough_bergomi`.
+//!
+//! Implements rough bergomi workflows with concrete routines such as `fbm_covariance`, `fbm_path_cholesky`, `fbm_path_hybrid`, `rbergomi_european_mc`.
+//!
+//! References: Bayer, Friz, Gatheral (2016), McCrickerd and Pakkanen (2018), rough-vol covariance formulas around Eq. (2.5).
+//!
+//! Key types and purpose: `FbmScheme` define the core data contracts for this module.
+//!
+//! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
+//!
+//! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use crate::core::{Diagnostics, PricingResult};
 use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::pricing::OptionType;
