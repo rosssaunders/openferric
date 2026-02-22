@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 /// - semi-annual: 6 months
 /// - quarterly: 3 months
 /// - monthly: 1 month
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Frequency {
     Annual,
     SemiAnnual,
