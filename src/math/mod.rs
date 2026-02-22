@@ -14,6 +14,7 @@ pub mod fast_norm;
 pub mod fast_rng;
 pub mod functions;
 pub mod gamma;
+pub mod interpolation;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 pub mod simd_math;
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
@@ -26,4 +27,5 @@ pub use fast_norm::{
 };
 pub use fast_rng::{FastRng, FastRngKind};
 pub use functions::*;
+pub use interpolation::*;
 pub use sobol::SobolSequence;

@@ -52,4 +52,6 @@ pub use ois::{BasisSwap, OvernightIndexSwap};
 pub use swap::{InterestRateSwap, SwapBuilder};
 pub use swaption::Swaption;
 pub use xccy_swap::XccySwap;
-pub use yield_curve::{YieldCurve, YieldCurveBuilder};
+pub use yield_curve::{
+    YieldCurve, YieldCurveBuilder, YieldCurveInterpolationMethod, YieldCurveInterpolationSettings,
+};
