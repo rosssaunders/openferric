@@ -13,6 +13,7 @@ pub mod andreasen_huge;
 pub mod arbitrage;
 pub mod builder;
 pub mod fengler;
+pub mod forward;
 pub mod implied;
 pub mod jaeckel;
 pub mod local_vol;

@@ -10,6 +10,10 @@
 //!
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 use crate::math::CubicSpline;
+use crate::vol::forward::{
+    AtmSkewTermStructure, ForwardVarianceCurve, ForwardVarianceSource, VixSettings, VixStyleIndex,
+    vix_style_index_from_surface,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SviParams {
@@ -239,6 +243,57 @@ impl VolSurface {
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
         let t = expiry.max(1e-10);
         (self.total_variance(strike, t) / t).sqrt()
+    }
+
+    /// Native expiry grid.
+    pub fn expiries(&self) -> &[f64] {
+        &self.expiries
+    }
+
+    /// Anchor forward level used to convert strike to log-moneyness.
+    pub fn forward(&self) -> f64 {
+        self.forward
+    }
+
+    /// Forward level at expiry (constant for this parametric representation).
+    pub fn forward_price(&self, _expiry: f64) -> f64 {
+        self.forward
+    }
+
+    /// Builds an ATM forward-variance curve on the provided expiry grid.
+    pub fn forward_variance_curve(&self, expiries: &[f64]) -> Result<ForwardVarianceCurve, String> {
+        ForwardVarianceCurve::from_surface(self, expiries)
+    }
+
+    /// Builds an ATM skew term structure on the provided expiry grid.
+    pub fn atm_skew_term_structure(
+        &self,
+        expiries: &[f64],
+    ) -> Result<AtmSkewTermStructure, String> {
+        AtmSkewTermStructure::from_surface(self, expiries)
+    }
+
+    /// Computes a VIX-style index from this surface for a given risk-free rate.
+    pub fn vix_style_index(
+        &self,
+        risk_free_rate: f64,
+        settings: VixSettings,
+    ) -> Result<VixStyleIndex, String> {
+        vix_style_index_from_surface(self, risk_free_rate, settings)
+    }
+}
+
+impl ForwardVarianceSource for VolSurface {
+    fn implied_vol(&self, strike: f64, expiry: f64) -> f64 {
+        VolSurface::vol(self, strike, expiry)
+    }
+
+    fn forward_price(&self, expiry: f64) -> f64 {
+        VolSurface::forward_price(self, expiry)
+    }
+
+    fn expiries(&self) -> &[f64] {
+        &self.expiries
     }
 }
 
