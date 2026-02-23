@@ -492,17 +492,8 @@ mod tests {
         let mats = [1.0, 0.75];
         let calls = [1u8, 0u8];
 
-        let black =
-            black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls);
-        let bsm = bs_price_batch_wasm(
-            &forwards,
-            &strikes,
-            &rates,
-            &rates,
-            &vols,
-            &mats,
-            &calls,
-        );
+        let black = black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls);
+        let bsm = bs_price_batch_wasm(&forwards, &strikes, &rates, &rates, &vols, &mats, &calls);
 
         assert_eq!(black.len(), bsm.len());
         for i in 0..black.len() {
@@ -524,13 +515,7 @@ mod tests {
         let black =
             black76_greeks_batch_wasm(&forwards, &strikes, &rates, &vols, &expiries, &calls);
         let bsm = bsm_greeks_batch_wasm(
-            &forwards,
-            &strikes,
-            &rates,
-            &rates,
-            &vols,
-            &expiries,
-            &calls,
+            &forwards, &strikes, &rates, &rates, &vols, &expiries, &calls,
         );
 
         assert_eq!(black.len(), 7);
