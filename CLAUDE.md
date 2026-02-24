@@ -102,6 +102,10 @@ Integration tests in `tests/` are validated against QuantLib (vendored as git su
 
 Most unit tests are colocated in `#[cfg(test)] mod tests` within each source file.
 
+## Design Rules
+
+- **Use a hard cutover approach and never implement backward compatibility.**
+
 ## Conventions
 
 - Rust 2024 edition. Core crate type: `rlib`. Binding crates produce `cdylib`.
