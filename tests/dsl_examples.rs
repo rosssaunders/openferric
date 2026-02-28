@@ -79,150 +79,150 @@ fn test_example(filename: &str, market: &MultiAssetMarket) {
 
 #[test]
 fn example_01_zero_coupon() {
-    test_example("01_zero_coupon.dsl", &single_asset_market());
+    test_example("01_zero_coupon.of", &single_asset_market());
 }
 
 #[test]
 fn example_02_fixed_coupon_note() {
-    test_example("02_fixed_coupon_note.dsl", &single_asset_market());
+    test_example("02_fixed_coupon_note.of", &single_asset_market());
 }
 
 #[test]
 fn example_03_forward() {
-    test_example("03_forward.dsl", &single_asset_market());
+    test_example("03_forward.of", &single_asset_market());
 }
 
 #[test]
 fn example_04_reverse_convertible() {
-    test_example("04_reverse_convertible.dsl", &single_asset_market());
+    test_example("04_reverse_convertible.of", &single_asset_market());
 }
 
 #[test]
 fn example_05_barrier_reverse_convertible() {
-    test_example("05_barrier_reverse_convertible.dsl", &single_asset_market());
+    test_example("05_barrier_reverse_convertible.of", &single_asset_market());
 }
 
 #[test]
 fn example_06_autocallable_worst_of() {
-    test_example("06_autocallable_worst_of.dsl", &three_asset_market());
+    test_example("06_autocallable_worst_of.of", &three_asset_market());
 }
 
 #[test]
 fn example_07_step_down_autocallable() {
-    test_example("07_step_down_autocallable.dsl", &two_asset_market());
+    test_example("07_step_down_autocallable.of", &two_asset_market());
 }
 
 #[test]
 fn example_08_phoenix_memory_coupon() {
-    test_example("08_phoenix_memory_coupon.dsl", &single_asset_market());
+    test_example("08_phoenix_memory_coupon.of", &single_asset_market());
 }
 
 #[test]
 fn example_09_athena_autocallable() {
-    test_example("09_athena_autocallable.dsl", &two_asset_market());
+    test_example("09_athena_autocallable.of", &two_asset_market());
 }
 
 #[test]
 fn example_10_snowball_note() {
-    test_example("10_snowball_note.dsl", &single_asset_market());
+    test_example("10_snowball_note.of", &single_asset_market());
 }
 
 #[test]
 fn example_11_digital_coupon_note() {
-    test_example("11_digital_coupon_note.dsl", &single_asset_market());
+    test_example("11_digital_coupon_note.of", &single_asset_market());
 }
 
 #[test]
 fn example_12_twin_win() {
-    test_example("12_twin_win.dsl", &single_asset_market());
+    test_example("12_twin_win.of", &single_asset_market());
 }
 
 #[test]
 fn example_13_capital_protected_note() {
-    test_example("13_capital_protected_note.dsl", &single_asset_market());
+    test_example("13_capital_protected_note.of", &single_asset_market());
 }
 
 #[test]
 fn example_14_bonus_certificate() {
-    test_example("14_bonus_certificate.dsl", &single_asset_market());
+    test_example("14_bonus_certificate.of", &single_asset_market());
 }
 
 #[test]
 fn example_15_cliquet() {
-    test_example("15_cliquet.dsl", &single_asset_market());
+    test_example("15_cliquet.of", &single_asset_market());
 }
 
 #[test]
 fn example_16_accumulator_tarf() {
-    test_example("16_accumulator_tarf.dsl", &single_asset_market());
+    test_example("16_accumulator_tarf.of", &single_asset_market());
 }
 
 #[test]
 fn example_17_range_accrual() {
-    test_example("17_range_accrual.dsl", &single_asset_market());
+    test_example("17_range_accrual.of", &single_asset_market());
 }
 
 #[test]
 fn example_18_shark_fin() {
-    test_example("18_shark_fin.dsl", &single_asset_market());
+    test_example("18_shark_fin.of", &single_asset_market());
 }
 
 #[test]
 fn example_19_outperformance_certificate() {
-    test_example("19_outperformance_certificate.dsl", &single_asset_market());
+    test_example("19_outperformance_certificate.of", &single_asset_market());
 }
 
 #[test]
 fn example_20_wedding_cake() {
-    test_example("20_wedding_cake.dsl", &three_asset_market());
+    test_example("20_wedding_cake.of", &three_asset_market());
 }
 
 #[test]
 fn example_21_best_of_call() {
-    test_example("21_best_of_call.dsl", &three_asset_market());
+    test_example("21_best_of_call.of", &three_asset_market());
 }
 
 #[test]
 fn example_22_worst_of_put() {
-    test_example("22_worst_of_put.dsl", &two_asset_market());
+    test_example("22_worst_of_put.of", &two_asset_market());
 }
 
 #[test]
 fn example_23_express_certificate() {
-    test_example("23_express_certificate.dsl", &single_asset_market());
+    test_example("23_express_certificate.of", &single_asset_market());
 }
 
 #[test]
 fn example_24_lookback_coupon() {
-    test_example("24_lookback_coupon.dsl", &single_asset_market());
+    test_example("24_lookback_coupon.of", &single_asset_market());
 }
 
 #[test]
 fn example_25_callable_note() {
-    test_example("25_callable_note.dsl", &single_asset_market());
+    test_example("25_callable_note.of", &single_asset_market());
 }
 
 #[test]
 fn example_26_asian_payout() {
-    test_example("26_asian_payout.dsl", &single_asset_market());
+    test_example("26_asian_payout.of", &single_asset_market());
 }
 
 #[test]
 fn example_27_airbag_certificate() {
-    test_example("27_airbag_certificate.dsl", &single_asset_market());
+    test_example("27_airbag_certificate.of", &single_asset_market());
 }
 
 #[test]
 fn example_28_double_barrier_ki_ko() {
-    test_example("28_double_barrier_ki_ko.dsl", &single_asset_market());
+    test_example("28_double_barrier_ki_ko.of", &single_asset_market());
 }
 
 #[test]
 fn example_29_dispersion_note() {
-    test_example("29_dispersion_note.dsl", &three_asset_market());
+    test_example("29_dispersion_note.of", &three_asset_market());
 }
 
 #[test]
 fn example_30_napoleon() {
-    test_example("30_napoleon.dsl", &two_asset_market());
+    test_example("30_napoleon.of", &two_asset_market());
 }

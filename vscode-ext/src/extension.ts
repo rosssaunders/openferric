@@ -5,11 +5,11 @@ import {
   ServerOptions,
 } from "vscode-languageclient/node";
 
-const LANGUAGE_ID = "openferric-dsl";
+const LANGUAGE_ID = "openferric";
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const config = vscode.workspace.getConfiguration("openferricDsl");
+  const config = vscode.workspace.getConfiguration("openferric");
   const lspPath = config.get<string>(
     "lsp.path",
     "openferric-lsp"
@@ -33,8 +33,8 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   client = new LanguageClient(
-    "openferric-dsl",
-    "OpenFerric DSL",
+    "openferric",
+    "OpenFerric",
     serverOptions,
     clientOptions
   );

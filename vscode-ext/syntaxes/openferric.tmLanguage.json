@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "OpenFerric DSL",
-  "scopeName": "source.openferric-dsl",
+  "scopeName": "source.openferric",
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
@@ -21,7 +21,7 @@
     "comments": {
       "patterns": [
         {
-          "name": "comment.line.double-slash.openferric-dsl",
+          "name": "comment.line.double-slash.openferric",
           "match": "//.*$"
         }
       ]
@@ -29,12 +29,12 @@
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.double.openferric-dsl",
+          "name": "string.quoted.double.openferric",
           "begin": "\"",
           "end": "\"",
           "patterns": [
             {
-              "name": "constant.character.escape.openferric-dsl",
+              "name": "constant.character.escape.openferric",
               "match": "\\\\."
             }
           ]
@@ -44,7 +44,7 @@
     "numbers": {
       "patterns": [
         {
-          "name": "constant.numeric.openferric-dsl",
+          "name": "constant.numeric.openferric",
           "match": "\\b\\d[\\d_]*(\\.[\\d_]+)?([eE][+-]?\\d+)?\\b"
         }
       ]
@@ -52,11 +52,11 @@
     "declaration-keywords": {
       "patterns": [
         {
-          "name": "keyword.control.product.openferric-dsl",
+          "name": "keyword.control.product.openferric",
           "match": "\\bproduct\\b"
         },
         {
-          "name": "keyword.other.declaration.openferric-dsl",
+          "name": "keyword.other.declaration.openferric",
           "match": "\\b(notional|maturity)(?=\\s*:)"
         }
       ]
@@ -64,11 +64,11 @@
     "block-keywords": {
       "patterns": [
         {
-          "name": "keyword.control.block.openferric-dsl",
+          "name": "keyword.control.block.openferric",
           "match": "\\b(underlyings|state|schedule)\\b"
         },
         {
-          "name": "keyword.other.range.openferric-dsl",
+          "name": "keyword.other.range.openferric",
           "match": "\\b(from|to)\\b"
         }
       ]
@@ -76,7 +76,7 @@
     "statement-keywords": {
       "patterns": [
         {
-          "name": "keyword.control.statement.openferric-dsl",
+          "name": "keyword.control.statement.openferric",
           "match": "\\b(let|if|then|else|pay|redeem|set|skip)\\b"
         }
       ]
@@ -84,7 +84,7 @@
     "frequency-constants": {
       "patterns": [
         {
-          "name": "constant.language.frequency.openferric-dsl",
+          "name": "constant.language.frequency.openferric",
           "match": "\\b(monthly|quarterly|semi_annual|annual)\\b"
         }
       ]
@@ -92,7 +92,7 @@
     "boolean-constants": {
       "patterns": [
         {
-          "name": "constant.language.boolean.openferric-dsl",
+          "name": "constant.language.boolean.openferric",
           "match": "\\b(true|false)\\b"
         }
       ]
@@ -100,7 +100,7 @@
     "type-keywords": {
       "patterns": [
         {
-          "name": "storage.type.openferric-dsl",
+          "name": "storage.type.openferric",
           "match": "\\b(bool|float)\\b"
         }
       ]
@@ -108,7 +108,7 @@
     "builtin-functions": {
       "patterns": [
         {
-          "name": "support.function.builtin.openferric-dsl",
+          "name": "support.function.builtin.openferric",
           "match": "\\b(worst_of|best_of|performances|price|min|max|abs|exp|log|asset)\\b"
         }
       ]
@@ -116,7 +116,7 @@
     "builtin-variables": {
       "patterns": [
         {
-          "name": "variable.language.builtin.openferric-dsl",
+          "name": "variable.language.builtin.openferric",
           "match": "\\b(notional|observation_date|is_final)\\b(?!\\s*:)"
         }
       ]
@@ -124,7 +124,7 @@
     "logical-operators": {
       "patterns": [
         {
-          "name": "keyword.operator.logical.openferric-dsl",
+          "name": "keyword.operator.logical.openferric",
           "match": "\\b(and|or|not)\\b"
         }
       ]
@@ -132,15 +132,15 @@
     "operators": {
       "patterns": [
         {
-          "name": "keyword.operator.comparison.openferric-dsl",
+          "name": "keyword.operator.comparison.openferric",
           "match": "==|!=|<=|>=|<|>"
         },
         {
-          "name": "keyword.operator.assignment.openferric-dsl",
+          "name": "keyword.operator.assignment.openferric",
           "match": "="
         },
         {
-          "name": "keyword.operator.arithmetic.openferric-dsl",
+          "name": "keyword.operator.arithmetic.openferric",
           "match": "[+\\-*/]"
         }
       ]

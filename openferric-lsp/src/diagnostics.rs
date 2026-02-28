@@ -53,7 +53,7 @@ fn error_to_diagnostic(source: &str, error: &DslError) -> Diagnostic {
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
-        source: Some("openferric-dsl".into()),
+        source: Some("openferric".into()),
         message,
         ..Default::default()
     }

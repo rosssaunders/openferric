@@ -1,6 +1,6 @@
 {
-  "name": "openferric-dsl",
-  "displayName": "OpenFerric DSL",
+  "name": "openferric",
+  "displayName": "OpenFerric",
   "description": "Language support for OpenFerric structured product DSL via LSP",
   "version": "0.2.0",
   "publisher": "openferric",
@@ -9,54 +9,54 @@
   },
   "categories": ["Programming Languages"],
   "activationEvents": [
-    "onLanguage:openferric-dsl"
+    "onLanguage:openferric"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
-        "id": "openferric-dsl",
-        "aliases": ["OpenFerric DSL", "openferric-dsl"],
-        "extensions": [".dsl"],
+        "id": "openferric",
+        "aliases": ["OpenFerric", "openferric"],
+        "extensions": [".of"],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "openferric-dsl",
-        "scopeName": "source.openferric-dsl",
-        "path": "./syntaxes/openferric-dsl.tmLanguage.json"
+        "language": "openferric",
+        "scopeName": "source.openferric",
+        "path": "./syntaxes/openferric.tmLanguage.json"
       }
     ],
     "configuration": {
-      "title": "OpenFerric DSL",
+      "title": "OpenFerric",
       "properties": {
-        "openferricDsl.lsp.path": {
+        "openferric.lsp.path": {
           "type": "string",
           "default": "openferric-lsp",
           "description": "Path to the openferric-lsp binary"
         },
-        "openferricDsl.pricing.enabled": {
+        "openferric.pricing.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable live pricing via CodeLens"
         },
-        "openferricDsl.pricing.numPaths": {
+        "openferric.pricing.numPaths": {
           "type": "number",
           "default": 50000,
           "description": "Number of Monte Carlo paths"
         },
-        "openferricDsl.pricing.numSteps": {
+        "openferric.pricing.numSteps": {
           "type": "number",
           "default": 100,
           "description": "Number of time steps per path"
         },
-        "openferricDsl.pricing.seed": {
+        "openferric.pricing.seed": {
           "type": "number",
           "default": 42,
           "description": "RNG seed for reproducibility"
         },
-        "openferricDsl.market.default": {
+        "openferric.market.default": {
           "type": "object",
           "default": {
             "assets": [
