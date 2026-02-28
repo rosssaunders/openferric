@@ -5,6 +5,7 @@ mod diagnostics;
 mod document_symbols;
 mod goto_def;
 mod hover;
+mod notification;
 mod semantic_tokens;
 mod symbols;
 

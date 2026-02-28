@@ -4,6 +4,7 @@ import {
   LanguageClientOptions,
   ServerOptions,
 } from "vscode-languageclient/node";
+import { PricingPanelProvider, PricingResult } from "./pricingPanel";
 
 const LANGUAGE_ID = "openferric";
 let client: LanguageClient | undefined;
@@ -39,7 +40,25 @@ export function activate(context: vscode.ExtensionContext): void {
     clientOptions
   );
 
-  client.start();
+  // Register pricing dashboard panel.
+  const pricingProvider = new PricingPanelProvider();
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      PricingPanelProvider.viewType,
+      pricingProvider
+    )
+  );
+
+  // Start client and listen for pricing notifications.
+  client.start().then(() => {
+    client!.onNotification(
+      "openferric/pricingResult",
+      (result: PricingResult) => {
+        pricingProvider.update(result);
+      }
+    );
+  });
+
   context.subscriptions.push({
     dispose: () => {
       if (client) {

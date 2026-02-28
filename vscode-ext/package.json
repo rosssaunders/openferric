@@ -13,6 +13,24 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "openferric",
+          "title": "OpenFerric",
+          "icon": "$(graph-line)"
+        }
+      ]
+    },
+    "views": {
+      "openferric": [
+        {
+          "type": "webview",
+          "id": "openferric.pricingPanel",
+          "name": "Pricing Dashboard"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "openferric",

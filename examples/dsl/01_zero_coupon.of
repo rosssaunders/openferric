@@ -3,9 +3,9 @@
 // PV = notional * exp(-r * T)
 
 product "Zero Coupon"
-    notional: 1_000_000
+    notional: 1
     maturity: 1.0
     underlyings
         SPX = asset(0)
-    schedule annual from 1.0 to 1.0
+    schedule annual from 1.0 to 5.0
         redeem notional

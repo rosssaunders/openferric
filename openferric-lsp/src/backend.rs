@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use openferric::dsl::ast::ProductDef;
+use openferric::dsl::engine::DslMonteCarloEngine;
 use openferric::dsl::ir::CompiledProduct;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -13,6 +14,7 @@ use crate::diagnostics;
 use crate::document_symbols;
 use crate::goto_def;
 use crate::hover;
+use crate::notification::{self, GreeksEntry, PayoffPoint, PricingResultPayload};
 use crate::semantic_tokens;
 use crate::symbols::{self, SymbolTable};
 
@@ -75,6 +77,33 @@ impl Backend {
         };
         self.documents.lock().unwrap().insert(uri.clone(), state);
         diags
+    }
+
+    /// Spawn a background task to compute pricing and send a notification.
+    fn send_pricing_notification(&self) {
+        let enabled = *self.pricing_enabled.lock().unwrap();
+        if !enabled {
+            return;
+        }
+
+        // Extract compiled product data under the lock.
+        let product_data = {
+            let docs = self.documents.lock().unwrap();
+            docs.values()
+                .find_map(|state| state.product.clone())
+        };
+        let Some(product) = product_data else { return };
+
+        let pricing_cfg = self.pricing_config.lock().unwrap().clone();
+        let market_cfg = self.market_config.lock().unwrap().clone();
+        let client = self.client.clone();
+
+        tokio::spawn(async move {
+            let payload = compute_pricing_payload(&product, &pricing_cfg, market_cfg.as_ref());
+            client
+                .send_notification::<notification::PricingNotification>(payload)
+                .await;
+        });
     }
 }
 
@@ -149,6 +178,7 @@ impl LanguageServer for Backend {
         self.client
             .publish_diagnostics(uri, diags, None)
             .await;
+        self.send_pricing_notification();
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -158,6 +188,7 @@ impl LanguageServer for Backend {
             self.client
                 .publish_diagnostics(uri, diags, None)
                 .await;
+            self.send_pricing_notification();
         }
     }
 
@@ -257,5 +288,96 @@ impl LanguageServer for Backend {
                 data: semantic_tokens::semantic_tokens(state),
             })
         }))
+    }
+}
+
+/// Compute pricing payload in a blocking context (called from spawned task).
+fn compute_pricing_payload(
+    product: &CompiledProduct,
+    pricing_cfg: &PricingConfig,
+    market_json: Option<&serde_json::Value>,
+) -> PricingResultPayload {
+    let underlying_names: Vec<String> = product
+        .underlyings
+        .iter()
+        .map(|u| u.name.clone())
+        .collect();
+
+    let market = match codelens::build_market(product.num_underlyings, market_json) {
+        Some(m) => m,
+        None => {
+            return PricingResultPayload {
+                product_name: product.name.clone(),
+                notional: product.notional,
+                maturity: product.maturity,
+                underlyings: underlying_names,
+                price: 0.0,
+                stderr: None,
+                greeks: vec![],
+                payoff_profile: vec![],
+                error: Some("Failed to build market data".into()),
+            };
+        }
+    };
+
+    let engine = DslMonteCarloEngine::new(
+        pricing_cfg.num_paths as usize,
+        pricing_cfg.num_steps as usize,
+        pricing_cfg.seed,
+    );
+
+    // Price.
+    let (price, stderr, error) = match engine.price_multi_asset(product, &market) {
+        Ok(result) => (result.price, result.stderr, None),
+        Err(e) => (0.0, None, Some(format!("{e}"))),
+    };
+
+    // Greeks per underlying.
+    let mut greeks = Vec::new();
+    for i in 0..product.num_underlyings {
+        let name = product
+            .underlyings
+            .get(i)
+            .map(|u| u.name.clone())
+            .unwrap_or_else(|| format!("Asset {i}"));
+        if let Ok(g) = engine.greeks_multi_asset(product, &market, i) {
+            greeks.push(GreeksEntry {
+                asset: name,
+                delta: g.delta,
+                gamma: g.gamma,
+                vega: g.vega,
+                theta: g.theta,
+                rho: g.rho,
+            });
+        }
+    }
+
+    // Payoff profile: 21 spot levels from 50% to 150%.
+    let payoff_engine = DslMonteCarloEngine::new(10_000, pricing_cfg.num_steps as usize, pricing_cfg.seed);
+    let mut payoff_profile = Vec::with_capacity(21);
+    for i in 0..=20 {
+        let pct = 50.0 + (i as f64) * 5.0;
+        let scale = pct / 100.0;
+        let mut bumped_market = market.clone();
+        for asset in &mut bumped_market.assets {
+            asset.spot *= scale;
+        }
+        let pv = payoff_engine
+            .price_multi_asset(product, &bumped_market)
+            .map(|r| r.price)
+            .unwrap_or(0.0);
+        payoff_profile.push(PayoffPoint { spot_pct: pct, pv });
+    }
+
+    PricingResultPayload {
+        product_name: product.name.clone(),
+        notional: product.notional,
+        maturity: product.maturity,
+        underlyings: underlying_names,
+        price,
+        stderr,
+        greeks,
+        payoff_profile,
+        error,
     }
 }

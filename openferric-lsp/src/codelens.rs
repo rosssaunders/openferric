@@ -91,7 +91,7 @@ pub fn code_lenses(
     lenses
 }
 
-fn build_market(num_underlyings: usize, market_json: Option<&serde_json::Value>) -> Option<MultiAssetMarket> {
+pub fn build_market(num_underlyings: usize, market_json: Option<&serde_json::Value>) -> Option<MultiAssetMarket> {
     // Try to parse from config.
     if let Some(json) = market_json
         && let Ok(mut market) = serde_json::from_value::<MultiAssetMarket>(json.clone())
