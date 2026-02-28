@@ -9,6 +9,30 @@ type_complexity = "allow"
 name = "openferric"
 version = "0.1.0"
 edition = "2024"
+description = "Quantitative finance library for derivative pricing, risk analytics, and structured products"
+license = "MIT"
+repository = "https://github.com/rosssaunders/openferric"
+readme = "README.md"
+keywords = ["finance", "derivatives", "pricing", "options", "quantitative"]
+categories = ["finance", "mathematics", "science"]
+exclude = [
+    "vendor/",
+    "excel-addin/",
+    "vscode-ext/",
+    "openferric-wasm/",
+    "openferric-python/",
+    "openferric-lsp/",
+    "www/",
+    ".github/",
+    "docs/",
+    "tests/",
+    "benches/",
+    "examples/",
+    "Makefile",
+    "CLAUDE.md",
+    ".copilot-instructions.md",
+    ".codecov.yml",
+]
 
 [lints]
 workspace = true
