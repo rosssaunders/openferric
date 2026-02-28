@@ -1,5 +1,6 @@
 mod calibrate;
 mod credit;
+mod dsl;
 mod gpu;
 mod helpers;
 mod heston;

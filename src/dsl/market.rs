@@ -3,7 +3,7 @@
 use crate::core::PricingError;
 
 /// Per-asset market data for the multi-asset DSL MC engine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AssetData {
     /// Initial spot price.
     pub spot: f64,
@@ -14,7 +14,7 @@ pub struct AssetData {
 }
 
 /// Multi-asset market snapshot used by `DslMonteCarloEngine`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MultiAssetMarket {
     /// Per-asset data, indexed by asset index.
     pub assets: Vec<AssetData>,
