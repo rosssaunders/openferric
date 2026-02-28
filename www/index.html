@@ -1084,13 +1084,15 @@
       overview: {
         panels: ['surface', 'term', 'smile', 'scanner', 'surfacecfg'],
         build(dv) {
+          const halfH = Math.round((window.innerHeight - 44) / 2);
+          const halfW = Math.round(window.innerWidth / 2);
           dv.addPanel({ id: 'surface', component: 'surface', title: '3D Vol Surface' });
           dv.addPanel({ id: 'term', component: 'term', title: 'Term Structure',
-            position: { referencePanel: 'surface', direction: 'right' } });
+            position: { referencePanel: 'surface', direction: 'right' }, initialWidth: halfW });
           dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
-            position: { referencePanel: 'term', direction: 'below' } });
+            position: { referencePanel: 'term', direction: 'below' }, initialHeight: halfH });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
-            position: { referencePanel: 'surface', direction: 'below' } });
+            position: { referencePanel: 'surface', direction: 'below' }, initialHeight: halfH });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
             position: { referencePanel: 'scanner', direction: 'right' } });
         },
@@ -1098,13 +1100,15 @@
       analysis: {
         panels: ['greeks', 'forwardvol', 'volcone', 'volchange', 'surfacecfg'],
         build(dv) {
+          const halfH = Math.round((window.innerHeight - 44) / 2);
+          const halfW = Math.round(window.innerWidth / 2);
           dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap (Black-76)' });
           dv.addPanel({ id: 'forwardvol', component: 'forwardvol', title: 'Forward Vol',
-            position: { referencePanel: 'greeks', direction: 'right' } });
+            position: { referencePanel: 'greeks', direction: 'right' }, initialWidth: halfW });
           dv.addPanel({ id: 'volcone', component: 'volcone', title: 'Vol Cone',
-            position: { referencePanel: 'greeks', direction: 'below' } });
+            position: { referencePanel: 'greeks', direction: 'below' }, initialHeight: halfH });
           dv.addPanel({ id: 'volchange', component: 'volchange', title: 'IV Change Heatmap',
-            position: { referencePanel: 'forwardvol', direction: 'below' } });
+            position: { referencePanel: 'forwardvol', direction: 'below' }, initialHeight: halfH });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
             position: { referencePanel: 'volcone', direction: 'right' } });
         },
@@ -1112,11 +1116,13 @@
       scanner: {
         panels: ['scanner', 'metrics', 'smile', 'surfacecfg'],
         build(dv) {
+          const halfH = Math.round((window.innerHeight - 44) / 2);
+          const halfW = Math.round(window.innerWidth / 2);
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner' });
           dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
-            position: { referencePanel: 'scanner', direction: 'right' } });
+            position: { referencePanel: 'scanner', direction: 'right' }, initialWidth: halfW });
           dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
-            position: { referencePanel: 'metrics', direction: 'below' } });
+            position: { referencePanel: 'metrics', direction: 'below' }, initialHeight: halfH });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
             position: { referencePanel: 'smile', direction: 'right' } });
         },
@@ -1124,11 +1130,13 @@
       trading: {
         panels: ['tradeflow', 'strategy', 'funding', 'surfacecfg'],
         build(dv) {
+          const halfH = Math.round((window.innerHeight - 44) / 2);
+          const halfW = Math.round(window.innerWidth / 2);
           dv.addPanel({ id: 'tradeflow', component: 'tradeflow', title: 'Trade Flow' });
           dv.addPanel({ id: 'strategy', component: 'strategy', title: 'Strategy Builder',
-            position: { referencePanel: 'tradeflow', direction: 'right' } });
+            position: { referencePanel: 'tradeflow', direction: 'right' }, initialWidth: halfW });
           dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding & Basis',
-            position: { referencePanel: 'tradeflow', direction: 'below' } });
+            position: { referencePanel: 'tradeflow', direction: 'below' }, initialHeight: halfH });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
             position: { referencePanel: 'funding', direction: 'right' } });
         },
@@ -1136,11 +1144,13 @@
       pricer: {
         panels: ['pricer', 'surfacecfg', 'scanner'],
         build(dv) {
+          const halfH = Math.round((window.innerHeight - 44) / 2);
+          const halfW = Math.round(window.innerWidth / 2);
           dv.addPanel({ id: 'pricer', component: 'pricer', title: 'OTC Exotic Pricer' });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
-            position: { referencePanel: 'pricer', direction: 'right' } });
+            position: { referencePanel: 'pricer', direction: 'right' }, initialWidth: halfW });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
-            position: { referencePanel: 'pricer', direction: 'below' } });
+            position: { referencePanel: 'pricer', direction: 'below' }, initialHeight: halfH });
         },
       },
       all: {
@@ -4304,18 +4314,8 @@
 
       activeView = viewName;
 
-      // Try to restore saved layout for this view, fall back to default
-      const savedKey = viewName === 'all' ? LAYOUT_KEY : (LAYOUT_KEY_PREFIX + viewName);
-      const saved = localStorage.getItem(savedKey);
-      if (saved) {
-        try {
-          dockview.fromJSON(JSON.parse(saved));
-        } catch (e) {
-          applyViewDef(viewName);
-        }
-      } else {
-        applyViewDef(viewName);
-      }
+      // Restore saved layout (validated) or fall back to default
+      restoreOrDefault(viewName);
 
       // Update button active states
       document.querySelectorAll('.view-switcher .tab-btn').forEach(btn => {
@@ -4349,6 +4349,36 @@
       } else {
         def.build(dockview);
       }
+    }
+
+    // Validate that a saved layout's panels match the view definition
+    function isSavedLayoutValid(json, viewName) {
+      try {
+        const def = VIEW_DEFS[viewName];
+        if (!def) return false;
+        const savedIds = Object.keys(json.panels || {}).sort().join(',');
+        const expectedIds = [...def.panels].sort().join(',');
+        return savedIds === expectedIds;
+      } catch (e) { return false; }
+    }
+
+    function restoreOrDefault(viewName) {
+      const savedKey = viewName === 'all' ? LAYOUT_KEY : (LAYOUT_KEY_PREFIX + viewName);
+      const saved = localStorage.getItem(savedKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (isSavedLayoutValid(parsed, viewName)) {
+            dockview.fromJSON(parsed);
+            return;
+          }
+          console.warn('[dockview] saved layout panels mismatch for ' + viewName + ', using default');
+          localStorage.removeItem(savedKey);
+        } catch (e) {
+          console.warn('[dockview] failed to restore layout, using default:', e);
+        }
+      }
+      applyViewDef(viewName);
     }
 
     // =====================================================================
@@ -4600,22 +4630,8 @@
       }
     });
 
-    // Try to restore saved layout for active view, fall back to default
-    {
-      const savedKey = LAYOUT_KEY_PREFIX + activeView;
-      const savedLayout = localStorage.getItem(savedKey);
-      if (savedLayout) {
-        try {
-          dockview.fromJSON(JSON.parse(savedLayout));
-          console.log('[dockview] restored ' + activeView + ' layout from localStorage');
-        } catch (e) {
-          console.warn('[dockview] failed to restore layout, using default:', e);
-          applyViewDef(activeView);
-        }
-      } else {
-        applyViewDef(activeView);
-      }
-    }
+    // Restore saved layout (validated) or fall back to default
+    restoreOrDefault(activeView);
 
     // Persist layout changes (debounced, per-view key)
     let layoutSaveTimer = null;
