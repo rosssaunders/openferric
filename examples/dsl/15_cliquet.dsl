@@ -1,0 +1,41 @@
+// Cliquet (Ratchet) Option
+// Accumulates capped and floored periodic returns.
+// Each period, the return is max(floor, min(cap, periodic_return)).
+// At maturity, pays notional * sum_of_capped_returns.
+//
+// This approximation uses observation-to-observation returns via
+// the performance ratio.
+//
+// Local floor: 0% (no negative contribution)
+// Local cap: 4% per quarter
+// Global floor: 0% (minimum total payout is zero)
+
+product "Cliquet 1Y"
+    notional: 1_000_000
+    maturity: 1.0
+
+    underlyings
+        SPX = asset(0)
+
+    state
+        prev_perf: float = 1.0
+        total_return: float = 0.0
+
+    schedule quarterly from 0.25 to 1.0
+        let perf = worst_of(performances())
+
+        // Periodic return relative to previous observation
+        let period_return = perf / prev_perf - 1.0
+
+        // Apply local floor and cap
+        let floored = max(period_return, 0.0)
+        let capped = min(floored, 0.04)
+
+        set total_return = total_return + capped
+        set prev_perf = perf
+
+        if is_final then
+            // Global floor at zero
+            let payout = max(total_return, 0.0)
+            pay notional * payout
+            redeem notional

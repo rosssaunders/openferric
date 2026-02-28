@@ -1,0 +1,30 @@
+// Asian Payout Note
+// Payout at maturity is based on the average performance across
+// all observation dates, rather than final spot.
+// Averaging reduces the impact of spot manipulation and vol.
+//
+// Participation: 100% of average performance above strike
+// Strike: 100%
+// Monthly averaging over 1 year (12 observations)
+
+product "Asian Payout 1Y"
+    notional: 1_000_000
+    maturity: 1.0
+
+    underlyings
+        SPX = asset(0)
+
+    state
+        sum_perf: float = 0.0
+        num_obs: float = 0.0
+
+    schedule monthly from 0.0833 to 1.0
+        let perf = worst_of(performances())
+        set sum_perf = sum_perf + perf
+        set num_obs = num_obs + 1.0
+
+        if is_final then
+            let avg_perf = sum_perf / num_obs
+            let payout = max(avg_perf - 1.0, 0.0)
+            pay notional * payout
+            redeem notional
