@@ -1,5 +1,18 @@
 import * as vscode from "vscode";
 
+export interface MarketSnapshot {
+  rate: number;
+  assets: AssetSnapshot[];
+  correlation: number[][];
+}
+
+export interface AssetSnapshot {
+  name: string;
+  spot: number;
+  vol: number;
+  dividendYield: number;
+}
+
 export interface PricingResult {
   productName: string;
   notional: number;
@@ -8,8 +21,10 @@ export interface PricingResult {
   price: number;
   stderr: number | null;
   greeks: GreeksEntry[];
+  crossGreeks: CrossGreeksEntry[];
   payoffProfile: PayoffPoint[];
   error: string | null;
+  market: MarketSnapshot | null;
 }
 
 interface GreeksEntry {
@@ -19,6 +34,15 @@ interface GreeksEntry {
   vega: number;
   theta: number;
   rho: number;
+  vanna: number;
+  volga: number;
+}
+
+interface CrossGreeksEntry {
+  assetI: string;
+  assetJ: string;
+  crossGamma: number;
+  corrSens: number;
 }
 
 interface PayoffPoint {
@@ -32,10 +56,19 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private latestResult?: PricingResult;
 
+  private readonly _onMarketUpdate = new vscode.EventEmitter<MarketSnapshot>();
+  public readonly onMarketUpdate = this._onMarketUpdate.event;
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = this.getHtml();
+
+    webviewView.webview.onDidReceiveMessage((msg) => {
+      if (msg.type === "marketUpdate") {
+        this._onMarketUpdate.fire(msg.data as MarketSnapshot);
+      }
+    });
 
     if (this.latestResult) {
       webviewView.webview.postMessage({
@@ -79,6 +112,12 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
     font-weight: 600;
     margin-bottom: 6px;
     color: var(--vscode-editor-foreground);
+  }
+  .card h3 {
+    font-size: 11px;
+    font-weight: 600;
+    margin: 8px 0 4px;
+    color: var(--vscode-descriptionForeground);
   }
   .meta {
     font-size: 11px;
@@ -150,6 +189,87 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
     padding: 40px 12px;
     font-size: 12px;
   }
+  .field-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 4px;
+    gap: 6px;
+  }
+  .field-row label {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    min-width: 60px;
+    flex-shrink: 0;
+  }
+  .field-row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .field-row input:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    border-color: var(--vscode-focusBorder);
+  }
+  .corr-grid {
+    margin-top: 4px;
+  }
+  .corr-grid table {
+    font-size: 11px;
+  }
+  .corr-grid td, .corr-grid th {
+    text-align: center;
+    padding: 2px 4px;
+  }
+  .corr-grid input {
+    width: 50px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-size: 10px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    text-align: center;
+  }
+  .corr-grid input:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+  }
+  .corr-grid .diag {
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+  }
+  .greeks-asset {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    margin: 8px 0 4px;
+  }
+  .greeks-asset:first-child { margin-top: 0; }
+  .greeks-pair {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin: 4px 0 2px;
+    padding-left: 4px;
+  }
+  .greeks-grid {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr;
+    gap: 2px 8px;
+    font-size: 11px;
+  }
+  .greeks-grid .gl {
+    color: var(--vscode-descriptionForeground);
+  }
+  .greeks-grid .gv {
+    text-align: right;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
 </style>
 </head>
 <body>
@@ -160,6 +280,10 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
       <div class="meta" id="product-meta"></div>
       <div class="meta" id="product-underlyings"></div>
     </div>
+    <div class="card" id="market-card" style="display:none;">
+      <h2>Market Data</h2>
+      <div id="market-inputs"></div>
+    </div>
     <div class="card" id="price-card">
       <h2>Price</h2>
       <div class="price-value" id="price-value"></div>
@@ -168,12 +292,7 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
     </div>
     <div class="card" id="greeks-card" style="display:none;">
       <h2>Greeks</h2>
-      <table>
-        <thead>
-          <tr><th>Asset</th><th>&Delta;</th><th>&Gamma;</th><th>&nu;</th><th>&theta;</th><th>&rho;</th></tr>
-        </thead>
-        <tbody id="greeks-body"></tbody>
-      </table>
+      <div id="greeks-body"></div>
     </div>
     <div class="card" id="payoff-card" style="display:none;">
       <h2>Payoff Profile</h2>
@@ -183,9 +302,135 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
   <script>
     const vscode = acquireVsCodeApi();
 
+    let currentMarket = null;
+    let debounceTimer = null;
+
     function fmt(n, d) {
       if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       return n.toFixed(d || 4);
+    }
+
+    function fmtGreek(n) {
+      const abs = Math.abs(n);
+      if (abs < 0.00005) return '~0';
+      if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+      if (abs >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return n.toFixed(4);
+    }
+
+    function emitMarketUpdate() {
+      if (!currentMarket) return;
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        // Convert camelCase back to snake_case for the LSP
+        const payload = {
+          rate: currentMarket.rate,
+          assets: currentMarket.assets.map(a => ({
+            spot: a.spot,
+            vol: a.vol,
+            dividend_yield: a.dividendYield,
+          })),
+          correlation: currentMarket.correlation,
+        };
+        vscode.postMessage({ type: 'marketUpdate', data: payload });
+      }, 300);
+    }
+
+    function renderMarket(market) {
+      if (!market) {
+        document.getElementById('market-card').style.display = 'none';
+        return;
+      }
+      currentMarket = JSON.parse(JSON.stringify(market));
+      document.getElementById('market-card').style.display = 'block';
+      const container = document.getElementById('market-inputs');
+      container.innerHTML = '';
+
+      // Rate input
+      const rateRow = document.createElement('div');
+      rateRow.className = 'field-row';
+      rateRow.innerHTML = '<label>Rate</label>';
+      const rateInput = document.createElement('input');
+      rateInput.type = 'number';
+      rateInput.step = '0.01';
+      rateInput.value = market.rate;
+      rateInput.addEventListener('input', () => {
+        currentMarket.rate = parseFloat(rateInput.value) || 0;
+        emitMarketUpdate();
+      });
+      rateRow.appendChild(rateInput);
+      container.appendChild(rateRow);
+
+      // Per-asset sections
+      for (let i = 0; i < market.assets.length; i++) {
+        const asset = market.assets[i];
+        const heading = document.createElement('h3');
+        heading.textContent = asset.name;
+        container.appendChild(heading);
+
+        const fields = [
+          { label: 'Spot', key: 'spot', step: '1', value: asset.spot },
+          { label: 'Vol', key: 'vol', step: '0.01', value: asset.vol },
+          { label: 'Div Yield', key: 'dividendYield', step: '0.01', value: asset.dividendYield },
+        ];
+        for (const f of fields) {
+          const row = document.createElement('div');
+          row.className = 'field-row';
+          row.innerHTML = '<label>' + f.label + '</label>';
+          const inp = document.createElement('input');
+          inp.type = 'number';
+          inp.step = f.step;
+          inp.value = f.value;
+          inp.dataset.assetIdx = String(i);
+          inp.dataset.field = f.key;
+          inp.addEventListener('input', () => {
+            currentMarket.assets[i][f.key] = parseFloat(inp.value) || 0;
+            emitMarketUpdate();
+          });
+          row.appendChild(inp);
+          container.appendChild(row);
+        }
+      }
+
+      // Correlation matrix (only for 2+ assets)
+      if (market.assets.length >= 2) {
+        const corrHeading = document.createElement('h3');
+        corrHeading.textContent = 'Correlation';
+        container.appendChild(corrHeading);
+
+        const corrDiv = document.createElement('div');
+        corrDiv.className = 'corr-grid';
+        const n = market.assets.length;
+        let html = '<table><tr><th></th>';
+        for (let j = 0; j < n; j++) html += '<th>' + market.assets[j].name + '</th>';
+        html += '</tr>';
+        for (let i = 0; i < n; i++) {
+          html += '<tr><th>' + market.assets[i].name + '</th>';
+          for (let j = 0; j < n; j++) {
+            if (i === j) {
+              html += '<td class="diag">1.00</td>';
+            } else if (j > i) {
+              html += '<td><input type="number" step="0.1" min="-1" max="1" value="' + market.correlation[i][j] + '" data-row="' + i + '" data-col="' + j + '"></td>';
+            } else {
+              html += '<td class="diag">' + market.correlation[i][j].toFixed(2) + '</td>';
+            }
+          }
+          html += '</tr>';
+        }
+        html += '</table>';
+        corrDiv.innerHTML = html;
+        corrDiv.querySelectorAll('input').forEach(inp => {
+          inp.addEventListener('input', () => {
+            const r = parseInt(inp.dataset.row);
+            const c = parseInt(inp.dataset.col);
+            const v = parseFloat(inp.value) || 0;
+            currentMarket.correlation[r][c] = v;
+            currentMarket.correlation[c][r] = v;
+            emitMarketUpdate();
+          });
+        });
+        container.appendChild(corrDiv);
+      }
     }
 
     function renderChart(points) {
@@ -274,22 +519,61 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
         document.getElementById('price-error').style.display = 'none';
       }
 
-      // Greeks table
+      // Market data inputs — only rebuild if asset count changed
+      if (d.market) {
+        const assetCount = d.market.assets ? d.market.assets.length : 0;
+        const currentCount = currentMarket ? currentMarket.assets.length : -1;
+        if (assetCount !== currentCount) {
+          renderMarket(d.market);
+        }
+      }
+
+      // Greeks per-asset grid
       const greeksCard = document.getElementById('greeks-card');
       const greeksBody = document.getElementById('greeks-body');
       if (d.greeks && d.greeks.length > 0) {
         greeksCard.style.display = 'block';
         greeksBody.innerHTML = '';
         for (const g of d.greeks) {
-          const tr = document.createElement('tr');
-          tr.innerHTML =
-            '<td>' + g.asset + '</td>' +
-            '<td>' + fmt(g.delta) + '</td>' +
-            '<td>' + fmt(g.gamma) + '</td>' +
-            '<td>' + fmt(g.vega) + '</td>' +
-            '<td>' + fmt(g.theta) + '</td>' +
-            '<td>' + fmt(g.rho) + '</td>';
-          greeksBody.appendChild(tr);
+          const heading = document.createElement('div');
+          heading.className = 'greeks-asset';
+          heading.textContent = g.asset;
+          greeksBody.appendChild(heading);
+          const grid = document.createElement('div');
+          grid.className = 'greeks-grid';
+          const pairs = [
+            ['\u0394', g.delta],   ['\u0393', g.gamma],
+            ['\u03BD', g.vega],    ['\u03B8', g.theta],
+            ['\u03C1', g.rho],     ['Vanna', g.vanna],
+            ['Volga', g.volga],
+          ];
+          for (const [label, val] of pairs) {
+            grid.innerHTML += '<span class="gl">' + label + '</span><span class="gv">' + fmtGreek(val) + '</span>';
+          }
+          greeksBody.appendChild(grid);
+        }
+
+        // Cross-greeks (only for 2+ assets)
+        if (d.crossGreeks && d.crossGreeks.length > 0) {
+          const crossHeading = document.createElement('div');
+          crossHeading.className = 'greeks-asset';
+          crossHeading.textContent = 'Cross Sensitivities';
+          greeksBody.appendChild(crossHeading);
+          for (const cg of d.crossGreeks) {
+            const pairLabel = document.createElement('div');
+            pairLabel.className = 'greeks-pair';
+            pairLabel.textContent = cg.assetI + ' / ' + cg.assetJ;
+            greeksBody.appendChild(pairLabel);
+            const grid = document.createElement('div');
+            grid.className = 'greeks-grid';
+            const pairs = [
+              ['X-\u0393', cg.crossGamma], ['\u03C1-Sens', cg.corrSens],
+            ];
+            for (const [label, val] of pairs) {
+              grid.innerHTML += '<span class="gl">' + label + '</span><span class="gv">' + fmtGreek(val) + '</span>';
+            }
+            greeksBody.appendChild(grid);
+          }
         }
       } else {
         greeksCard.style.display = 'none';

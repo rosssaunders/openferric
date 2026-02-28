@@ -14,7 +14,7 @@ use crate::diagnostics;
 use crate::document_symbols;
 use crate::goto_def;
 use crate::hover;
-use crate::notification::{self, GreeksEntry, PayoffPoint, PricingResultPayload};
+use crate::notification::{self, AssetSnapshot, CrossGreeksEntry, GreeksEntry, MarketSnapshot, PayoffPoint, PricingResultPayload};
 use crate::semantic_tokens;
 use crate::symbols::{self, SymbolTable};
 
@@ -77,6 +77,12 @@ impl Backend {
         };
         self.documents.lock().unwrap().insert(uri.clone(), state);
         diags
+    }
+
+    /// Handle custom `openferric/updateMarket` notification from the client.
+    pub async fn on_update_market(&self, params: serde_json::Value) {
+        *self.market_config.lock().unwrap() = Some(params);
+        self.send_pricing_notification();
     }
 
     /// Spawn a background task to compute pricing and send a notification.
@@ -314,8 +320,10 @@ fn compute_pricing_payload(
                 price: 0.0,
                 stderr: None,
                 greeks: vec![],
+                cross_greeks: vec![],
                 payoff_profile: vec![],
                 error: Some("Failed to build market data".into()),
+                market: None,
             };
         }
     };
@@ -332,7 +340,7 @@ fn compute_pricing_payload(
         Err(e) => (0.0, None, Some(format!("{e}"))),
     };
 
-    // Greeks per underlying.
+    // Extended greeks per underlying (delta, gamma, vega, rho, vanna, volga).
     let mut greeks = Vec::new();
     for i in 0..product.num_underlyings {
         let name = product
@@ -340,7 +348,7 @@ fn compute_pricing_payload(
             .get(i)
             .map(|u| u.name.clone())
             .unwrap_or_else(|| format!("Asset {i}"));
-        if let Ok(g) = engine.greeks_multi_asset(product, &market, i) {
+        if let Ok(g) = engine.extended_greeks_multi_asset(product, &market, i, price) {
             greeks.push(GreeksEntry {
                 asset: name,
                 delta: g.delta,
@@ -348,7 +356,26 @@ fn compute_pricing_payload(
                 vega: g.vega,
                 theta: g.theta,
                 rho: g.rho,
+                vanna: g.vanna,
+                volga: g.volga,
             });
+        }
+    }
+
+    // Cross-greeks for each unique pair (i < j).
+    let mut cross_greeks = Vec::new();
+    for i in 0..product.num_underlyings {
+        for j in (i + 1)..product.num_underlyings {
+            let name_i = product.underlyings.get(i).map(|u| u.name.clone()).unwrap_or_else(|| format!("Asset {i}"));
+            let name_j = product.underlyings.get(j).map(|u| u.name.clone()).unwrap_or_else(|| format!("Asset {j}"));
+            if let Ok(cg) = engine.cross_greeks_multi_asset(product, &market, i, j, price) {
+                cross_greeks.push(CrossGreeksEntry {
+                    asset_i: name_i,
+                    asset_j: name_j,
+                    cross_gamma: cg.cross_gamma,
+                    corr_sens: cg.corr_sens,
+                });
+            }
         }
     }
 
@@ -369,6 +396,26 @@ fn compute_pricing_payload(
         payoff_profile.push(PayoffPoint { spot_pct: pct, pv });
     }
 
+    // Build market snapshot for the UI.
+    let market_snapshot = MarketSnapshot {
+        rate: market.rate,
+        assets: product
+            .underlyings
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                let a = &market.assets[i];
+                AssetSnapshot {
+                    name: u.name.clone(),
+                    spot: a.spot,
+                    vol: a.vol,
+                    dividend_yield: a.dividend_yield,
+                }
+            })
+            .collect(),
+        correlation: market.correlation.clone(),
+    };
+
     PricingResultPayload {
         product_name: product.name.clone(),
         notional: product.notional,
@@ -377,7 +424,9 @@ fn compute_pricing_payload(
         price,
         stderr,
         greeks,
+        cross_greeks,
         payoff_profile,
         error,
+        market: Some(market_snapshot),
     }
 }

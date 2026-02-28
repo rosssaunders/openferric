@@ -8,7 +8,7 @@
 // Monthly averaging over 1 year (12 observations)
 
 product "Asian Payout 1Y"
-    notional: 1_000_000
+    notional: 1
     maturity: 1.0
 
     underlyings

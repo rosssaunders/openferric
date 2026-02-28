@@ -4,9 +4,10 @@ import {
   LanguageClientOptions,
   ServerOptions,
 } from "vscode-languageclient/node";
-import { PricingPanelProvider, PricingResult } from "./pricingPanel";
+import { PricingPanelProvider, PricingResult, MarketSnapshot } from "./pricingPanel";
 
 const LANGUAGE_ID = "openferric";
+const MARKET_STATE_KEY = "openferric.marketState";
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -15,6 +16,10 @@ export function activate(context: vscode.ExtensionContext): void {
     "lsp.path",
     "openferric-lsp"
   );
+
+  // Restore market state from workspace or fall back to settings.
+  const savedMarket = context.workspaceState.get<MarketSnapshot>(MARKET_STATE_KEY);
+  const initialMarket = savedMarket ?? config.get("market.default");
 
   const serverOptions: ServerOptions = {
     command: lspPath,
@@ -29,7 +34,7 @@ export function activate(context: vscode.ExtensionContext): void {
         numSteps: config.get<number>("pricing.numSteps", 100),
         seed: config.get<number>("pricing.seed", 42),
       },
-      market: config.get("market.default"),
+      market: initialMarket,
     },
   };
 
@@ -48,6 +53,14 @@ export function activate(context: vscode.ExtensionContext): void {
       pricingProvider
     )
   );
+
+  // Forward market edits from webview to LSP and persist.
+  pricingProvider.onMarketUpdate((market: MarketSnapshot) => {
+    context.workspaceState.update(MARKET_STATE_KEY, market);
+    if (client) {
+      client.sendNotification("openferric/updateMarket", market);
+    }
+  });
 
   // Start client and listen for pricing notifications.
   client.start().then(() => {

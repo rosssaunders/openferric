@@ -200,6 +200,176 @@ impl DslMonteCarloEngine {
             rho,
         })
     }
+
+    /// Compute per-asset greeks including higher-order sensitivities (vanna, volga).
+    pub fn extended_greeks_multi_asset(
+        &self,
+        product: &CompiledProduct,
+        market: &MultiAssetMarket,
+        asset_index: usize,
+        base_price: f64,
+    ) -> Result<ExtendedGreeks, PricingError> {
+        if asset_index >= market.assets.len() {
+            return Err(PricingError::InvalidInput(format!(
+                "asset_index {asset_index} out of range (have {} assets)",
+                market.assets.len()
+            )));
+        }
+
+        let spot_bump = 0.01 * market.assets[asset_index].spot;
+        let vol_bump = 0.01;
+
+        // Spot up / down
+        let mut market_spot_up = market.clone();
+        market_spot_up.assets[asset_index].spot += spot_bump;
+        let price_spot_up = self.price_multi_asset(product, &market_spot_up)?.price;
+
+        let mut market_spot_down = market.clone();
+        market_spot_down.assets[asset_index].spot -= spot_bump;
+        let price_spot_down = self.price_multi_asset(product, &market_spot_down)?.price;
+
+        let delta = (price_spot_up - price_spot_down) / (2.0 * spot_bump);
+        let gamma = (price_spot_up - 2.0 * base_price + price_spot_down) / (spot_bump * spot_bump);
+
+        // Vol up / down
+        let mut market_vol_up = market.clone();
+        market_vol_up.assets[asset_index].vol += vol_bump;
+        let price_vol_up = self.price_multi_asset(product, &market_vol_up)?.price;
+
+        let mut market_vol_down = market.clone();
+        market_vol_down.assets[asset_index].vol -= vol_bump;
+        let price_vol_down = self.price_multi_asset(product, &market_vol_down)?.price;
+
+        let vega = (price_vol_up - price_vol_down) / (2.0 * vol_bump);
+        let volga = (price_vol_up - 2.0 * base_price + price_vol_down) / (vol_bump * vol_bump);
+
+        // Vanna: cross derivative d²V/(dS dσ)
+        // Bump spot+vol jointly for the four corners
+        let mut m_up_up = market.clone();
+        m_up_up.assets[asset_index].spot += spot_bump;
+        m_up_up.assets[asset_index].vol += vol_bump;
+        let p_up_up = self.price_multi_asset(product, &m_up_up)?.price;
+
+        let mut m_up_down = market.clone();
+        m_up_down.assets[asset_index].spot += spot_bump;
+        m_up_down.assets[asset_index].vol -= vol_bump;
+        let p_up_down = self.price_multi_asset(product, &m_up_down)?.price;
+
+        let mut m_down_up = market.clone();
+        m_down_up.assets[asset_index].spot -= spot_bump;
+        m_down_up.assets[asset_index].vol += vol_bump;
+        let p_down_up = self.price_multi_asset(product, &m_down_up)?.price;
+
+        let mut m_down_down = market.clone();
+        m_down_down.assets[asset_index].spot -= spot_bump;
+        m_down_down.assets[asset_index].vol -= vol_bump;
+        let p_down_down = self.price_multi_asset(product, &m_down_down)?.price;
+
+        let vanna = (p_up_up - p_up_down - p_down_up + p_down_down) / (4.0 * spot_bump * vol_bump);
+
+        // Rho
+        let rate_bump = 0.0001;
+        let mut market_rho = market.clone();
+        market_rho.rate += rate_bump;
+        let price_rho = self.price_multi_asset(product, &market_rho)?.price;
+        let rho = (price_rho - base_price) / rate_bump;
+
+        Ok(ExtendedGreeks {
+            delta,
+            gamma,
+            vega,
+            theta: 0.0,
+            rho,
+            vanna,
+            volga,
+        })
+    }
+
+    /// Compute cross-asset sensitivities between a pair of underlyings.
+    pub fn cross_greeks_multi_asset(
+        &self,
+        product: &CompiledProduct,
+        market: &MultiAssetMarket,
+        asset_i: usize,
+        asset_j: usize,
+        _base_price: f64,
+    ) -> Result<CrossGreeks, PricingError> {
+        let n = market.assets.len();
+        if asset_i >= n || asset_j >= n {
+            return Err(PricingError::InvalidInput(format!(
+                "asset indices ({asset_i}, {asset_j}) out of range (have {n} assets)"
+            )));
+        }
+
+        // Cross-gamma: d²V/(dSi dSj)
+        let bump_i = 0.01 * market.assets[asset_i].spot;
+        let bump_j = 0.01 * market.assets[asset_j].spot;
+
+        let mut m_pp = market.clone();
+        m_pp.assets[asset_i].spot += bump_i;
+        m_pp.assets[asset_j].spot += bump_j;
+        let p_pp = self.price_multi_asset(product, &m_pp)?.price;
+
+        let mut m_pm = market.clone();
+        m_pm.assets[asset_i].spot += bump_i;
+        m_pm.assets[asset_j].spot -= bump_j;
+        let p_pm = self.price_multi_asset(product, &m_pm)?.price;
+
+        let mut m_mp = market.clone();
+        m_mp.assets[asset_i].spot -= bump_i;
+        m_mp.assets[asset_j].spot += bump_j;
+        let p_mp = self.price_multi_asset(product, &m_mp)?.price;
+
+        let mut m_mm = market.clone();
+        m_mm.assets[asset_i].spot -= bump_i;
+        m_mm.assets[asset_j].spot -= bump_j;
+        let p_mm = self.price_multi_asset(product, &m_mm)?.price;
+
+        let cross_gamma = (p_pp - p_pm - p_mp + p_mm) / (4.0 * bump_i * bump_j);
+
+        // Correlation sensitivity: dV/dρij
+        let corr_bump = 0.01;
+        let mut m_corr_up = market.clone();
+        let rho_val = m_corr_up.correlation[asset_i][asset_j];
+        let rho_up = (rho_val + corr_bump).min(1.0);
+        m_corr_up.correlation[asset_i][asset_j] = rho_up;
+        m_corr_up.correlation[asset_j][asset_i] = rho_up;
+        let p_corr_up = self.price_multi_asset(product, &m_corr_up)?.price;
+
+        let mut m_corr_down = market.clone();
+        let rho_down = (rho_val - corr_bump).max(-1.0);
+        m_corr_down.correlation[asset_i][asset_j] = rho_down;
+        m_corr_down.correlation[asset_j][asset_i] = rho_down;
+        let p_corr_down = self.price_multi_asset(product, &m_corr_down)?.price;
+
+        let corr_sens = (p_corr_up - p_corr_down) / (rho_up - rho_down);
+
+        Ok(CrossGreeks {
+            cross_gamma,
+            corr_sens,
+        })
+    }
+}
+
+/// Extended per-asset greeks including higher-order sensitivities.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtendedGreeks {
+    pub delta: f64,
+    pub gamma: f64,
+    pub vega: f64,
+    pub theta: f64,
+    pub rho: f64,
+    pub vanna: f64,
+    pub volga: f64,
+}
+
+/// Cross-asset sensitivities between a pair of underlyings.
+#[derive(Debug, Clone, Copy)]
+pub struct CrossGreeks {
+    /// d²V/(dSi dSj)
+    pub cross_gamma: f64,
+    /// dV/dρij
+    pub corr_sens: f64,
 }
 
 /// Implement `PricingEngine<DslProduct>` for single-asset convenience.

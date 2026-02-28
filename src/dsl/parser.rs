@@ -203,7 +203,7 @@ fn parse_product_item(p: &mut Parser) -> Result<ProductItem, DslError> {
             p.expect(&TokenKind::Indent)?;
             let mut decls = Vec::new();
             while !matches!(p.peek_kind(), Some(TokenKind::Dedent) | None) {
-                decls.push(parse_underlying_decl(p)?);
+                decls.push(parse_underlying_decl(p, decls.len())?);
             }
             let end = p.current_span();
             p.expect(&TokenKind::Dedent)?;
@@ -242,16 +242,21 @@ fn parse_product_item(p: &mut Parser) -> Result<ProductItem, DslError> {
     }
 }
 
-fn parse_underlying_decl(p: &mut Parser) -> Result<UnderlyingDecl, DslError> {
+fn parse_underlying_decl(p: &mut Parser, position: usize) -> Result<UnderlyingDecl, DslError> {
     let (name, span) = p.expect_ident()?;
-    p.expect(&TokenKind::Eq)?;
-    p.expect(&TokenKind::Asset)?;
-    p.expect(&TokenKind::LParen)?;
-    let (idx, end_span) = p.expect_number()?;
-    p.expect(&TokenKind::RParen)?;
+    let (asset_index, end_span) = if p.peek_kind() == Some(&TokenKind::Eq) {
+        p.advance();
+        p.expect(&TokenKind::Asset)?;
+        p.expect(&TokenKind::LParen)?;
+        let (idx, es) = p.expect_number()?;
+        p.expect(&TokenKind::RParen)?;
+        (idx as usize, es)
+    } else {
+        (position, span)
+    };
     Ok(UnderlyingDecl {
         name,
-        asset_index: idx as usize,
+        asset_index,
         span: Span::new(span.start, end_span.end),
     })
 }

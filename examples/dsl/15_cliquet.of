@@ -11,13 +11,13 @@
 // Global floor: 0% (minimum total payout is zero)
 
 product "Cliquet 1Y"
-    notional: 1_000_000
+    notional: 1
     maturity: 1.0
 
     underlyings
         SPX = asset(0)
 
-    state
+    state  
         prev_perf: float = 1.0
         total_return: float = 0.0
 
