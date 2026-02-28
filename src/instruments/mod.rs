@@ -143,6 +143,7 @@ pub enum TradeInstrument {
     WeatherOption(WeatherOption),
     CatastropheBond(CatastropheBond),
     MbsPassThrough(MbsPassThrough),
+    DslProduct(crate::dsl::engine::DslProduct),
 }
 
 /// Trade record container.

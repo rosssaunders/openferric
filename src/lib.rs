@@ -94,6 +94,7 @@
 pub mod calibration;
 pub mod core;
 pub mod credit;
+pub mod dsl;
 pub mod engines;
 pub mod instruments;
 pub mod market;
