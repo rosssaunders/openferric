@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BTC Options Vol Terminal</title>
+  <title>Ferric Terminal</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dockview-core@4.3.1/dist/styles/dockview.css">
   <style>
@@ -633,7 +633,7 @@
 <body>
   <!-- ===== Header ===== -->
   <div class="header">
-    <div class="header-title">BTC Options Vol Terminal</div>
+    <div class="header-title">Ferric Terminal</div>
     <div class="header-spot" id="hdr-spot">--</div>
     <div class="sparkline-wrap">
       spot
@@ -1084,73 +1084,73 @@
       overview: {
         panels: ['surface', 'term', 'smile', 'scanner', 'surfacecfg'],
         build(dv) {
-          const halfH = Math.round((window.innerHeight - 44) / 2);
-          const halfW = Math.round(window.innerWidth / 2);
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
           dv.addPanel({ id: 'surface', component: 'surface', title: '3D Vol Surface' });
           dv.addPanel({ id: 'term', component: 'term', title: 'Term Structure',
-            position: { referencePanel: 'surface', direction: 'right' }, initialWidth: halfW });
+            position: { referencePanel: 'surface', direction: 'right' }, initialWidth: Math.round(W * 0.45) });
           dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
-            position: { referencePanel: 'term', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'surface', direction: 'below' }, initialHeight: Math.round(H * 0.4) });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
-            position: { referencePanel: 'surface', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'term', direction: 'below' }, initialHeight: Math.round(H * 0.4) });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
-            position: { referencePanel: 'scanner', direction: 'right' } });
+            position: { referencePanel: 'scanner' } });
         },
       },
       analysis: {
         panels: ['greeks', 'forwardvol', 'volcone', 'volchange', 'surfacecfg'],
         build(dv) {
-          const halfH = Math.round((window.innerHeight - 44) / 2);
-          const halfW = Math.round(window.innerWidth / 2);
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
           dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap (Black-76)' });
           dv.addPanel({ id: 'forwardvol', component: 'forwardvol', title: 'Forward Vol',
-            position: { referencePanel: 'greeks', direction: 'right' }, initialWidth: halfW });
+            position: { referencePanel: 'greeks', direction: 'right' }, initialWidth: Math.round(W * 0.5) });
           dv.addPanel({ id: 'volcone', component: 'volcone', title: 'Vol Cone',
-            position: { referencePanel: 'greeks', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'greeks', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
           dv.addPanel({ id: 'volchange', component: 'volchange', title: 'IV Change Heatmap',
-            position: { referencePanel: 'forwardvol', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'forwardvol', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
-            position: { referencePanel: 'volcone', direction: 'right' } });
+            position: { referencePanel: 'volchange' } });
         },
       },
       scanner: {
         panels: ['scanner', 'metrics', 'smile', 'surfacecfg'],
         build(dv) {
-          const halfH = Math.round((window.innerHeight - 44) / 2);
-          const halfW = Math.round(window.innerWidth / 2);
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner' });
-          dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
-            position: { referencePanel: 'scanner', direction: 'right' }, initialWidth: halfW });
           dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
-            position: { referencePanel: 'metrics', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'scanner', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
+          dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
+            position: { referencePanel: 'smile', direction: 'right' }, initialWidth: Math.round(W * 0.45) });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
-            position: { referencePanel: 'smile', direction: 'right' } });
+            position: { referencePanel: 'metrics' } });
         },
       },
       trading: {
         panels: ['tradeflow', 'strategy', 'funding', 'surfacecfg'],
         build(dv) {
-          const halfH = Math.round((window.innerHeight - 44) / 2);
-          const halfW = Math.round(window.innerWidth / 2);
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
           dv.addPanel({ id: 'tradeflow', component: 'tradeflow', title: 'Trade Flow' });
           dv.addPanel({ id: 'strategy', component: 'strategy', title: 'Strategy Builder',
-            position: { referencePanel: 'tradeflow', direction: 'right' }, initialWidth: halfW });
+            position: { referencePanel: 'tradeflow', direction: 'right' }, initialWidth: Math.round(W * 0.5) });
           dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding & Basis',
-            position: { referencePanel: 'tradeflow', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'tradeflow', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
-            position: { referencePanel: 'funding', direction: 'right' } });
+            position: { referencePanel: 'strategy', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
         },
       },
       pricer: {
         panels: ['pricer', 'surfacecfg', 'scanner'],
         build(dv) {
-          const halfH = Math.round((window.innerHeight - 44) / 2);
-          const halfW = Math.round(window.innerWidth / 2);
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
           dv.addPanel({ id: 'pricer', component: 'pricer', title: 'OTC Exotic Pricer' });
           dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
-            position: { referencePanel: 'pricer', direction: 'right' }, initialWidth: halfW });
+            position: { referencePanel: 'pricer', direction: 'right' }, initialWidth: Math.round(W * 0.45) });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
-            position: { referencePanel: 'pricer', direction: 'below' }, initialHeight: halfH });
+            position: { referencePanel: 'surfacecfg', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
         },
       },
       all: {
@@ -1159,7 +1159,7 @@
       },
     };
     let activeView = 'overview';
-    const LAYOUT_KEY_PREFIX = 'vol-terminal-layout-';
+    const LAYOUT_KEY_PREFIX = 'vol-terminal-layout-v2-';
 
     // IndexedDB snapshot timers
     const lastDbWrite = { vol_snapshots: 0, atm_iv_series: 0, spot_series: 0, realized_vol_series: 0, trade_flow_agg: 0, funding_basis: 0 };
@@ -1268,8 +1268,8 @@
       }
 
       // Update page title and header
-      document.title = currencyConfig.label + ' Options Vol Terminal';
-      document.querySelector('.header-title').textContent = currencyConfig.label + ' Options Vol Terminal';
+      document.title = 'Ferric Terminal — ' + currencyConfig.label;
+      document.querySelector('.header-title').textContent = 'Ferric Terminal';
       document.getElementById('hdr-spot').textContent = '--';
 
       mutateSurfaceConfig((cfg) => { cfg.asset = activeCurrency; }, {
@@ -4567,39 +4567,38 @@
     // =====================================================================
     //  Dockview Initialization
     // =====================================================================
-    const LAYOUT_KEY = 'vol-terminal-layout';
+    const LAYOUT_KEY = 'vol-terminal-layout-v2';
 
     function createDefaultLayout(dv) {
-      const surface = dv.addPanel({ id: 'surface', component: 'surface', title: '3D Vol Surface' });
+      const W = window.innerWidth;
+      const H = window.innerHeight - 44;
+      dv.addPanel({ id: 'surface', component: 'surface', title: '3D Vol Surface' });
       dv.addPanel({ id: 'volchange', component: 'volchange', title: 'IV Change Heatmap',
-        position: { referencePanel: 'surface', direction: 'right' } });
+        position: { referencePanel: 'surface', direction: 'right' }, initialWidth: Math.round(W * 0.5) });
       dv.addPanel({ id: 'smile', component: 'smile', title: 'Smile Slice',
-        position: { referencePanel: 'surface', direction: 'below' } });
+        position: { referencePanel: 'surface', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
       dv.addPanel({ id: 'greeks', component: 'greeks', title: 'Greeks Heatmap (Black-76)',
-        position: { referencePanel: 'volchange', direction: 'below' } });
+        position: { referencePanel: 'volchange', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
       dv.addPanel({ id: 'term', component: 'term', title: 'Term Structure',
-        position: { referencePanel: 'smile', direction: 'below' } });
-      // Forward Vol tabbed with Term Structure
+        position: { referencePanel: 'smile', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
       dv.addPanel({ id: 'forwardvol', component: 'forwardvol', title: 'Forward Vol',
         position: { referencePanel: 'term' } });
       dv.addPanel({ id: 'metrics', component: 'metrics', title: 'Metrics & Skew',
-        position: { referencePanel: 'greeks', direction: 'below' } });
+        position: { referencePanel: 'greeks', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
       dv.addPanel({ id: 'surfacecfg', component: 'surfacecfg', title: 'Surface Config',
         position: { referencePanel: 'metrics' } });
-      // Funding and Vol Cone tabbed with Metrics
       dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding & Basis',
         position: { referencePanel: 'metrics' } });
       dv.addPanel({ id: 'volcone', component: 'volcone', title: 'Vol Cone',
         position: { referencePanel: 'metrics' } });
       dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
-        position: { referencePanel: 'term', direction: 'below' } });
-      // Trade Flow and Strategy tabbed with Scanner
+        position: { referencePanel: 'term', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
       dv.addPanel({ id: 'tradeflow', component: 'tradeflow', title: 'Trade Flow',
         position: { referencePanel: 'scanner' } });
       dv.addPanel({ id: 'strategy', component: 'strategy', title: 'Strategy Builder',
         position: { referencePanel: 'scanner' } });
       dv.addPanel({ id: 'pricer', component: 'pricer', title: 'OTC Exotic Pricer',
-        position: { referencePanel: 'strategy' } });
+        position: { referencePanel: 'scanner' } });
     }
 
     const dockviewContainer = document.getElementById('dockview');
