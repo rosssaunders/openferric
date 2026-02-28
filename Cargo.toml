@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "openferric-wasm", "openferric-python"]
+members = [".", "openferric-wasm", "openferric-python", "openferric-lsp"]
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"

@@ -1,0 +1,149 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "OpenFerric DSL",
+  "scopeName": "source.openferric-dsl",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#declaration-keywords" },
+    { "include": "#block-keywords" },
+    { "include": "#statement-keywords" },
+    { "include": "#frequency-constants" },
+    { "include": "#boolean-constants" },
+    { "include": "#type-keywords" },
+    { "include": "#builtin-functions" },
+    { "include": "#builtin-variables" },
+    { "include": "#logical-operators" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.openferric-dsl",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.openferric-dsl",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.openferric-dsl",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.openferric-dsl",
+          "match": "\\b\\d[\\d_]*(\\.[\\d_]+)?([eE][+-]?\\d+)?\\b"
+        }
+      ]
+    },
+    "declaration-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.product.openferric-dsl",
+          "match": "\\bproduct\\b"
+        },
+        {
+          "name": "keyword.other.declaration.openferric-dsl",
+          "match": "\\b(notional|maturity)(?=\\s*:)"
+        }
+      ]
+    },
+    "block-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.block.openferric-dsl",
+          "match": "\\b(underlyings|state|schedule)\\b"
+        },
+        {
+          "name": "keyword.other.range.openferric-dsl",
+          "match": "\\b(from|to)\\b"
+        }
+      ]
+    },
+    "statement-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.statement.openferric-dsl",
+          "match": "\\b(let|if|then|else|pay|redeem|set|skip)\\b"
+        }
+      ]
+    },
+    "frequency-constants": {
+      "patterns": [
+        {
+          "name": "constant.language.frequency.openferric-dsl",
+          "match": "\\b(monthly|quarterly|semi_annual|annual)\\b"
+        }
+      ]
+    },
+    "boolean-constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.openferric-dsl",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "type-keywords": {
+      "patterns": [
+        {
+          "name": "storage.type.openferric-dsl",
+          "match": "\\b(bool|float)\\b"
+        }
+      ]
+    },
+    "builtin-functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.openferric-dsl",
+          "match": "\\b(worst_of|best_of|performances|price|min|max|abs|exp|log|asset)\\b"
+        }
+      ]
+    },
+    "builtin-variables": {
+      "patterns": [
+        {
+          "name": "variable.language.builtin.openferric-dsl",
+          "match": "\\b(notional|observation_date|is_final)\\b(?!\\s*:)"
+        }
+      ]
+    },
+    "logical-operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.logical.openferric-dsl",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.openferric-dsl",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.openferric-dsl",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.openferric-dsl",
+          "match": "[+\\-*/]"
+        }
+      ]
+    }
+  }
+}
