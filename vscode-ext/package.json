@@ -1,0 +1,86 @@
+{
+  "name": "openferric-dsl",
+  "displayName": "OpenFerric DSL",
+  "description": "Language support for OpenFerric structured product DSL via LSP",
+  "version": "0.2.0",
+  "publisher": "openferric",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:openferric-dsl"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "openferric-dsl",
+        "aliases": ["OpenFerric DSL", "openferric-dsl"],
+        "extensions": [".dsl"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "openferric-dsl",
+        "scopeName": "source.openferric-dsl",
+        "path": "./syntaxes/openferric-dsl.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "OpenFerric DSL",
+      "properties": {
+        "openferricDsl.lsp.path": {
+          "type": "string",
+          "default": "openferric-lsp",
+          "description": "Path to the openferric-lsp binary"
+        },
+        "openferricDsl.pricing.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable live pricing via CodeLens"
+        },
+        "openferricDsl.pricing.numPaths": {
+          "type": "number",
+          "default": 50000,
+          "description": "Number of Monte Carlo paths"
+        },
+        "openferricDsl.pricing.numSteps": {
+          "type": "number",
+          "default": 100,
+          "description": "Number of time steps per path"
+        },
+        "openferricDsl.pricing.seed": {
+          "type": "number",
+          "default": 42,
+          "description": "RNG seed for reproducibility"
+        },
+        "openferricDsl.market.default": {
+          "type": "object",
+          "default": {
+            "assets": [
+              { "spot": 100.0, "vol": 0.20, "dividend_yield": 0.02 }
+            ],
+            "correlation": [[1.0]],
+            "rate": 0.05
+          },
+          "description": "Default market data (MultiAssetMarket JSON)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
