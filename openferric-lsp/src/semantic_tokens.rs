@@ -109,10 +109,7 @@ pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
 
             // Skip indentation and punctuation tokens
             TokenKind::Indent | TokenKind::Dedent => continue,
-            TokenKind::LParen
-            | TokenKind::RParen
-            | TokenKind::Colon
-            | TokenKind::Comma => continue,
+            TokenKind::LParen | TokenKind::RParen | TokenKind::Colon | TokenKind::Comma => continue,
             TokenKind::Eq
             | TokenKind::EqEq
             | TokenKind::Ne

@@ -73,11 +73,7 @@ pub fn document_symbols(state: &DocumentState, uri: &Url) -> Vec<SymbolInformati
                         kind: tower_lsp::lsp_types::SymbolKind::VARIABLE,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(
-                                &state.source,
-                                decl.span.start,
-                                decl.span.end,
-                            ),
+                            range: span_to_range(&state.source, decl.span.start, decl.span.end),
                         },
                         tags: None,
                         deprecated: None,
@@ -103,11 +99,7 @@ pub fn document_symbols(state: &DocumentState, uri: &Url) -> Vec<SymbolInformati
                         kind: tower_lsp::lsp_types::SymbolKind::VARIABLE,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(
-                                &state.source,
-                                decl.span.start,
-                                decl.span.end,
-                            ),
+                            range: span_to_range(&state.source, decl.span.start, decl.span.end),
                         },
                         tags: None,
                         deprecated: None,
@@ -135,11 +127,7 @@ pub fn document_symbols(state: &DocumentState, uri: &Url) -> Vec<SymbolInformati
                     kind: tower_lsp::lsp_types::SymbolKind::EVENT,
                     location: Location {
                         uri: uri.clone(),
-                        range: span_to_range(
-                            &state.source,
-                            sched.span.start,
-                            sched.span.end,
-                        ),
+                        range: span_to_range(&state.source, sched.span.start, sched.span.end),
                     },
                     tags: None,
                     deprecated: None,

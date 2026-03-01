@@ -1203,8 +1203,7 @@ fn extrinsic_storage_value_lsm(
 
     for p in 0..lsm_config.num_paths {
         let s_t = spots[p][n_t - 1];
-        for inv_idx in 0..n_inv {
-            let inv = grid[inv_idx];
+        for (inv_idx, &inv) in grid[..n_inv].iter().enumerate() {
             let mut terminal = terminal_disc * s_t * inv;
             if let Some(target) = contract.terminal_inventory_target {
                 terminal -= 1.0e6 * (inv - target).abs();
@@ -1224,8 +1223,7 @@ fn extrinsic_storage_value_lsm(
 
         let mut values_cur = vec![vec![f64::NEG_INFINITY; n_inv]; lsm_config.num_paths];
 
-        for inv_idx in 0..n_inv {
-            let inv = grid[inv_idx];
+        for (inv_idx, &inv) in grid[..n_inv].iter().enumerate() {
             let min_next_inv = (inv - contract.max_withdrawal).max(contract.min_inventory);
             let max_next_inv = (inv + contract.max_injection).min(contract.max_inventory);
 

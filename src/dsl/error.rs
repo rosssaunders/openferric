@@ -41,11 +41,7 @@ impl fmt::Display for DslError {
             Self::CompileError {
                 message,
                 span: Some(span),
-            } => write!(
-                f,
-                "compile error at {}-{}: {message}",
-                span.start, span.end
-            ),
+            } => write!(f, "compile error at {}-{}: {message}", span.start, span.end),
             Self::CompileError {
                 message,
                 span: None,
@@ -67,6 +63,9 @@ impl From<DslError> for PricingError {
 pub fn annotate_source(source: &str, span: Span) -> String {
     let before = &source[..span.start.min(source.len())];
     let line = before.chars().filter(|&c| c == '\n').count() + 1;
-    let col = before.rfind('\n').map_or(span.start, |nl| span.start - nl - 1) + 1;
+    let col = before
+        .rfind('\n')
+        .map_or(span.start, |nl| span.start - nl - 1)
+        + 1;
     format!("line {line}, col {col}")
 }

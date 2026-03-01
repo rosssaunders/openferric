@@ -4,7 +4,9 @@
 //! accumulating discounted cashflows and handling early termination.
 
 use crate::dsl::error::DslError;
-use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Schedule, Statement, UnaryOp, Value};
+use crate::dsl::ir::{
+    BinOp, BuiltinFn, CompiledProduct, Expr, Schedule, Statement, UnaryOp, Value,
+};
 
 /// Per-path evaluation context.
 struct EvalContext<'a> {
@@ -74,7 +76,10 @@ pub fn evaluate_product(
             &mut state,
             &mut pv,
         )?;
-        if matches!(outcome, ObservationResult::Redeemed | ObservationResult::Skipped) {
+        if matches!(
+            outcome,
+            ObservationResult::Redeemed | ObservationResult::Skipped
+        ) {
             break;
         }
     }
@@ -317,7 +322,9 @@ fn eval_builtin(
         }
         BuiltinFn::Price => {
             if args.is_empty() {
-                return Err(DslError::EvalError("price() requires an asset index".to_string()));
+                return Err(DslError::EvalError(
+                    "price() requires an asset index".to_string(),
+                ));
             }
             let idx = eval_expr(&args[0], ctx)?.as_f64() as usize;
             if idx >= ctx.spots.len() {
@@ -330,7 +337,9 @@ fn eval_builtin(
         }
         BuiltinFn::Min => {
             if args.len() != 2 {
-                return Err(DslError::EvalError("min() requires 2 arguments".to_string()));
+                return Err(DslError::EvalError(
+                    "min() requires 2 arguments".to_string(),
+                ));
             }
             let a = eval_expr(&args[0], ctx)?.as_f64();
             let b = eval_expr(&args[1], ctx)?.as_f64();
@@ -338,7 +347,9 @@ fn eval_builtin(
         }
         BuiltinFn::Max => {
             if args.len() != 2 {
-                return Err(DslError::EvalError("max() requires 2 arguments".to_string()));
+                return Err(DslError::EvalError(
+                    "max() requires 2 arguments".to_string(),
+                ));
             }
             let a = eval_expr(&args[0], ctx)?.as_f64();
             let b = eval_expr(&args[1], ctx)?.as_f64();
@@ -572,22 +583,13 @@ mod tests {
         // At t=0.25: pays coupon = 1M * 0.08 * 0.25 = 20000, redeems 1M
         // PV = (20000 + 1000000) * exp(-0.05 * 0.25)
         let expected = (20_000.0 + 1_000_000.0) * (-0.05 * 0.25f64).exp();
-        assert!(
-            (pv - expected).abs() < 1.0,
-            "expected {expected}, got {pv}"
-        );
+        assert!((pv - expected).abs() < 1.0, "expected {expected}, got {pv}");
     }
 
     #[test]
     fn autocallable_ki_hit_with_final_wof_below_one() {
-        let product = make_simple_autocallable(
-            1_000_000.0,
-            1.5,
-            vec![0.5, 1.0, 1.5],
-            1.0,
-            0.08,
-            0.60,
-        );
+        let product =
+            make_simple_autocallable(1_000_000.0, 1.5, vec![0.5, 1.0, 1.5], 1.0, 0.08, 0.60);
 
         let initial_spots = vec![100.0];
         let num_steps = 3;
@@ -612,22 +614,12 @@ mod tests {
         let redeem_pv = 800_000.0 * (-0.05 * 1.5f64).exp();
         let expected = coupon_pv + redeem_pv;
 
-        assert!(
-            (pv - expected).abs() < 1.0,
-            "expected {expected}, got {pv}"
-        );
+        assert!((pv - expected).abs() < 1.0, "expected {expected}, got {pv}");
     }
 
     #[test]
     fn autocallable_no_ki_hit_returns_full_notional() {
-        let product = make_simple_autocallable(
-            1_000_000.0,
-            1.0,
-            vec![0.5, 1.0],
-            1.0,
-            0.08,
-            0.60,
-        );
+        let product = make_simple_autocallable(1_000_000.0, 1.0, vec![0.5, 1.0], 1.0, 0.08, 0.60);
 
         let initial_spots = vec![100.0];
         let num_steps = 2;
@@ -647,10 +639,7 @@ mod tests {
         let redeem_pv = 1_000_000.0 * (-0.05 * 1.0f64).exp();
         let expected = coupon_pv + redeem_pv;
 
-        assert!(
-            (pv - expected).abs() < 1.0,
-            "expected {expected}, got {pv}"
-        );
+        assert!((pv - expected).abs() < 1.0, "expected {expected}, got {pv}");
     }
 
     #[test]
@@ -662,9 +651,18 @@ mod tests {
             maturity: 1.0,
             num_underlyings: 3,
             underlyings: vec![
-                UnderlyingDef { name: "A".to_string(), asset_index: 0 },
-                UnderlyingDef { name: "B".to_string(), asset_index: 1 },
-                UnderlyingDef { name: "C".to_string(), asset_index: 2 },
+                UnderlyingDef {
+                    name: "A".to_string(),
+                    asset_index: 0,
+                },
+                UnderlyingDef {
+                    name: "B".to_string(),
+                    asset_index: 1,
+                },
+                UnderlyingDef {
+                    name: "C".to_string(),
+                    asset_index: 2,
+                },
             ],
             state_vars: vec![],
             constants: vec![],

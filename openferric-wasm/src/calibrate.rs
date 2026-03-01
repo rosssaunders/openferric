@@ -141,7 +141,8 @@ pub fn calibrate_slice(
 
                 // Spread quality: tight markets get higher weight
                 let spread_quality = if q.bid_iv > 0.0 && q.ask_iv > 0.0 {
-                    let rel_spread = (q.ask_iv - q.bid_iv) / ((q.ask_iv + q.bid_iv) * 0.5).max(1e-8);
+                    let rel_spread =
+                        (q.ask_iv - q.bid_iv) / ((q.ask_iv + q.bid_iv) * 0.5).max(1e-8);
                     1.0 / (1.0 + rel_spread * 2.0)
                 } else {
                     0.5
@@ -161,9 +162,8 @@ pub fn calibrate_slice(
                 m: 0.0,
                 sigma: 0.15,
             };
-            let result = openferric::vol::surface::calibrate_svi_weighted(
-                &points, &weights, init, 150,
-            );
+            let result =
+                openferric::vol::surface::calibrate_svi_weighted(&points, &weights, init, 150);
             // Scale a and b by T (SVI parameterizes total variance)
             vec![
                 result.a * t,

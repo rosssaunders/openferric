@@ -149,11 +149,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, DslError> {
 }
 
 /// Tokenize the content of a single line (leading whitespace already stripped).
-fn tokenize_content(
-    content: &str,
-    offset: usize,
-    tokens: &mut Vec<Token>,
-) -> Result<(), DslError> {
+fn tokenize_content(content: &str, offset: usize, tokens: &mut Vec<Token>) -> Result<(), DslError> {
     let bytes = content.as_bytes();
     let mut pos = 0;
 
@@ -298,11 +294,7 @@ fn tokenize_content(
     Ok(())
 }
 
-fn lex_string(
-    content: &str,
-    start: usize,
-    offset: usize,
-) -> Result<(String, usize), DslError> {
+fn lex_string(content: &str, start: usize, offset: usize) -> Result<(String, usize), DslError> {
     let bytes = content.as_bytes();
     let mut pos = start + 1;
     let mut s = String::new();
@@ -330,11 +322,7 @@ fn lex_string(
     })
 }
 
-fn lex_number(
-    content: &str,
-    start: usize,
-    offset: usize,
-) -> Result<(f64, usize), DslError> {
+fn lex_number(content: &str, start: usize, offset: usize) -> Result<(f64, usize), DslError> {
     let bytes = content.as_bytes();
     let mut pos = start;
     let mut num_str = String::new();
@@ -371,12 +359,13 @@ fn lex_number(
     }
 
     let global_end = offset + pos;
-    num_str.parse::<f64>().map(|n| (n, global_end)).map_err(|_| {
-        DslError::LexError {
+    num_str
+        .parse::<f64>()
+        .map(|n| (n, global_end))
+        .map_err(|_| DslError::LexError {
             message: format!("invalid number literal '{num_str}'"),
             span: Span::new(offset + start, global_end),
-        }
-    })
+        })
 }
 
 fn lex_ident_end(content: &str, start: usize) -> usize {

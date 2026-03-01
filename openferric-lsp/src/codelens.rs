@@ -76,10 +76,7 @@ pub fn code_lenses(
             command: Some(Command {
                 title: format!(
                     "Delta: {:.4} | Gamma: {:.4} | Vega: {:.4} | Rho: {:.4}",
-                    greeks.delta,
-                    greeks.gamma,
-                    greeks.vega,
-                    greeks.rho,
+                    greeks.delta, greeks.gamma, greeks.vega, greeks.rho,
                 ),
                 command: String::new(),
                 arguments: None,
@@ -91,7 +88,10 @@ pub fn code_lenses(
     lenses
 }
 
-pub fn build_market(num_underlyings: usize, market_json: Option<&serde_json::Value>) -> Option<MultiAssetMarket> {
+pub fn build_market(
+    num_underlyings: usize,
+    market_json: Option<&serde_json::Value>,
+) -> Option<MultiAssetMarket> {
     // Try to parse from config.
     if let Some(json) = market_json
         && let Ok(mut market) = serde_json::from_value::<MultiAssetMarket>(json.clone())
@@ -131,10 +131,6 @@ pub fn build_market(num_underlyings: usize, market_json: Option<&serde_json::Val
 
 fn identity_correlation(n: usize) -> Vec<Vec<f64>> {
     (0..n)
-        .map(|i| {
-            (0..n)
-                .map(|j| if i == j { 1.0 } else { 0.0 })
-                .collect()
-        })
+        .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
         .collect()
 }

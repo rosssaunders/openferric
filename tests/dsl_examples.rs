@@ -3,7 +3,7 @@
 //! Ensures all examples in `examples/dsl/` are valid DSL that compiles
 //! and produces a finite price under standard market conditions.
 
-use openferric::dsl::{parse_and_compile, AssetData, DslMonteCarloEngine, MultiAssetMarket};
+use openferric::dsl::{AssetData, DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
 
 fn single_asset_market() -> MultiAssetMarket {
     MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02)
@@ -64,8 +64,7 @@ fn engine() -> DslMonteCarloEngine {
 fn test_example(filename: &str, market: &MultiAssetMarket) {
     let path = format!("examples/dsl/{filename}");
     let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let product =
-        parse_and_compile(&source).unwrap_or_else(|e| panic!("compile {filename}: {e}"));
+    let product = parse_and_compile(&source).unwrap_or_else(|e| panic!("compile {filename}: {e}"));
     let result = engine()
         .price_multi_asset(&product, market)
         .unwrap_or_else(|e| panic!("price {filename}: {e}"));
@@ -74,7 +73,10 @@ fn test_example(filename: &str, market: &MultiAssetMarket) {
         "{filename}: price is not finite ({})",
         result.price
     );
-    eprintln!("{filename}: {:<40} price = {:>14.2}", product.name, result.price);
+    eprintln!(
+        "{filename}: {:<40} price = {:>14.2}",
+        product.name, result.price
+    );
 }
 
 #[test]

@@ -10,18 +10,18 @@ pub fn hover(state: &DocumentState, pos: Position) -> Option<Hover> {
 
     // Check if cursor is on a reference.
     if let Some(sym_ref) = state.symbols.reference_at(offset) {
-        let markdown = format_symbol_hover(
-            &sym_ref.name,
-            sym_ref.kind,
-            sym_ref.type_hint,
-            sym_ref.doc,
-        );
+        let markdown =
+            format_symbol_hover(&sym_ref.name, sym_ref.kind, sym_ref.type_hint, sym_ref.doc);
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value: markdown,
             }),
-            range: Some(span_to_range(&state.source, sym_ref.span.start, sym_ref.span.end)),
+            range: Some(span_to_range(
+                &state.source,
+                sym_ref.span.start,
+                sym_ref.span.end,
+            )),
         });
     }
 
@@ -33,7 +33,11 @@ pub fn hover(state: &DocumentState, pos: Position) -> Option<Hover> {
                 kind: MarkupKind::Markdown,
                 value: markdown,
             }),
-            range: Some(span_to_range(&state.source, sym.def_span.start, sym.def_span.end)),
+            range: Some(span_to_range(
+                &state.source,
+                sym.def_span.start,
+                sym.def_span.end,
+            )),
         });
     }
 

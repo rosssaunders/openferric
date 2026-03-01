@@ -1,7 +1,7 @@
 use openferric::dsl::ast::ProductDef;
 use openferric::dsl::error::DslError;
 use openferric::dsl::ir::CompiledProduct;
-use openferric::dsl::{lexer, parser, compiler};
+use openferric::dsl::{compiler, lexer, parser};
 use tower_lsp::lsp_types::*;
 
 /// Parse and compile source, returning the AST, compiled product, and diagnostics.

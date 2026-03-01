@@ -89,7 +89,10 @@ fn is_in_schedule_body(before: &str) -> bool {
         if trimmed.starts_with("schedule") {
             return true;
         }
-        if trimmed.starts_with("product") || trimmed.starts_with("underlyings") || trimmed == "state" {
+        if trimmed.starts_with("product")
+            || trimmed.starts_with("underlyings")
+            || trimmed == "state"
+        {
             return false;
         }
     }

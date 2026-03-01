@@ -121,15 +121,9 @@ pub enum Expr {
         rhs: Box<Expr>,
     },
     /// Unary operation.
-    UnaryOp {
-        op: UnaryOp,
-        operand: Box<Expr>,
-    },
+    UnaryOp { op: UnaryOp, operand: Box<Expr> },
     /// Built-in function call.
-    Call {
-        func: BuiltinFn,
-        args: Vec<Expr>,
-    },
+    Call { func: BuiltinFn, args: Vec<Expr> },
 }
 
 /// Statement in the IR (executed per observation date per path).

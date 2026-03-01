@@ -26,6 +26,7 @@ pub struct SymbolInfo {
     pub kind: SymbolKind,
     pub type_hint: &'static str,
     pub def_span: Span,
+    #[allow(dead_code)]
     pub scope: SymbolScope,
     pub doc: &'static str,
 }
@@ -72,7 +73,11 @@ pub fn build_symbol_table(ast: &ProductDef, source: &str) -> SymbolTable {
     // Add builtins (no source span — use 0..0).
     let builtins = [
         ("notional", "float", "Product face value"),
-        ("observation_date", "float", "Current observation date in year fractions"),
+        (
+            "observation_date",
+            "float",
+            "Current observation date in year fractions",
+        ),
         ("is_final", "bool", "True on the last observation date"),
         ("maturity", "float", "Product maturity in year fractions"),
     ];
@@ -88,12 +93,36 @@ pub fn build_symbol_table(ast: &ProductDef, source: &str) -> SymbolTable {
     }
 
     let builtin_fns: &[(&str, &str, &str)] = &[
-        ("worst_of", "worst_of(values: [float]) -> float", "Minimum of a vector"),
-        ("best_of", "best_of(values: [float]) -> float", "Maximum of a vector"),
-        ("performances", "performances() -> [float]", "Spot/initial for each underlying"),
-        ("price", "price(asset_index: int) -> float", "Current spot price of underlying"),
-        ("min", "min(a: float, b: float) -> float", "Minimum of two values"),
-        ("max", "max(a: float, b: float) -> float", "Maximum of two values"),
+        (
+            "worst_of",
+            "worst_of(values: [float]) -> float",
+            "Minimum of a vector",
+        ),
+        (
+            "best_of",
+            "best_of(values: [float]) -> float",
+            "Maximum of a vector",
+        ),
+        (
+            "performances",
+            "performances() -> [float]",
+            "Spot/initial for each underlying",
+        ),
+        (
+            "price",
+            "price(asset_index: int) -> float",
+            "Current spot price of underlying",
+        ),
+        (
+            "min",
+            "min(a: float, b: float) -> float",
+            "Minimum of two values",
+        ),
+        (
+            "max",
+            "max(a: float, b: float) -> float",
+            "Maximum of two values",
+        ),
         ("abs", "abs(x: float) -> float", "Absolute value"),
         ("exp", "exp(x: float) -> float", "Exponential function"),
         ("log", "log(x: float) -> float", "Natural logarithm"),

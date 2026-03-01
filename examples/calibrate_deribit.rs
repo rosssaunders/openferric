@@ -17,23 +17,35 @@ fn main() {
 
     eprintln!("Fetching {currency} option chain from Deribit...");
 
-    let url = format!(
-        "{API_BASE}/get_book_summary_by_currency?currency={currency}&kind=option"
-    );
-    let resp: serde_json::Value = ureq::get(&url).call().unwrap().body_mut().read_json().unwrap();
+    let url = format!("{API_BASE}/get_book_summary_by_currency?currency={currency}&kind=option");
+    let resp: serde_json::Value = ureq::get(&url)
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_json()
+        .unwrap();
 
     let entries = resp["result"].as_array().expect("no result array");
     eprintln!("Got {} instruments", entries.len());
 
     // Fetch spot — Deribit index names: btc_usd, eth_usd, etc.
-    let base = currency.split('-').next().unwrap_or(&currency).to_lowercase();
+    let base = currency
+        .split('-')
+        .next()
+        .unwrap_or(&currency)
+        .to_lowercase();
     let index_name = if currency.contains("USDC") {
         format!("{base}_usdc")
     } else {
         format!("{base}_usd")
     };
     let spot_url = format!("{API_BASE}/get_index_price?index_name={index_name}");
-    let spot_resp: serde_json::Value = ureq::get(&spot_url).call().unwrap().body_mut().read_json().unwrap();
+    let spot_resp: serde_json::Value = ureq::get(&spot_url)
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_json()
+        .unwrap();
     let spot = spot_resp["result"]["index_price"].as_f64().unwrap_or(0.0);
     eprintln!("Spot: {spot:.2}\n");
 
@@ -160,8 +172,7 @@ fn main() {
             points.push((k, iv2));
 
             let spread_quality = if q.bid_iv > 0.0 && q.ask_iv > 0.0 {
-                let rel_spread =
-                    (q.ask_iv - q.bid_iv) / ((q.ask_iv + q.bid_iv) * 0.5).max(1e-8);
+                let rel_spread = (q.ask_iv - q.bid_iv) / ((q.ask_iv + q.bid_iv) * 0.5).max(1e-8);
                 1.0 / (1.0 + rel_spread * 2.0)
             } else {
                 0.5
@@ -216,7 +227,10 @@ fn main() {
 
         // Show per-point detail for short-dated slices
         if days < 20.0 {
-            println!("  {:>10} {:>10} {:>10} {:>10} {:>10}", "strike", "k", "mkt_iv%", "fit_iv%", "weight");
+            println!(
+                "  {:>10} {:>10} {:>10} {:>10} {:>10}",
+                "strike", "k", "mkt_iv%", "fit_iv%", "weight"
+            );
             let mut idxs: Vec<usize> = (0..points.len()).collect();
             idxs.sort_by(|a, b| points[*a].0.partial_cmp(&points[*b].0).unwrap());
             for &i in &idxs {
@@ -246,14 +260,23 @@ fn parse_deribit_expiry(code: &str) -> f64 {
     let year_suffix: u32 = code[code.len() - 2..].parse().unwrap_or(0);
     let year = 2000 + year_suffix;
     let month = match month_str {
-        "JAN" => 1, "FEB" => 2, "MAR" => 3, "APR" => 4,
-        "MAY" => 5, "JUN" => 6, "JUL" => 7, "AUG" => 8,
-        "SEP" => 9, "OCT" => 10, "NOV" => 11, "DEC" => 12,
+        "JAN" => 1,
+        "FEB" => 2,
+        "MAR" => 3,
+        "APR" => 4,
+        "MAY" => 5,
+        "JUN" => 6,
+        "JUL" => 7,
+        "AUG" => 8,
+        "SEP" => 9,
+        "OCT" => 10,
+        "NOV" => 11,
+        "DEC" => 12,
         _ => return 0.0,
     };
 
     // Rough unix timestamp (good enough for year fraction)
-    use chrono::{NaiveDate, NaiveTime, NaiveDateTime};
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
     let date = NaiveDate::from_ymd_opt(year as i32, month, day);
     let Some(date) = date else { return 0.0 };
     let time = NaiveTime::from_hms_opt(8, 0, 0).unwrap();

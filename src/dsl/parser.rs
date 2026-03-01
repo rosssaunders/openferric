@@ -689,10 +689,8 @@ mod tests {
 
     #[test]
     fn parse_minimal_product() {
-        let product = parse_str(
-            "product \"Test\"\n    notional: 1000\n    maturity: 1.0\n",
-        )
-        .unwrap();
+        let product =
+            parse_str("product \"Test\"\n    notional: 1000\n    maturity: 1.0\n").unwrap();
 
         assert_eq!(product.name, "Test");
         assert_eq!(product.body.len(), 2);

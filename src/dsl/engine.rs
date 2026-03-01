@@ -2,7 +2,9 @@
 //!
 //! Generates correlated GBM paths and evaluates compiled products.
 
-use crate::core::{Diagnostics, DiagKey, Greeks, Instrument, PricingEngine, PricingError, PricingResult};
+use crate::core::{
+    DiagKey, Diagnostics, Greeks, Instrument, PricingEngine, PricingError, PricingResult,
+};
 use crate::dsl::eval::evaluate_product;
 use crate::dsl::ir::CompiledProduct;
 use crate::dsl::market::MultiAssetMarket;
@@ -381,12 +383,8 @@ impl PricingEngine<DslProduct> for DslMonteCarloEngine {
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
         let vol = market.vol_for(market.spot, instrument.product.maturity);
-        let multi_market = MultiAssetMarket::single(
-            market.spot,
-            vol,
-            market.rate,
-            market.dividend_yield,
-        );
+        let multi_market =
+            MultiAssetMarket::single(market.spot, vol, market.rate, market.dividend_yield);
         self.price_multi_asset(&instrument.product, &multi_market)
     }
 }

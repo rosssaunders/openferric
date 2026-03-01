@@ -1,6 +1,6 @@
 use wasm_bindgen::prelude::*;
 
-use openferric::dsl::{parse_and_compile, DslMonteCarloEngine, MultiAssetMarket};
+use openferric::dsl::{DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
 
 /// Parse and compile a DSL source string.
 ///
@@ -56,22 +56,30 @@ pub fn dsl_price(
 ) -> String {
     let product = match serde_json::from_str(product_json) {
         Ok(p) => p,
-        Err(e) => return serde_json::to_string(&serde_json::json!({"err": format!("invalid product JSON: {e}")})).unwrap(),
+        Err(e) => {
+            return serde_json::to_string(
+                &serde_json::json!({"err": format!("invalid product JSON: {e}")}),
+            )
+            .unwrap();
+        }
     };
     let market: MultiAssetMarket = match serde_json::from_str(market_json) {
         Ok(m) => m,
-        Err(e) => return serde_json::to_string(&serde_json::json!({"err": format!("invalid market JSON: {e}")})).unwrap(),
+        Err(e) => {
+            return serde_json::to_string(
+                &serde_json::json!({"err": format!("invalid market JSON: {e}")}),
+            )
+            .unwrap();
+        }
     };
 
     let engine = DslMonteCarloEngine::new(num_paths as usize, num_steps as usize, seed);
     match engine.price_multi_asset(&product, &market) {
-        Ok(result) => {
-            serde_json::to_string(&serde_json::json!({
-                "price": result.price,
-                "stderr": result.stderr.unwrap_or(0.0),
-            }))
-            .unwrap()
-        }
+        Ok(result) => serde_json::to_string(&serde_json::json!({
+            "price": result.price,
+            "stderr": result.stderr.unwrap_or(0.0),
+        }))
+        .unwrap(),
         Err(e) => serde_json::to_string(&serde_json::json!({"err": e.to_string()})).unwrap(),
     }
 }
@@ -90,24 +98,32 @@ pub fn dsl_greeks(
 ) -> String {
     let product = match serde_json::from_str(product_json) {
         Ok(p) => p,
-        Err(e) => return serde_json::to_string(&serde_json::json!({"err": format!("invalid product JSON: {e}")})).unwrap(),
+        Err(e) => {
+            return serde_json::to_string(
+                &serde_json::json!({"err": format!("invalid product JSON: {e}")}),
+            )
+            .unwrap();
+        }
     };
     let market: MultiAssetMarket = match serde_json::from_str(market_json) {
         Ok(m) => m,
-        Err(e) => return serde_json::to_string(&serde_json::json!({"err": format!("invalid market JSON: {e}")})).unwrap(),
+        Err(e) => {
+            return serde_json::to_string(
+                &serde_json::json!({"err": format!("invalid market JSON: {e}")}),
+            )
+            .unwrap();
+        }
     };
 
     let engine = DslMonteCarloEngine::new(num_paths as usize, num_steps as usize, seed);
     match engine.greeks_multi_asset(&product, &market, asset_index as usize) {
-        Ok(greeks) => {
-            serde_json::to_string(&serde_json::json!({
-                "delta": greeks.delta,
-                "gamma": greeks.gamma,
-                "vega": greeks.vega,
-                "rho": greeks.rho,
-            }))
-            .unwrap()
-        }
+        Ok(greeks) => serde_json::to_string(&serde_json::json!({
+            "delta": greeks.delta,
+            "gamma": greeks.gamma,
+            "vega": greeks.vega,
+            "rho": greeks.rho,
+        }))
+        .unwrap(),
         Err(e) => serde_json::to_string(&serde_json::json!({"err": e.to_string()})).unwrap(),
     }
 }

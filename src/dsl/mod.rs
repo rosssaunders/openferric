@@ -140,9 +140,21 @@ product \"WoF Autocall 18m\"
 
         let market = MultiAssetMarket {
             assets: vec![
-                AssetData { spot: 100.0, vol: 0.20, dividend_yield: 0.02 },
-                AssetData { spot: 100.0, vol: 0.22, dividend_yield: 0.03 },
-                AssetData { spot: 100.0, vol: 0.25, dividend_yield: 0.01 },
+                AssetData {
+                    spot: 100.0,
+                    vol: 0.20,
+                    dividend_yield: 0.02,
+                },
+                AssetData {
+                    spot: 100.0,
+                    vol: 0.22,
+                    dividend_yield: 0.03,
+                },
+                AssetData {
+                    spot: 100.0,
+                    vol: 0.25,
+                    dividend_yield: 0.01,
+                },
             ],
             correlation: vec![
                 vec![1.0, 0.7, 0.5],

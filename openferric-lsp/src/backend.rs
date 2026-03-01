@@ -14,7 +14,10 @@ use crate::diagnostics;
 use crate::document_symbols;
 use crate::goto_def;
 use crate::hover;
-use crate::notification::{self, AssetSnapshot, CrossGreeksEntry, GreeksEntry, MarketSnapshot, PayoffPoint, PricingResultPayload};
+use crate::notification::{
+    self, AssetSnapshot, CrossGreeksEntry, GreeksEntry, MarketSnapshot, PayoffPoint,
+    PricingResultPayload,
+};
 use crate::semantic_tokens;
 use crate::symbols::{self, SymbolTable};
 
@@ -95,8 +98,7 @@ impl Backend {
         // Extract compiled product data under the lock.
         let product_data = {
             let docs = self.documents.lock().unwrap();
-            docs.values()
-                .find_map(|state| state.product.clone())
+            docs.values().find_map(|state| state.product.clone())
         };
         let Some(product) = product_data else { return };
 
@@ -144,11 +146,7 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![
-                        " ".into(),
-                        ".".into(),
-                        "(".into(),
-                    ]),
+                    trigger_characters: Some(vec![" ".into(), ".".into(), "(".into()]),
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -181,9 +179,7 @@ impl LanguageServer for Backend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         let diags = self.update_document(&uri, params.text_document.text);
-        self.client
-            .publish_diagnostics(uri, diags, None)
-            .await;
+        self.client.publish_diagnostics(uri, diags, None).await;
         self.send_pricing_notification();
     }
 
@@ -191,9 +187,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.clone();
         if let Some(change) = params.content_changes.into_iter().last() {
             let diags = self.update_document(&uri, change.text);
-            self.client
-                .publish_diagnostics(uri, diags, None)
-                .await;
+            self.client.publish_diagnostics(uri, diags, None).await;
             self.send_pricing_notification();
         }
     }
@@ -201,9 +195,7 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents.lock().unwrap().remove(&uri);
-        self.client
-            .publish_diagnostics(uri, vec![], None)
-            .await;
+        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -303,11 +295,8 @@ fn compute_pricing_payload(
     pricing_cfg: &PricingConfig,
     market_json: Option<&serde_json::Value>,
 ) -> PricingResultPayload {
-    let underlying_names: Vec<String> = product
-        .underlyings
-        .iter()
-        .map(|u| u.name.clone())
-        .collect();
+    let underlying_names: Vec<String> =
+        product.underlyings.iter().map(|u| u.name.clone()).collect();
 
     let market = match codelens::build_market(product.num_underlyings, market_json) {
         Some(m) => m,
@@ -366,8 +355,16 @@ fn compute_pricing_payload(
     let mut cross_greeks = Vec::new();
     for i in 0..product.num_underlyings {
         for j in (i + 1)..product.num_underlyings {
-            let name_i = product.underlyings.get(i).map(|u| u.name.clone()).unwrap_or_else(|| format!("Asset {i}"));
-            let name_j = product.underlyings.get(j).map(|u| u.name.clone()).unwrap_or_else(|| format!("Asset {j}"));
+            let name_i = product
+                .underlyings
+                .get(i)
+                .map(|u| u.name.clone())
+                .unwrap_or_else(|| format!("Asset {i}"));
+            let name_j = product
+                .underlyings
+                .get(j)
+                .map(|u| u.name.clone())
+                .unwrap_or_else(|| format!("Asset {j}"));
             if let Ok(cg) = engine.cross_greeks_multi_asset(product, &market, i, j, price) {
                 cross_greeks.push(CrossGreeksEntry {
                     asset_i: name_i,
@@ -380,7 +377,8 @@ fn compute_pricing_payload(
     }
 
     // Payoff profile: 21 spot levels from 50% to 150%.
-    let payoff_engine = DslMonteCarloEngine::new(10_000, pricing_cfg.num_steps as usize, pricing_cfg.seed);
+    let payoff_engine =
+        DslMonteCarloEngine::new(10_000, pricing_cfg.num_steps as usize, pricing_cfg.seed);
     let mut payoff_profile = Vec::with_capacity(21);
     for i in 0..=20 {
         let pct = 50.0 + (i as f64) * 5.0;

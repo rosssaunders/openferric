@@ -84,16 +84,16 @@ fn project(mut p: SviParams) -> SviParams {
 fn solve5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
     let mut lu = *a;
     let mut piv = [0usize; 5];
-    for i in 0..5 {
-        piv[i] = i;
+    for (i, p) in piv.iter_mut().enumerate() {
+        *p = i;
     }
 
     for col in 0..5 {
         // Partial pivot
         let mut max_val = lu[col][col].abs();
         let mut max_row = col;
-        for row in (col + 1)..5 {
-            let v = lu[row][col].abs();
+        for (row, lu_row) in lu.iter().enumerate().skip(col + 1) {
+            let v = lu_row[col].abs();
             if v > max_val {
                 max_val = v;
                 max_row = row;
@@ -177,8 +177,8 @@ fn lm_svi(
 
         // Damping
         let mut damped = jtj;
-        for d in 0..5 {
-            damped[d][d] += lambda;
+        for (d, row) in damped.iter_mut().enumerate() {
+            row[d] += lambda;
         }
 
         let Some(delta) = solve5(&damped, &jtr) else {
@@ -501,16 +501,32 @@ mod tests {
                     - SviParams { b: p.b - h, ..p }.total_variance(k))
                     / (2.0 * h),
                 // dw/drho
-                (SviParams { rho: p.rho + h, ..p }.total_variance(k)
-                    - SviParams { rho: p.rho - h, ..p }.total_variance(k))
+                (SviParams {
+                    rho: p.rho + h,
+                    ..p
+                }
+                .total_variance(k)
+                    - SviParams {
+                        rho: p.rho - h,
+                        ..p
+                    }
+                    .total_variance(k))
                     / (2.0 * h),
                 // dw/dm
                 (SviParams { m: p.m + h, ..p }.total_variance(k)
                     - SviParams { m: p.m - h, ..p }.total_variance(k))
                     / (2.0 * h),
                 // dw/dsigma
-                (SviParams { sigma: p.sigma + h, ..p }.total_variance(k)
-                    - SviParams { sigma: p.sigma - h, ..p }.total_variance(k))
+                (SviParams {
+                    sigma: p.sigma + h,
+                    ..p
+                }
+                .total_variance(k)
+                    - SviParams {
+                        sigma: p.sigma - h,
+                        ..p
+                    }
+                    .total_variance(k))
                     / (2.0 * h),
             ];
 
@@ -519,7 +535,8 @@ mod tests {
                 assert!(
                     err < 1e-4,
                     "Jacobian mismatch at k={k}, param {j}: analytic={}, fd={}, err={err}",
-                    analytic[j], fd[j]
+                    analytic[j],
+                    fd[j]
                 );
             }
         }

@@ -120,10 +120,7 @@ pub enum AstExprKind {
         operand: Box<AstExpr>,
     },
     /// Function call: `name(args...)`.
-    FnCall {
-        name: String,
-        args: Vec<AstExpr>,
-    },
+    FnCall { name: String, args: Vec<AstExpr> },
 }
 
 /// Binary operators in the AST.

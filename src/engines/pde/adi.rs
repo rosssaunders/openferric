@@ -298,9 +298,9 @@ fn solve_s_direction(
             &mut interior,
         )?;
 
-        for k in 0..m {
+        for (k, val) in interior[..m].iter().enumerate() {
             let i = k + 1;
-            out[idx(i, j, ctx.grid.n_s)] = interior[k];
+            out[idx(i, j, ctx.grid.n_s)] = *val;
         }
     }
 
@@ -380,9 +380,9 @@ fn solve_v_direction(
             &mut interior,
         )?;
 
-        for k in 0..m {
+        for (k, val) in interior[..m].iter().enumerate() {
             let j = k + 1;
-            out[idx(i, j, ctx.grid.n_s)] = interior[k];
+            out[idx(i, j, ctx.grid.n_s)] = *val;
         }
     }
 

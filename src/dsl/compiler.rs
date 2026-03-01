@@ -131,7 +131,9 @@ pub fn compile(ast: &ProductDef) -> Result<CompiledProduct, DslError> {
     for item in &ast.body {
         if let ProductItem::Schedule(sched_def) = item {
             scope.reset_locals();
-            let dates = sched_def.frequency.generate_dates(sched_def.start, sched_def.end);
+            let dates = sched_def
+                .frequency
+                .generate_dates(sched_def.start, sched_def.end);
             let body = compile_statements(&sched_def.body, &mut scope)?;
             schedules.push(Schedule { dates, body });
         }
@@ -207,12 +209,15 @@ fn compile_statement(stmt: &AstStatement, scope: &mut Scope) -> Result<Statement
             Ok(Statement::Redeem { amount })
         }
         AstStatementKind::SetState { name, expr } => {
-            let slot = scope.state_vars.get(name).copied().ok_or_else(|| {
-                DslError::CompileError {
-                    message: format!("undefined state variable '{name}'"),
-                    span: Some(stmt.span),
-                }
-            })?;
+            let slot =
+                scope
+                    .state_vars
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| DslError::CompileError {
+                        message: format!("undefined state variable '{name}'"),
+                        span: Some(stmt.span),
+                    })?;
             let expr = compile_expr(expr, scope)?;
             Ok(Statement::SetState { slot, expr })
         }
