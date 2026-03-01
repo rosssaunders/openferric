@@ -38,35 +38,197 @@ impl SviParams {
     }
 }
 
-fn svi_objective(params: SviParams, points: &[(f64, f64)]) -> f64 {
+fn svi_objective_weighted(params: SviParams, points: &[(f64, f64)], weights: &[f64]) -> f64 {
     points
         .iter()
-        .map(|(k, w)| {
+        .zip(weights.iter())
+        .map(|((k, w), &wt)| {
             let err = params.total_variance(*k) - *w;
-            err * err
+            wt * err * err
         })
         .sum()
 }
 
-pub fn calibrate_svi(
-    points: &[(f64, f64)],
-    init: SviParams,
-    max_iter: usize,
-    learning_rate: f64,
-) -> SviParams {
-    fn project(mut p: SviParams) -> SviParams {
-        p.a = p.a.max(1e-8);
-        p.b = p.b.max(1e-8);
-        p.rho = p.rho.clamp(-0.999, 0.999);
-        p.sigma = p.sigma.max(1e-6);
-        p
+/// Analytic Jacobian row for SVI: partial derivatives of w(k) w.r.t. [a, b, rho, m, sigma].
+#[inline]
+pub fn svi_jacobian_row(p: &SviParams, k: f64) -> [f64; 5] {
+    let x = k - p.m;
+    let s2 = x * x + p.sigma * p.sigma;
+    let s = s2.sqrt();
+    // dw/da = 1
+    // dw/db = rho*x + s
+    // dw/drho = b*x
+    // dw/dm = b*(-rho - x/s)
+    // dw/dsigma = b*sigma/s
+    [
+        1.0,
+        p.rho * x + s,
+        p.b * x,
+        p.b * (-p.rho - x / s),
+        p.b * p.sigma / s,
+    ]
+}
+
+#[inline]
+fn project(mut p: SviParams) -> SviParams {
+    // SVI allows negative a (min total variance = a + b*sigma*sqrt(1-rho^2))
+    // so only enforce a loose lower bound; positivity is maintained by the data.
+    p.b = p.b.max(1e-8);
+    p.rho = p.rho.clamp(-0.999, 0.999);
+    p.sigma = p.sigma.max(1e-6);
+    p
+}
+
+/// Solve 5x5 linear system Ax = b via LU decomposition (no external dependency).
+/// Returns None if singular.
+fn solve5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
+    let mut lu = *a;
+    let mut piv = [0usize; 5];
+    for i in 0..5 {
+        piv[i] = i;
     }
 
+    for col in 0..5 {
+        // Partial pivot
+        let mut max_val = lu[col][col].abs();
+        let mut max_row = col;
+        for row in (col + 1)..5 {
+            let v = lu[row][col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-15 {
+            return None;
+        }
+        if max_row != col {
+            lu.swap(col, max_row);
+            piv.swap(col, max_row);
+        }
+        let diag = lu[col][col];
+        for row in (col + 1)..5 {
+            lu[row][col] /= diag;
+            let factor = lu[row][col];
+            for j in (col + 1)..5 {
+                lu[row][j] -= factor * lu[col][j];
+            }
+        }
+    }
+
+    // Forward substitution (Ly = Pb)
+    let mut y = [0.0; 5];
+    for i in 0..5 {
+        y[i] = b[piv[i]];
+        for j in 0..i {
+            y[i] -= lu[i][j] * y[j];
+        }
+    }
+    // Back substitution (Ux = y)
+    let mut x = [0.0; 5];
+    for i in (0..5).rev() {
+        x[i] = y[i];
+        for j in (i + 1)..5 {
+            x[i] -= lu[i][j] * x[j];
+        }
+        if lu[i][i].abs() < 1e-15 {
+            return None;
+        }
+        x[i] /= lu[i][i];
+    }
+    Some(x)
+}
+
+/// Levenberg-Marquardt SVI calibration with analytic Jacobian and optional weights.
+fn lm_svi(
+    points: &[(f64, f64)],
+    weights: &[f64],
+    start: SviParams,
+    max_iter: usize,
+) -> (SviParams, f64) {
+    let n = points.len();
+    let mut p = project(start);
+    let mut obj = svi_objective_weighted(p, points, weights);
+    let mut lambda = 1e-3;
+
+    for _ in 0..max_iter {
+        // Build J^T W J and J^T W r using analytic Jacobian
+        let mut jtj = [[0.0f64; 5]; 5];
+        let mut jtr = [0.0f64; 5];
+
+        for i in 0..n {
+            let (k, w) = points[i];
+            let r = p.total_variance(k) - w;
+            let row = svi_jacobian_row(&p, k);
+            let wi = weights[i];
+            for a in 0..5 {
+                jtr[a] += wi * row[a] * r;
+                for b in a..5 {
+                    jtj[a][b] += wi * row[a] * row[b];
+                }
+            }
+        }
+        // Fill symmetric lower triangle
+        for a in 0..5 {
+            for b in 0..a {
+                jtj[a][b] = jtj[b][a];
+            }
+        }
+
+        // Damping
+        let mut damped = jtj;
+        for d in 0..5 {
+            damped[d][d] += lambda;
+        }
+
+        let Some(delta) = solve5(&damped, &jtr) else {
+            lambda *= 10.0;
+            if lambda > 1e10 {
+                break;
+            }
+            continue;
+        };
+
+        let delta_norm = delta.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let candidate = project(SviParams {
+            a: p.a - delta[0],
+            b: p.b - delta[1],
+            rho: p.rho - delta[2],
+            m: p.m - delta[3],
+            sigma: p.sigma - delta[4],
+        });
+        let cand_obj = svi_objective_weighted(candidate, points, weights);
+
+        if cand_obj < obj {
+            let improvement = obj - cand_obj;
+            p = candidate;
+            obj = cand_obj;
+            lambda = (lambda * 0.5).max(1e-8);
+            if improvement < 1e-12 || delta_norm < 1e-8 {
+                break;
+            }
+        } else {
+            lambda *= 2.0;
+            if lambda > 1e10 {
+                break;
+            }
+        }
+    }
+
+    (p, obj)
+}
+
+pub fn calibrate_svi_weighted(
+    points: &[(f64, f64)],
+    weights: &[f64],
+    init: SviParams,
+    max_iter: usize,
+) -> SviParams {
     if points.is_empty() {
         return project(init);
     }
 
-    let starts = vec![
+    let starts = [
         init,
         SviParams {
             a: init.a * 0.7,
@@ -75,101 +237,13 @@ pub fn calibrate_svi(
             m: init.m - 0.1,
             sigma: init.sigma * 0.8,
         },
-        SviParams {
-            a: init.a * 1.3,
-            b: init.b * 0.8,
-            rho: (init.rho + 0.2).clamp(-0.9, 0.9),
-            m: init.m + 0.1,
-            sigma: init.sigma * 1.2,
-        },
     ];
 
     let mut best = project(init);
-    let mut best_obj = svi_objective(best, points);
-    let eps = 1e-5;
+    let mut best_obj = svi_objective_weighted(best, points, weights);
 
     for start in starts {
-        let mut p = project(start);
-        let mut obj = svi_objective(p, points);
-        let mut lr = learning_rate.max(1e-6);
-
-        for _ in 0..max_iter {
-            let mut g = [0.0_f64; 5];
-
-            let mut p_plus = p;
-            p_plus.a += eps;
-            let mut p_minus = p;
-            p_minus.a -= eps;
-            g[0] = (svi_objective(project(p_plus), points)
-                - svi_objective(project(p_minus), points))
-                / (2.0 * eps);
-
-            p_plus = p;
-            p_plus.b += eps;
-            p_minus = p;
-            p_minus.b -= eps;
-            g[1] = (svi_objective(project(p_plus), points)
-                - svi_objective(project(p_minus), points))
-                / (2.0 * eps);
-
-            p_plus = p;
-            p_plus.rho += eps;
-            p_minus = p;
-            p_minus.rho -= eps;
-            g[2] = (svi_objective(project(p_plus), points)
-                - svi_objective(project(p_minus), points))
-                / (2.0 * eps);
-
-            p_plus = p;
-            p_plus.m += eps;
-            p_minus = p;
-            p_minus.m -= eps;
-            g[3] = (svi_objective(project(p_plus), points)
-                - svi_objective(project(p_minus), points))
-                / (2.0 * eps);
-
-            p_plus = p;
-            p_plus.sigma += eps;
-            p_minus = p;
-            p_minus.sigma -= eps;
-            g[4] = (svi_objective(project(p_plus), points)
-                - svi_objective(project(p_minus), points))
-                / (2.0 * eps);
-
-            let grad_norm = (g.iter().map(|v| v * v).sum::<f64>()).sqrt();
-            if grad_norm < 1e-12 {
-                break;
-            }
-
-            let mut improved = false;
-            let mut trial_lr = lr;
-            for _ in 0..12 {
-                let candidate = project(SviParams {
-                    a: p.a - trial_lr * g[0],
-                    b: p.b - trial_lr * g[1],
-                    rho: p.rho - trial_lr * g[2],
-                    m: p.m - trial_lr * g[3],
-                    sigma: p.sigma - trial_lr * g[4],
-                });
-                let cand_obj = svi_objective(candidate, points);
-                if cand_obj < obj {
-                    p = candidate;
-                    obj = cand_obj;
-                    lr = trial_lr * 1.1;
-                    improved = true;
-                    break;
-                }
-                trial_lr *= 0.5;
-            }
-
-            if !improved {
-                lr *= 0.5;
-                if lr < 1e-10 {
-                    break;
-                }
-            }
-        }
-
+        let (p, obj) = lm_svi(points, weights, start, max_iter);
         if obj < best_obj {
             best = p;
             best_obj = obj;
@@ -177,6 +251,19 @@ pub fn calibrate_svi(
     }
 
     best
+}
+
+pub fn calibrate_svi(
+    points: &[(f64, f64)],
+    init: SviParams,
+    _max_iter: usize,
+    _learning_rate: f64,
+) -> SviParams {
+    if points.is_empty() {
+        return project(init);
+    }
+    let uniform: Vec<f64> = vec![1.0; points.len()];
+    calibrate_svi_weighted(points, &uniform, init, 150)
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -379,5 +466,105 @@ mod tests {
         assert!(v_mid > 0.0);
         assert!(v_long > 0.0);
         assert!(v_mid >= v_short * 0.7);
+    }
+
+    #[test]
+    fn svi_analytic_jacobian_matches_finite_difference() {
+        let p = SviParams {
+            a: 0.04,
+            b: 0.4,
+            rho: -0.4,
+            m: 0.05,
+            sigma: 0.1,
+        };
+        let h = 1e-6;
+
+        for i in -10..=10 {
+            let k = i as f64 * 0.1;
+            let analytic = svi_jacobian_row(&p, k);
+
+            // Finite-difference partials
+            let fd = [
+                // dw/da
+                (SviParams { a: p.a + h, ..p }.total_variance(k)
+                    - SviParams { a: p.a - h, ..p }.total_variance(k))
+                    / (2.0 * h),
+                // dw/db
+                (SviParams { b: p.b + h, ..p }.total_variance(k)
+                    - SviParams { b: p.b - h, ..p }.total_variance(k))
+                    / (2.0 * h),
+                // dw/drho
+                (SviParams { rho: p.rho + h, ..p }.total_variance(k)
+                    - SviParams { rho: p.rho - h, ..p }.total_variance(k))
+                    / (2.0 * h),
+                // dw/dm
+                (SviParams { m: p.m + h, ..p }.total_variance(k)
+                    - SviParams { m: p.m - h, ..p }.total_variance(k))
+                    / (2.0 * h),
+                // dw/dsigma
+                (SviParams { sigma: p.sigma + h, ..p }.total_variance(k)
+                    - SviParams { sigma: p.sigma - h, ..p }.total_variance(k))
+                    / (2.0 * h),
+            ];
+
+            for j in 0..5 {
+                let err = (analytic[j] - fd[j]).abs();
+                assert!(
+                    err < 1e-4,
+                    "Jacobian mismatch at k={k}, param {j}: analytic={}, fd={}, err={err}",
+                    analytic[j], fd[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn calibrate_svi_weighted_uniform_matches_unweighted() {
+        let true_p = SviParams {
+            a: 0.01,
+            b: 0.2,
+            rho: -0.25,
+            m: 0.05,
+            sigma: 0.3,
+        };
+
+        let points: Vec<(f64, f64)> = (-8..=8)
+            .map(|i| {
+                let k = i as f64 * 0.1;
+                (k, true_p.total_variance(k))
+            })
+            .collect();
+
+        let init = SviParams {
+            a: 0.03,
+            b: 0.1,
+            rho: 0.0,
+            m: 0.0,
+            sigma: 0.5,
+        };
+
+        let fit_unweighted = calibrate_svi(&points, init, 150, 0.0);
+        let uniform: Vec<f64> = vec![1.0; points.len()];
+        let fit_weighted = calibrate_svi_weighted(&points, &uniform, init, 150);
+
+        // Both should produce equivalent fits (same MSE within tolerance)
+        let mse_uw: f64 = points
+            .iter()
+            .map(|(k, w)| (fit_unweighted.total_variance(*k) - *w).powi(2))
+            .sum::<f64>()
+            / points.len() as f64;
+        let mse_w: f64 = points
+            .iter()
+            .map(|(k, w)| (fit_weighted.total_variance(*k) - *w).powi(2))
+            .sum::<f64>()
+            / points.len() as f64;
+
+        assert!(mse_uw < 1e-6, "unweighted MSE={mse_uw}");
+        assert!(mse_w < 1e-6, "weighted MSE={mse_w}");
+        // Both should be very close
+        assert!(
+            (mse_uw - mse_w).abs() < 1e-8,
+            "MSE difference too large: unweighted={mse_uw}, weighted={mse_w}"
+        );
     }
 }

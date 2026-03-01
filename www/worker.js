@@ -27,6 +27,15 @@ let edgeThreshold = 1.0;
 let edgeSideFilter = 'all';
 let isLinear = false;
 
+// ---------------------------------------------------------------------------
+//  Calibration caching — fingerprint + warm-start
+// ---------------------------------------------------------------------------
+const calibCache = {
+  fingerprints: new Map(),  // expiryCode -> fingerprint (rounded sum of strike*markIv)
+  prevSlices: new Map(),    // expiryCode -> cached slice result
+  cycleCount: 0,
+};
+
 const SURFACE_PARAM_KEYS = {
   svi: ['a', 'b', 'rho', 'm', 'sigma'],
   sabr: ['alpha', 'beta', 'rho', 'nu'],
@@ -523,6 +532,14 @@ function preprocessCalibrationQuotes(quotes, forward, weighting) {
 // ---------------------------------------------------------------------------
 //  Calibration — all math in WASM via calibrate_slice_wasm
 // ---------------------------------------------------------------------------
+function computeExpiryFingerprint(quotes) {
+  let sum = 0;
+  for (const q of quotes) {
+    sum += q.strike * q.mark_iv;
+  }
+  return Math.round(sum * 10000) / 10000;
+}
+
 function runCalibration(chainEntries, spotPrice, model, cfg) {
   const now = Date.now();
   const nowSec = now / 1000;
@@ -539,17 +556,40 @@ function runCalibration(chainEntries, spotPrice, model, cfg) {
     grouped.get(key).push(q);
   }
 
+  calibCache.cycleCount++;
+  const isWarmup = calibCache.cycleCount <= 5;
+  // After warmup, only recalibrate every 2nd cycle unless fingerprint changed
+  const skipUnchanged = !isWarmup && (calibCache.cycleCount % 2 === 0);
+
   const fitWeighting = cfg?.calibration?.fitWeighting || 'mid';
   const mtCode = modelTypeCode(model);
   const slices = [];
+  const seenExpiries = new Set();
+
   for (const [expiryCode, quotes] of grouped) {
     if (quotes.length < 5) continue;
+    seenExpiries.add(expiryCode);
 
     const expiryDate = parseDeribitExpiry(expiryCode);
     if (!expiryDate) continue;
     // Year fraction (epoch arithmetic — not quant math)
     const T = (expiryDate.getTime() / 1000 - nowSec) / (365.25 * 24 * 3600);
     if (T <= 0) continue;
+
+    // Change detection: fingerprint per expiry
+    const fp = computeExpiryFingerprint(quotes);
+    const prevFp = calibCache.fingerprints.get(expiryCode);
+    const unchanged = prevFp === fp;
+
+    // If unchanged and we have a cached result, reuse it
+    if (unchanged && calibCache.prevSlices.has(expiryCode)) {
+      if (skipUnchanged) {
+        slices.push(calibCache.prevSlices.get(expiryCode));
+        continue;
+      }
+    }
+
+    calibCache.fingerprints.set(expiryCode, fp);
 
     // Forward: simple average of underlying_price (aggregation, not formula)
     const forward = quotes.reduce((s, q) => s + q.underlying_price, 0) / quotes.length;
@@ -570,7 +610,18 @@ function runCalibration(chainEntries, spotPrice, model, cfg) {
       mtCode
     );
     const slice = unpackSliceResult(packed, expiryCode);
-    if (slice) slices.push(slice);
+    if (slice) {
+      slices.push(slice);
+      calibCache.prevSlices.set(expiryCode, slice);
+    }
+  }
+
+  // Evict stale cache entries for expiries no longer in the chain
+  for (const key of calibCache.fingerprints.keys()) {
+    if (!seenExpiries.has(key)) {
+      calibCache.fingerprints.delete(key);
+      calibCache.prevSlices.delete(key);
+    }
   }
 
   slices.sort((a, b) => a.T - b.T);

@@ -90,13 +90,6 @@ pub fn calibrate_slice(
                 continue;
             }
         }
-        // OTM thresholds for short dates
-        if t < 7.0 / 365.0 && q.k.abs() > 0.15 {
-            continue;
-        }
-        if t < 30.0 / 365.0 && q.k.abs() > 0.5 {
-            continue;
-        }
         filtered.push(i);
     }
 
@@ -135,20 +128,25 @@ pub fn calibrate_slice(
 
     let params: Vec<f64> = match model_type {
         MODEL_SVI => {
-            // Build OI-weighted (k, iv^2) points
-            let max_oi = filtered
-                .iter()
-                .map(|&i| all_quotes[i].open_interest)
-                .fold(1.0_f64, f64::max);
-            let mut points: Vec<(f64, f64)> = Vec::new();
+            // Build (k, iv^2) points with continuous soft weights
+            let decay_scale = 0.3_f64.max(2.0 * t.sqrt());
+            let mut points: Vec<(f64, f64)> = Vec::with_capacity(filtered.len());
+            let mut weights: Vec<f64> = Vec::with_capacity(filtered.len());
             for &idx in &filtered {
                 let q = &all_quotes[idx];
                 let iv2 = q.mark_iv * q.mark_iv;
-                let oi = q.open_interest.max(0.0);
-                let reps = 1 + ((oi / max_oi) * 4.0).floor() as usize;
-                for _ in 0..reps {
-                    points.push((q.k, iv2));
-                }
+                points.push((q.k, iv2));
+
+                // Spread quality: tight markets get higher weight
+                let spread_quality = if q.bid_iv > 0.0 && q.ask_iv > 0.0 {
+                    let rel_spread = (q.ask_iv - q.bid_iv) / ((q.ask_iv + q.bid_iv) * 0.5).max(1e-8);
+                    1.0 / (1.0 + rel_spread * 2.0)
+                } else {
+                    0.5
+                };
+                // Moneyness decay: ATM gets highest weight, wings decay smoothly
+                let moneyness_decay = (-0.5 * (q.k / decay_scale).powi(2)).exp();
+                weights.push(spread_quality * moneyness_decay);
             }
             let atm_iv2 = (atm_vol * atm_vol).max(1e-4);
             let init = SviParams {
@@ -158,7 +156,9 @@ pub fn calibrate_slice(
                 m: 0.0,
                 sigma: 0.15,
             };
-            let result = openferric::vol::surface::calibrate_svi(&points, init, 3000, 0.002);
+            let result = openferric::vol::surface::calibrate_svi_weighted(
+                &points, &weights, init, 150,
+            );
             // Scale a and b by T (SVI parameterizes total variance)
             vec![
                 result.a * t,
