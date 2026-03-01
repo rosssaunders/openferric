@@ -153,6 +153,17 @@ pub fn iv_grid(slice_headers: &[f64], slice_params: &[f64], k_grid: &[f64]) -> V
     openferric::vol::slice::iv_grid(slice_headers, slice_params, k_grid)
 }
 
+/// IV grid with per-slice k-bounds for flat wing extrapolation.
+#[wasm_bindgen]
+pub fn iv_grid_clamped(
+    slice_headers: &[f64],
+    slice_params: &[f64],
+    k_grid: &[f64],
+    k_bounds: &[f64],
+) -> Vec<f64> {
+    openferric::vol::slice::iv_grid_clamped(slice_headers, slice_params, k_grid, k_bounds)
+}
+
 /// Batch IV evaluation for irregular (per-option) lookups.
 #[wasm_bindgen]
 pub fn batch_slice_iv(

@@ -306,7 +306,8 @@ function paramsToArray(modelType, params) {
 function clampModelParams(modelType, params, modelCfg) {
   const out = { ...params };
   if (modelType === 'svi') {
-    out.a = Math.max(1e-8, finiteOr(out.a, 0.01));
+    // SVI allows negative 'a' (the no-arbitrage condition is a + b*sigma*sqrt(1-rho^2) > 0)
+    out.a = finiteOr(out.a, 0.01);
     out.b = Math.max(1e-8, finiteOr(out.b, 0.1));
     out.rho = clamp(finiteOr(out.rho, -0.1), -0.999, 0.999);
     out.m = clamp(finiteOr(out.m, 0.0), -3.0, 3.0);
@@ -684,13 +685,35 @@ function computeSurfaceData(slices, packed, cfg) {
     if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
   }
 
+  // Per-slice k bounds for flat wing extrapolation.
+  // Short-dated slices have steep SVI wings that explode if evaluated at
+  // moneyness values appropriate for long-dated slices.  Use time-dependent
+  // bounds: maxAbsK scales with sqrt(T) so short-dated slices stay near ATM.
+  const kBoundsArr = [];
+  for (const sl of slices) {
+    const maxAbsK = Math.max(0.12, 0.6 * Math.sqrt(sl.T));
+    let slKMin = -maxAbsK, slKMax = maxAbsK;
+    // Also clamp to actual data range (don't extrapolate beyond data either)
+    for (const pt of sl.points) {
+      if (Number.isFinite(pt.k)) {
+        if (pt.k < slKMin) slKMin = pt.k;
+        if (pt.k > slKMax) slKMax = pt.k;
+      }
+    }
+    // But enforce the time-dependent ceiling
+    slKMin = Math.max(slKMin, -maxAbsK);
+    slKMax = Math.min(slKMax, maxAbsK);
+    kBoundsArr.push(slKMin, slKMax);
+  }
+  const kBounds = new Float64Array(kBoundsArr);
+
   const gridN = 15;
   const kGrid = [];
   for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
   const tGrid = slices.map(s => s.T);
   const kGridF64 = new Float64Array(kGrid);
   const caps = getVolCaps(cfg);
-  const flatZ = Array.from(wasm.iv_grid(packed.headers, packed.params, kGridF64)).map(v => capIv(v, caps));
+  const flatZ = Array.from(wasm.iv_grid_clamped(packed.headers, packed.params, kGridF64, kBounds)).map(v => capIv(v, caps));
 
   const stickyRule = cfg?.conventions?.stickyRule || 'delta';
   let xGrid = kGrid;

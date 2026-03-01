@@ -187,6 +187,39 @@ pub fn iv_grid(slice_headers: &[f64], slice_params: &[f64], k_grid: &[f64]) -> V
     out
 }
 
+/// Like `iv_grid` but with per-slice k-bounds for flat extrapolation.
+///
+/// - `k_bounds`: 2 f64 per slice `[k_min, k_max, k_min, k_max, ...]`
+///   If a grid k falls outside `[k_min, k_max]` for a slice, the k is clamped
+///   to the boundary (flat wing extrapolation).
+///   Pass an empty slice to disable clamping.
+pub fn iv_grid_clamped(
+    slice_headers: &[f64],
+    slice_params: &[f64],
+    k_grid: &[f64],
+    k_bounds: &[f64],
+) -> Vec<f64> {
+    let n_slices = slice_headers.len() / 4;
+    let n_k = k_grid.len();
+    let has_bounds = k_bounds.len() >= n_slices * 2;
+    let mut out = Vec::with_capacity(n_slices * n_k);
+
+    for i in 0..n_slices {
+        let (model_type, params, t, forward) =
+            parse_slice(slice_headers, slice_params, i, n_slices);
+        let (k_min, k_max) = if has_bounds {
+            (k_bounds[i * 2], k_bounds[i * 2 + 1])
+        } else {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        };
+        for &k in k_grid {
+            let k_clamped = k.clamp(k_min, k_max);
+            out.push(eval_iv_pct(model_type, params, k_clamped, t, forward));
+        }
+    }
+    out
+}
+
 /// Batch IV evaluation for irregular (per-option) lookups.
 ///
 /// - `k_values[i]` is evaluated against slice `slice_indices[i]`
