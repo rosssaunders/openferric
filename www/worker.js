@@ -685,30 +685,13 @@ function computeSurfaceData(slices, packed, cfg) {
     if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
   }
 
-  // Per-slice k bounds: clamp to each slice's calibration data range.
-  // Prevents extrapolation beyond market data (where SVI wings diverge)
-  // while still showing the full fitted smile within the data range.
-  const kBoundsArr = [];
-  for (const sl of slices) {
-    let slKMin = Infinity, slKMax = -Infinity;
-    for (const pt of sl.points) {
-      if (Number.isFinite(pt.k)) {
-        if (pt.k < slKMin) slKMin = pt.k;
-        if (pt.k > slKMax) slKMax = pt.k;
-      }
-    }
-    if (!Number.isFinite(slKMin)) { slKMin = kMin; slKMax = kMax; }
-    kBoundsArr.push(slKMin, slKMax);
-  }
-  const kBounds = new Float64Array(kBoundsArr);
-
   const gridN = 15;
   const kGrid = [];
   for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
   const tGrid = slices.map(s => s.T);
   const kGridF64 = new Float64Array(kGrid);
   const caps = getVolCaps(cfg);
-  const flatZ = Array.from(wasm.iv_grid_clamped(packed.headers, packed.params, kGridF64, kBounds)).map(v => capIv(v, caps));
+  const flatZ = Array.from(wasm.iv_grid(packed.headers, packed.params, kGridF64)).map(v => capIv(v, caps));
 
   const stickyRule = cfg?.conventions?.stickyRule || 'delta';
   let xGrid = kGrid;

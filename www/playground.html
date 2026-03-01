@@ -1,0 +1,1347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenFerric DSL Playground</title>
+  <style>
+    :root {
+      --bg: #070a0f;
+      --panel: #11161f;
+      --border: #263241;
+      --fg: #d8e0ea;
+      --muted: #8ea1b8;
+      --accent: #2fb2ff;
+      --accent2: #19d8a8;
+      --danger: #ff7a7a;
+      --warn: #ffb347;
+      --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      --sans: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--fg);
+      font-family: var(--sans);
+      background:
+        radial-gradient(900px 650px at 8% -18%, #15314f 0%, rgba(21,49,79,0) 58%),
+        radial-gradient(900px 650px at 100% 0%, #0f2d25 0%, rgba(15,45,37,0) 58%),
+        linear-gradient(180deg, #06080c 0%, #070a0f 100%);
+      min-height: 100vh;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(17, 22, 31, 0.85);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .header-sub {
+      color: var(--muted);
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+
+    .status-pill {
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      white-space: nowrap;
+      color: var(--muted);
+    }
+
+    .status-pill.ready { color: var(--accent2); border-color: var(--accent2); }
+    .status-pill.running { color: var(--warn); border-color: var(--warn); }
+    .status-pill.error { color: var(--danger); border-color: var(--danger); }
+
+    #app {
+      display: grid;
+      grid-template-columns: minmax(360px, 3fr) minmax(320px, 2fr);
+      gap: 12px;
+      padding: 12px;
+      height: calc(100vh - 60px);
+      min-height: 620px;
+    }
+
+    .panel {
+      background: color-mix(in srgb, var(--panel) 94%, black);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(142, 161, 184, 0.18);
+      background: rgba(9, 13, 18, 0.55);
+    }
+
+    .panel-title {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .editor-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    select,
+    button,
+    input,
+    textarea {
+      background: #0d141d;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    button {
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: border-color 120ms linear, color 120ms linear;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    select,
+    input,
+    textarea {
+      width: 100%;
+      padding: 6px 8px;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 62px;
+      line-height: 1.35;
+    }
+
+    #editor {
+      flex: 1;
+      min-height: 0;
+    }
+
+    #side {
+      display: grid;
+      grid-template-rows: minmax(220px, 42%) minmax(300px, 58%);
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .panel-body {
+      padding: 10px 12px;
+      overflow: auto;
+      min-height: 0;
+    }
+
+    .market-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 9px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .field small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .sim-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+
+    .metric {
+      background: rgba(18, 30, 43, 0.45);
+      border: 1px solid rgba(142, 161, 184, 0.2);
+      border-radius: 6px;
+      padding: 8px;
+    }
+
+    .metric .k {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .metric .v {
+      font-family: var(--mono);
+      font-size: 13px;
+      word-break: break-word;
+    }
+
+    .subpanel {
+      border: 1px solid rgba(142, 161, 184, 0.2);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(8, 12, 17, 0.45);
+      margin-bottom: 10px;
+    }
+
+    .subpanel h3 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    #greeks-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+
+    #greeks-table th,
+    #greeks-table td {
+      border-bottom: 1px solid rgba(142, 161, 184, 0.14);
+      padding: 4px 2px;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    #greeks-table th:first-child,
+    #greeks-table td:first-child {
+      text-align: left;
+      color: var(--muted);
+      font-family: var(--sans);
+    }
+
+    #error-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #error-list li {
+      font-size: 12px;
+      border: 1px solid rgba(255, 122, 122, 0.35);
+      background: rgba(120, 33, 33, 0.24);
+      border-radius: 5px;
+      padding: 6px;
+      color: #ffd5d5;
+      line-height: 1.4;
+    }
+
+    .error-link {
+      color: #ffd5d5;
+      font-family: var(--mono);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .error-link:hover {
+      color: #fff;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+
+    .json-tree {
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.45;
+      overflow: auto;
+      max-height: 320px;
+    }
+
+    .json-node {
+      margin-left: 12px;
+      border-left: 1px dashed rgba(142, 161, 184, 0.22);
+      padding-left: 8px;
+    }
+
+    .json-tree details {
+      margin: 2px 0;
+    }
+
+    .json-tree summary {
+      cursor: pointer;
+      color: #c8d8ea;
+      user-select: none;
+    }
+
+    .json-key { color: var(--accent); }
+    .json-type { color: var(--muted); }
+    .json-leaf { margin: 2px 0; }
+    .json-string { color: #9fd38c; }
+    .json-number { color: #f5c57a; }
+    .json-boolean { color: #e88fd9; }
+    .json-null { color: #7f8ea3; }
+
+    @media (max-width: 1120px) {
+      #app {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 0;
+      }
+      #side {
+        grid-template-rows: auto auto;
+      }
+      .panel {
+        min-height: 380px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>OpenFerric Structured Products DSL Playground</h1>
+      <div class="header-sub">Compile, price, and compute Greeks with WASM</div>
+    </div>
+    <div id="status-pill" class="status-pill">Initializing...</div>
+  </header>
+
+  <main id="app">
+    <section class="panel" aria-label="DSL Editor">
+      <div class="panel-head">
+        <div class="panel-title">DSL Editor</div>
+        <div class="editor-toolbar">
+          <select id="example-picker" aria-label="Example picker"></select>
+          <button id="run-now" type="button">Run Now</button>
+        </div>
+      </div>
+      <div id="editor" aria-label="OpenFerric editor"></div>
+    </section>
+
+    <section id="side">
+      <div class="panel" aria-label="Market Data">
+        <div class="panel-head">
+          <div class="panel-title">Market Data</div>
+        </div>
+        <div class="panel-body">
+          <div class="market-grid">
+            <div class="field">
+              <label for="spots-input">Spots Per Asset</label>
+              <input id="spots-input" value="[100.0]" />
+              <small>JSON array, e.g. <code>[100, 95, 110]</code></small>
+            </div>
+            <div class="field">
+              <label for="vols-input">Vols Per Asset</label>
+              <input id="vols-input" value="[0.20]" />
+              <small>JSON array, e.g. <code>[0.2, 0.22, 0.25]</code></small>
+            </div>
+            <div class="field">
+              <label for="dividends-input">Dividend Yields Per Asset</label>
+              <input id="dividends-input" value="[0.0]" />
+              <small>JSON array, e.g. <code>[0.0, 0.01]</code></small>
+            </div>
+            <div class="field">
+              <label for="rate-input">Rate</label>
+              <input id="rate-input" type="number" step="0.0001" value="0.05" />
+            </div>
+            <div class="field">
+              <label for="corr-input">Correlations</label>
+              <textarea id="corr-input">[[1.0]]</textarea>
+              <small>JSON matrix, default identity for missing entries.</small>
+            </div>
+            <div class="sim-grid">
+              <div class="field">
+                <label for="paths-input">Num Paths</label>
+                <input id="paths-input" type="number" min="1000" step="1000" value="100000" />
+              </div>
+              <div class="field">
+                <label for="steps-input">Num Steps</label>
+                <input id="steps-input" type="number" min="1" step="1" value="252" />
+              </div>
+              <div class="field">
+                <label for="seed-input">Seed</label>
+                <input id="seed-input" type="number" step="1" value="42" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" aria-label="Results">
+        <div class="panel-head">
+          <div class="panel-title">Results</div>
+        </div>
+        <div class="panel-body">
+          <div class="metrics">
+            <div class="metric">
+              <div class="k">Price</div>
+              <div id="price-value" class="v">-</div>
+            </div>
+            <div class="metric">
+              <div class="k">StdErr</div>
+              <div id="stderr-value" class="v">-</div>
+            </div>
+          </div>
+
+          <div class="subpanel">
+            <h3>Greeks Per Asset</h3>
+            <table id="greeks-table">
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th>Delta</th>
+                  <th>Gamma</th>
+                  <th>Vega</th>
+                  <th>Rho</th>
+                </tr>
+              </thead>
+              <tbody id="greeks-body">
+                <tr><td colspan="5" class="empty">No results yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="subpanel">
+            <h3>Errors</h3>
+            <ul id="error-list">
+              <li class="empty">No errors.</li>
+            </ul>
+          </div>
+
+          <div class="subpanel">
+            <h3>Compiled Product JSON</h3>
+            <div id="compiled-json" class="json-tree">
+              <div class="empty">Compile output will appear here.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const EXAMPLES = {
+  "01_zero_coupon.of": "// Zero Coupon Bond\n// Simplest possible product: redeem notional at maturity, no coupons.\n// PV = notional * exp(-r * T)\n\nproduct \"Zero Coupon\"\n    notional: 1\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 5.0\n        redeem notional\n",
+  "02_fixed_coupon_note.of": "// Fixed Coupon Note\n// Pays a fixed 5% annual coupon and redeems at par at maturity.\n// No equity linkage — pure fixed income in DSL form.\n\nproduct \"Fixed Coupon Note 3Y\"\n    notional: 1_000_000\n    maturity: 3.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 3.0\n        pay notional * 0.05\n        if is_final then\n            redeem notional\n",
+  "03_forward.of": "// Equity Forward\n// At maturity, pays (S(T)/S(0) - 1) * notional.\n// Long exposure to the underlying with no premium.\n\nproduct \"Equity Forward 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n        pay notional * (perf - 1.0)\n        redeem notional\n",
+  "04_reverse_convertible.of": "// Reverse Convertible\n// Pays an enhanced coupon (10% p.a.) in exchange for downside risk.\n// At maturity: if spot >= strike (100%), redeem at par.\n// If spot < strike, investor receives notional * (S(T)/S(0)),\n// i.e., they \"bought\" the stock at strike.\n\nproduct \"Reverse Convertible 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule quarterly from 0.25 to 1.0\n        // Enhanced coupon paid quarterly\n        pay notional * 0.025\n\n        if is_final then\n            let perf = worst_of(performances())\n            if perf >= 1.0 then\n                redeem notional\n            else\n                redeem notional * perf\n",
+  "05_barrier_reverse_convertible.of": "// Barrier Reverse Convertible (BRC)\n// Like a reverse convertible but with knock-in protection.\n// Downside only applies if a barrier (60%) is ever breached.\n// If barrier never touched, investor receives full notional regardless\n// of final spot level.\n\nproduct \"Barrier Reverse Convertible 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    state\n        ki_hit: bool = false\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        // Continuous barrier observation (approximated at observation dates)\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Enhanced coupon\n        pay notional * 0.02\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+  "06_autocallable_worst_of.of": "// Worst-of Autocallable (3 underlyings, 18 months)\n// Classic autocallable on a basket of 3 indices.\n// Quarterly observations:\n//   - If worst-of performance >= 100%, early redeem + coupon\n//   - Knock-in barrier at 60%\n//   - At maturity: coupon always paid; if KI hit and WoF < 100%,\n//     redeem at WoF level; otherwise redeem at par\n\nproduct \"WoF Autocall 18m\"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Early autocall (not on final date)\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        // Maturity\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+  "07_step_down_autocallable.of": "// Step-Down Autocallable\n// Autocall barrier decreases over time, making early redemption\n// progressively easier. Common in declining-vol environments.\n//\n// Barriers: Q1=105%, Q2=100%, Q3=95%, Q4=90%, Q5=85%, Q6=80%\n// Coupon: 8% p.a.\n// KI barrier: 55%\n\nproduct \"Step-Down Autocall 18m\"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        // Step-down autocall barriers using observation_date to determine quarter\n        // Q1 (0.25): 105%, Q2 (0.50): 100%, Q3 (0.75): 95%\n        // Q4 (1.00): 90%, Q5 (1.25): 85%, Q6 (1.50): 80%\n        let barrier = 1.05 - observation_date * 0.2 + 0.05\n\n        if wof >= barrier and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 0.80 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+  "08_phoenix_memory_coupon.of": "// Phoenix with Memory Coupons\n// Pays a coupon when worst-of performance is above the coupon barrier (70%).\n// Missed coupons accumulate and are paid when the barrier is next breached.\n// This \"memory\" feature is highly valued by investors.\n//\n// Coupon barrier: 70%\n// KI barrier: 60%\n// Autocall barrier: 100%\n// Coupon: 2% per quarter (8% p.a.)\n\nproduct \"Phoenix Memory 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        missed_coupons: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let wof = worst_of(performances())\n\n        // Knock-in observation\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Coupon with memory\n        if wof >= 0.70 then\n            pay notional * (0.02 + missed_coupons)\n            set missed_coupons = 0.0\n        else\n            set missed_coupons = missed_coupons + 0.02\n\n        // Early autocall (not on final date)\n        if wof >= 1.0 and not is_final then\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+  "09_athena_autocallable.of": "// Athena (Zero-Coupon Autocallable)\n// No periodic coupons — instead, a single premium is paid at redemption.\n// The premium grows with time: the later the autocall, the larger the payout.\n// Simpler structure favored for its clean payoff profile.\n//\n// Premium: 5% per period (cumulative)\n// Autocall barrier: 100%\n// KI barrier: 60%\n\nproduct \"Athena 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Autocall with cumulative premium\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.05 * observation_date / 0.5\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                pay notional * 0.05 * 4.0\n                redeem notional\n",
+  "10_snowball_note.of": "// Snowball Note\n// Coupon \"snowballs\" — each period's coupon is the previous coupon plus a\n// fixed increment, but only if the underlying is above the coupon barrier.\n// If below, the coupon resets to zero and starts snowballing again.\n//\n// Increment: 1% per quarter\n// Coupon barrier: 80%\n// KI barrier: 60%\n\nproduct \"Snowball 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        current_coupon: float = 0.0\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Snowball coupon logic\n        if perf >= 0.80 then\n            set current_coupon = current_coupon + 0.01\n            pay notional * current_coupon\n        else\n            set current_coupon = 0.0\n\n        // Maturity\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+  "11_digital_coupon_note.of": "// Digital Coupon Note\n// Pays a fixed coupon if the underlying is above the digital barrier,\n// zero otherwise. No memory feature. Capital at risk if KI barrier\n// is breached.\n//\n// Digital barrier: 80%\n// Coupon: 3% per quarter (12% p.a. conditional)\n// KI barrier: 55%\n\nproduct \"Digital Coupon Note 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.55 then\n            set ki_hit = true\n\n        // Digital coupon: all or nothing\n        if perf >= 0.80 then\n            pay notional * 0.03\n\n        // Maturity\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+  "12_twin_win.of": "// Twin-Win Certificate\n// Profits from both upward and downward moves of the underlying.\n// At maturity: pays abs(performance - 1) as a bonus.\n// BUT if a knock-in barrier is breached, downside protection is lost\n// and the investor participates in the full downside.\n//\n// KI barrier: 60%\n// Participation: 100% both ways (when no KI)\n\nproduct \"Twin-Win 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Barrier monitoring\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Maturity payoff\n        if is_final then\n            if ki_hit then\n                // KI hit: straight equity participation\n                redeem notional * perf\n            else\n                // No KI: profit from abs move\n                let move = perf - 1.0\n                let abs_move = max(move, 0.0 - move)\n                redeem notional * (1.0 + abs_move)\n",
+  "13_capital_protected_note.of": "// Capital Protected Note (CPN)\n// 100% capital protection at maturity plus participation in upside.\n// Investor never loses principal, but upside is capped or has\n// reduced participation to fund the protection.\n//\n// Protection: 100%\n// Upside participation: 60%\n// Cap: 130% of notional total return\n\nproduct \"Capital Protected Note 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 2.0 to 2.0\n        let perf = worst_of(performances())\n\n        // Upside participation, capped\n        let upside = max(perf - 1.0, 0.0) * 0.60\n        let capped_upside = min(upside, 0.30)\n\n        pay notional * capped_upside\n        redeem notional\n",
+  "14_bonus_certificate.of": "// Bonus Certificate\n// Offers a minimum return (bonus level) as long as the barrier is never\n// breached. If barrier is breached, the certificate tracks the underlying\n// 1:1 from inception.\n//\n// Bonus level: 120% (i.e., min 20% return)\n// Barrier: 70%\n// No cap on upside\n\nproduct \"Bonus Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        barrier_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.70 then\n            set barrier_hit = true\n\n        if is_final then\n            if barrier_hit then\n                // Barrier hit: 1:1 participation\n                redeem notional * perf\n            else\n                // Barrier not hit: at least bonus level\n                let payout = max(perf, 1.20)\n                redeem notional * payout\n",
+  "15_cliquet.of": "// Cliquet (Ratchet) Option\n// Accumulates capped and floored periodic returns.\n// Each period, the return is max(floor, min(cap, periodic_return)).\n// At maturity, pays notional * sum_of_capped_returns.\n//\n// This approximation uses observation-to-observation returns via\n// the performance ratio.\n//\n// Local floor: 0% (no negative contribution)\n// Local cap: 4% per quarter\n// Global floor: 0% (minimum total payout is zero)\n\nproduct \"Cliquet 1Y\"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state  \n        prev_perf: float = 1.0\n        total_return: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        // Periodic return relative to previous observation\n        let period_return = perf / prev_perf - 1.0\n\n        // Apply local floor and cap\n        let floored = max(period_return, 0.0)\n        let capped = min(floored, 0.04)\n\n        set total_return = total_return + capped\n        set prev_perf = perf\n\n        if is_final then\n            // Global floor at zero\n            let payout = max(total_return, 0.0)\n            pay notional * payout\n            redeem notional\n",
+  "16_accumulator_tarf.of": "// Accumulator (TARF — Target Accrual Redemption Forward)\n// Monthly observations. When the spot is within a range, the investor\n// accumulates units at a discounted price. Once the total accumulated\n// profit hits a target, the structure terminates.\n//\n// Range: 90% – 110% of initial spot\n// Accumulation per period: notional * 0.0833 * (perf - 1.0)\n// Target cap: 10% of notional\n\nproduct \"Accumulator TARF 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        accumulated_profit: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if accumulated_profit < 0.10 then\n            if perf >= 0.90 and perf <= 1.10 then\n                let period_pnl = 0.0833 * (perf - 1.0)\n                set accumulated_profit = accumulated_profit + max(period_pnl, 0.0)\n                pay notional * period_pnl\n\n        // Target hit — knock out\n        if accumulated_profit >= 0.10 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n",
+  "17_range_accrual.of": "// Equity Range Accrual\n// Pays a coupon proportional to the fraction of observation dates\n// where the underlying stays within a range.\n//\n// Range: 80% – 120% of initial spot\n// Max coupon: 10% p.a. * accrual fraction\n// Monthly monitoring (12 dates)\n\nproduct \"Range Accrual 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        days_in_range: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 0.80 and perf <= 1.20 then\n            set days_in_range = days_in_range + 1.0\n\n        if is_final then\n            let accrual_frac = days_in_range / 12.0\n            pay notional * 0.10 * accrual_frac\n            redeem notional\n",
+  "18_shark_fin.of": "// Shark Fin Note\n// Capital protected with capped upside participation.\n// If the underlying ever breaches an upper barrier (knock-out),\n// the upside is capped at a rebate level instead of full participation.\n//\n// Upper KO barrier: 130%\n// Participation (no KO): 100% of upside\n// Rebate (if KO): fixed 10%\n// Downside: 100% protected\n\nproduct \"Shark Fin 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ko_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Upper barrier monitoring\n        if perf >= 1.30 then\n            set ko_hit = true\n\n        if is_final then\n            if ko_hit then\n                // Knocked out: pay rebate only\n                pay notional * 0.10\n                redeem notional\n            else\n                // No KO: participate in upside, protected on downside\n                let upside = max(perf - 1.0, 0.0)\n                pay notional * upside\n                redeem notional\n",
+  "19_outperformance_certificate.of": "// Outperformance Certificate\n// Leveraged participation in the upside above the strike.\n// Below strike, investor participates 1:1 in the downside.\n//\n// Strike: 100%\n// Upside participation: 150%\n// No cap, no capital protection\n\nproduct \"Outperformance Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            // Leveraged upside\n            let upside = (perf - 1.0) * 1.50\n            redeem notional * (1.0 + upside)\n        else\n            // 1:1 downside\n            redeem notional * perf\n",
+  "20_wedding_cake.of": "// Wedding Cake (Multi-Barrier Coupon)\n// Coupon depends on which \"tier\" the worst-of performance falls into.\n// Higher performance tiers pay higher coupons.\n//\n// Tier 1: WoF >= 100% → 3% coupon\n// Tier 2: WoF >= 80%  → 2% coupon\n// Tier 3: WoF >= 60%  → 1% coupon\n// Below 60%: no coupon + KI risk\n//\n// KI barrier: 50%\n\nproduct \"Wedding Cake 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.50 then\n            set ki_hit = true\n\n        // Tiered coupon structure\n        if wof >= 1.0 then\n            pay notional * 0.03\n        else if wof >= 0.80 then\n            pay notional * 0.02\n        else if wof >= 0.60 then\n            pay notional * 0.01\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+  "21_best_of_call.of": "// Best-of Call on Basket\n// At maturity, pays the best performance among 3 underlyings.\n// Investor profits from the strongest-performing asset.\n// Capital at risk (no protection).\n//\n// This is essentially a rainbow option (best-of call).\n\nproduct \"Best-of Call 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n\n        // Pay upside of best performer\n        let payout = max(bof - 1.0, 0.0)\n        pay notional * payout\n        redeem notional\n",
+  "22_worst_of_put.of": "// Worst-of Put\n// At maturity, pays max(0, strike - worst_of_performance) * notional.\n// The investor is long a put on the worst-performing asset.\n// Strike at 100%.\n\nproduct \"Worst-of Put 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    schedule annual from 1.0 to 1.0\n        let wof = worst_of(performances())\n        let put_payout = max(1.0 - wof, 0.0)\n        pay notional * put_payout\n        redeem notional\n",
+  "23_express_certificate.of": "// Express Certificate\n// Similar to an autocallable but with a growing redemption premium.\n// Each observation date, if the underlying is above par,\n// the product redeems at an increasing premium.\n//\n// Period 1 (6m): redeem at 103%\n// Period 2 (12m): redeem at 106%\n// Period 3 (18m): redeem at 109%\n// Period 4 (24m, final): redeem at 112% or at performance if KI hit\n//\n// KI barrier: 65%\n\nproduct \"Express Certificate 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.65 then\n            set ki_hit = true\n\n        // Express redemption with growing premium\n        let premium = 1.0 + 0.03 * observation_date / 0.5\n\n        if perf >= 1.0 and not is_final then\n            redeem notional * premium\n\n        if is_final then\n            if perf >= 1.0 then\n                redeem notional * premium\n            else if ki_hit then\n                redeem notional * perf\n            else\n                redeem notional\n",
+  "24_lookback_coupon.of": "// Lookback-Style Coupon Note\n// Tracks the maximum performance seen across observation dates.\n// At maturity, pays a coupon based on the highest watermark achieved.\n// Principal always returned (capital protected).\n//\n// Coupon: 50% participation in max observed performance above par.\n\nproduct \"Lookback Coupon 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        max_perf: float = 1.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Track high watermark\n        if perf > max_perf then\n            set max_perf = perf\n\n        if is_final then\n            // Pay coupon based on best performance seen\n            let upside = max(max_perf - 1.0, 0.0) * 0.50\n            pay notional * upside\n            redeem notional\n",
+  "25_callable_note.of": "// Callable Yield Note\n// Issuer has the right to call (redeem early) the note at any\n// observation date. Modeled here as automatic call when the\n// underlying is above a call trigger (105%).\n// Pays a high fixed coupon each period as compensation for call risk.\n//\n// Coupon: 3% per quarter (12% p.a.)\n// Call trigger: 105%\n\nproduct \"Callable Yield Note 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        // Fixed coupon each period\n        pay notional * 0.03\n\n        // Issuer calls if above trigger\n        if perf >= 1.05 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n",
+  "26_asian_payout.of": "// Asian Payout Note\n// Payout at maturity is based on the average performance across\n// all observation dates, rather than final spot.\n// Averaging reduces the impact of spot manipulation and vol.\n//\n// Participation: 100% of average performance above strike\n// Strike: 100%\n// Monthly averaging over 1 year (12 observations)\n\nproduct \"Asian Payout 1Y\"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        sum_perf: float = 0.0\n        num_obs: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n        set sum_perf = sum_perf + perf\n        set num_obs = num_obs + 1.0\n\n        if is_final then\n            let avg_perf = sum_perf / num_obs\n            let payout = max(avg_perf - 1.0, 0.0)\n            pay notional * payout\n            redeem notional\n",
+  "27_airbag_certificate.of": "// Airbag Certificate\n// Provides cushioned downside exposure. The investor participates 1:1\n// in the upside. On the downside, losses are reduced by the \"airbag\"\n// ratio: the investor's entry point is effectively lowered.\n//\n// Buffer zone: first 30% of losses are absorbed\n// Below buffer: 1:1 participation from the buffer level\n// Upside: 1:1 uncapped participation\n//\n// Example: if perf = 0.60, investor gets 0.60/0.70 = 0.857 (not 0.60)\n\nproduct \"Airbag Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            // 1:1 upside\n            redeem notional * perf\n        else if perf >= 0.70 then\n            // Within buffer: no loss\n            redeem notional\n        else\n            // Below buffer: airbag ratio\n            redeem notional * perf / 0.70\n",
+  "28_double_barrier_ki_ko.of": "// Double Barrier (Knock-In / Knock-Out)\n// Combines an upper knock-out barrier with a lower knock-in barrier.\n// If upper barrier is hit, the structure terminates with a rebate.\n// If lower barrier is hit, capital is at risk at maturity.\n// Neither hit: full notional + coupon.\n//\n// Upper KO: 140%\n// Lower KI: 60%\n// KO rebate: 5%\n// Coupon: 8% p.a.\n\nproduct \"Double Barrier KIKO 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Lower knock-in\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Upper knock-out\n        if perf >= 1.40 and not is_final then\n            pay notional * 0.05\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+  "29_dispersion_note.of": "// Dispersion Note\n// Pays a coupon proportional to the spread between the best and worst\n// performing assets. The wider the dispersion, the higher the coupon.\n// Investors profit from divergence in the basket.\n//\n// Coupon: notional * (best_of - worst_of) * participation\n// Participation: 50%\n// Capital protected\n\nproduct \"Dispersion Note 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n        let wof = worst_of(performances())\n        let spread = bof - wof\n\n        pay notional * spread * 0.50\n        redeem notional\n",
+  "30_napoleon.of": "// Napoleon (Worst-of Digital Autocallable)\n// Monthly observations. Each month pays a fixed coupon only if\n// the worst-of performance is above the digital barrier.\n// Features autocall and KI barrier.\n//\n// Digital barrier: 85%\n// Coupon: 1% per month (12% p.a. conditional)\n// Autocall: 100% (semi-annual only, every 6th observation)\n// KI: 55%\n\nproduct \"Napoleon 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n        obs_count: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let wof = worst_of(performances())\n        set obs_count = obs_count + 1.0\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        // Digital coupon\n        if wof >= 0.85 then\n            pay notional * 0.01\n\n        // Semi-annual autocall check (obs 6)\n        if obs_count == 6.0 and wof >= 1.0 then\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n"
+};
+
+    const MONACO_VERSION = '0.52.2';
+    const MONACO_BASE = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min`;
+
+    const state = {
+      monaco: null,
+      editor: null,
+      model: null,
+      worker: null,
+      workerReady: false,
+      workerError: null,
+      pending: new Map(),
+      nextReqId: 1,
+      runSeq: 0,
+      debounceTimer: null,
+      latestProduct: null,
+    };
+
+    const els = {
+      statusPill: document.getElementById('status-pill'),
+      examplePicker: document.getElementById('example-picker'),
+      runNow: document.getElementById('run-now'),
+      spots: document.getElementById('spots-input'),
+      vols: document.getElementById('vols-input'),
+      dividends: document.getElementById('dividends-input'),
+      rate: document.getElementById('rate-input'),
+      corr: document.getElementById('corr-input'),
+      paths: document.getElementById('paths-input'),
+      steps: document.getElementById('steps-input'),
+      seed: document.getElementById('seed-input'),
+      price: document.getElementById('price-value'),
+      stderr: document.getElementById('stderr-value'),
+      greeksBody: document.getElementById('greeks-body'),
+      errorList: document.getElementById('error-list'),
+      compiledJson: document.getElementById('compiled-json'),
+    };
+
+    function setStatus(text, kind) {
+      els.statusPill.textContent = text;
+      els.statusPill.className = 'status-pill' + (kind ? ` ${kind}` : '');
+    }
+
+    function fmtNumber(v, digits = 8) {
+      if (!Number.isFinite(v)) return '-';
+      return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits });
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const tag = document.createElement('script');
+        tag.src = src;
+        tag.onload = () => resolve();
+        tag.onerror = () => reject(new Error(`Failed to load ${src}`));
+        document.head.appendChild(tag);
+      });
+    }
+
+    function setupMonacoEnvironment() {
+      window.MonacoEnvironment = {
+        getWorkerUrl() {
+          const code = `self.MonacoEnvironment = { baseUrl: '${MONACO_BASE}/' }; importScripts('${MONACO_BASE}/vs/base/worker/workerMain.js');`;
+          return `data:text/javascript;charset=utf-8,${encodeURIComponent(code)}`;
+        },
+      };
+    }
+
+    function registerOpenFerricLanguage(monaco) {
+      monaco.languages.register({ id: 'openferric' });
+
+      monaco.languages.setMonarchTokensProvider('openferric', {
+        defaultToken: '',
+        tokenPostfix: '.openferric',
+        keywords: [
+          'product', 'notional', 'maturity', 'underlyings', 'state', 'schedule',
+          'from', 'to', 'let', 'if', 'then', 'else', 'pay', 'redeem', 'set', 'skip',
+          'monthly', 'quarterly', 'semi_annual', 'annual', 'and', 'or', 'not', 'true', 'false',
+        ],
+        typeKeywords: ['bool', 'float'],
+        builtinFunctions: ['worst_of', 'best_of', 'performances', 'price', 'min', 'max', 'abs', 'exp', 'log', 'asset'],
+        builtinVariables: ['observation_date', 'is_final', 'notional'],
+        operators: ['=', '==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/'],
+        symbols: /[=><!~?:&|+\-*\/\^%]+/,
+
+        tokenizer: {
+          root: [
+            [/\/\/.*$/, 'comment'],
+            [/"/, { token: 'string.quote', next: '@string' }],
+            [/\d[\d_]*(\.[\d_]+)?([eE][+-]?\d+)?\b/, 'number'],
+            [/[{}()\[\]]/, '@brackets'],
+            [/@symbols/, {
+              cases: {
+                '@operators': 'operator',
+                '@default': '',
+              },
+            }],
+            [/[a-zA-Z_][\w]*/, {
+              cases: {
+                '@keywords': 'keyword',
+                '@typeKeywords': 'type',
+                '@builtinFunctions': 'predefined',
+                '@builtinVariables': 'variable.predefined',
+                'true': 'constant.language.boolean',
+                'false': 'constant.language.boolean',
+                '@default': 'identifier',
+              },
+            }],
+            [/[,:;]/, 'delimiter'],
+          ],
+
+          string: [
+            [/[^\\"]+/, 'string'],
+            [/\\./, 'string.escape'],
+            [/"/, { token: 'string.quote', next: '@pop' }],
+          ],
+        },
+      });
+
+      monaco.editor.defineTheme('openferric-dark', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'keyword', foreground: '6DB6FF' },
+          { token: 'type', foreground: 'B6A6FF' },
+          { token: 'number', foreground: 'F5C57A' },
+          { token: 'string', foreground: '9FD38C' },
+          { token: 'comment', foreground: '6F8AA9' },
+          { token: 'operator', foreground: 'D8E0EA' },
+          { token: 'predefined', foreground: '19D8A8' },
+          { token: 'variable.predefined', foreground: '79C0FF' },
+          { token: 'constant.language.boolean', foreground: 'E88FD9' },
+        ],
+        colors: {
+          'editor.background': '#070A0F',
+          'editor.foreground': '#D8E0EA',
+          'editorLineNumber.foreground': '#3D4E61',
+          'editorLineNumber.activeForeground': '#8EA1B8',
+          'editorCursor.foreground': '#2FB2FF',
+          'editor.selectionBackground': '#234764',
+          'editor.inactiveSelectionBackground': '#1B2E44',
+          'editorGutter.background': '#070A0F',
+        },
+      });
+    }
+
+    async function initMonacoEditor() {
+      setupMonacoEnvironment();
+      await loadScript(`${MONACO_BASE}/vs/loader.min.js`);
+
+      await new Promise((resolve, reject) => {
+        require.config({ paths: { vs: `${MONACO_BASE}/vs` } });
+        require(['vs/editor/editor.main'], resolve, reject);
+      });
+
+      const monaco = window.monaco;
+      registerOpenFerricLanguage(monaco);
+
+      state.monaco = monaco;
+      state.model = monaco.editor.createModel('', 'openferric');
+      state.editor = monaco.editor.create(document.getElementById('editor'), {
+        model: state.model,
+        theme: 'openferric-dark',
+        fontFamily: 'JetBrains Mono, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontLigatures: true,
+        minimap: { enabled: false },
+        automaticLayout: true,
+        scrollBeyondLastLine: false,
+        tabSize: 2,
+        insertSpaces: true,
+      });
+
+      state.editor.onDidChangeModelContent(() => scheduleRun());
+      window.addEventListener('resize', () => state.editor.layout());
+    }
+
+    function buildWorker() {
+      const wasmModuleUrl = new URL('./pkg/openferric_wasm.js', window.location.href).href;
+      const workerSource = `
+        let wasmMod = null;
+        const wasmModuleUrl = ${JSON.stringify(wasmModuleUrl)};
+
+        async function ensureWasm() {
+          if (wasmMod) return wasmMod;
+          const mod = await import(wasmModuleUrl);
+          await mod.default();
+          wasmMod = mod;
+          return wasmMod;
+        }
+
+        function parseResult(raw) {
+          try {
+            return JSON.parse(raw);
+          } catch (e) {
+            return { err: 'Invalid JSON from WASM: ' + (e && e.message ? e.message : String(e)) };
+          }
+        }
+
+        function normalizeSeed(seed) {
+          const n = Number(seed);
+          const safe = Number.isFinite(n) ? Math.trunc(n) : 42;
+          try {
+            return BigInt(safe);
+          } catch (_) {
+            return safe;
+          }
+        }
+
+        async function handleRequest(type, payload) {
+          const wasm = await ensureWasm();
+          if (type === 'compile') {
+            return parseResult(wasm.dsl_parse_and_compile(String(payload.source || '')));
+          }
+
+          if (type === 'price') {
+            const seed = normalizeSeed(payload.seed);
+            try {
+              return parseResult(
+                wasm.dsl_price(
+                  String(payload.product_json || '{}'),
+                  String(payload.market_json || '{}'),
+                  Number(payload.num_paths) >>> 0,
+                  Number(payload.num_steps) >>> 0,
+                  seed
+                )
+              );
+            } catch (e) {
+              return parseResult(
+                wasm.dsl_price(
+                  String(payload.product_json || '{}'),
+                  String(payload.market_json || '{}'),
+                  Number(payload.num_paths) >>> 0,
+                  Number(payload.num_steps) >>> 0,
+                  Number(seed)
+                )
+              );
+            }
+          }
+
+          if (type === 'greeks') {
+            const seed = normalizeSeed(payload.seed);
+            try {
+              return parseResult(
+                wasm.dsl_greeks(
+                  String(payload.product_json || '{}'),
+                  String(payload.market_json || '{}'),
+                  Number(payload.num_paths) >>> 0,
+                  Number(payload.num_steps) >>> 0,
+                  seed,
+                  Number(payload.asset_index) >>> 0
+                )
+              );
+            } catch (e) {
+              return parseResult(
+                wasm.dsl_greeks(
+                  String(payload.product_json || '{}'),
+                  String(payload.market_json || '{}'),
+                  Number(payload.num_paths) >>> 0,
+                  Number(payload.num_steps) >>> 0,
+                  Number(seed),
+                  Number(payload.asset_index) >>> 0
+                )
+              );
+            }
+          }
+
+          return { err: 'Unknown worker request type: ' + type };
+        }
+
+        self.onmessage = async (event) => {
+          const msg = event.data || {};
+          const id = msg.id;
+          if (!id) return;
+
+          try {
+            const result = await handleRequest(msg.type, msg.payload || {});
+            self.postMessage({ id, ok: true, result });
+          } catch (err) {
+            self.postMessage({
+              id,
+              ok: false,
+              error: err && err.message ? err.message : String(err),
+            });
+          }
+        };
+
+        (async () => {
+          try {
+            await ensureWasm();
+            self.postMessage({ type: 'ready' });
+          } catch (err) {
+            self.postMessage({
+              type: 'ready',
+              error: err && err.message ? err.message : String(err),
+            });
+          }
+        })();
+      `;
+
+      const blob = new Blob([workerSource], { type: 'text/javascript' });
+      const workerUrl = URL.createObjectURL(blob);
+      const worker = new Worker(workerUrl, { type: 'module' });
+      URL.revokeObjectURL(workerUrl);
+
+      worker.onmessage = (event) => {
+        const msg = event.data || {};
+        if (msg.type === 'ready') {
+          if (msg.error) {
+            state.workerReady = false;
+            state.workerError = msg.error;
+            setStatus('WASM load error', 'error');
+            renderErrors([{ kind: 'wasm', message: msg.error }]);
+          } else {
+            state.workerReady = true;
+            state.workerError = null;
+            setStatus('Ready', 'ready');
+            scheduleRun(50);
+          }
+          return;
+        }
+
+        const pending = state.pending.get(msg.id);
+        if (!pending) return;
+        state.pending.delete(msg.id);
+
+        if (!msg.ok) {
+          pending.reject(new Error(msg.error || 'Worker request failed'));
+          return;
+        }
+
+        pending.resolve(msg.result);
+      };
+
+      worker.onerror = (err) => {
+        state.workerError = err && err.message ? err.message : String(err);
+        setStatus('Worker crashed', 'error');
+        renderErrors([{ kind: 'worker', message: state.workerError }]);
+      };
+
+      state.worker = worker;
+    }
+
+    function callWorker(type, payload) {
+      if (!state.worker) {
+        return Promise.reject(new Error('Worker not initialized'));
+      }
+      const id = state.nextReqId++;
+      return new Promise((resolve, reject) => {
+        state.pending.set(id, { resolve, reject });
+        state.worker.postMessage({ id, type, payload });
+      });
+    }
+
+    function parseNumberArray(raw, fieldName) {
+      let arr;
+      try {
+        arr = JSON.parse(raw);
+      } catch (e) {
+        throw new Error(`${fieldName} must be valid JSON array`);
+      }
+      if (!Array.isArray(arr)) {
+        throw new Error(`${fieldName} must be an array`);
+      }
+      const out = arr.map((v, i) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) {
+          throw new Error(`${fieldName}[${i}] must be a finite number`);
+        }
+        return n;
+      });
+      if (!out.length) {
+        throw new Error(`${fieldName} cannot be empty`);
+      }
+      return out;
+    }
+
+    function parseCorrelation(raw) {
+      let m;
+      try {
+        m = JSON.parse(raw);
+      } catch (e) {
+        throw new Error('Correlations must be valid JSON matrix');
+      }
+      if (!Array.isArray(m)) {
+        throw new Error('Correlations must be an array of rows');
+      }
+      for (let i = 0; i < m.length; i += 1) {
+        if (!Array.isArray(m[i])) {
+          throw new Error(`Correlations row ${i} must be an array`);
+        }
+      }
+      return m;
+    }
+
+    function identityMatrix(n) {
+      return Array.from({ length: n }, (_, i) => (
+        Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))
+      ));
+    }
+
+    function resizeArray(values, n, fallback) {
+      return Array.from({ length: n }, (_, i) => {
+        const v = Number(values[i]);
+        return Number.isFinite(v) ? v : fallback;
+      });
+    }
+
+    function normalizeCorrelation(input, n) {
+      const corr = identityMatrix(n);
+      for (let i = 0; i < n; i += 1) {
+        if (!Array.isArray(input[i])) continue;
+        for (let j = 0; j < n; j += 1) {
+          const v = Number(input[i][j]);
+          if (Number.isFinite(v)) {
+            corr[i][j] = Math.max(-1, Math.min(1, v));
+          }
+        }
+      }
+      for (let i = 0; i < n; i += 1) corr[i][i] = 1;
+      return corr;
+    }
+
+    function readSimInputs() {
+      const numPaths = Math.max(1, Math.floor(Number(els.paths.value) || 100000));
+      const numSteps = Math.max(1, Math.floor(Number(els.steps.value) || 252));
+      const seed = Math.floor(Number(els.seed.value) || 42);
+      return { numPaths, numSteps, seed };
+    }
+
+    function buildMarket(numUnderlyings) {
+      const spots = parseNumberArray(els.spots.value.trim(), 'Spots');
+      const vols = parseNumberArray(els.vols.value.trim(), 'Vols');
+      const dividends = parseNumberArray(els.dividends.value.trim(), 'Dividend yields');
+      const corrInput = parseCorrelation(els.corr.value.trim());
+      const rate = Number(els.rate.value);
+
+      if (!Number.isFinite(rate)) {
+        throw new Error('Rate must be a finite number');
+      }
+
+      const n = Math.max(1, Number(numUnderlyings) || 1);
+      const normSpots = resizeArray(spots, n, 100.0);
+      const normVols = resizeArray(vols, n, 0.20).map((v) => (v > 0 ? v : 0.20));
+      const normDivs = resizeArray(dividends, n, 0.0);
+      const correlation = normalizeCorrelation(corrInput, n);
+
+      const assets = Array.from({ length: n }, (_, i) => ({
+        spot: normSpots[i],
+        vol: normVols[i],
+        dividend_yield: normDivs[i],
+      }));
+
+      return {
+        assets,
+        correlation,
+        rate,
+      };
+    }
+
+    function offsetToMarkerRange(model, start, end) {
+      const max = model.getValueLength();
+      const s = Math.max(0, Math.min(max, Number(start) || 0));
+      const rawEnd = Number(end);
+      const e = Math.max(s + 1, Math.min(max, Number.isFinite(rawEnd) ? rawEnd : s + 1));
+      const startPos = model.getPositionAt(s);
+      const endPos = model.getPositionAt(e);
+      return {
+        startLineNumber: startPos.lineNumber,
+        startColumn: startPos.column,
+        endLineNumber: endPos.lineNumber,
+        endColumn: endPos.column,
+      };
+    }
+
+    function applyErrorMarkers(errors) {
+      if (!state.monaco || !state.model) return;
+      const markers = errors
+        .filter((e) => Number.isFinite(e.span_start) && Number.isFinite(e.span_end) && e.span_end > e.span_start)
+        .map((e) => {
+          const range = offsetToMarkerRange(state.model, e.span_start, e.span_end);
+          return {
+            ...range,
+            severity: state.monaco.MarkerSeverity.Error,
+            message: `${e.kind || 'error'}: ${e.message || 'Unknown error'}`,
+          };
+        });
+
+      state.monaco.editor.setModelMarkers(state.model, 'openferric-diagnostics', markers);
+    }
+
+    function goToSpan(start, end) {
+      if (!state.editor || !state.model) return;
+      const range = offsetToMarkerRange(state.model, start, end);
+      state.editor.revealPositionInCenter({
+        lineNumber: range.startLineNumber,
+        column: range.startColumn,
+      });
+      state.editor.setSelection(range);
+      state.editor.focus();
+    }
+
+    function renderErrors(errors) {
+      applyErrorMarkers(errors);
+      if (!errors.length) {
+        els.errorList.innerHTML = '<li class="empty">No errors.</li>';
+        return;
+      }
+
+      const model = state.model;
+      const items = errors.map((e, idx) => {
+        const spanValid = model
+          && Number.isFinite(e.span_start)
+          && Number.isFinite(e.span_end)
+          && e.span_end > e.span_start;
+
+        let loc = '';
+        if (spanValid) {
+          const pos = model.getPositionAt(e.span_start);
+          loc = ` (line ${pos.lineNumber}, col ${pos.column})`;
+        }
+
+        const kind = escapeHtml(e.kind || 'error');
+        const msg = escapeHtml(e.message || 'Unknown error');
+
+        if (!spanValid) {
+          return `<li><strong>${kind}</strong>: ${msg}</li>`;
+        }
+
+        return `<li><strong>${kind}</strong>: <button class="error-link" data-idx="${idx}">${msg}${escapeHtml(loc)}</button></li>`;
+      });
+
+      els.errorList.innerHTML = items.join('');
+
+      Array.from(els.errorList.querySelectorAll('.error-link')).forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.idx);
+          const e = errors[idx];
+          if (!e) return;
+          goToSpan(e.span_start, e.span_end);
+        });
+      });
+    }
+
+    function renderGreeks(rows) {
+      if (!rows.length) {
+        els.greeksBody.innerHTML = '<tr><td colspan="5" class="empty">No results yet.</td></tr>';
+        return;
+      }
+
+      const html = rows.map((row) => {
+        if (row.err) {
+          return `<tr><td>${row.asset}</td><td colspan="4" style="text-align:left;color:#ffb3b3">${escapeHtml(row.err)}</td></tr>`;
+        }
+        return `
+          <tr>
+            <td>${row.asset}</td>
+            <td>${fmtNumber(row.delta, 8)}</td>
+            <td>${fmtNumber(row.gamma, 8)}</td>
+            <td>${fmtNumber(row.vega, 8)}</td>
+            <td>${fmtNumber(row.rho, 8)}</td>
+          </tr>
+        `;
+      }).join('');
+      els.greeksBody.innerHTML = html;
+    }
+
+    function jsonLeafClass(v) {
+      if (v === null) return 'json-null';
+      if (typeof v === 'number') return 'json-number';
+      if (typeof v === 'boolean') return 'json-boolean';
+      if (typeof v === 'string') return 'json-string';
+      return '';
+    }
+
+    function buildJsonTreeNode(key, value, open = false) {
+      const keyHtml = key ? `<span class="json-key">${escapeHtml(key)}</span>: ` : '';
+
+      if (value === null || typeof value !== 'object') {
+        const cls = jsonLeafClass(value);
+        const val = typeof value === 'string' ? `"${escapeHtml(value)}"` : escapeHtml(String(value));
+        const line = document.createElement('div');
+        line.className = 'json-leaf json-node';
+        line.innerHTML = `${keyHtml}<span class="${cls}">${val}</span>`;
+        return line;
+      }
+
+      const isArray = Array.isArray(value);
+      const entries = isArray
+        ? value.map((v, i) => [String(i), v])
+        : Object.entries(value);
+
+      const details = document.createElement('details');
+      details.className = 'json-node';
+      details.open = open;
+
+      const summary = document.createElement('summary');
+      const shape = isArray ? `[${entries.length}]` : `{${entries.length}}`;
+      summary.innerHTML = `${keyHtml}<span class="json-type">${shape}</span>`;
+      details.appendChild(summary);
+
+      for (const [k, v] of entries) {
+        details.appendChild(buildJsonTreeNode(k, v, false));
+      }
+
+      return details;
+    }
+
+    function renderCompiledJson(product) {
+      if (!product) {
+        els.compiledJson.innerHTML = '<div class="empty">Compile output will appear here.</div>';
+        return;
+      }
+      els.compiledJson.innerHTML = '';
+      els.compiledJson.appendChild(buildJsonTreeNode('product', product, true));
+    }
+
+    function clearPricingResults() {
+      els.price.textContent = '-';
+      els.stderr.textContent = '-';
+      renderGreeks([]);
+    }
+
+    async function runAll() {
+      if (!state.editor || !state.workerReady) return;
+      const seq = ++state.runSeq;
+      setStatus('Running...', 'running');
+
+      const source = state.editor.getValue();
+      const errors = [];
+
+      let compileResp;
+      try {
+        compileResp = await callWorker('compile', { source });
+      } catch (e) {
+        if (seq !== state.runSeq) return;
+        setStatus('Worker error', 'error');
+        renderErrors([{ kind: 'worker', message: e.message || String(e) }]);
+        clearPricingResults();
+        return;
+      }
+
+      if (seq !== state.runSeq) return;
+
+      if (!compileResp || compileResp.err) {
+        const err = compileResp && compileResp.err
+          ? compileResp.err
+          : { kind: 'compile', message: 'Unknown compile failure' };
+        errors.push(err);
+        state.latestProduct = null;
+        renderCompiledJson(null);
+        clearPricingResults();
+        renderErrors(errors);
+        setStatus('Compile error', 'error');
+        return;
+      }
+
+      const product = compileResp.ok;
+      state.latestProduct = product;
+      renderCompiledJson(product);
+
+      let market;
+      try {
+        market = buildMarket(product && product.num_underlyings ? product.num_underlyings : 1);
+      } catch (e) {
+        errors.push({ kind: 'market', message: e.message || String(e), span_start: 0, span_end: 0 });
+        clearPricingResults();
+        renderErrors(errors);
+        setStatus('Market input error', 'error');
+        return;
+      }
+
+      const sim = readSimInputs();
+      const productJson = JSON.stringify(product);
+      const marketJson = JSON.stringify(market);
+
+      let priceResp;
+      try {
+        priceResp = await callWorker('price', {
+          product_json: productJson,
+          market_json: marketJson,
+          num_paths: sim.numPaths,
+          num_steps: sim.numSteps,
+          seed: sim.seed,
+        });
+      } catch (e) {
+        if (seq !== state.runSeq) return;
+        errors.push({ kind: 'worker', message: e.message || String(e), span_start: 0, span_end: 0 });
+        clearPricingResults();
+        renderErrors(errors);
+        setStatus('Worker error', 'error');
+        return;
+      }
+
+      if (seq !== state.runSeq) return;
+
+      if (!priceResp || priceResp.err) {
+        errors.push({ kind: 'eval', message: (priceResp && priceResp.err) || 'Pricing failed', span_start: 0, span_end: 0 });
+        clearPricingResults();
+        renderErrors(errors);
+        setStatus('Pricing error', 'error');
+        return;
+      }
+
+      els.price.textContent = fmtNumber(priceResp.price, 8);
+      els.stderr.textContent = fmtNumber(priceResp.stderr, 8);
+
+      const nAssets = Math.max(1, Number(product.num_underlyings) || 1);
+      const greekRequests = Array.from({ length: nAssets }, (_, assetIdx) => (
+        callWorker('greeks', {
+          product_json: productJson,
+          market_json: marketJson,
+          num_paths: sim.numPaths,
+          num_steps: sim.numSteps,
+          seed: sim.seed,
+          asset_index: assetIdx,
+        })
+      ));
+
+      const greekRows = [];
+      try {
+        const greekResponses = await Promise.all(greekRequests);
+        if (seq !== state.runSeq) return;
+
+        for (let i = 0; i < greekResponses.length; i += 1) {
+          const r = greekResponses[i];
+          if (!r || r.err) {
+            const msg = r && r.err ? r.err : 'Greek computation failed';
+            greekRows.push({ asset: i, err: msg });
+            errors.push({ kind: 'greeks', message: `asset ${i}: ${msg}`, span_start: 0, span_end: 0 });
+            continue;
+          }
+          greekRows.push({
+            asset: i,
+            delta: r.delta,
+            gamma: r.gamma,
+            vega: r.vega,
+            rho: r.rho,
+          });
+        }
+      } catch (e) {
+        if (seq !== state.runSeq) return;
+        errors.push({ kind: 'worker', message: e.message || String(e), span_start: 0, span_end: 0 });
+      }
+
+      renderGreeks(greekRows);
+      renderErrors(errors);
+      setStatus(errors.length ? 'Completed with issues' : 'Ready', errors.length ? 'error' : 'ready');
+    }
+
+    function scheduleRun(delay = 500) {
+      if (!state.workerReady) return;
+      if (state.debounceTimer) clearTimeout(state.debounceTimer);
+      state.debounceTimer = setTimeout(() => {
+        runAll().catch((e) => {
+          setStatus('Unexpected error', 'error');
+          renderErrors([{ kind: 'runtime', message: e.message || String(e), span_start: 0, span_end: 0 }]);
+        });
+      }, delay);
+    }
+
+    function initExamples() {
+      const entries = Object.entries(EXAMPLES).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+      els.examplePicker.innerHTML = entries
+        .map(([name]) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+        .join('');
+
+      els.examplePicker.addEventListener('change', () => {
+        const selected = els.examplePicker.value;
+        if (!(selected in EXAMPLES)) return;
+        state.editor.setValue(EXAMPLES[selected]);
+      });
+
+      if (entries.length) {
+        const first = entries[0][0];
+        els.examplePicker.value = first;
+        if (state.editor) {
+          state.editor.setValue(EXAMPLES[first]);
+        }
+      }
+    }
+
+    function bindUiEvents() {
+      const runTriggers = [
+        els.spots,
+        els.vols,
+        els.dividends,
+        els.rate,
+        els.corr,
+        els.paths,
+        els.steps,
+        els.seed,
+      ];
+
+      runTriggers.forEach((el) => {
+        el.addEventListener('input', () => scheduleRun());
+      });
+
+      els.runNow.addEventListener('click', () => {
+        if (state.debounceTimer) clearTimeout(state.debounceTimer);
+        runAll().catch((e) => {
+          setStatus('Unexpected error', 'error');
+          renderErrors([{ kind: 'runtime', message: e.message || String(e), span_start: 0, span_end: 0 }]);
+        });
+      });
+    }
+
+    async function bootstrap() {
+      setStatus('Loading Monaco...', 'running');
+      try {
+        await initMonacoEditor();
+      } catch (e) {
+        setStatus('Monaco load error', 'error');
+        renderErrors([{ kind: 'monaco', message: e.message || String(e) }]);
+        return;
+      }
+
+      initExamples();
+      bindUiEvents();
+
+      setStatus('Loading WASM...', 'running');
+      buildWorker();
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>
