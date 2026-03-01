@@ -685,24 +685,19 @@ function computeSurfaceData(slices, packed, cfg) {
     if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
   }
 
-  // Per-slice k bounds for flat wing extrapolation.
-  // Short-dated slices have steep SVI wings that explode if evaluated at
-  // moneyness values appropriate for long-dated slices.  Use time-dependent
-  // bounds: maxAbsK scales with sqrt(T) so short-dated slices stay near ATM.
+  // Per-slice k bounds: clamp to each slice's calibration data range.
+  // Prevents extrapolation beyond market data (where SVI wings diverge)
+  // while still showing the full fitted smile within the data range.
   const kBoundsArr = [];
   for (const sl of slices) {
-    const maxAbsK = Math.max(0.12, 0.6 * Math.sqrt(sl.T));
-    let slKMin = -maxAbsK, slKMax = maxAbsK;
-    // Also clamp to actual data range (don't extrapolate beyond data either)
+    let slKMin = Infinity, slKMax = -Infinity;
     for (const pt of sl.points) {
       if (Number.isFinite(pt.k)) {
         if (pt.k < slKMin) slKMin = pt.k;
         if (pt.k > slKMax) slKMax = pt.k;
       }
     }
-    // But enforce the time-dependent ceiling
-    slKMin = Math.max(slKMin, -maxAbsK);
-    slKMax = Math.min(slKMax, maxAbsK);
+    if (!Number.isFinite(slKMin)) { slKMin = kMin; slKMax = kMax; }
     kBoundsArr.push(slKMin, slKMax);
   }
   const kBounds = new Float64Array(kBoundsArr);
