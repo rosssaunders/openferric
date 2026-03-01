@@ -237,6 +237,13 @@ pub fn calibrate_svi_weighted(
             m: init.m - 0.1,
             sigma: init.sigma * 0.8,
         },
+        SviParams {
+            a: init.a * 1.3,
+            b: init.b * 0.8,
+            rho: (init.rho + 0.2).clamp(-0.9, 0.9),
+            m: init.m + 0.1,
+            sigma: init.sigma * 1.2,
+        },
     ];
 
     let mut best = project(init);

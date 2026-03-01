@@ -129,7 +129,9 @@ pub fn calibrate_slice(
     let params: Vec<f64> = match model_type {
         MODEL_SVI => {
             // Build (k, iv^2) points with continuous soft weights
-            let decay_scale = 0.3_f64.max(2.0 * t.sqrt());
+            // decay_scale controls how aggressively wings are down-weighted;
+            // tighter for short-dated options where wing quotes are noisy.
+            let decay_scale = 0.08_f64.max(0.5 * t.sqrt());
             let mut points: Vec<(f64, f64)> = Vec::with_capacity(filtered.len());
             let mut weights: Vec<f64> = Vec::with_capacity(filtered.len());
             for &idx in &filtered {
@@ -146,7 +148,10 @@ pub fn calibrate_slice(
                 };
                 // Moneyness decay: ATM gets highest weight, wings decay smoothly
                 let moneyness_decay = (-0.5 * (q.k / decay_scale).powi(2)).exp();
-                weights.push(spread_quality * moneyness_decay);
+                // IV outlier penalty: down-weight points whose IV deviates from ATM
+                let iv_ratio = q.mark_iv / atm_vol.max(0.01);
+                let iv_penalty = 1.0 / (1.0 + (iv_ratio - 1.0).max(0.0).powi(2) * 16.0);
+                weights.push(spread_quality * moneyness_decay * iv_penalty);
             }
             let atm_iv2 = (atm_vol * atm_vol).max(1e-4);
             let init = SviParams {

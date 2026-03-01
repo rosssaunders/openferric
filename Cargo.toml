@@ -72,6 +72,7 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.8"
+ureq = { version = "3", features = ["json"] }
 
 [[bench]]
 name = "pricing_bench"
