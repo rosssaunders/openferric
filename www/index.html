@@ -392,6 +392,195 @@
       }
     }
 
+    /* ---- DSL Panels ---- */
+    .dsl-editor-host {
+      flex: 1;
+      min-height: 0;
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #070a0f;
+    }
+    .dsl-editor-loading {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      border: 1px dashed rgba(142,161,184,0.3);
+      border-radius: 6px;
+      background: rgba(0,0,0,0.2);
+    }
+    .dsl-results-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .dsl-status {
+      font-size: 11px;
+      font-family: var(--mono);
+      border-radius: 4px;
+      padding: 4px 6px;
+      border: 1px solid rgba(142,161,184,0.24);
+      background: rgba(0,0,0,0.2);
+    }
+    .dsl-status.success {
+      color: var(--accent2);
+      border-color: rgba(25,216,168,0.5);
+      background: rgba(25,216,168,0.08);
+    }
+    .dsl-status.error {
+      color: var(--danger);
+      border-color: rgba(255,122,122,0.5);
+      background: rgba(255,122,122,0.08);
+    }
+    .dsl-status.pending {
+      color: var(--warn);
+      border-color: rgba(255,179,71,0.5);
+      background: rgba(255,179,71,0.08);
+    }
+    .dsl-kv {
+      display: grid;
+      grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+      gap: 4px 8px;
+      font-size: 10px;
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      padding: 6px;
+      background: rgba(0,0,0,0.2);
+    }
+    .dsl-kv .k {
+      color: var(--muted);
+      text-transform: lowercase;
+      white-space: nowrap;
+    }
+    .dsl-kv .v {
+      text-align: right;
+      font-family: var(--mono);
+      overflow-wrap: anywhere;
+    }
+    .dsl-greeks-wrap {
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      background: rgba(0,0,0,0.2);
+      overflow: auto;
+      max-height: 200px;
+      padding: 0 4px;
+    }
+    .dsl-greeks-wrap th {
+      position: sticky;
+      top: 0;
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      z-index: 1;
+    }
+    .dsl-greeks-wrap th,
+    .dsl-greeks-wrap td {
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .dsl-json-wrap {
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      background: rgba(0,0,0,0.2);
+      padding: 6px;
+      font-size: 10px;
+      overflow: auto;
+      min-height: 0;
+      flex: 1;
+    }
+    .dsl-json-wrap details {
+      margin-left: 10px;
+    }
+    .dsl-json-wrap summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-family: var(--mono);
+      line-height: 1.4;
+      user-select: none;
+    }
+    .dsl-json-wrap .dsl-json-leaf {
+      color: var(--fg);
+      font-family: var(--mono);
+      line-height: 1.4;
+      margin-left: 20px;
+      overflow-wrap: anywhere;
+    }
+    .dsl-json-wrap .dsl-json-empty {
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+    .dsl-market-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .dsl-market-grid {
+      display: grid;
+      grid-template-columns: minmax(112px, auto) 1fr;
+      gap: 4px 8px;
+      align-items: center;
+      font-size: 10px;
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      padding: 6px;
+      background: rgba(0,0,0,0.2);
+    }
+    .dsl-market-grid label {
+      color: var(--muted);
+      text-transform: lowercase;
+    }
+    .dsl-market-grid input {
+      width: 100%;
+      background: #0d141d;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+    .dsl-market-note {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+    .dsl-examples-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .dsl-examples-wrap select {
+      width: 100%;
+      font-size: 10px;
+      padding: 4px 6px;
+      font-family: var(--mono);
+    }
+    .dsl-examples-meta {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      padding: 6px;
+      background: rgba(0,0,0,0.2);
+      line-height: 1.4;
+    }
+
     /* ---- Dockview theme overrides ---- */
     .dockview-theme-abyss {
       --dv-group-view-background-color: var(--panel);
@@ -672,6 +861,7 @@
       <button class="tab-btn" data-view="scanner">Scanner</button>
       <button class="tab-btn" data-view="trading">Trading</button>
       <button class="tab-btn" data-view="pricer">Pricer</button>
+      <button class="tab-btn" data-view="dsl">DSL</button>
       <button class="tab-btn" data-view="all">All</button>
     </div>
     <button id="reset-layout" class="tab-btn" title="Reset panel layout to default">Reset Layout</button>
@@ -873,6 +1063,192 @@
       manualIvPct: NaN,
       productType: 'barrier-ko',
     };
+
+    // DSL state
+    const DSL_MONACO_BASE_URL = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min';
+    const DSL_MARKER_OWNER = 'openferric-dsl';
+    let monacoLoaderPromise = null;
+    let monacoRef = null;
+    let monacoLanguageReady = false;
+    let dslCompileTimer = null;
+    let dslPriceTimer = null;
+    let dslCompileSeq = 0;
+    let dslPricingSeq = 0;
+    const dslState = {
+      source: '',
+      activeExampleId: '',
+      compilePending: false,
+      compileResult: null,
+      compiledProduct: null,
+      compiledProductJson: '',
+      pricingPending: false,
+      priceResult: null,
+      greeksResults: [],
+      marketInputs: {
+        spots: '100',
+        vols: '0.2',
+        rate: '0.05',
+        dividendYields: '0',
+        numPaths: '100000',
+        numSteps: '252',
+        seed: '42',
+      },
+      currentCompileRequestId: 0,
+      currentPricingRequestId: 0,
+    };
+    const DSL_EXAMPLES = [
+      {
+        id: "01_zero_coupon",
+        title: "01 Zero Coupon",
+        source: "// Zero Coupon Bond\n// Simplest possible product: redeem notional at maturity, no coupons.\n// PV = notional * exp(-r * T)\n\nproduct \"Zero Coupon\"\n    notional: 1\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 5.0\n        redeem notional\n",
+      },
+      {
+        id: "02_fixed_coupon_note",
+        title: "02 Fixed Coupon Note",
+        source: "// Fixed Coupon Note\n// Pays a fixed 5% annual coupon and redeems at par at maturity.\n// No equity linkage — pure fixed income in DSL form.\n\nproduct \"Fixed Coupon Note 3Y\"\n    notional: 1_000_000\n    maturity: 3.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 3.0\n        pay notional * 0.05\n        if is_final then\n            redeem notional\n",
+      },
+      {
+        id: "03_forward",
+        title: "03 Forward",
+        source: "// Equity Forward\n// At maturity, pays (S(T)/S(0) - 1) * notional.\n// Long exposure to the underlying with no premium.\n\nproduct \"Equity Forward 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n        pay notional * (perf - 1.0)\n        redeem notional\n",
+      },
+      {
+        id: "04_reverse_convertible",
+        title: "04 Reverse Convertible",
+        source: "// Reverse Convertible\n// Pays an enhanced coupon (10% p.a.) in exchange for downside risk.\n// At maturity: if spot >= strike (100%), redeem at par.\n// If spot < strike, investor receives notional * (S(T)/S(0)),\n// i.e., they \"bought\" the stock at strike.\n\nproduct \"Reverse Convertible 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule quarterly from 0.25 to 1.0\n        // Enhanced coupon paid quarterly\n        pay notional * 0.025\n\n        if is_final then\n            let perf = worst_of(performances())\n            if perf >= 1.0 then\n                redeem notional\n            else\n                redeem notional * perf\n",
+      },
+      {
+        id: "05_barrier_reverse_convertible",
+        title: "05 Barrier Reverse Convertible",
+        source: "// Barrier Reverse Convertible (BRC)\n// Like a reverse convertible but with knock-in protection.\n// Downside only applies if a barrier (60%) is ever breached.\n// If barrier never touched, investor receives full notional regardless\n// of final spot level.\n\nproduct \"Barrier Reverse Convertible 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    state\n        ki_hit: bool = false\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        // Continuous barrier observation (approximated at observation dates)\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Enhanced coupon\n        pay notional * 0.02\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+      },
+      {
+        id: "06_autocallable_worst_of",
+        title: "06 Autocallable Worst Of",
+        source: "// Worst-of Autocallable (3 underlyings, 18 months)\n// Classic autocallable on a basket of 3 indices.\n// Quarterly observations:\n//   - If worst-of performance >= 100%, early redeem + coupon\n//   - Knock-in barrier at 60%\n//   - At maturity: coupon always paid; if KI hit and WoF < 100%,\n//     redeem at WoF level; otherwise redeem at par\n\nproduct \"WoF Autocall 18m\"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Early autocall (not on final date)\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        // Maturity\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+      },
+      {
+        id: "07_step_down_autocallable",
+        title: "07 Step Down Autocallable",
+        source: "// Step-Down Autocallable\n// Autocall barrier decreases over time, making early redemption\n// progressively easier. Common in declining-vol environments.\n//\n// Barriers: Q1=105%, Q2=100%, Q3=95%, Q4=90%, Q5=85%, Q6=80%\n// Coupon: 8% p.a.\n// KI barrier: 55%\n\nproduct \"Step-Down Autocall 18m\"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        // Step-down autocall barriers using observation_date to determine quarter\n        // Q1 (0.25): 105%, Q2 (0.50): 100%, Q3 (0.75): 95%\n        // Q4 (1.00): 90%, Q5 (1.25): 85%, Q6 (1.50): 80%\n        let barrier = 1.05 - observation_date * 0.2 + 0.05\n\n        if wof >= barrier and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 0.80 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+      },
+      {
+        id: "08_phoenix_memory_coupon",
+        title: "08 Phoenix Memory Coupon",
+        source: "// Phoenix with Memory Coupons\n// Pays a coupon when worst-of performance is above the coupon barrier (70%).\n// Missed coupons accumulate and are paid when the barrier is next breached.\n// This \"memory\" feature is highly valued by investors.\n//\n// Coupon barrier: 70%\n// KI barrier: 60%\n// Autocall barrier: 100%\n// Coupon: 2% per quarter (8% p.a.)\n\nproduct \"Phoenix Memory 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        missed_coupons: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let wof = worst_of(performances())\n\n        // Knock-in observation\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Coupon with memory\n        if wof >= 0.70 then\n            pay notional * (0.02 + missed_coupons)\n            set missed_coupons = 0.0\n        else\n            set missed_coupons = missed_coupons + 0.02\n\n        // Early autocall (not on final date)\n        if wof >= 1.0 and not is_final then\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+      },
+      {
+        id: "09_athena_autocallable",
+        title: "09 Athena Autocallable",
+        source: "// Athena (Zero-Coupon Autocallable)\n// No periodic coupons — instead, a single premium is paid at redemption.\n// The premium grows with time: the later the autocall, the larger the payout.\n// Simpler structure favored for its clean payoff profile.\n//\n// Premium: 5% per period (cumulative)\n// Autocall barrier: 100%\n// KI barrier: 60%\n\nproduct \"Athena 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Autocall with cumulative premium\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.05 * observation_date / 0.5\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                pay notional * 0.05 * 4.0\n                redeem notional\n",
+      },
+      {
+        id: "10_snowball_note",
+        title: "10 Snowball Note",
+        source: "// Snowball Note\n// Coupon \"snowballs\" — each period's coupon is the previous coupon plus a\n// fixed increment, but only if the underlying is above the coupon barrier.\n// If below, the coupon resets to zero and starts snowballing again.\n//\n// Increment: 1% per quarter\n// Coupon barrier: 80%\n// KI barrier: 60%\n\nproduct \"Snowball 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        current_coupon: float = 0.0\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Snowball coupon logic\n        if perf >= 0.80 then\n            set current_coupon = current_coupon + 0.01\n            pay notional * current_coupon\n        else\n            set current_coupon = 0.0\n\n        // Maturity\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+      },
+      {
+        id: "11_digital_coupon_note",
+        title: "11 Digital Coupon Note",
+        source: "// Digital Coupon Note\n// Pays a fixed coupon if the underlying is above the digital barrier,\n// zero otherwise. No memory feature. Capital at risk if KI barrier\n// is breached.\n//\n// Digital barrier: 80%\n// Coupon: 3% per quarter (12% p.a. conditional)\n// KI barrier: 55%\n\nproduct \"Digital Coupon Note 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.55 then\n            set ki_hit = true\n\n        // Digital coupon: all or nothing\n        if perf >= 0.80 then\n            pay notional * 0.03\n\n        // Maturity\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+      },
+      {
+        id: "12_twin_win",
+        title: "12 Twin Win",
+        source: "// Twin-Win Certificate\n// Profits from both upward and downward moves of the underlying.\n// At maturity: pays abs(performance - 1) as a bonus.\n// BUT if a knock-in barrier is breached, downside protection is lost\n// and the investor participates in the full downside.\n//\n// KI barrier: 60%\n// Participation: 100% both ways (when no KI)\n\nproduct \"Twin-Win 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Barrier monitoring\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Maturity payoff\n        if is_final then\n            if ki_hit then\n                // KI hit: straight equity participation\n                redeem notional * perf\n            else\n                // No KI: profit from abs move\n                let move = perf - 1.0\n                let abs_move = max(move, 0.0 - move)\n                redeem notional * (1.0 + abs_move)\n",
+      },
+      {
+        id: "13_capital_protected_note",
+        title: "13 Capital Protected Note",
+        source: "// Capital Protected Note (CPN)\n// 100% capital protection at maturity plus participation in upside.\n// Investor never loses principal, but upside is capped or has\n// reduced participation to fund the protection.\n//\n// Protection: 100%\n// Upside participation: 60%\n// Cap: 130% of notional total return\n\nproduct \"Capital Protected Note 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 2.0 to 2.0\n        let perf = worst_of(performances())\n\n        // Upside participation, capped\n        let upside = max(perf - 1.0, 0.0) * 0.60\n        let capped_upside = min(upside, 0.30)\n\n        pay notional * capped_upside\n        redeem notional\n",
+      },
+      {
+        id: "14_bonus_certificate",
+        title: "14 Bonus Certificate",
+        source: "// Bonus Certificate\n// Offers a minimum return (bonus level) as long as the barrier is never\n// breached. If barrier is breached, the certificate tracks the underlying\n// 1:1 from inception.\n//\n// Bonus level: 120% (i.e., min 20% return)\n// Barrier: 70%\n// No cap on upside\n\nproduct \"Bonus Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        barrier_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.70 then\n            set barrier_hit = true\n\n        if is_final then\n            if barrier_hit then\n                // Barrier hit: 1:1 participation\n                redeem notional * perf\n            else\n                // Barrier not hit: at least bonus level\n                let payout = max(perf, 1.20)\n                redeem notional * payout\n",
+      },
+      {
+        id: "15_cliquet",
+        title: "15 Cliquet",
+        source: "// Cliquet (Ratchet) Option\n// Accumulates capped and floored periodic returns.\n// Each period, the return is max(floor, min(cap, periodic_return)).\n// At maturity, pays notional * sum_of_capped_returns.\n//\n// This approximation uses observation-to-observation returns via\n// the performance ratio.\n//\n// Local floor: 0% (no negative contribution)\n// Local cap: 4% per quarter\n// Global floor: 0% (minimum total payout is zero)\n\nproduct \"Cliquet 1Y\"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state  \n        prev_perf: float = 1.0\n        total_return: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        // Periodic return relative to previous observation\n        let period_return = perf / prev_perf - 1.0\n\n        // Apply local floor and cap\n        let floored = max(period_return, 0.0)\n        let capped = min(floored, 0.04)\n\n        set total_return = total_return + capped\n        set prev_perf = perf\n\n        if is_final then\n            // Global floor at zero\n            let payout = max(total_return, 0.0)\n            pay notional * payout\n            redeem notional\n",
+      },
+      {
+        id: "16_accumulator_tarf",
+        title: "16 Accumulator Tarf",
+        source: "// Accumulator (TARF — Target Accrual Redemption Forward)\n// Monthly observations. When the spot is within a range, the investor\n// accumulates units at a discounted price. Once the total accumulated\n// profit hits a target, the structure terminates.\n//\n// Range: 90% – 110% of initial spot\n// Accumulation per period: notional * 0.0833 * (perf - 1.0)\n// Target cap: 10% of notional\n\nproduct \"Accumulator TARF 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        accumulated_profit: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if accumulated_profit < 0.10 then\n            if perf >= 0.90 and perf <= 1.10 then\n                let period_pnl = 0.0833 * (perf - 1.0)\n                set accumulated_profit = accumulated_profit + max(period_pnl, 0.0)\n                pay notional * period_pnl\n\n        // Target hit — knock out\n        if accumulated_profit >= 0.10 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n",
+      },
+      {
+        id: "17_range_accrual",
+        title: "17 Range Accrual",
+        source: "// Equity Range Accrual\n// Pays a coupon proportional to the fraction of observation dates\n// where the underlying stays within a range.\n//\n// Range: 80% – 120% of initial spot\n// Max coupon: 10% p.a. * accrual fraction\n// Monthly monitoring (12 dates)\n\nproduct \"Range Accrual 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        days_in_range: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 0.80 and perf <= 1.20 then\n            set days_in_range = days_in_range + 1.0\n\n        if is_final then\n            let accrual_frac = days_in_range / 12.0\n            pay notional * 0.10 * accrual_frac\n            redeem notional\n",
+      },
+      {
+        id: "18_shark_fin",
+        title: "18 Shark Fin",
+        source: "// Shark Fin Note\n// Capital protected with capped upside participation.\n// If the underlying ever breaches an upper barrier (knock-out),\n// the upside is capped at a rebate level instead of full participation.\n//\n// Upper KO barrier: 130%\n// Participation (no KO): 100% of upside\n// Rebate (if KO): fixed 10%\n// Downside: 100% protected\n\nproduct \"Shark Fin 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ko_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Upper barrier monitoring\n        if perf >= 1.30 then\n            set ko_hit = true\n\n        if is_final then\n            if ko_hit then\n                // Knocked out: pay rebate only\n                pay notional * 0.10\n                redeem notional\n            else\n                // No KO: participate in upside, protected on downside\n                let upside = max(perf - 1.0, 0.0)\n                pay notional * upside\n                redeem notional\n",
+      },
+      {
+        id: "19_outperformance_certificate",
+        title: "19 Outperformance Certificate",
+        source: "// Outperformance Certificate\n// Leveraged participation in the upside above the strike.\n// Below strike, investor participates 1:1 in the downside.\n//\n// Strike: 100%\n// Upside participation: 150%\n// No cap, no capital protection\n\nproduct \"Outperformance Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            // Leveraged upside\n            let upside = (perf - 1.0) * 1.50\n            redeem notional * (1.0 + upside)\n        else\n            // 1:1 downside\n            redeem notional * perf\n",
+      },
+      {
+        id: "20_wedding_cake",
+        title: "20 Wedding Cake",
+        source: "// Wedding Cake (Multi-Barrier Coupon)\n// Coupon depends on which \"tier\" the worst-of performance falls into.\n// Higher performance tiers pay higher coupons.\n//\n// Tier 1: WoF >= 100% → 3% coupon\n// Tier 2: WoF >= 80%  → 2% coupon\n// Tier 3: WoF >= 60%  → 1% coupon\n// Below 60%: no coupon + KI risk\n//\n// KI barrier: 50%\n\nproduct \"Wedding Cake 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.50 then\n            set ki_hit = true\n\n        // Tiered coupon structure\n        if wof >= 1.0 then\n            pay notional * 0.03\n        else if wof >= 0.80 then\n            pay notional * 0.02\n        else if wof >= 0.60 then\n            pay notional * 0.01\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+      },
+      {
+        id: "21_best_of_call",
+        title: "21 Best Of Call",
+        source: "// Best-of Call on Basket\n// At maturity, pays the best performance among 3 underlyings.\n// Investor profits from the strongest-performing asset.\n// Capital at risk (no protection).\n//\n// This is essentially a rainbow option (best-of call).\n\nproduct \"Best-of Call 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n\n        // Pay upside of best performer\n        let payout = max(bof - 1.0, 0.0)\n        pay notional * payout\n        redeem notional\n",
+      },
+      {
+        id: "22_worst_of_put",
+        title: "22 Worst Of Put",
+        source: "// Worst-of Put\n// At maturity, pays max(0, strike - worst_of_performance) * notional.\n// The investor is long a put on the worst-performing asset.\n// Strike at 100%.\n\nproduct \"Worst-of Put 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    schedule annual from 1.0 to 1.0\n        let wof = worst_of(performances())\n        let put_payout = max(1.0 - wof, 0.0)\n        pay notional * put_payout\n        redeem notional\n",
+      },
+      {
+        id: "23_express_certificate",
+        title: "23 Express Certificate",
+        source: "// Express Certificate\n// Similar to an autocallable but with a growing redemption premium.\n// Each observation date, if the underlying is above par,\n// the product redeems at an increasing premium.\n//\n// Period 1 (6m): redeem at 103%\n// Period 2 (12m): redeem at 106%\n// Period 3 (18m): redeem at 109%\n// Period 4 (24m, final): redeem at 112% or at performance if KI hit\n//\n// KI barrier: 65%\n\nproduct \"Express Certificate 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.65 then\n            set ki_hit = true\n\n        // Express redemption with growing premium\n        let premium = 1.0 + 0.03 * observation_date / 0.5\n\n        if perf >= 1.0 and not is_final then\n            redeem notional * premium\n\n        if is_final then\n            if perf >= 1.0 then\n                redeem notional * premium\n            else if ki_hit then\n                redeem notional * perf\n            else\n                redeem notional\n",
+      },
+      {
+        id: "24_lookback_coupon",
+        title: "24 Lookback Coupon",
+        source: "// Lookback-Style Coupon Note\n// Tracks the maximum performance seen across observation dates.\n// At maturity, pays a coupon based on the highest watermark achieved.\n// Principal always returned (capital protected).\n//\n// Coupon: 50% participation in max observed performance above par.\n\nproduct \"Lookback Coupon 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        max_perf: float = 1.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Track high watermark\n        if perf > max_perf then\n            set max_perf = perf\n\n        if is_final then\n            // Pay coupon based on best performance seen\n            let upside = max(max_perf - 1.0, 0.0) * 0.50\n            pay notional * upside\n            redeem notional\n",
+      },
+      {
+        id: "25_callable_note",
+        title: "25 Callable Note",
+        source: "// Callable Yield Note\n// Issuer has the right to call (redeem early) the note at any\n// observation date. Modeled here as automatic call when the\n// underlying is above a call trigger (105%).\n// Pays a high fixed coupon each period as compensation for call risk.\n//\n// Coupon: 3% per quarter (12% p.a.)\n// Call trigger: 105%\n\nproduct \"Callable Yield Note 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        // Fixed coupon each period\n        pay notional * 0.03\n\n        // Issuer calls if above trigger\n        if perf >= 1.05 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n",
+      },
+      {
+        id: "26_asian_payout",
+        title: "26 Asian Payout",
+        source: "// Asian Payout Note\n// Payout at maturity is based on the average performance across\n// all observation dates, rather than final spot.\n// Averaging reduces the impact of spot manipulation and vol.\n//\n// Participation: 100% of average performance above strike\n// Strike: 100%\n// Monthly averaging over 1 year (12 observations)\n\nproduct \"Asian Payout 1Y\"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        sum_perf: float = 0.0\n        num_obs: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n        set sum_perf = sum_perf + perf\n        set num_obs = num_obs + 1.0\n\n        if is_final then\n            let avg_perf = sum_perf / num_obs\n            let payout = max(avg_perf - 1.0, 0.0)\n            pay notional * payout\n            redeem notional\n",
+      },
+      {
+        id: "27_airbag_certificate",
+        title: "27 Airbag Certificate",
+        source: "// Airbag Certificate\n// Provides cushioned downside exposure. The investor participates 1:1\n// in the upside. On the downside, losses are reduced by the \"airbag\"\n// ratio: the investor's entry point is effectively lowered.\n//\n// Buffer zone: first 30% of losses are absorbed\n// Below buffer: 1:1 participation from the buffer level\n// Upside: 1:1 uncapped participation\n//\n// Example: if perf = 0.60, investor gets 0.60/0.70 = 0.857 (not 0.60)\n\nproduct \"Airbag Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            // 1:1 upside\n            redeem notional * perf\n        else if perf >= 0.70 then\n            // Within buffer: no loss\n            redeem notional\n        else\n            // Below buffer: airbag ratio\n            redeem notional * perf / 0.70\n",
+      },
+      {
+        id: "28_double_barrier_ki_ko",
+        title: "28 Double Barrier Ki Ko",
+        source: "// Double Barrier (Knock-In / Knock-Out)\n// Combines an upper knock-out barrier with a lower knock-in barrier.\n// If upper barrier is hit, the structure terminates with a rebate.\n// If lower barrier is hit, capital is at risk at maturity.\n// Neither hit: full notional + coupon.\n//\n// Upper KO: 140%\n// Lower KI: 60%\n// KO rebate: 5%\n// Coupon: 8% p.a.\n\nproduct \"Double Barrier KIKO 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Lower knock-in\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Upper knock-out\n        if perf >= 1.40 and not is_final then\n            pay notional * 0.05\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
+      },
+      {
+        id: "29_dispersion_note",
+        title: "29 Dispersion Note",
+        source: "// Dispersion Note\n// Pays a coupon proportional to the spread between the best and worst\n// performing assets. The wider the dispersion, the higher the coupon.\n// Investors profit from divergence in the basket.\n//\n// Coupon: notional * (best_of - worst_of) * participation\n// Participation: 50%\n// Capital protected\n\nproduct \"Dispersion Note 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n        let wof = worst_of(performances())\n        let spread = bof - wof\n\n        pay notional * spread * 0.50\n        redeem notional\n",
+      },
+      {
+        id: "30_napoleon",
+        title: "30 Napoleon",
+        source: "// Napoleon (Worst-of Digital Autocallable)\n// Monthly observations. Each month pays a fixed coupon only if\n// the worst-of performance is above the digital barrier.\n// Features autocall and KI barrier.\n//\n// Digital barrier: 85%\n// Coupon: 1% per month (12% p.a. conditional)\n// Autocall: 100% (semi-annual only, every 6th observation)\n// KI: 55%\n\nproduct \"Napoleon 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n        obs_count: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let wof = worst_of(performances())\n        set obs_count = obs_count + 1.0\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        // Digital coupon\n        if wof >= 0.85 then\n            pay notional * 0.01\n\n        // Semi-annual autocall check (obs 6)\n        if obs_count == 6.0 and wof >= 1.0 then\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
+      },
+    ];
+    const DSL_EXAMPLE_MAP = new Map(DSL_EXAMPLES.map((x) => [x.id, x]));
 
     // =====================================================================
     //  Surface Config State
@@ -1151,6 +1527,20 @@
             position: { referencePanel: 'pricer', direction: 'right' }, initialWidth: Math.round(W * 0.45) });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
             position: { referencePanel: 'surfacecfg', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
+        },
+      },
+      dsl: {
+        panels: ['dsleditor', 'dslresults', 'dslmarket', 'dslexamples'],
+        build(dv) {
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
+          dv.addPanel({ id: 'dsleditor', component: 'dsleditor', title: 'OpenFerric DSL Editor' });
+          dv.addPanel({ id: 'dslresults', component: 'dslresults', title: 'DSL Results',
+            position: { referencePanel: 'dsleditor', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
+          dv.addPanel({ id: 'dslmarket', component: 'dslmarket', title: 'DSL Market',
+            position: { referencePanel: 'dslresults', direction: 'below' }, initialHeight: Math.round(H * 0.32) });
+          dv.addPanel({ id: 'dslexamples', component: 'dslexamples', title: 'DSL Examples',
+            position: { referencePanel: 'dslmarket', direction: 'below' }, initialHeight: Math.round(H * 0.32) });
         },
       },
       all: {
@@ -2981,6 +3371,748 @@
       }
     }
 
+    function ensureDslInitialSource() {
+      if (dslState.source) return;
+      if (DSL_EXAMPLES.length === 0) return;
+      dslState.source = DSL_EXAMPLES[0].source;
+      dslState.activeExampleId = DSL_EXAMPLES[0].id;
+    }
+
+    function dslNormalizeCompileError(rawErr) {
+      if (!rawErr) return null;
+      if (typeof rawErr === 'string') {
+        return { kind: 'error', message: rawErr, span_start: 0, span_end: 0 };
+      }
+      return {
+        kind: rawErr.kind || 'error',
+        message: rawErr.message || 'Unknown compile error',
+        span_start: Number.isFinite(rawErr.span_start) ? rawErr.span_start : 0,
+        span_end: Number.isFinite(rawErr.span_end) ? rawErr.span_end : 0,
+      };
+    }
+
+    function dslFormatNumber(value, digits = 6) {
+      if (!Number.isFinite(value)) return '--';
+      if (Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.0001)) {
+        return value.toExponential(4);
+      }
+      return value.toFixed(digits);
+    }
+
+    function dslParseNumberList(raw, fallback) {
+      const txt = String(raw ?? '');
+      const parts = txt.split(',').map((x) => x.trim()).filter((x) => x.length > 0);
+      const out = [];
+      for (const part of parts) {
+        const cleaned = part.replace(/_/g, '');
+        const num = parseFloat(cleaned);
+        if (Number.isFinite(num)) out.push(num);
+      }
+      return out.length > 0 ? out : fallback.slice();
+    }
+
+    function dslParsePositiveInt(raw, fallback, min = 1, max = 500000000) {
+      const parsed = parseInt(String(raw ?? ''), 10);
+      if (!Number.isFinite(parsed)) return fallback;
+      if (parsed < min) return min;
+      if (parsed > max) return max;
+      return parsed;
+    }
+
+    function dslExpandArray(values, n, fallback) {
+      const out = values.slice(0, n);
+      while (out.length < n) {
+        out.push(out.length > 0 ? out[out.length - 1] : fallback);
+      }
+      return out;
+    }
+
+    function inferDslAssetCount(compiledProduct, parsedSpots, parsedVols, parsedDivs) {
+      let n = 1;
+      if (Array.isArray(parsedSpots)) n = Math.max(n, parsedSpots.length);
+      if (Array.isArray(parsedVols)) n = Math.max(n, parsedVols.length);
+      if (Array.isArray(parsedDivs)) n = Math.max(n, parsedDivs.length);
+      if (compiledProduct && typeof compiledProduct === 'object') {
+        if (Array.isArray(compiledProduct.underlyings)) n = Math.max(n, compiledProduct.underlyings.length);
+        if (Array.isArray(compiledProduct.assets)) n = Math.max(n, compiledProduct.assets.length);
+        if (compiledProduct.underlyings && typeof compiledProduct.underlyings === 'object' && !Array.isArray(compiledProduct.underlyings)) {
+          n = Math.max(n, Object.keys(compiledProduct.underlyings).length);
+        }
+        if (Number.isFinite(compiledProduct.num_underlyings)) {
+          n = Math.max(n, Math.max(1, Math.floor(compiledProduct.num_underlyings)));
+        }
+      }
+      return Math.max(1, n);
+    }
+
+    function buildDslPricingPayload() {
+      const parsedSpots = dslParseNumberList(dslState.marketInputs.spots, [100.0]);
+      const parsedVols = dslParseNumberList(dslState.marketInputs.vols, [0.2]);
+      const parsedDivs = dslParseNumberList(dslState.marketInputs.dividendYields, [0.0]);
+      const nAssets = inferDslAssetCount(dslState.compiledProduct, parsedSpots, parsedVols, parsedDivs);
+      const spots = dslExpandArray(parsedSpots, nAssets, 100.0);
+      const vols = dslExpandArray(parsedVols, nAssets, 0.2);
+      const dividendYields = dslExpandArray(parsedDivs, nAssets, 0.0);
+      const rate = Number.isFinite(parseFloat(dslState.marketInputs.rate)) ? parseFloat(dslState.marketInputs.rate) : 0.05;
+      const numPaths = dslParsePositiveInt(dslState.marketInputs.numPaths, 100000, 1);
+      const numSteps = dslParsePositiveInt(dslState.marketInputs.numSteps, 252, 1);
+      const seed = dslParsePositiveInt(dslState.marketInputs.seed, 42, 0, Number.MAX_SAFE_INTEGER);
+
+      const correlations = [];
+      for (let i = 0; i < nAssets; i++) {
+        const row = [];
+        for (let j = 0; j < nAssets; j++) row.push(i === j ? 1.0 : 0.0);
+        correlations.push(row);
+      }
+
+      const market = {
+        spots,
+        vols,
+        rate,
+        dividend_yields: dividendYields,
+        correlations,
+      };
+
+      return {
+        assetCount: nAssets,
+        numPaths,
+        numSteps,
+        seed,
+        market,
+        marketJson: JSON.stringify(market),
+      };
+    }
+
+    function dslSetCompileMarkers(errObj) {
+      if (!monacoRef || !panels.dsleditor || !panels.dsleditor.editor) return;
+      const model = panels.dsleditor.editor.getModel();
+      if (!model) return;
+
+      const markers = [];
+      if (errObj && Number.isFinite(errObj.span_start)) {
+        const maxOffset = model.getValueLength();
+        let startOffset = Math.max(0, Math.min(maxOffset, errObj.span_start));
+        let endOffset = Number.isFinite(errObj.span_end) ? Math.max(0, Math.min(maxOffset, errObj.span_end)) : startOffset + 1;
+        if (endOffset <= startOffset) endOffset = Math.min(maxOffset, startOffset + 1);
+        const startPos = model.getPositionAt(startOffset);
+        const endPos = model.getPositionAt(endOffset);
+        markers.push({
+          severity: monacoRef.MarkerSeverity.Error,
+          message: (errObj.kind ? errObj.kind + ': ' : '') + (errObj.message || 'compile error'),
+          startLineNumber: startPos.lineNumber,
+          startColumn: startPos.column,
+          endLineNumber: endPos.lineNumber,
+          endColumn: endPos.column,
+        });
+      }
+
+      monacoRef.editor.setModelMarkers(model, DSL_MARKER_OWNER, markers);
+    }
+
+    function scheduleDslCompile(delayMs = 500) {
+      clearTimeout(dslCompileTimer);
+      dslCompileTimer = setTimeout(() => {
+        triggerDslCompile();
+      }, delayMs);
+    }
+
+    function scheduleDslReprice(delayMs = 500) {
+      clearTimeout(dslPriceTimer);
+      dslPriceTimer = setTimeout(() => {
+        triggerDslPricing();
+      }, delayMs);
+    }
+
+    function triggerDslCompile() {
+      ensureDslInitialSource();
+      if (panels.dsleditor && panels.dsleditor.editor) {
+        dslState.source = panels.dsleditor.editor.getValue();
+      }
+      const source = dslState.source || '';
+      const requestId = ++dslCompileSeq;
+      dslState.currentCompileRequestId = requestId;
+      dslState.compilePending = true;
+      renderDslResultsPanel();
+
+      computeWorker.postMessage({
+        type: 'dsl-compile',
+        payload: {
+          requestId,
+          source,
+        },
+      });
+    }
+
+    function triggerDslPricing() {
+      if (!dslState.compiledProductJson) {
+        dslState.pricingPending = false;
+        dslState.priceResult = null;
+        dslState.greeksResults = [];
+        renderDslResultsPanel();
+        return;
+      }
+
+      const pricing = buildDslPricingPayload();
+      const requestId = ++dslPricingSeq;
+      dslState.currentPricingRequestId = requestId;
+      dslState.pricingPending = true;
+      dslState.priceResult = { pending: true };
+      dslState.greeksResults = Array.from({ length: pricing.assetCount }, () => ({ pending: true }));
+      renderDslResultsPanel();
+
+      const payloadBase = {
+        requestId,
+        productJson: dslState.compiledProductJson,
+        marketJson: pricing.marketJson,
+        numPaths: pricing.numPaths,
+        numSteps: pricing.numSteps,
+        seed: pricing.seed,
+      };
+
+      computeWorker.postMessage({
+        type: 'dsl-price',
+        payload: payloadBase,
+      });
+
+      for (let i = 0; i < pricing.assetCount; i++) {
+        computeWorker.postMessage({
+          type: 'dsl-greeks',
+          payload: {
+            ...payloadBase,
+            assetIndex: i,
+          },
+        });
+      }
+    }
+
+    function handleDslCompileResult(payload) {
+      const requestId = Number(payload.requestId);
+      if (Number.isFinite(requestId) && requestId < dslState.currentCompileRequestId) return;
+      dslState.compilePending = false;
+      dslState.compileResult = payload.result || null;
+
+      if (dslState.compileResult && dslState.compileResult.ok) {
+        dslState.compiledProduct = dslState.compileResult.ok;
+        try {
+          dslState.compiledProductJson = JSON.stringify(dslState.compiledProduct);
+        } catch (e) {
+          dslState.compiledProduct = null;
+          dslState.compiledProductJson = '';
+          dslState.compileResult = { err: { kind: 'serialize', message: 'failed to serialize compiled product', span_start: 0, span_end: 0 } };
+        }
+      } else {
+        dslState.compiledProduct = null;
+        dslState.compiledProductJson = '';
+        dslState.priceResult = null;
+        dslState.greeksResults = [];
+        dslState.pricingPending = false;
+      }
+
+      const compileErr = dslNormalizeCompileError(dslState.compileResult && dslState.compileResult.err);
+      dslSetCompileMarkers(compileErr);
+      renderDslResultsPanel();
+      renderDslMarketPanel();
+
+      if (dslState.compiledProductJson) {
+        scheduleDslReprice(0);
+      }
+    }
+
+    function handleDslPriceResult(payload) {
+      const requestId = Number(payload.requestId);
+      if (Number.isFinite(requestId) && requestId < dslState.currentPricingRequestId) return;
+      dslState.priceResult = payload.result || { err: 'missing price result' };
+      const anyPendingGreeks = dslState.greeksResults.some((row) => row && row.pending);
+      dslState.pricingPending = !!anyPendingGreeks;
+      renderDslResultsPanel();
+    }
+
+    function handleDslGreeksResult(payload) {
+      const requestId = Number(payload.requestId);
+      if (Number.isFinite(requestId) && requestId < dslState.currentPricingRequestId) return;
+      const idx = Number(payload.assetIndex);
+      if (!Number.isFinite(idx) || idx < 0) return;
+      if (!Array.isArray(dslState.greeksResults)) dslState.greeksResults = [];
+      dslState.greeksResults[idx] = payload.result || { err: 'missing greeks result' };
+      const anyPendingGreeks = dslState.greeksResults.some((row) => row && row.pending);
+      const pricePending = !dslState.priceResult || dslState.priceResult.pending;
+      dslState.pricingPending = anyPendingGreeks || pricePending;
+      renderDslResultsPanel();
+    }
+
+    function renderDslJsonTree(rootEl, value, key = 'compiled_product', depth = 0) {
+      if (!rootEl) return;
+      if (value === null || typeof value !== 'object') {
+        const leaf = document.createElement('div');
+        leaf.className = 'dsl-json-leaf';
+        leaf.textContent = `${key}: ${JSON.stringify(value)}`;
+        rootEl.appendChild(leaf);
+        return;
+      }
+
+      const details = document.createElement('details');
+      if (depth <= 1) details.open = true;
+      const summary = document.createElement('summary');
+      if (Array.isArray(value)) summary.textContent = `${key} [${value.length}]`;
+      else summary.textContent = `${key} {${Object.keys(value).length}}`;
+      details.appendChild(summary);
+
+      if (Array.isArray(value)) {
+        if (value.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'dsl-json-leaf';
+          empty.textContent = '(empty)';
+          details.appendChild(empty);
+        } else {
+          value.forEach((item, idx) => renderDslJsonTree(details, item, `[${idx}]`, depth + 1));
+        }
+      } else {
+        const keys = Object.keys(value);
+        if (keys.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'dsl-json-leaf';
+          empty.textContent = '(empty)';
+          details.appendChild(empty);
+        } else {
+          for (const childKey of keys) {
+            renderDslJsonTree(details, value[childKey], childKey, depth + 1);
+          }
+        }
+      }
+      rootEl.appendChild(details);
+    }
+
+    function renderDslResultsPanel() {
+      const p = panels.dslresults;
+      if (!p) return;
+
+      const compileErr = dslNormalizeCompileError(dslState.compileResult && dslState.compileResult.err);
+      if (dslState.compilePending) {
+        p.statusEl.className = 'dsl-status pending';
+        p.statusEl.textContent = 'Compiling...';
+      } else if (dslState.compileResult && dslState.compileResult.ok) {
+        p.statusEl.className = 'dsl-status success';
+        p.statusEl.textContent = 'Compile success';
+      } else if (compileErr) {
+        p.statusEl.className = 'dsl-status error';
+        const spanText = (Number.isFinite(compileErr.span_start) || Number.isFinite(compileErr.span_end))
+          ? ` [span ${compileErr.span_start || 0}-${compileErr.span_end || 0}]`
+          : '';
+        p.statusEl.textContent = `${compileErr.kind}: ${compileErr.message}${spanText}`;
+      } else {
+        p.statusEl.className = 'dsl-status';
+        p.statusEl.textContent = 'Idle';
+      }
+
+      if (!dslState.compiledProductJson) {
+        p.priceEl.textContent = '--';
+        p.stderrEl.textContent = '--';
+      } else if (dslState.priceResult && dslState.priceResult.err) {
+        p.priceEl.textContent = 'error';
+        p.stderrEl.textContent = String(dslState.priceResult.err);
+      } else if (dslState.priceResult && Number.isFinite(dslState.priceResult.price)) {
+        p.priceEl.textContent = dslFormatNumber(dslState.priceResult.price, 6);
+        p.stderrEl.textContent = Number.isFinite(dslState.priceResult.stderr)
+          ? dslFormatNumber(dslState.priceResult.stderr, 6)
+          : '--';
+      } else if (dslState.pricingPending) {
+        p.priceEl.textContent = '...';
+        p.stderrEl.textContent = '...';
+      } else {
+        p.priceEl.textContent = '--';
+        p.stderrEl.textContent = '--';
+      }
+
+      p.greeksBody.innerHTML = '';
+      if (!dslState.compiledProductJson) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>--</td><td colspan="4">compile a product</td>';
+        p.greeksBody.appendChild(tr);
+      } else if (!dslState.greeksResults || dslState.greeksResults.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>--</td><td colspan="4">waiting...</td>';
+        p.greeksBody.appendChild(tr);
+      } else {
+        dslState.greeksResults.forEach((row, idx) => {
+          const tr = document.createElement('tr');
+          if (!row || row.pending) {
+            tr.innerHTML = `<td>${idx}</td><td colspan="4">...</td>`;
+          } else if (row.err) {
+            tr.innerHTML = `<td>${idx}</td><td colspan="4">${String(row.err)}</td>`;
+          } else {
+            tr.innerHTML = `<td>${idx}</td>`
+              + `<td>${dslFormatNumber(row.delta, 6)}</td>`
+              + `<td>${dslFormatNumber(row.gamma, 6)}</td>`
+              + `<td>${dslFormatNumber(row.vega, 6)}</td>`
+              + `<td>${dslFormatNumber(row.rho, 6)}</td>`;
+          }
+          p.greeksBody.appendChild(tr);
+        });
+      }
+
+      p.jsonTree.innerHTML = '';
+      if (dslState.compiledProduct) {
+        renderDslJsonTree(p.jsonTree, dslState.compiledProduct);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'dsl-json-empty';
+        empty.textContent = 'No compiled product';
+        p.jsonTree.appendChild(empty);
+      }
+    }
+
+    function renderDslMarketPanel() {
+      const p = panels.dslmarket;
+      if (!p) return;
+      p.spotsInput.value = dslState.marketInputs.spots;
+      p.volsInput.value = dslState.marketInputs.vols;
+      p.rateInput.value = dslState.marketInputs.rate;
+      p.divsInput.value = dslState.marketInputs.dividendYields;
+      p.pathsInput.value = dslState.marketInputs.numPaths;
+      p.stepsInput.value = dslState.marketInputs.numSteps;
+      p.seedInput.value = dslState.marketInputs.seed;
+
+      const parsedSpots = dslParseNumberList(dslState.marketInputs.spots, [100.0]);
+      const parsedVols = dslParseNumberList(dslState.marketInputs.vols, [0.2]);
+      const parsedDivs = dslParseNumberList(dslState.marketInputs.dividendYields, [0.0]);
+      const nAssets = inferDslAssetCount(dslState.compiledProduct, parsedSpots, parsedVols, parsedDivs);
+      p.noteEl.textContent = `asset count: ${nAssets} | market format: {"spots":[],"vols":[],"rate":0.05,"dividend_yields":[],"correlations":[[]]}`;
+    }
+
+    function renderDslExamplesPanel() {
+      const p = panels.dslexamples;
+      if (!p) return;
+      p.selectEl.value = dslState.activeExampleId || (DSL_EXAMPLES[0] ? DSL_EXAMPLES[0].id : '');
+      p.metaEl.textContent = `${DSL_EXAMPLES.length} examples embedded inline`;
+    }
+
+    function loadDslExample(exampleId) {
+      const example = DSL_EXAMPLE_MAP.get(exampleId) || DSL_EXAMPLES[0];
+      if (!example) return;
+      dslState.activeExampleId = example.id;
+      dslState.source = example.source;
+      if (panels.dslexamples) renderDslExamplesPanel();
+      if (panels.dsleditor && panels.dsleditor.editor) {
+        const cur = panels.dsleditor.editor.getValue();
+        if (cur !== example.source) {
+          panels.dsleditor.editor.setValue(example.source);
+        } else {
+          scheduleDslCompile(0);
+        }
+      } else {
+        scheduleDslCompile(0);
+      }
+    }
+
+    function setupOpenferricMonaco(monaco) {
+      if (monacoLanguageReady) return;
+      monaco.languages.register({ id: 'openferric' });
+      monaco.languages.setMonarchTokensProvider('openferric', {
+        keywords: [
+          'product', 'notional', 'maturity', 'underlyings', 'state', 'schedule',
+          'if', 'then', 'else', 'elif', 'let', 'pay', 'redeem', 'set',
+          'and', 'or', 'not', 'true', 'false',
+          'quarterly', 'monthly', 'annual', 'semi_annual', 'daily', 'weekly',
+        ],
+        builtins: [
+          'asset', 'worst_of', 'best_of', 'avg_of', 'performances', 'performance',
+          'observation_date', 'is_final', 'notional',
+        ],
+        tokenizer: {
+          root: [
+            [/\/\/.*$/, 'comment'],
+            [/\"(?:[^\"\\]|\\.)*\"/, 'string'],
+            [/\b\d[\d_]*(\.\d[\d_]*)?\b/, 'number'],
+            [/[{}()\[\]]/, '@brackets'],
+            [/[,:]/, 'delimiter'],
+            [/[=+\-*\/<>!]+/, 'operator'],
+            [/[a-zA-Z_][\w]*/, {
+              cases: {
+                '@keywords': 'keyword',
+                '@builtins': 'type.identifier',
+                '@default': 'identifier',
+              }
+            }],
+          ],
+        },
+      });
+      monaco.editor.defineTheme('openferric-terminal', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'comment', foreground: '7c8da2' },
+          { token: 'keyword', foreground: '2fb2ff', fontStyle: 'bold' },
+          { token: 'type.identifier', foreground: '19d8a8' },
+          { token: 'string', foreground: 'ffb347' },
+          { token: 'number', foreground: 'f3dca2' },
+          { token: 'operator', foreground: 'd8e0ea' },
+          { token: 'identifier', foreground: 'd8e0ea' },
+        ],
+        colors: {
+          'editor.background': '#070a0f',
+          'editor.foreground': '#d8e0ea',
+          'editorLineNumber.foreground': '#4d5e73',
+          'editorLineNumber.activeForeground': '#8ea1b8',
+          'editorCursor.foreground': '#2fb2ff',
+          'editor.selectionBackground': '#1a3f5c66',
+          'editor.inactiveSelectionBackground': '#1a3f5c44',
+          'editorIndentGuide.background': '#1b2634',
+          'editorIndentGuide.activeBackground': '#2b3b4f',
+          'editorLineHighlightBackground': '#0e142020',
+        },
+      });
+      monacoLanguageReady = true;
+    }
+
+    function loadMonaco() {
+      if (monacoRef && monacoRef.editor) return Promise.resolve(monacoRef);
+      if (monacoLoaderPromise) return monacoLoaderPromise;
+
+      monacoLoaderPromise = new Promise((resolve, reject) => {
+        const loadEditorMain = () => {
+          const req = window.require;
+          if (!req || !req.config) {
+            reject(new Error('Monaco AMD loader unavailable'));
+            return;
+          }
+
+          window.MonacoEnvironment = {
+            getWorkerUrl() {
+              const src = `self.MonacoEnvironment={baseUrl:'${DSL_MONACO_BASE_URL}/'};importScripts('${DSL_MONACO_BASE_URL}/vs/base/worker/workerMain.js');`;
+              return `data:text/javascript;charset=utf-8,${encodeURIComponent(src)}`;
+            },
+          };
+
+          req.config({ paths: { vs: `${DSL_MONACO_BASE_URL}/vs` } });
+          req(['vs/editor/editor.main'], () => {
+            monacoRef = window.monaco;
+            setupOpenferricMonaco(monacoRef);
+            resolve(monacoRef);
+          }, reject);
+        };
+
+        if (window.monaco && window.monaco.editor && window.require) {
+          monacoRef = window.monaco;
+          setupOpenferricMonaco(monacoRef);
+          resolve(monacoRef);
+          return;
+        }
+
+        const existing = document.querySelector('script[data-monaco-loader="1"]');
+        if (existing) {
+          existing.addEventListener('load', loadEditorMain, { once: true });
+          existing.addEventListener('error', reject, { once: true });
+          return;
+        }
+
+        const script = document.createElement('script');
+        script.src = `${DSL_MONACO_BASE_URL}/vs/loader.min.js`;
+        script.async = true;
+        script.dataset.monacoLoader = '1';
+        script.addEventListener('load', loadEditorMain, { once: true });
+        script.addEventListener('error', () => reject(new Error('failed to load Monaco loader')), { once: true });
+        document.head.appendChild(script);
+      });
+      return monacoLoaderPromise;
+    }
+
+    class DslEditorPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.editor = null;
+      }
+      get element() { return this._el; }
+      init(params) {
+        ensureDslInitialSource();
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">OpenFerric DSL Editor</div>'
+          + '</div>'
+          + '<div class="dsl-editor-loading">Loading Monaco editor...</div>';
+        this.loadingEl = this._el.querySelector('.dsl-editor-loading');
+        panels.dsleditor = this;
+
+        loadMonaco().then((monaco) => {
+          if (!panels.dsleditor || panels.dsleditor !== this) return;
+          this.loadingEl.className = 'dsl-editor-host';
+          this.loadingEl.textContent = '';
+
+          if (!dslState.editorModel || dslState.editorModel.isDisposed()) {
+            dslState.editorModel = monaco.editor.createModel(dslState.source || '', 'openferric');
+          }
+
+          this.editor = monaco.editor.create(this.loadingEl, {
+            model: dslState.editorModel,
+            theme: 'openferric-terminal',
+            automaticLayout: true,
+            minimap: { enabled: false },
+            fontFamily: '"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace',
+            fontSize: 12,
+            lineHeight: 18,
+            smoothScrolling: true,
+            scrollBeyondLastLine: false,
+            renderWhitespace: 'selection',
+            tabSize: 4,
+            insertSpaces: true,
+          });
+
+          this._changeListener = this.editor.onDidChangeModelContent(() => {
+            dslState.source = this.editor.getValue();
+            scheduleDslCompile(500);
+          });
+
+          if (dslState.compileResult && dslState.compileResult.err) {
+            dslSetCompileMarkers(dslNormalizeCompileError(dslState.compileResult.err));
+          } else {
+            dslSetCompileMarkers(null);
+          }
+
+          if (!dslState.compileResult) scheduleDslCompile(0);
+        }).catch((err) => {
+          if (this.loadingEl) this.loadingEl.textContent = 'Monaco failed: ' + (err && err.message ? err.message : err);
+        });
+      }
+      dispose() {
+        if (this._changeListener) this._changeListener.dispose();
+        if (this.editor) this.editor.dispose();
+        delete panels.dsleditor;
+      }
+    }
+
+    class DslResultsPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">DSL Results</div>'
+          + '</div>'
+          + '<div class="dsl-results-wrap">'
+          + '<div class="dsl-status">Idle</div>'
+          + '<div class="dsl-kv">'
+          + '<div class="k">price</div><div class="v dsl-price-val">--</div>'
+          + '<div class="k">stderr</div><div class="v dsl-stderr-val">--</div>'
+          + '</div>'
+          + '<div class="dsl-greeks-wrap"><table>'
+          + '<thead><tr><th>asset</th><th>delta</th><th>gamma</th><th>vega</th><th>rho</th></tr></thead>'
+          + '<tbody></tbody></table></div>'
+          + '<details open><summary style="font-family:var(--mono);color:var(--accent);cursor:pointer;">compiled product JSON</summary>'
+          + '<div class="dsl-json-wrap"></div></details>'
+          + '</div>';
+        this.statusEl = this._el.querySelector('.dsl-status');
+        this.priceEl = this._el.querySelector('.dsl-price-val');
+        this.stderrEl = this._el.querySelector('.dsl-stderr-val');
+        this.greeksBody = this._el.querySelector('tbody');
+        this.jsonTree = this._el.querySelector('.dsl-json-wrap');
+        panels.dslresults = this;
+        renderDslResultsPanel();
+      }
+      dispose() { delete panels.dslresults; }
+    }
+
+    class DslMarketPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">DSL Market</div>'
+          + '</div>'
+          + '<div class="dsl-market-wrap">'
+          + '<div class="dsl-market-grid">'
+          + '<label>spots</label><input type="text" class="dsl-m-spots" placeholder="100, 100">'
+          + '<label>vols</label><input type="text" class="dsl-m-vols" placeholder="0.2, 0.2">'
+          + '<label>rate</label><input type="text" class="dsl-m-rate" placeholder="0.05">'
+          + '<label>dividend_yields</label><input type="text" class="dsl-m-divs" placeholder="0, 0">'
+          + '<label>num paths</label><input type="text" class="dsl-m-paths" placeholder="100000">'
+          + '<label>num steps</label><input type="text" class="dsl-m-steps" placeholder="252">'
+          + '<label>seed</label><input type="text" class="dsl-m-seed" placeholder="42">'
+          + '</div>'
+          + '<div class="dsl-market-note"></div>'
+          + '</div>';
+
+        this.spotsInput = this._el.querySelector('.dsl-m-spots');
+        this.volsInput = this._el.querySelector('.dsl-m-vols');
+        this.rateInput = this._el.querySelector('.dsl-m-rate');
+        this.divsInput = this._el.querySelector('.dsl-m-divs');
+        this.pathsInput = this._el.querySelector('.dsl-m-paths');
+        this.stepsInput = this._el.querySelector('.dsl-m-steps');
+        this.seedInput = this._el.querySelector('.dsl-m-seed');
+        this.noteEl = this._el.querySelector('.dsl-market-note');
+        panels.dslmarket = this;
+
+        const wireInput = (el, key) => {
+          el.addEventListener('input', () => {
+            dslState.marketInputs[key] = el.value;
+            scheduleDslReprice(500);
+            renderDslMarketPanel();
+          });
+        };
+        wireInput(this.spotsInput, 'spots');
+        wireInput(this.volsInput, 'vols');
+        wireInput(this.rateInput, 'rate');
+        wireInput(this.divsInput, 'dividendYields');
+        wireInput(this.pathsInput, 'numPaths');
+        wireInput(this.stepsInput, 'numSteps');
+        wireInput(this.seedInput, 'seed');
+
+        renderDslMarketPanel();
+      }
+      dispose() { delete panels.dslmarket; }
+    }
+
+    class DslExamplesPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        ensureDslInitialSource();
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">DSL Examples</div>'
+          + '</div>'
+          + '<div class="dsl-examples-wrap">'
+          + '<select class="dsl-example-select" size="12"></select>'
+          + '<button class="tab-btn dsl-example-load">Load Selected</button>'
+          + '<div class="dsl-examples-meta"></div>'
+          + '</div>';
+        this.selectEl = this._el.querySelector('.dsl-example-select');
+        this.loadBtn = this._el.querySelector('.dsl-example-load');
+        this.metaEl = this._el.querySelector('.dsl-examples-meta');
+        panels.dslexamples = this;
+
+        this.selectEl.innerHTML = '';
+        for (const ex of DSL_EXAMPLES) {
+          const opt = document.createElement('option');
+          opt.value = ex.id;
+          opt.textContent = ex.title;
+          this.selectEl.appendChild(opt);
+        }
+        if (!dslState.activeExampleId && DSL_EXAMPLES.length > 0) dslState.activeExampleId = DSL_EXAMPLES[0].id;
+
+        this.loadBtn.addEventListener('click', () => {
+          loadDslExample(this.selectEl.value);
+        });
+        this.selectEl.addEventListener('dblclick', () => {
+          loadDslExample(this.selectEl.value);
+        });
+        this.selectEl.addEventListener('change', () => {
+          loadDslExample(this.selectEl.value);
+        });
+        renderDslExamplesPanel();
+      }
+      dispose() { delete panels.dslexamples; }
+    }
+
     function exportSurfaceConfigJson() {
       const payload = deepClone(surfaceConfig);
       payload.timestamp = Date.now();
@@ -3141,6 +4273,18 @@
         if (Number.isFinite(payload.requestId) && payload.requestId < pricerRequestSeq) return;
         lastPricerResult = payload;
         requestAnimationFrame(() => renderPricerPanelData(payload));
+        return;
+      }
+      if (e.data.type === 'dsl-compile-result') {
+        handleDslCompileResult((e.data && e.data.payload) || {});
+        return;
+      }
+      if (e.data.type === 'dsl-price-result') {
+        handleDslPriceResult((e.data && e.data.payload) || {});
+        return;
+      }
+      if (e.data.type === 'dsl-greeks-result') {
+        handleDslGreeksResult((e.data && e.data.payload) || {});
       }
     }
 
@@ -4337,6 +5481,9 @@
         if (panels.tradeflow) renderTradeFlow();
         if (lastStrategyResult && panels.strategy) renderStrategyPayoff(lastStrategyResult);
         if (panels.pricer) renderPricerPanelData(lastPricerResult);
+        if (panels.dslresults) renderDslResultsPanel();
+        if (panels.dslmarket) renderDslMarketPanel();
+        if (panels.dslexamples) renderDslExamplesPanel();
         if (panels.surfacecfg) renderSurfaceConfigPanel();
       });
     }
@@ -4619,6 +5766,10 @@
           case 'volcone': return new VolConePanel();
           case 'strategy': return new StrategyPanel();
           case 'pricer': return new PricerPanel();
+          case 'dsleditor': return new DslEditorPanel();
+          case 'dslresults': return new DslResultsPanel();
+          case 'dslmarket': return new DslMarketPanel();
+          case 'dslexamples': return new DslExamplesPanel();
           default: {
             const el = document.createElement('div');
             el.className = 'dock-content';

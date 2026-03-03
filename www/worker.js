@@ -1440,6 +1440,41 @@ function computePricerResult(payload) {
   };
 }
 
+function parseDslJson(raw, fallbackErr) {
+  if (typeof raw !== 'string') {
+    return { err: fallbackErr || 'invalid non-string response from WASM' };
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return { err: (fallbackErr || 'invalid JSON from WASM') + ': ' + (e.message || String(e)) };
+  }
+}
+
+function dslParseInt(raw, fallback, min = 1, max = 2147483647) {
+  const n = parseInt(String(raw ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
+function dslParseSeedBigInt(raw, fallback = 42n) {
+  const MAX_U64 = 18446744073709551615n;
+  try {
+    let out;
+    if (typeof raw === 'bigint') out = raw;
+    else if (typeof raw === 'number' && Number.isFinite(raw)) out = BigInt(Math.trunc(raw));
+    else if (typeof raw === 'string' && raw.trim().length > 0) out = BigInt(raw.trim());
+    else out = fallback;
+    if (out < 0n) out = 0n;
+    if (out > MAX_U64) out = MAX_U64;
+    return out;
+  } catch (e) {
+    return fallback;
+  }
+}
+
 // ---------------------------------------------------------------------------
 //  Message handler
 // ---------------------------------------------------------------------------
@@ -1453,6 +1488,98 @@ self.onmessage = function(e) {
     if (payload.edgeSideFilter !== undefined) edgeSideFilter = payload.edgeSideFilter;
     if (payload.isLinear !== undefined) isLinear = payload.isLinear;
     if (payload.surfaceConfig !== undefined) surfaceConfig = sanitizeSurfaceConfig(payload.surfaceConfig);
+    return;
+  }
+
+  if (type === 'dsl-compile') {
+    const requestId = Number.isFinite(payload?.requestId) ? payload.requestId : 0;
+    if (!wasmReady) {
+      self.postMessage({
+        type: 'dsl-compile-result',
+        payload: {
+          requestId,
+          result: { err: { kind: 'runtime', message: 'WASM not ready', span_start: 0, span_end: 0 } },
+        },
+      });
+      return;
+    }
+
+    const source = typeof payload?.source === 'string' ? payload.source : '';
+    let result;
+    try {
+      result = parseDslJson(wasm.dsl_parse_and_compile(source), 'dsl_parse_and_compile failed');
+    } catch (e) {
+      result = { err: { kind: 'runtime', message: e.message || String(e), span_start: 0, span_end: 0 } };
+    }
+    self.postMessage({
+      type: 'dsl-compile-result',
+      payload: { requestId, result },
+    });
+    return;
+  }
+
+  if (type === 'dsl-price') {
+    const requestId = Number.isFinite(payload?.requestId) ? payload.requestId : 0;
+    if (!wasmReady) {
+      self.postMessage({
+        type: 'dsl-price-result',
+        payload: { requestId, result: { err: 'WASM not ready' } },
+      });
+      return;
+    }
+
+    const productJson = typeof payload?.productJson === 'string' ? payload.productJson : '{}';
+    const marketJson = typeof payload?.marketJson === 'string' ? payload.marketJson : '{}';
+    const numPaths = dslParseInt(payload?.numPaths, 100000, 1);
+    const numSteps = dslParseInt(payload?.numSteps, 252, 1);
+    const seed = dslParseSeedBigInt(payload?.seed, 42n);
+
+    let result;
+    try {
+      result = parseDslJson(
+        wasm.dsl_price(productJson, marketJson, numPaths, numSteps, seed),
+        'dsl_price failed'
+      );
+    } catch (e) {
+      result = { err: e.message || String(e) };
+    }
+    self.postMessage({
+      type: 'dsl-price-result',
+      payload: { requestId, result },
+    });
+    return;
+  }
+
+  if (type === 'dsl-greeks') {
+    const requestId = Number.isFinite(payload?.requestId) ? payload.requestId : 0;
+    const assetIndex = dslParseInt(payload?.assetIndex, 0, 0, 1000);
+    if (!wasmReady) {
+      self.postMessage({
+        type: 'dsl-greeks-result',
+        payload: { requestId, assetIndex, result: { err: 'WASM not ready' } },
+      });
+      return;
+    }
+
+    const productJson = typeof payload?.productJson === 'string' ? payload.productJson : '{}';
+    const marketJson = typeof payload?.marketJson === 'string' ? payload.marketJson : '{}';
+    const numPaths = dslParseInt(payload?.numPaths, 100000, 1);
+    const numSteps = dslParseInt(payload?.numSteps, 252, 1);
+    const seed = dslParseSeedBigInt(payload?.seed, 42n);
+
+    let result;
+    try {
+      result = parseDslJson(
+        wasm.dsl_greeks(productJson, marketJson, numPaths, numSteps, seed, assetIndex),
+        'dsl_greeks failed'
+      );
+    } catch (e) {
+      result = { err: e.message || String(e) };
+    }
+    self.postMessage({
+      type: 'dsl-greeks-result',
+      payload: { requestId, assetIndex, result },
+    });
     return;
   }
 
