@@ -9,6 +9,6 @@ echo "[pre-push] Running cargo build for wasm32 library..."
 cargo build --lib --target wasm32-unknown-unknown
 
 echo "[pre-push] Running cargo clippy..."
-cargo clippy -- -D warnings
+cargo clippy --workspace --all-targets --features parallel,simd -- -D warnings
 
 echo "[pre-push] Checks passed."
