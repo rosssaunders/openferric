@@ -9,6 +9,6 @@ echo "[pre-commit] Running cargo check..."
 cargo check
 
 echo "[pre-commit] Running cargo clippy..."
-cargo clippy -- -D warnings
+cargo clippy --workspace --all-targets --features parallel,simd -- -D warnings
 
 echo "[pre-commit] Checks passed."
