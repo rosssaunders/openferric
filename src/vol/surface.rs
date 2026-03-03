@@ -81,6 +81,7 @@ fn project(mut p: SviParams) -> SviParams {
 
 /// Solve 5x5 linear system Ax = b via LU decomposition (no external dependency).
 /// Returns None if singular.
+#[allow(clippy::needless_range_loop)]
 fn solve5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
     let mut lu = *a;
     let mut piv = [0usize; 5];
@@ -140,6 +141,7 @@ fn solve5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
 }
 
 /// Levenberg-Marquardt SVI calibration with analytic Jacobian and optional weights.
+#[allow(clippy::needless_range_loop)]
 fn lm_svi(
     points: &[(f64, f64)],
     weights: &[f64],

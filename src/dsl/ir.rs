@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn value_conversions() {
-        assert_eq!(Value::F64(3.14).as_f64(), 3.14);
+        assert_eq!(Value::F64(3.125).as_f64(), 3.125);
         assert_eq!(Value::Bool(true).as_f64(), 1.0);
         assert_eq!(Value::Bool(false).as_f64(), 0.0);
         assert!(Value::Bool(true).as_bool());

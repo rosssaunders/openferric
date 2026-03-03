@@ -111,7 +111,7 @@ fn main() {
         }
 
         // Parse expiry date
-        let expiry_ts = parse_deribit_expiry(&expiry_code);
+        let expiry_ts = parse_deribit_expiry(expiry_code);
         if expiry_ts <= 0.0 {
             continue;
         }
