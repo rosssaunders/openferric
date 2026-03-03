@@ -3465,12 +3465,14 @@
         correlations.push(row);
       }
 
+      const assets = [];
+      for (let i = 0; i < nAssets; i++) {
+        assets.push({ spot: spots[i], vol: vols[i], dividend_yield: dividendYields[i] });
+      }
       const market = {
-        spots,
-        vols,
+        assets,
+        correlation: correlations,
         rate,
-        dividend_yields: dividendYields,
-        correlations,
       };
 
       return {
@@ -3776,7 +3778,7 @@
       const parsedVols = dslParseNumberList(dslState.marketInputs.vols, [0.2]);
       const parsedDivs = dslParseNumberList(dslState.marketInputs.dividendYields, [0.0]);
       const nAssets = inferDslAssetCount(dslState.compiledProduct, parsedSpots, parsedVols, parsedDivs);
-      p.noteEl.textContent = `asset count: ${nAssets} | market format: {"spots":[],"vols":[],"rate":0.05,"dividend_yields":[],"correlations":[[]]}`;
+      p.noteEl.textContent = `asset count: ${nAssets} | market format: {"assets":[{"spot":..,"vol":..,"dividend_yield":..}],"correlation":[[..]],"rate":0.05}`;
     }
 
     function renderDslExamplesPanel() {
