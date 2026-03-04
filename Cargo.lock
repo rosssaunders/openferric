@@ -1397,6 +1397,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openferric-mcp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "openferric",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
 name = "openferric-python"
 version = "0.1.0"
 dependencies = [
