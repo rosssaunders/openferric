@@ -246,6 +246,107 @@
     .flow-metrics .k { color: var(--muted); }
     .flow-metrics .v { font-family: var(--mono); text-align: right; }
 
+    /* ---- Historical Panels ---- */
+    .history-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 4px;
+      font-size: 10px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .history-toolbar select,
+    .history-toolbar .tab-btn {
+      font-size: 10px;
+      padding: 2px 6px;
+    }
+    .history-toolbar .tab-btn.active {
+      background: rgba(47,178,255,0.22);
+      color: var(--accent);
+      border-color: rgba(47,178,255,0.5);
+    }
+    .history-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 2px 8px;
+      font-size: 10px;
+      margin-bottom: 4px;
+      flex-shrink: 0;
+    }
+    .history-stats .k { color: var(--muted); }
+    .history-stats .v { text-align: right; font-family: var(--mono); }
+    .history-table-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid rgba(142,161,184,0.15);
+      border-radius: 6px;
+      background: rgba(7,10,15,0.55);
+      padding: 0 4px;
+    }
+    .history-table-wrap table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+    }
+    .history-table-wrap th {
+      position: sticky;
+      top: 0;
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      z-index: 1;
+    }
+    .history-table-wrap td,
+    .history-table-wrap th {
+      white-space: nowrap;
+      font-family: var(--mono);
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(142,161,184,0.12);
+      text-align: right;
+    }
+    .history-table-wrap td:first-child,
+    .history-table-wrap th:first-child {
+      text-align: left;
+      font-family: var(--sans);
+    }
+    .hist-buy { color: #22c55e; }
+    .hist-sell { color: #ef4444; }
+    .history-chart-wrap {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      background: #070a0f;
+      overflow: hidden;
+    }
+    .history-chart {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .history-tooltip {
+      position: absolute;
+      pointer-events: none;
+      z-index: 5;
+      padding: 5px 7px;
+      border-radius: 4px;
+      border: 1px solid rgba(142,161,184,0.35);
+      background: rgba(7,10,15,0.94);
+      color: var(--fg);
+      font-size: 10px;
+      font-family: var(--mono);
+      white-space: nowrap;
+      display: none;
+    }
+    .history-empty {
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+      font-family: var(--mono);
+    }
+
     /* ---- Strategy Builder ---- */
     .strategy-split { display: flex; gap: 6px; flex: 1; min-height: 0; overflow: hidden; }
     .strategy-legs { flex: 0 0 40%; overflow: auto; min-height: 0; display: flex; flex-direction: column; }
@@ -861,6 +962,7 @@
       <button class="tab-btn" data-view="scanner">Scanner</button>
       <button class="tab-btn" data-view="trading">Trading</button>
       <button class="tab-btn" data-view="pricer">Pricer</button>
+      <button class="tab-btn" data-view="history">History</button>
       <button class="tab-btn" data-view="dsl">DSL</button>
       <button class="tab-btn" data-view="all">All</button>
     </div>
@@ -988,6 +1090,102 @@
     function normalizeIv(raw) {
       if (!isFinite(raw) || raw <= 0) return NaN;
       return raw > 3.0 ? raw / 100.0 : raw;
+    }
+
+    class HistoricalDataService {
+      constructor(baseUrl) {
+        this.baseUrl = baseUrl;
+        this.cache = new Map();
+      }
+      buildUrl(endpoint, params = {}) {
+        const qp = new URLSearchParams();
+        for (const [k, v] of Object.entries(params)) {
+          if (v === undefined || v === null || v === '') continue;
+          qp.set(k, String(v));
+        }
+        return `${this.baseUrl}/${endpoint}?${qp.toString()}`;
+      }
+      async fetchJson(endpoint, params = {}, ttlMs = 0) {
+        const cacheKey = endpoint + '::' + JSON.stringify(params);
+        if (ttlMs > 0) {
+          const hit = this.cache.get(cacheKey);
+          if (hit && Date.now() - hit.ts < ttlMs) return hit.value;
+        }
+        const resp = await fetch(this.buildUrl(endpoint, params));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${endpoint}`);
+        const json = await resp.json();
+        if (json.error) throw new Error(json.error.message || `Deribit error ${endpoint}`);
+        if (ttlMs > 0) this.cache.set(cacheKey, { ts: Date.now(), value: json });
+        return json;
+      }
+      async getTradingviewChartData({ instrument, startTs, endTs, resolution, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_tradingview_chart_data', {
+          instrument_name: instrument,
+          start_timestamp: startTs,
+          end_timestamp: endTs,
+          resolution,
+        }, ttlMs);
+        return json.result || null;
+      }
+      async getHistoricalVolatility({ currency, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_historical_volatility', { currency }, ttlMs);
+        return Array.isArray(json.result) ? json.result : [];
+      }
+      async getVolatilityIndexData({ currency, startTs, endTs, resolution, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_volatility_index_data', {
+          currency,
+          start_timestamp: startTs,
+          end_timestamp: endTs,
+          resolution,
+        }, ttlMs);
+        const result = json.result || {};
+        return Array.isArray(result.data) ? result.data : [];
+      }
+      async getFundingRateHistory({ instrument, startTs, endTs, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_funding_rate_history', {
+          instrument_name: instrument,
+          start_timestamp: startTs,
+          end_timestamp: endTs,
+        }, ttlMs);
+        return Array.isArray(json.result) ? json.result : [];
+      }
+      async getLastTradesByCurrencyAndTime({
+        currency,
+        kind = 'option',
+        startTs,
+        endTs,
+        count = 1000,
+        sorting = 'desc',
+        maxPages = 3,
+        ttlMs = 0,
+      }) {
+        let pageEndTs = endTs;
+        const out = [];
+        for (let page = 0; page < maxPages; page++) {
+          const json = await this.fetchJson('get_last_trades_by_currency_and_time', {
+            currency,
+            kind,
+            start_timestamp: startTs,
+            end_timestamp: pageEndTs,
+            count,
+            sorting,
+          }, page === 0 ? ttlMs : 0);
+          const res = json.result || {};
+          const trades = Array.isArray(res.trades) ? res.trades : [];
+          if (trades.length === 0) break;
+          out.push(...trades);
+          if (!res.has_more) break;
+          const oldestTs = Math.min(...trades.map((t) => Number(t.timestamp)).filter((n) => Number.isFinite(n)));
+          if (!Number.isFinite(oldestTs) || oldestTs <= startTs) break;
+          pageEndTs = oldestTs - 1;
+        }
+        const dedupe = new Map();
+        for (const trade of out) {
+          const key = `${trade.trade_id || ''}|${trade.timestamp || ''}|${trade.instrument_name || ''}`;
+          dedupe.set(key, trade);
+        }
+        return [...dedupe.values()].sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+      }
     }
 
     // =====================================================================
@@ -1527,6 +1725,20 @@
             position: { referencePanel: 'pricer', direction: 'right' }, initialWidth: Math.round(W * 0.45) });
           dv.addPanel({ id: 'scanner', component: 'scanner', title: 'Mispricing Scanner',
             position: { referencePanel: 'surfacecfg', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
+        },
+      },
+      history: {
+        panels: ['pricechart', 'histvol', 'tradeflow', 'funding'],
+        build(dv) {
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
+          dv.addPanel({ id: 'pricechart', component: 'pricechart', title: 'Price Chart' });
+          dv.addPanel({ id: 'histvol', component: 'histvol', title: 'Historical Volatility',
+            position: { referencePanel: 'pricechart', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
+          dv.addPanel({ id: 'tradeflow', component: 'tradeflow', title: 'Option Trade Flow',
+            position: { referencePanel: 'pricechart', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
+          dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding History',
+            position: { referencePanel: 'histvol', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
         },
       },
       dsl: {
@@ -3056,7 +3268,7 @@
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.funding; }
     }
 
-    class TradeFlowPanel {
+    class LiveTradeFlowPanel {
       constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
       get element() { return this._el; }
       init(params) {
@@ -3139,6 +3351,768 @@
         fetchHistoricalVol();
       }
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.volcone; }
+    }
+
+    const HISTORY_RANGE_MS = Object.freeze({
+      '1h': 60 * 60 * 1000,
+      '4h': 4 * 60 * 60 * 1000,
+      '24h': 24 * 60 * 60 * 1000,
+      '1d': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000,
+      '90d': 90 * 24 * 60 * 60 * 1000,
+      '1y': 365 * 24 * 60 * 60 * 1000,
+    });
+
+    function historyLinePanelCurrencyDefault() {
+      return activeCurrency.startsWith('ETH') ? 'ETH' : 'BTC';
+    }
+
+    function historyResizeCanvas(canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(16, Math.floor(rect.width));
+      const height = Math.max(16, Math.floor(rect.height));
+      const dpr = window.devicePixelRatio || 1;
+      const rawW = Math.floor(width * dpr);
+      const rawH = Math.floor(height * dpr);
+      if (canvas.width !== rawW || canvas.height !== rawH) {
+        canvas.width = rawW;
+        canvas.height = rawH;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, width, height };
+    }
+
+    function historyNearestPoint(points, targetTs) {
+      if (!Array.isArray(points) || points.length === 0) return null;
+      let best = points[0];
+      let bestDiff = Math.abs(points[0].ts - targetTs);
+      for (let i = 1; i < points.length; i++) {
+        const d = Math.abs(points[i].ts - targetTs);
+        if (d < bestDiff) {
+          bestDiff = d;
+          best = points[i];
+        }
+      }
+      return best;
+    }
+
+    function historyFormatTs(ts) {
+      if (!Number.isFinite(ts)) return '--';
+      return new Date(ts).toLocaleString();
+    }
+
+    function historyDrawGrid(ctx, area, xTicks = 6, yTicks = 5) {
+      ctx.save();
+      ctx.strokeStyle = '#1a2332';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= xTicks; i++) {
+        const x = area.x + (i / xTicks) * area.w;
+        ctx.beginPath();
+        ctx.moveTo(x, area.y);
+        ctx.lineTo(x, area.y + area.h);
+        ctx.stroke();
+      }
+      for (let i = 0; i <= yTicks; i++) {
+        const y = area.y + (i / yTicks) * area.h;
+        ctx.beginPath();
+        ctx.moveTo(area.x, y);
+        ctx.lineTo(area.x + area.w, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function historyDrawLineChart(canvas, tooltipEl, lines, hoverState, valueSuffix = '%') {
+      const { ctx, width, height } = historyResizeCanvas(canvas);
+      ctx.fillStyle = '#070a0f';
+      ctx.fillRect(0, 0, width, height);
+
+      const area = { x: 46, y: 16, w: Math.max(10, width - 58), h: Math.max(10, height - 38) };
+      historyDrawGrid(ctx, area, 6, 5);
+
+      const points = [];
+      for (const line of lines || []) {
+        if (!line || !Array.isArray(line.data)) continue;
+        for (const pt of line.data) {
+          if (!pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.v)) continue;
+          points.push(pt);
+        }
+      }
+      if (points.length < 2) {
+        ctx.fillStyle = '#8ea1b8';
+        ctx.font = '11px "JetBrains Mono"';
+        ctx.textAlign = 'center';
+        ctx.fillText('No historical data in selected window', width * 0.5, height * 0.5);
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+
+      const minTs = Math.min(...points.map((p) => p.ts));
+      const maxTs = Math.max(...points.map((p) => p.ts));
+      let minV = Math.min(...points.map((p) => p.v));
+      let maxV = Math.max(...points.map((p) => p.v));
+      if (!Number.isFinite(minV) || !Number.isFinite(maxV)) {
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+      const pad = Math.max(0.1, (maxV - minV) * 0.12);
+      minV -= pad;
+      maxV += pad;
+      if (maxV - minV < 1e-9) { maxV += 1; minV -= 1; }
+
+      const xFromTs = (ts) => area.x + ((ts - minTs) / Math.max(1, maxTs - minTs)) * area.w;
+      const yFromV = (v) => area.y + (1 - ((v - minV) / Math.max(1e-9, maxV - minV))) * area.h;
+
+      for (const line of lines || []) {
+        if (!line || !Array.isArray(line.data) || line.data.length < 2) continue;
+        ctx.save();
+        ctx.strokeStyle = line.color || '#2fb2ff';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash(line.dashed ? [4, 3] : []);
+        let started = false;
+        for (const pt of line.data) {
+          if (!Number.isFinite(pt.ts) || !Number.isFinite(pt.v)) continue;
+          const x = xFromTs(pt.ts);
+          const y = yFromV(pt.v);
+          if (!started) {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            started = true;
+          } else ctx.lineTo(x, y);
+        }
+        if (started) ctx.stroke();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = '#8ea1b8';
+      ctx.font = '10px "JetBrains Mono"';
+      ctx.textAlign = 'left';
+      ctx.fillText(minV.toFixed(2) + valueSuffix, 6, area.y + area.h);
+      ctx.fillText(maxV.toFixed(2) + valueSuffix, 6, area.y + 8);
+      ctx.textAlign = 'center';
+      ctx.fillText(new Date(minTs).toLocaleDateString(), area.x, height - 6);
+      ctx.fillText(new Date(maxTs).toLocaleDateString(), area.x + area.w, height - 6);
+
+      let legendX = area.x + 4;
+      const legendY = 8;
+      for (const line of lines || []) {
+        ctx.fillStyle = line.color || '#2fb2ff';
+        ctx.fillRect(legendX, legendY, 8, 2);
+        legendX += 12;
+        ctx.fillStyle = '#8ea1b8';
+        ctx.textAlign = 'left';
+        ctx.fillText(line.name || 'Series', legendX, legendY + 4);
+        legendX += (line.name || 'Series').length * 6 + 12;
+      }
+
+      if (!hoverState || hoverState.x < area.x || hoverState.x > area.x + area.w || hoverState.y < area.y || hoverState.y > area.y + area.h) {
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+      const hoverTs = minTs + ((hoverState.x - area.x) / area.w) * (maxTs - minTs);
+      const nearest = [];
+      for (const line of lines || []) {
+        if (!line || !Array.isArray(line.data) || line.data.length === 0) continue;
+        const hit = historyNearestPoint(line.data, hoverTs);
+        if (hit) nearest.push({ line, hit });
+      }
+      if (nearest.length === 0) {
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+      const anchor = nearest[0].hit;
+      const cx = xFromTs(anchor.ts);
+      ctx.strokeStyle = 'rgba(142,161,184,0.55)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(cx, area.y);
+      ctx.lineTo(cx, area.y + area.h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      for (const row of nearest) {
+        const cy = yFromV(row.hit.v);
+        ctx.beginPath();
+        ctx.fillStyle = row.line.color || '#2fb2ff';
+        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (!tooltipEl) return;
+      const html = [`<div>${historyFormatTs(anchor.ts)}</div>`];
+      for (const row of nearest) {
+        html.push(`<div style="color:${row.line.color || '#2fb2ff'}">${row.line.name}: ${row.hit.v.toFixed(2)}${valueSuffix}</div>`);
+      }
+      tooltipEl.innerHTML = html.join('');
+      tooltipEl.style.display = 'block';
+      const left = Math.max(6, Math.min(width - 180, hoverState.x + 10));
+      const top = Math.max(6, Math.min(height - 52, hoverState.y - 10));
+      tooltipEl.style.left = left + 'px';
+      tooltipEl.style.top = top + 'px';
+    }
+
+    class HistVolPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.hover = null;
+        this.lines = [];
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Historical Volatility</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>currency</label><select class="hv-currency"><option value="BTC">BTC</option><option value="ETH">ETH</option></select>'
+          + '<label>range</label><select class="hv-range"><option value="7d">7d</option><option value="30d" selected>30d</option><option value="90d">90d</option><option value="1y">1y</option></select>'
+          + '<button class="tab-btn hv-refresh">Refresh</button>'
+          + '</div>'
+          + '<div class="history-chart-wrap"><canvas class="history-chart"></canvas><div class="history-tooltip"></div></div>';
+        this.currencySel = this._el.querySelector('.hv-currency');
+        this.rangeSel = this._el.querySelector('.hv-range');
+        this.refreshBtn = this._el.querySelector('.hv-refresh');
+        this.canvas = this._el.querySelector('.history-chart');
+        this.tooltip = this._el.querySelector('.history-tooltip');
+        this.chartWrap = this._el.querySelector('.history-chart-wrap');
+        this.currencySel.value = historyLinePanelCurrencyDefault();
+        panels.histvol = this;
+
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.currencySel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.canvas.addEventListener('mousemove', (e) => {
+          const rect = this.canvas.getBoundingClientRect();
+          this.hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          this.draw();
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+          this.hover = null;
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          this.draw();
+        });
+        this._resizeObs = new ResizeObserver(() => { this.draw(); });
+        this._resizeObs.observe(this._el);
+        this.refresh();
+      }
+      buildHvLines(points) {
+        if (!Array.isArray(points) || points.length < 2) return [];
+        const grouped = new Map();
+        for (const row of points) {
+          if (!Array.isArray(row) || row.length < 2) continue;
+          const ts = Number(row[0]);
+          const v = Number(row[1]);
+          if (!Number.isFinite(ts) || !Number.isFinite(v) || v <= 0) continue;
+          if (!grouped.has(ts)) grouped.set(ts, []);
+          grouped.get(ts).push(v);
+        }
+        const timestamps = [...grouped.keys()].sort((a, b) => a - b);
+        if (timestamps.length < 2) return [];
+        let maxWindows = 0;
+        for (const ts of timestamps) maxWindows = Math.max(maxWindows, grouped.get(ts).length);
+        const out = [];
+        if (maxWindows > 1) {
+          for (let w = 0; w < Math.min(4, maxWindows); w++) {
+            const lineData = [];
+            for (const ts of timestamps) {
+              const val = grouped.get(ts)[w];
+              if (Number.isFinite(val)) lineData.push({ ts, v: val });
+            }
+            if (lineData.length > 1) {
+              out.push({ name: `HV W${w + 1}`, color: ['#2fb2ff', '#19d8a8', '#ffb347', '#ff7a7a'][w % 4], data: lineData });
+            }
+          }
+        } else {
+          const base = timestamps.map((ts) => ({ ts, v: grouped.get(ts)[0] }));
+          const makeMA = (windowLen, label, color) => {
+            if (base.length <= windowLen) return null;
+            let sum = 0;
+            const line = [];
+            for (let i = 0; i < base.length; i++) {
+              sum += base[i].v;
+              if (i >= windowLen) sum -= base[i - windowLen].v;
+              if (i >= windowLen - 1) {
+                line.push({ ts: base[i].ts, v: sum / windowLen });
+              }
+            }
+            return line.length > 1 ? { name: label, color, data: line } : null;
+          };
+          out.push({ name: 'HV', color: '#2fb2ff', data: base });
+          const ma24 = makeMA(24, 'HV 24h', '#19d8a8');
+          const ma168 = makeMA(168, 'HV 7d', '#ffb347');
+          if (ma24) out.push(ma24);
+          if (ma168) out.push(ma168);
+        }
+        return out;
+      }
+      async refresh() {
+        if (!historicalDataService) return;
+        this.refreshBtn.disabled = true;
+        this.refreshBtn.textContent = 'Loading...';
+        try {
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['30d'];
+          const endTs = Date.now();
+          const startTs = endTs - rangeMs;
+          const currency = this.currencySel.value || 'BTC';
+          const [hvRes, dvolRes] = await Promise.all([
+            historicalDataService.getHistoricalVolatility({ currency, ttlMs: 15000 }),
+            historicalDataService.getVolatilityIndexData({ currency, startTs, endTs, resolution: 3600, ttlMs: 15000 }),
+          ]);
+          let hvRows = Array.isArray(hvRes) ? hvRes : [];
+          hvRows = hvRows.filter((r) => Array.isArray(r) && Number(r[0]) >= startTs && Number(r[0]) <= endTs);
+          const lines = this.buildHvLines(hvRows);
+          const dvolData = Array.isArray(dvolRes)
+            ? dvolRes.map((d) => ({ ts: Number(d.tick), v: Number(d.close) })).filter((d) => Number.isFinite(d.ts) && Number.isFinite(d.v))
+            : [];
+          if (dvolData.length > 1) {
+            lines.push({ name: 'DVOL', color: '#ff7a7a', data: dvolData, dashed: true });
+          }
+          this.lines = lines;
+          this.draw();
+        } catch (e) {
+          console.warn('[histvol] refresh failed:', e);
+          this.lines = [];
+          this.draw();
+        } finally {
+          this.refreshBtn.disabled = false;
+          this.refreshBtn.textContent = 'Refresh';
+        }
+      }
+      draw() {
+        historyDrawLineChart(this.canvas, this.tooltip, this.lines, this.hover, '%');
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.histvol;
+      }
+    }
+
+    class PriceChartPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.candles = [];
+        this.hover = null;
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Price Chart</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>instrument</label>'
+          + '<select class="pc-instrument"><option value="BTC-PERPETUAL" selected>BTC-PERPETUAL</option><option value="ETH-PERPETUAL">ETH-PERPETUAL</option></select>'
+          + '<label>res</label>'
+          + '<select class="pc-res"><option value="1">1m</option><option value="5" selected>5m</option><option value="15">15m</option><option value="60">1h</option><option value="240">4h</option><option value="1D">1D</option></select>'
+          + '<label>range</label>'
+          + '<select class="pc-range"><option value="1d">1d</option><option value="7d" selected>7d</option><option value="30d">30d</option><option value="90d">90d</option></select>'
+          + '<button class="tab-btn pc-refresh">Refresh</button>'
+          + '</div>'
+          + '<div class="history-chart-wrap"><canvas class="history-chart"></canvas><div class="history-tooltip"></div></div>';
+        this.instrumentSel = this._el.querySelector('.pc-instrument');
+        this.resSel = this._el.querySelector('.pc-res');
+        this.rangeSel = this._el.querySelector('.pc-range');
+        this.refreshBtn = this._el.querySelector('.pc-refresh');
+        this.canvas = this._el.querySelector('.history-chart');
+        this.tooltip = this._el.querySelector('.history-tooltip');
+        this.chartWrap = this._el.querySelector('.history-chart-wrap');
+        panels.pricechart = this;
+
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.instrumentSel.addEventListener('change', () => { this.refresh(); });
+        this.resSel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.canvas.addEventListener('mousemove', (e) => {
+          const rect = this.canvas.getBoundingClientRect();
+          this.hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          this.draw();
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+          this.hover = null;
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          this.draw();
+        });
+        this._resizeObs = new ResizeObserver(() => { this.draw(); });
+        this._resizeObs.observe(this._el);
+        this.refresh();
+      }
+      async refresh() {
+        if (!historicalDataService) return;
+        this.refreshBtn.disabled = true;
+        this.refreshBtn.textContent = 'Loading...';
+        try {
+          const endTs = Date.now();
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['7d'];
+          const startTs = endTs - rangeMs;
+          const result = await historicalDataService.getTradingviewChartData({
+            instrument: this.instrumentSel.value,
+            startTs,
+            endTs,
+            resolution: this.resSel.value,
+            ttlMs: 8000,
+          });
+          const ticks = Array.isArray(result?.ticks) ? result.ticks : [];
+          const open = Array.isArray(result?.open) ? result.open : [];
+          const high = Array.isArray(result?.high) ? result.high : [];
+          const low = Array.isArray(result?.low) ? result.low : [];
+          const close = Array.isArray(result?.close) ? result.close : [];
+          const volume = Array.isArray(result?.volume) ? result.volume : [];
+          const n = Math.min(ticks.length, open.length, high.length, low.length, close.length, volume.length);
+          const rows = [];
+          for (let i = 0; i < n; i++) {
+            const ts = Number(ticks[i]);
+            const o = Number(open[i]);
+            const h = Number(high[i]);
+            const l = Number(low[i]);
+            const c = Number(close[i]);
+            const v = Number(volume[i]);
+            if (!Number.isFinite(ts) || !Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
+            rows.push({ ts, o, h, l, c, v: Number.isFinite(v) ? Math.max(0, v) : 0 });
+          }
+          rows.sort((a, b) => a.ts - b.ts);
+          this.candles = rows;
+          this.draw();
+        } catch (e) {
+          console.warn('[pricechart] refresh failed:', e);
+          this.candles = [];
+          this.draw();
+        } finally {
+          this.refreshBtn.disabled = false;
+          this.refreshBtn.textContent = 'Refresh';
+        }
+      }
+      draw() {
+        const { ctx, width, height } = historyResizeCanvas(this.canvas);
+        ctx.fillStyle = '#070a0f';
+        ctx.fillRect(0, 0, width, height);
+
+        const candles = this.candles;
+        const priceArea = { x: 50, y: 12, w: Math.max(10, width - 62), h: Math.max(10, Math.floor(height * 0.68)) };
+        const volArea = { x: priceArea.x, y: priceArea.y + priceArea.h + 8, w: priceArea.w, h: Math.max(10, height - (priceArea.y + priceArea.h + 24)) };
+        historyDrawGrid(ctx, priceArea, 6, 5);
+        historyDrawGrid(ctx, volArea, 6, 2);
+
+        if (!Array.isArray(candles) || candles.length < 2) {
+          ctx.fillStyle = '#8ea1b8';
+          ctx.font = '11px "JetBrains Mono"';
+          ctx.textAlign = 'center';
+          ctx.fillText('No OHLCV data in selected window', width * 0.5, height * 0.5);
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          return;
+        }
+
+        let low = Infinity;
+        let high = -Infinity;
+        let maxVol = 0;
+        for (const c of candles) {
+          if (c.l < low) low = c.l;
+          if (c.h > high) high = c.h;
+          if (c.v > maxVol) maxVol = c.v;
+        }
+        const pPad = Math.max(1e-6, (high - low) * 0.08);
+        low -= pPad;
+        high += pPad;
+        const tsMin = candles[0].ts;
+        const tsMax = candles[candles.length - 1].ts;
+        const xFromIndex = (i) => priceArea.x + (i / Math.max(1, candles.length - 1)) * priceArea.w;
+        const yFromPrice = (v) => priceArea.y + (1 - ((v - low) / Math.max(1e-9, high - low))) * priceArea.h;
+        const yFromVol = (v) => volArea.y + volArea.h - (v / Math.max(1, maxVol)) * volArea.h;
+        const bodyW = Math.max(1, Math.min(10, (priceArea.w / candles.length) * 0.7));
+
+        for (let i = 0; i < candles.length; i++) {
+          const c = candles[i];
+          const x = xFromIndex(i);
+          const yHigh = yFromPrice(c.h);
+          const yLow = yFromPrice(c.l);
+          const yOpen = yFromPrice(c.o);
+          const yClose = yFromPrice(c.c);
+          const color = c.c >= c.o ? '#22c55e' : '#ef4444';
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, yHigh);
+          ctx.lineTo(x, yLow);
+          ctx.stroke();
+
+          const top = Math.min(yOpen, yClose);
+          const hBody = Math.max(1, Math.abs(yClose - yOpen));
+          ctx.fillStyle = color;
+          ctx.fillRect(x - bodyW * 0.5, top, bodyW, hBody);
+
+          ctx.fillStyle = color;
+          const vy = yFromVol(c.v);
+          ctx.fillRect(x - bodyW * 0.5, vy, bodyW, volArea.y + volArea.h - vy);
+        }
+
+        ctx.fillStyle = '#8ea1b8';
+        ctx.font = '10px "JetBrains Mono"';
+        ctx.textAlign = 'left';
+        ctx.fillText(high.toFixed(2), 6, priceArea.y + 8);
+        ctx.fillText(low.toFixed(2), 6, priceArea.y + priceArea.h);
+        ctx.fillText('V ' + maxVol.toFixed(0), 6, volArea.y + 10);
+        ctx.textAlign = 'center';
+        ctx.fillText(new Date(tsMin).toLocaleDateString(), priceArea.x, height - 6);
+        ctx.fillText(new Date(tsMax).toLocaleDateString(), priceArea.x + priceArea.w, height - 6);
+
+        if (!this.hover || this.hover.x < priceArea.x || this.hover.x > priceArea.x + priceArea.w || this.hover.y < priceArea.y || this.hover.y > volArea.y + volArea.h) {
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          return;
+        }
+        let idx = Math.round(((this.hover.x - priceArea.x) / priceArea.w) * (candles.length - 1));
+        idx = Math.max(0, Math.min(candles.length - 1, idx));
+        const hit = candles[idx];
+        const cx = xFromIndex(idx);
+        const cy = yFromPrice(hit.c);
+
+        ctx.strokeStyle = 'rgba(142,161,184,0.6)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(cx, priceArea.y);
+        ctx.lineTo(cx, volArea.y + volArea.h);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(priceArea.x, this.hover.y);
+        ctx.lineTo(priceArea.x + priceArea.w, this.hover.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.fillStyle = '#2fb2ff';
+        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (!this.tooltip) return;
+        this.tooltip.innerHTML =
+          `<div>${historyFormatTs(hit.ts)}</div>`
+          + `<div>O ${hit.o.toFixed(2)} H ${hit.h.toFixed(2)}</div>`
+          + `<div>L ${hit.l.toFixed(2)} C ${hit.c.toFixed(2)}</div>`
+          + `<div>V ${hit.v.toFixed(2)}</div>`;
+        this.tooltip.style.display = 'block';
+        const left = Math.max(6, Math.min(width - 170, this.hover.x + 10));
+        const top = Math.max(6, Math.min(height - 68, this.hover.y - 10));
+        this.tooltip.style.left = left + 'px';
+        this.tooltip.style.top = top + 'px';
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.pricechart;
+      }
+    }
+
+    class TradeFlowPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.autoOn = true;
+        this.rows = [];
+        this._autoTimer = null;
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Option Trade Flow</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>currency</label><select class="htf-currency"><option value="BTC">BTC</option><option value="ETH">ETH</option></select>'
+          + '<label>range</label><select class="htf-range"><option value="1h">1h</option><option value="4h">4h</option><option value="24h" selected>24h</option></select>'
+          + '<button class="tab-btn htf-refresh">Refresh</button>'
+          + '<button class="tab-btn htf-auto active">Auto On</button>'
+          + '</div>'
+          + '<div class="history-stats">'
+          + '<div class="k">total volume</div><div class="v htf-total">--</div>'
+          + '<div class="k">buy/sell ratio</div><div class="v htf-ratio">--</div>'
+          + '<div class="k">avg IV</div><div class="v htf-iv">--</div>'
+          + '</div>'
+          + '<div class="history-table-wrap"><table><thead><tr><th>time</th><th>instrument</th><th>side</th><th>amount</th><th>price</th><th>IV</th><th>index</th></tr></thead><tbody></tbody></table></div>';
+        this.currencySel = this._el.querySelector('.htf-currency');
+        this.rangeSel = this._el.querySelector('.htf-range');
+        this.refreshBtn = this._el.querySelector('.htf-refresh');
+        this.autoBtn = this._el.querySelector('.htf-auto');
+        this.totalEl = this._el.querySelector('.htf-total');
+        this.ratioEl = this._el.querySelector('.htf-ratio');
+        this.ivEl = this._el.querySelector('.htf-iv');
+        this.tbody = this._el.querySelector('tbody');
+        this.currencySel.value = historyLinePanelCurrencyDefault();
+        panels.tradeflowhist = this;
+
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.currencySel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.autoBtn.addEventListener('click', () => {
+          this.autoOn = !this.autoOn;
+          this.autoBtn.classList.toggle('active', this.autoOn);
+          this.autoBtn.textContent = this.autoOn ? 'Auto On' : 'Auto Off';
+          this.resetAutoTimer();
+        });
+        this.resetAutoTimer();
+        this.refresh();
+      }
+      resetAutoTimer() {
+        clearInterval(this._autoTimer);
+        if (this.autoOn) this._autoTimer = setInterval(() => { this.refresh(true); }, 15000);
+      }
+      async refresh(isAuto = false) {
+        if (!historicalDataService) return;
+        if (!isAuto) {
+          this.refreshBtn.disabled = true;
+          this.refreshBtn.textContent = 'Loading...';
+        }
+        try {
+          const endTs = Date.now();
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['24h'];
+          const startTs = endTs - rangeMs;
+          const trades = await historicalDataService.getLastTradesByCurrencyAndTime({
+            currency: this.currencySel.value,
+            kind: 'option',
+            startTs,
+            endTs,
+            count: 1000,
+            sorting: 'desc',
+            maxPages: 4,
+            ttlMs: isAuto ? 0 : 5000,
+          });
+          this.rows = Array.isArray(trades) ? trades.slice(0, 400) : [];
+          this.renderRows();
+        } catch (e) {
+          console.warn('[history-tradeflow] refresh failed:', e);
+          this.rows = [];
+          this.renderRows();
+        } finally {
+          if (!isAuto) {
+            this.refreshBtn.disabled = false;
+            this.refreshBtn.textContent = 'Refresh';
+          }
+        }
+      }
+      renderRows() {
+        const rows = this.rows || [];
+        let totalVol = 0;
+        let buyVol = 0;
+        let sellVol = 0;
+        let ivSum = 0;
+        let ivN = 0;
+        this.tbody.innerHTML = '';
+        for (const t of rows) {
+          const amount = Number(t.amount);
+          const price = Number(t.price);
+          const iv = Number(t.iv);
+          const idx = Number(t.index_price);
+          const direction = String(t.direction || '').toLowerCase();
+          const tr = document.createElement('tr');
+          const cls = direction === 'buy' ? 'hist-buy' : 'hist-sell';
+          tr.innerHTML =
+            `<td>${new Date(Number(t.timestamp || Date.now())).toLocaleTimeString()}</td>`
+            + `<td>${t.instrument_name || '--'}</td>`
+            + `<td class="${cls}">${direction || '--'}</td>`
+            + `<td>${Number.isFinite(amount) ? amount.toFixed(2) : '--'}</td>`
+            + `<td>${Number.isFinite(price) ? pFmt.format(price) : '--'}</td>`
+            + `<td>${Number.isFinite(iv) ? (normalizeIv(iv) * 100).toFixed(1) + '%' : '--'}</td>`
+            + `<td>${Number.isFinite(idx) ? pFmt.format(idx) : '--'}</td>`;
+          this.tbody.appendChild(tr);
+
+          if (Number.isFinite(amount)) {
+            totalVol += amount;
+            if (direction === 'buy') buyVol += amount;
+            else if (direction === 'sell') sellVol += amount;
+          }
+          const ivNorm = normalizeIv(iv);
+          if (Number.isFinite(ivNorm)) { ivSum += ivNorm; ivN++; }
+        }
+        if (this.totalEl) this.totalEl.textContent = totalVol.toFixed(2);
+        if (this.ratioEl) this.ratioEl.textContent = sellVol > 0 ? (buyVol / sellVol).toFixed(2) : '--';
+        if (this.ivEl) this.ivEl.textContent = ivN > 0 ? ((ivSum / ivN) * 100).toFixed(2) + '%' : '--';
+      }
+      dispose() {
+        clearInterval(this._autoTimer);
+        delete panels.tradeflowhist;
+      }
+    }
+
+    class FundingPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.hover = null;
+        this.lines = [];
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Funding History</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>instrument</label><select class="hf-instrument"><option value="BTC-PERPETUAL" selected>BTC-PERPETUAL</option><option value="ETH-PERPETUAL">ETH-PERPETUAL</option></select>'
+          + '<label>range</label><select class="hf-range"><option value="7d" selected>7d</option><option value="30d">30d</option><option value="90d">90d</option></select>'
+          + '<button class="tab-btn hf-refresh">Refresh</button>'
+          + '</div>'
+          + '<div class="history-chart-wrap"><canvas class="history-chart"></canvas><div class="history-tooltip"></div></div>';
+        this.instrumentSel = this._el.querySelector('.hf-instrument');
+        this.rangeSel = this._el.querySelector('.hf-range');
+        this.refreshBtn = this._el.querySelector('.hf-refresh');
+        this.canvas = this._el.querySelector('.history-chart');
+        this.tooltip = this._el.querySelector('.history-tooltip');
+        panels.fundinghist = this;
+
+        this.instrumentSel.value = activeCurrency.startsWith('ETH') ? 'ETH-PERPETUAL' : 'BTC-PERPETUAL';
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.instrumentSel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.canvas.addEventListener('mousemove', (e) => {
+          const rect = this.canvas.getBoundingClientRect();
+          this.hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          this.draw();
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+          this.hover = null;
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          this.draw();
+        });
+        this._resizeObs = new ResizeObserver(() => { this.draw(); });
+        this._resizeObs.observe(this._el);
+        this.refresh();
+      }
+      async refresh() {
+        if (!historicalDataService) return;
+        this.refreshBtn.disabled = true;
+        this.refreshBtn.textContent = 'Loading...';
+        try {
+          const endTs = Date.now();
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['7d'];
+          const startTs = endTs - rangeMs;
+          const rows = await historicalDataService.getFundingRateHistory({
+            instrument: this.instrumentSel.value,
+            startTs,
+            endTs,
+            ttlMs: 12000,
+          });
+          const points = Array.isArray(rows)
+            ? rows
+              .map((r) => ({ ts: Number(r.timestamp), r8h: Number(r.interest_8h) * 100, r1h: Number(r.interest_1h) * 100 }))
+              .filter((r) => Number.isFinite(r.ts))
+              .sort((a, b) => a.ts - b.ts)
+            : [];
+          this.lines = [
+            { name: '8h', color: '#2fb2ff', data: points.filter((p) => Number.isFinite(p.r8h)).map((p) => ({ ts: p.ts, v: p.r8h })) },
+            { name: '1h', color: '#19d8a8', data: points.filter((p) => Number.isFinite(p.r1h)).map((p) => ({ ts: p.ts, v: p.r1h })) },
+          ].filter((line) => line.data.length > 1);
+          this.draw();
+        } catch (e) {
+          console.warn('[history-funding] refresh failed:', e);
+          this.lines = [];
+          this.draw();
+        } finally {
+          this.refreshBtn.disabled = false;
+          this.refreshBtn.textContent = 'Refresh';
+        }
+      }
+      draw() {
+        historyDrawLineChart(this.canvas, this.tooltip, this.lines, this.hover, '%');
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.fundinghist;
+      }
     }
 
     class StrategyPanel {
@@ -4894,10 +5868,14 @@
       try {
         const perpInstrument = currencyConfig.prefix + 'PERPETUAL';
         const endTs = Date.now(), startTs = endTs - 7 * 24 * 60 * 60 * 1000;
-        const resp = await fetch(`${DERIBIT_REST}/get_funding_rate_history?instrument_name=${perpInstrument}&start_timestamp=${startTs}&end_timestamp=${endTs}`);
-        const data = await resp.json();
-        if (data.result) {
-          fundingState.history = data.result.map(r => ({ timestamp: r.timestamp, rate: r.interest_8h || 0 }));
+        const rows = await historicalDataService.getFundingRateHistory({
+          instrument: perpInstrument,
+          startTs,
+          endTs,
+          ttlMs: 12000,
+        });
+        if (rows) {
+          fundingState.history = rows.map(r => ({ timestamp: r.timestamp, rate: r.interest_8h || 0 }));
           renderFunding();
         }
       } catch (e) { console.warn('[funding] fetch failed:', e); }
@@ -5048,9 +6026,11 @@
     // =====================================================================
     async function fetchHistoricalVol() {
       try {
-        const resp = await fetch(`${DERIBIT_REST}/get_historical_volatility?currency=${currencyConfig.base || currencyConfig.apiCurrency}`);
-        const data = await resp.json();
-        if (data.result) { historicalVolData = data.result; renderVolCone(); }
+        historicalVolData = await historicalDataService.getHistoricalVolatility({
+          currency: currencyConfig.base || currencyConfig.apiCurrency,
+          ttlMs: 20000,
+        });
+        renderVolCone();
       } catch (e) { console.warn('[volcone] fetch failed:', e); }
     }
 
@@ -5535,6 +6515,7 @@
     // =====================================================================
     const DERIBIT_REST = 'https://www.deribit.com/api/v2/public';
     const DERIBIT_WS = 'wss://www.deribit.com/ws/api/v2';
+    const historicalDataService = new HistoricalDataService(DERIBIT_REST);
 
     const statusPill = document.getElementById('status-pill');
     function setStatus(state, text) {
@@ -5763,9 +6744,11 @@
           case 'surfacecfg': return new SurfaceConfigPanel();
           case 'scanner': return new ScannerPanel();
           case 'forwardvol': return new ForwardVolPanel();
-          case 'funding': return new FundingBasisPanel();
-          case 'tradeflow': return new TradeFlowPanel();
+          case 'funding': return activeView === 'history' ? new FundingPanel() : new FundingBasisPanel();
+          case 'tradeflow': return activeView === 'history' ? new TradeFlowPanel() : new LiveTradeFlowPanel();
           case 'volcone': return new VolConePanel();
+          case 'histvol': return new HistVolPanel();
+          case 'pricechart': return new PriceChartPanel();
           case 'strategy': return new StrategyPanel();
           case 'pricer': return new PricerPanel();
           case 'dsleditor': return new DslEditorPanel();
