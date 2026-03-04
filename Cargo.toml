@@ -1,5 +1,11 @@
 [workspace]
-members = [".", "openferric-wasm", "openferric-python", "openferric-lsp"]
+members = [
+    ".",
+    "openferric-wasm",
+    "openferric-python",
+    "openferric-lsp",
+    "openferric-mcp",
+]
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"
