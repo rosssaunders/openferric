@@ -554,6 +554,7 @@ mod tests {
             underlyings: vec![UnderlyingDef {
                 name: "SPX".to_string(),
                 asset_index: 0,
+                underlying_type: Default::default(),
             }],
             state_vars,
             constants: vec![],
@@ -654,14 +655,17 @@ mod tests {
                 UnderlyingDef {
                     name: "A".to_string(),
                     asset_index: 0,
+                    underlying_type: Default::default(),
                 },
                 UnderlyingDef {
                     name: "B".to_string(),
                     asset_index: 1,
+                    underlying_type: Default::default(),
                 },
                 UnderlyingDef {
                     name: "C".to_string(),
                     asset_index: 2,
+                    underlying_type: Default::default(),
                 },
             ],
             state_vars: vec![],

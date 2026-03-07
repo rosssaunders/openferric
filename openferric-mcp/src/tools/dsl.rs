@@ -234,7 +234,7 @@ fn parse_market(args: &Value) -> Result<MultiAssetMarket, String> {
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
 
-        assets.push(openferric::dsl::AssetData {
+        assets.push(openferric::dsl::AssetMarketData::Equity {
             spot,
             vol,
             dividend_yield,

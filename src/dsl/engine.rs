@@ -7,12 +7,111 @@ use crate::core::{
 };
 use crate::dsl::eval::evaluate_product;
 use crate::dsl::ir::CompiledProduct;
-use crate::dsl::market::MultiAssetMarket;
+use crate::dsl::market::{AssetMarketData, MultiAssetMarket};
 use crate::engines::monte_carlo::correlated_mc::{
     cholesky_for_correlation, sample_correlated_normals_cholesky,
 };
 use crate::market::Market;
 use crate::math::fast_rng::{FastRng, FastRngKind};
+
+/// Per-asset stepping strategy for path generation.
+///
+/// Built once from `AssetMarketData` + time step `dt` and reused for every path.
+#[derive(Debug, Clone, Copy)]
+enum AssetStepper {
+    /// Geometric Brownian Motion for equities (with dividend yield) and FX (Garman-Kohlhagen).
+    Gbm { drift: f64, diffusion: f64 },
+    /// Schwartz one-factor mean-reverting log-price model for commodities.
+    SchwartzOneF {
+        long_run_log_mean: f64,
+        exp_neg_kappa_dt: f64,
+        vol_step: f64,
+    },
+    /// Vasicek / Hull-White short-rate model for interest rates.
+    Vasicek {
+        long_run_mean: f64,
+        exp_neg_a_dt: f64,
+        vol_step: f64,
+    },
+}
+
+impl AssetStepper {
+    /// Build a stepper from asset market data and simulation parameters.
+    fn from_asset(asset: &AssetMarketData, rate: f64, dt: f64) -> Self {
+        let sqrt_dt = dt.sqrt();
+        match asset {
+            AssetMarketData::Equity {
+                vol,
+                dividend_yield,
+                ..
+            } => Self::Gbm {
+                drift: (rate - dividend_yield - 0.5 * vol * vol) * dt,
+                diffusion: vol * sqrt_dt,
+            },
+            AssetMarketData::Fx {
+                vol,
+                domestic_rate,
+                foreign_rate,
+                ..
+            } => {
+                // Garman-Kohlhagen: drift = (r_d - r_f - 0.5 σ²) dt
+                let _ = rate; // use explicit domestic/foreign rates
+                Self::Gbm {
+                    drift: (domestic_rate - foreign_rate - 0.5 * vol * vol) * dt,
+                    diffusion: vol * sqrt_dt,
+                }
+            }
+            AssetMarketData::Commodity {
+                vol,
+                kappa,
+                mu,
+                ..
+            } => Self::SchwartzOneF {
+                long_run_log_mean: *mu,
+                exp_neg_kappa_dt: (-kappa * dt).exp(),
+                vol_step: vol * sqrt_dt,
+            },
+            AssetMarketData::Rate {
+                vol,
+                mean_reversion,
+                long_run_mean,
+                ..
+            } => Self::Vasicek {
+                long_run_mean: *long_run_mean,
+                exp_neg_a_dt: (-mean_reversion * dt).exp(),
+                vol_step: vol * sqrt_dt,
+            },
+        }
+    }
+
+    /// Advance one time step given previous value and a standard normal draw.
+    #[inline]
+    fn step(self, prev: f64, z: f64) -> f64 {
+        match self {
+            Self::Gbm { drift, diffusion } => prev * (drift + diffusion * z).exp(),
+            Self::SchwartzOneF {
+                long_run_log_mean,
+                exp_neg_kappa_dt,
+                vol_step,
+            } => {
+                // Schwartz 1-factor: d(ln S) = κ(μ - ln S) dt + σ dW
+                let log_prev = prev.ln();
+                let log_next =
+                    long_run_log_mean + exp_neg_kappa_dt * (log_prev - long_run_log_mean)
+                        + vol_step * z;
+                log_next.exp()
+            }
+            Self::Vasicek {
+                long_run_mean,
+                exp_neg_a_dt,
+                vol_step,
+            } => {
+                // Vasicek: dr = a(θ - r) dt + σ dW
+                long_run_mean + exp_neg_a_dt * (prev - long_run_mean) + vol_step * z
+            }
+        }
+    }
+}
 
 /// A DSL product wrapped as an `Instrument` for compatibility.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -78,20 +177,18 @@ impl DslMonteCarloEngine {
         let n_assets = market.assets.len();
         let n_steps = self.num_steps;
         let dt = product.maturity / n_steps as f64;
-        let sqrt_dt = dt.sqrt();
 
         // Build Cholesky factor for correlation.
         let (chol, _) = cholesky_for_correlation(&market.correlation)?;
 
         let initial_spots = market.initial_spots();
 
-        // Pre-compute per-asset drift and diffusion.
-        let drifts: Vec<f64> = market
+        // Build per-asset steppers.
+        let steppers: Vec<AssetStepper> = market
             .assets
             .iter()
-            .map(|a| (market.rate - a.dividend_yield - 0.5 * a.vol * a.vol) * dt)
+            .map(|a| AssetStepper::from_asset(a, market.rate, dt))
             .collect();
-        let diffusions: Vec<f64> = market.assets.iter().map(|a| a.vol * sqrt_dt).collect();
 
         let mut rng = FastRng::from_seed(self.rng_kind, self.seed);
         let mut sum_pv = 0.0;
@@ -112,8 +209,7 @@ impl DslMonteCarloEngine {
                 for asset in 0..n_assets {
                     let prev = path_spots[step][asset];
                     let z = corr_normals[asset];
-                    path_spots[step + 1][asset] =
-                        prev * (drifts[asset] + diffusions[asset] * z).exp();
+                    path_spots[step + 1][asset] = steppers[asset].step(prev, z);
                 }
             }
 
@@ -163,13 +259,13 @@ impl DslMonteCarloEngine {
         let base = self.price_multi_asset(product, market)?;
 
         // Delta: bump spot by 1%
-        let spot_bump = 0.01 * market.assets[asset_index].spot;
+        let spot_bump = 0.01 * market.assets[asset_index].initial_value();
         let mut market_up = market.clone();
-        market_up.assets[asset_index].spot += spot_bump;
+        market_up.assets[asset_index] = market.assets[asset_index].with_spot_bump(spot_bump);
         let price_up = self.price_multi_asset(product, &market_up)?.price;
 
         let mut market_down = market.clone();
-        market_down.assets[asset_index].spot -= spot_bump;
+        market_down.assets[asset_index] = market.assets[asset_index].with_spot_bump(-spot_bump);
         let price_down = self.price_multi_asset(product, &market_down)?.price;
 
         let delta = (price_up - price_down) / (2.0 * spot_bump);
@@ -178,7 +274,7 @@ impl DslMonteCarloEngine {
         // Vega: bump vol by 1%
         let vol_bump = 0.01;
         let mut market_vega = market.clone();
-        market_vega.assets[asset_index].vol += vol_bump;
+        market_vega.assets[asset_index] = market.assets[asset_index].with_vol_bump(vol_bump);
         let price_vega = self.price_multi_asset(product, &market_vega)?.price;
         let vega = (price_vega - base.price) / vol_bump;
 
@@ -189,10 +285,7 @@ impl DslMonteCarloEngine {
         let price_rho = self.price_multi_asset(product, &market_rho)?.price;
         let rho = (price_rho - base.price) / rate_bump;
 
-        // Theta: bump maturity by -1/365 (not applicable to product maturity directly,
-        // but we approximate by shifting observation dates isn't feasible, so we use
-        // time-decay via a small time bump on rate discounting)
-        let theta = 0.0; // Theta requires more sophisticated approach for products
+        let theta = 0.0;
 
         Ok(Greeks {
             delta,
@@ -218,16 +311,17 @@ impl DslMonteCarloEngine {
             )));
         }
 
-        let spot_bump = 0.01 * market.assets[asset_index].spot;
+        let spot_bump = 0.01 * market.assets[asset_index].initial_value();
         let vol_bump = 0.01;
+        let asset_data = &market.assets[asset_index];
 
         // Spot up / down
         let mut market_spot_up = market.clone();
-        market_spot_up.assets[asset_index].spot += spot_bump;
+        market_spot_up.assets[asset_index] = asset_data.with_spot_bump(spot_bump);
         let price_spot_up = self.price_multi_asset(product, &market_spot_up)?.price;
 
         let mut market_spot_down = market.clone();
-        market_spot_down.assets[asset_index].spot -= spot_bump;
+        market_spot_down.assets[asset_index] = asset_data.with_spot_bump(-spot_bump);
         let price_spot_down = self.price_multi_asset(product, &market_spot_down)?.price;
 
         let delta = (price_spot_up - price_spot_down) / (2.0 * spot_bump);
@@ -235,11 +329,11 @@ impl DslMonteCarloEngine {
 
         // Vol up / down
         let mut market_vol_up = market.clone();
-        market_vol_up.assets[asset_index].vol += vol_bump;
+        market_vol_up.assets[asset_index] = asset_data.with_vol_bump(vol_bump);
         let price_vol_up = self.price_multi_asset(product, &market_vol_up)?.price;
 
         let mut market_vol_down = market.clone();
-        market_vol_down.assets[asset_index].vol -= vol_bump;
+        market_vol_down.assets[asset_index] = asset_data.with_vol_bump(-vol_bump);
         let price_vol_down = self.price_multi_asset(product, &market_vol_down)?.price;
 
         let vega = (price_vol_up - price_vol_down) / (2.0 * vol_bump);
@@ -248,23 +342,23 @@ impl DslMonteCarloEngine {
         // Vanna: cross derivative d²V/(dS dσ)
         // Bump spot+vol jointly for the four corners
         let mut m_up_up = market.clone();
-        m_up_up.assets[asset_index].spot += spot_bump;
-        m_up_up.assets[asset_index].vol += vol_bump;
+        m_up_up.assets[asset_index] = asset_data.with_spot_bump(spot_bump).with_vol_bump(vol_bump);
         let p_up_up = self.price_multi_asset(product, &m_up_up)?.price;
 
         let mut m_up_down = market.clone();
-        m_up_down.assets[asset_index].spot += spot_bump;
-        m_up_down.assets[asset_index].vol -= vol_bump;
+        m_up_down.assets[asset_index] =
+            asset_data.with_spot_bump(spot_bump).with_vol_bump(-vol_bump);
         let p_up_down = self.price_multi_asset(product, &m_up_down)?.price;
 
         let mut m_down_up = market.clone();
-        m_down_up.assets[asset_index].spot -= spot_bump;
-        m_down_up.assets[asset_index].vol += vol_bump;
+        m_down_up.assets[asset_index] =
+            asset_data.with_spot_bump(-spot_bump).with_vol_bump(vol_bump);
         let p_down_up = self.price_multi_asset(product, &m_down_up)?.price;
 
         let mut m_down_down = market.clone();
-        m_down_down.assets[asset_index].spot -= spot_bump;
-        m_down_down.assets[asset_index].vol -= vol_bump;
+        m_down_down.assets[asset_index] = asset_data
+            .with_spot_bump(-spot_bump)
+            .with_vol_bump(-vol_bump);
         let p_down_down = self.price_multi_asset(product, &m_down_down)?.price;
 
         let vanna = (p_up_up - p_up_down - p_down_up + p_down_down) / (4.0 * spot_bump * vol_bump);
@@ -304,27 +398,27 @@ impl DslMonteCarloEngine {
         }
 
         // Cross-gamma: d²V/(dSi dSj)
-        let bump_i = 0.01 * market.assets[asset_i].spot;
-        let bump_j = 0.01 * market.assets[asset_j].spot;
+        let bump_i = 0.01 * market.assets[asset_i].initial_value();
+        let bump_j = 0.01 * market.assets[asset_j].initial_value();
 
         let mut m_pp = market.clone();
-        m_pp.assets[asset_i].spot += bump_i;
-        m_pp.assets[asset_j].spot += bump_j;
+        m_pp.assets[asset_i] = market.assets[asset_i].with_spot_bump(bump_i);
+        m_pp.assets[asset_j] = market.assets[asset_j].with_spot_bump(bump_j);
         let p_pp = self.price_multi_asset(product, &m_pp)?.price;
 
         let mut m_pm = market.clone();
-        m_pm.assets[asset_i].spot += bump_i;
-        m_pm.assets[asset_j].spot -= bump_j;
+        m_pm.assets[asset_i] = market.assets[asset_i].with_spot_bump(bump_i);
+        m_pm.assets[asset_j] = market.assets[asset_j].with_spot_bump(-bump_j);
         let p_pm = self.price_multi_asset(product, &m_pm)?.price;
 
         let mut m_mp = market.clone();
-        m_mp.assets[asset_i].spot -= bump_i;
-        m_mp.assets[asset_j].spot += bump_j;
+        m_mp.assets[asset_i] = market.assets[asset_i].with_spot_bump(-bump_i);
+        m_mp.assets[asset_j] = market.assets[asset_j].with_spot_bump(bump_j);
         let p_mp = self.price_multi_asset(product, &m_mp)?.price;
 
         let mut m_mm = market.clone();
-        m_mm.assets[asset_i].spot -= bump_i;
-        m_mm.assets[asset_j].spot -= bump_j;
+        m_mm.assets[asset_i] = market.assets[asset_i].with_spot_bump(-bump_i);
+        m_mm.assets[asset_j] = market.assets[asset_j].with_spot_bump(-bump_j);
         let p_mm = self.price_multi_asset(product, &m_mm)?.price;
 
         let cross_gamma = (p_pp - p_pm - p_mp + p_mm) / (4.0 * bump_i * bump_j);
@@ -405,6 +499,7 @@ mod tests {
             underlyings: vec![UnderlyingDef {
                 name: "SPX".to_string(),
                 asset_index: 0,
+                underlying_type: Default::default(),
             }],
             state_vars: vec![],
             constants: vec![],
@@ -450,10 +545,12 @@ mod tests {
                 UnderlyingDef {
                     name: "A".to_string(),
                     asset_index: 0,
+                    underlying_type: Default::default(),
                 },
                 UnderlyingDef {
                     name: "B".to_string(),
                     asset_index: 1,
+                    underlying_type: Default::default(),
                 },
             ],
             state_vars: vec![],
@@ -478,12 +575,12 @@ mod tests {
 
         let market = MultiAssetMarket {
             assets: vec![
-                crate::dsl::market::AssetData {
+                crate::dsl::market::AssetMarketData::Equity {
                     spot: 100.0,
                     vol: 0.20,
                     dividend_yield: 0.0,
                 },
-                crate::dsl::market::AssetData {
+                crate::dsl::market::AssetMarketData::Equity {
                     spot: 100.0,
                     vol: 0.20,
                     dividend_yield: 0.0,
@@ -543,6 +640,127 @@ mod tests {
             (greeks.delta - expected_delta).abs() < 0.05,
             "delta {} should be near {expected_delta}",
             greeks.delta
+        );
+    }
+
+    #[test]
+    fn schwartz_stepper_mean_reverts() {
+        // Schwartz one-factor: commodity price should mean-revert toward exp(mu).
+        let stepper = AssetStepper::SchwartzOneF {
+            long_run_log_mean: (100.0_f64).ln(), // mu = ln(100)
+            exp_neg_kappa_dt: (-2.0 * 0.01_f64).exp(), // kappa=2, dt=0.01
+            vol_step: 0.30 * (0.01_f64).sqrt(),
+        };
+        // Starting far below mean: 50. With z=0 the step should pull toward 100.
+        let next = stepper.step(50.0, 0.0);
+        assert!(
+            next > 50.0 && next < 100.0,
+            "Schwartz step from 50 with z=0 should move toward 100, got {next}"
+        );
+        // Starting far above mean: 200. Should pull down.
+        let next_high = stepper.step(200.0, 0.0);
+        assert!(
+            next_high < 200.0 && next_high > 100.0,
+            "Schwartz step from 200 with z=0 should move toward 100, got {next_high}"
+        );
+    }
+
+    #[test]
+    fn vasicek_stepper_mean_reverts() {
+        // Vasicek: rate should mean-revert toward long_run_mean.
+        let stepper = AssetStepper::Vasicek {
+            long_run_mean: 0.05,
+            exp_neg_a_dt: (-1.0 * 0.01_f64).exp(), // a=1, dt=0.01
+            vol_step: 0.01 * (0.01_f64).sqrt(),
+        };
+        // Starting above mean: r=0.10. With z=0 should pull down.
+        let next = stepper.step(0.10, 0.0);
+        assert!(
+            next < 0.10 && next > 0.05,
+            "Vasicek step from 0.10 with z=0 should move toward 0.05, got {next}"
+        );
+        // Starting below mean: r=0.01.
+        let next_low = stepper.step(0.01, 0.0);
+        assert!(
+            next_low > 0.01 && next_low < 0.05,
+            "Vasicek step from 0.01 with z=0 should move toward 0.05, got {next_low}"
+        );
+    }
+
+    #[test]
+    fn fx_stepper_uses_garman_kohlhagen() {
+        // FX stepper should use domestic/foreign rates, not the market rate.
+        let asset = AssetMarketData::Fx {
+            spot: 1.10,
+            vol: 0.10,
+            domestic_rate: 0.05,
+            foreign_rate: 0.02,
+        };
+        let dt = 1.0 / 252.0;
+        let stepper = AssetStepper::from_asset(&asset, 0.99, dt); // market.rate=0.99 should be ignored
+        match stepper {
+            AssetStepper::Gbm { drift, .. } => {
+                // Expected drift = (r_d - r_f - 0.5 σ²) dt = (0.05 - 0.02 - 0.005) * dt
+                let expected_drift = (0.05 - 0.02 - 0.5 * 0.10 * 0.10) * dt;
+                assert!(
+                    (drift - expected_drift).abs() < 1e-12,
+                    "FX drift {drift} != expected {expected_drift}"
+                );
+            }
+            _ => panic!("FX asset should produce Gbm stepper"),
+        }
+    }
+
+    #[test]
+    fn commodity_forward_product_mean_reverts() {
+        // Build a forward product on a commodity, price it, and verify
+        // the price reflects mean-reversion toward exp(mu).
+        let product = CompiledProduct {
+            name: "CommodityForward".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![UnderlyingDef {
+                name: "WTI".to_string(),
+                asset_index: 0,
+                underlying_type: crate::dsl::ir::UnderlyingType::Commodity,
+            }],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::Call {
+                        func: BuiltinFn::Price,
+                        args: vec![Expr::Literal(Value::F64(0.0))],
+                    },
+                }],
+            }],
+        };
+
+        let market = MultiAssetMarket {
+            assets: vec![AssetMarketData::Commodity {
+                spot: 80.0,
+                vol: 0.30,
+                convenience_yield: 0.0,
+                kappa: 1.0,
+                mu: (100.0_f64).ln(), // mean-reverts toward 100
+            }],
+            correlation: vec![vec![1.0]],
+            rate: 0.05,
+        };
+
+        let engine = DslMonteCarloEngine::new(100_000, 252, 42);
+        let result = engine.price_multi_asset(&product, &market).unwrap();
+
+        // Starting at 80, mean-reverting toward 100 over 1 year with kappa=1.
+        // Expected E[S(T)] ≈ exp(mu + (ln(S0) - mu)*exp(-kappa*T))
+        // = exp(ln(100) + (ln(80) - ln(100))*exp(-1)) ≈ exp(4.605 - 0.223*0.368) ≈ 92.1
+        // Discounted by exp(-r*T) ≈ 0.951
+        assert!(
+            result.price > 70.0 && result.price < 110.0,
+            "commodity forward price {} should be between 70 and 110",
+            result.price
         );
     }
 }

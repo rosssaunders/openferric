@@ -35,12 +35,25 @@ impl Value {
     }
 }
 
+/// The type of an underlying asset, determining its market data shape and dynamics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UnderlyingType {
+    #[default]
+    Equity,
+    Fx,
+    Commodity,
+    Rate,
+}
+
 /// Definition of a named underlying asset.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UnderlyingDef {
     pub name: String,
     /// Index into the multi-asset spot/vol arrays.
     pub asset_index: usize,
+    /// The type of this underlying (equity, FX, commodity, rate).
+    #[serde(default)]
+    pub underlying_type: UnderlyingType,
 }
 
 /// Definition of a state variable with its initial value.

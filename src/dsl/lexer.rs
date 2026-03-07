@@ -45,6 +45,10 @@ pub enum TokenKind {
     Or,
     Not,
     Asset,
+    Equity,
+    Fx,
+    Commodity,
+    Rate,
 
     // Frequencies
     Monthly,
@@ -219,6 +223,10 @@ fn tokenize_content(content: &str, offset: usize, tokens: &mut Vec<Token>) -> Re
                 "or" => TokenKind::Or,
                 "not" => TokenKind::Not,
                 "asset" => TokenKind::Asset,
+                "equity" => TokenKind::Equity,
+                "fx" => TokenKind::Fx,
+                "commodity" => TokenKind::Commodity,
+                "rate" => TokenKind::Rate,
                 "true" => TokenKind::True,
                 "false" => TokenKind::False,
                 "monthly" => TokenKind::Monthly,

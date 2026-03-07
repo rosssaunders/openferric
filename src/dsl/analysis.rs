@@ -289,13 +289,19 @@ pub fn build_symbol_table(ast: &ProductDef, source: &str) -> SymbolTable {
         match item {
             ProductItem::Underlyings(decls, _) => {
                 for decl in decls {
+                    let doc = match decl.underlying_type {
+                        crate::dsl::ir::UnderlyingType::Equity => "Underlying equity",
+                        crate::dsl::ir::UnderlyingType::Fx => "Underlying FX pair",
+                        crate::dsl::ir::UnderlyingType::Commodity => "Underlying commodity",
+                        crate::dsl::ir::UnderlyingType::Rate => "Underlying interest rate",
+                    };
                     declarations.push(SymbolInfo {
                         name: decl.name.clone(),
                         kind: SymbolKind::Underlying,
                         type_hint: "float",
                         def_span: decl.span,
                         scope: SymbolScope::Product,
-                        doc: "Underlying equity",
+                        doc,
                     });
                 }
             }
@@ -719,7 +725,11 @@ fn keyword_hover(source: &str, offset: usize) -> Option<HoverInfo> {
         "true" | "false" => "Boolean literal",
         "bool" => "Boolean type",
         "float" => "Floating-point number type",
-        "asset" => "Reference an underlying by index: asset(N)",
+        "asset" => "Reference an underlying by index: asset(N) (synonym for equity)",
+        "equity" => "Equity underlying type: equity(N)",
+        "fx" => "FX pair underlying type: fx(N)",
+        "commodity" => "Commodity underlying type: commodity(N)",
+        "rate" => "Interest rate underlying type: rate(N)",
         _ => return None,
     };
 
@@ -818,6 +828,10 @@ pub fn semantic_token_data(source: &str, symbols: &SymbolTable) -> Vec<SemanticT
             | TokenKind::Set
             | TokenKind::Skip
             | TokenKind::Asset
+            | TokenKind::Equity
+            | TokenKind::Fx
+            | TokenKind::Commodity
+            | TokenKind::Rate
             | TokenKind::Bool
             | TokenKind::Float
             | TokenKind::True

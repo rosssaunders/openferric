@@ -4483,7 +4483,7 @@
 
       const assets = [];
       for (let i = 0; i < nAssets; i++) {
-        assets.push({ spot: spots[i], vol: vols[i], dividend_yield: dividendYields[i] });
+        assets.push({ type: "Equity", spot: spots[i], vol: vols[i], dividend_yield: dividendYields[i] });
       }
       const market = {
         assets,

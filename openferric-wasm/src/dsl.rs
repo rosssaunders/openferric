@@ -2,7 +2,7 @@ use wasm_bindgen::prelude::*;
 
 use openferric::dsl::analysis;
 use openferric::dsl::ir::CompiledProduct;
-use openferric::dsl::market::AssetData;
+use openferric::dsl::market::AssetMarketData;
 use openferric::dsl::{DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
 
 /// Parse and compile a DSL source string.
@@ -338,7 +338,9 @@ pub fn dsl_price_full(
         let scale = pct / 100.0;
         let mut bumped_market = market.clone();
         for asset in &mut bumped_market.assets {
-            asset.spot *= scale;
+            let base_val = asset.initial_value();
+            let bump = base_val * (scale - 1.0);
+            *asset = asset.with_spot_bump(bump);
         }
         let pv = payoff_engine
             .price_multi_asset(&product, &bumped_market)
@@ -353,9 +355,9 @@ pub fn dsl_price_full(
         "assets": product.underlyings.iter().zip(market.assets.iter()).map(|(u, a)| {
             serde_json::json!({
                 "name": u.name,
-                "spot": a.spot,
-                "vol": a.vol,
-                "dividendYield": a.dividend_yield,
+                "spot": a.initial_value(),
+                "vol": a.vol(),
+                "underlyingType": format!("{:?}", u.underlying_type),
             })
         }).collect::<Vec<_>>(),
     });
@@ -388,8 +390,8 @@ fn build_symbols_from_source(source: &str) -> analysis::SymbolTable {
 }
 
 fn build_default_market(num_underlyings: usize) -> MultiAssetMarket {
-    let assets: Vec<AssetData> = (0..num_underlyings)
-        .map(|_| AssetData {
+    let assets: Vec<AssetMarketData> = (0..num_underlyings)
+        .map(|_| AssetMarketData::Equity {
             spot: 100.0,
             vol: 0.20,
             dividend_yield: 0.02,
@@ -405,7 +407,7 @@ fn build_default_market(num_underlyings: usize) -> MultiAssetMarket {
 
 fn pad_market(market: &mut MultiAssetMarket, num_underlyings: usize) {
     while market.assets.len() < num_underlyings {
-        market.assets.push(AssetData {
+        market.assets.push(AssetMarketData::Equity {
             spot: 100.0,
             vol: 0.20,
             dividend_yield: 0.02,

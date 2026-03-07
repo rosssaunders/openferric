@@ -3,7 +3,7 @@
 //! Ensures all examples in `examples/dsl/` are valid DSL that compiles
 //! and produces a finite price under standard market conditions.
 
-use openferric::dsl::{AssetData, DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
+use openferric::dsl::{AssetMarketData, DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
 
 fn single_asset_market() -> MultiAssetMarket {
     MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02)
@@ -12,17 +12,17 @@ fn single_asset_market() -> MultiAssetMarket {
 fn three_asset_market() -> MultiAssetMarket {
     MultiAssetMarket {
         assets: vec![
-            AssetData {
+            AssetMarketData::Equity {
                 spot: 100.0,
                 vol: 0.20,
                 dividend_yield: 0.02,
             },
-            AssetData {
+            AssetMarketData::Equity {
                 spot: 100.0,
                 vol: 0.22,
                 dividend_yield: 0.03,
             },
-            AssetData {
+            AssetMarketData::Equity {
                 spot: 100.0,
                 vol: 0.25,
                 dividend_yield: 0.01,
@@ -40,12 +40,12 @@ fn three_asset_market() -> MultiAssetMarket {
 fn two_asset_market() -> MultiAssetMarket {
     MultiAssetMarket {
         assets: vec![
-            AssetData {
+            AssetMarketData::Equity {
                 spot: 100.0,
                 vol: 0.20,
                 dividend_yield: 0.02,
             },
-            AssetData {
+            AssetMarketData::Equity {
                 spot: 100.0,
                 vol: 0.22,
                 dividend_yield: 0.03,

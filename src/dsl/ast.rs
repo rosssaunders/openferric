@@ -3,6 +3,7 @@
 //! Each AST node carries a source `Span` for error reporting.
 
 use crate::dsl::error::Span;
+use crate::dsl::ir::UnderlyingType;
 
 /// Top-level product definition.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,11 +23,12 @@ pub enum ProductItem {
     Schedule(ScheduleDef),
 }
 
-/// Underlying declaration: `NAME = asset(index)`.
+/// Underlying declaration: `NAME = asset(index)` or `NAME = equity(index)`, etc.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnderlyingDecl {
     pub name: String,
     pub asset_index: usize,
+    pub underlying_type: UnderlyingType,
     pub span: Span,
 }
 

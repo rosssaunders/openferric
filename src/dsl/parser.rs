@@ -5,6 +5,7 @@
 
 use crate::dsl::ast::*;
 use crate::dsl::error::{DslError, Span};
+use crate::dsl::ir::UnderlyingType;
 use crate::dsl::lexer::{Token, TokenKind};
 
 /// Parser state wrapping a token stream.
@@ -244,19 +245,46 @@ fn parse_product_item(p: &mut Parser) -> Result<ProductItem, DslError> {
 
 fn parse_underlying_decl(p: &mut Parser, position: usize) -> Result<UnderlyingDecl, DslError> {
     let (name, span) = p.expect_ident()?;
-    let (asset_index, end_span) = if p.peek_kind() == Some(&TokenKind::Eq) {
+    let (asset_index, underlying_type, end_span) = if p.peek_kind() == Some(&TokenKind::Eq) {
         p.advance();
-        p.expect(&TokenKind::Asset)?;
+        let utype = match p.peek_kind() {
+            Some(TokenKind::Asset | TokenKind::Equity) => {
+                p.advance();
+                UnderlyingType::Equity
+            }
+            Some(TokenKind::Fx) => {
+                p.advance();
+                UnderlyingType::Fx
+            }
+            Some(TokenKind::Commodity) => {
+                p.advance();
+                UnderlyingType::Commodity
+            }
+            Some(TokenKind::Rate) => {
+                p.advance();
+                UnderlyingType::Rate
+            }
+            _ => {
+                return Err(DslError::ParseError {
+                    message: format!(
+                        "expected asset type (asset, equity, fx, commodity, rate), got {:?}",
+                        p.peek_kind()
+                    ),
+                    span: p.current_span(),
+                });
+            }
+        };
         p.expect(&TokenKind::LParen)?;
         let (idx, es) = p.expect_number()?;
         p.expect(&TokenKind::RParen)?;
-        (idx as usize, es)
+        (idx as usize, utype, es)
     } else {
-        (position, span)
+        (position, UnderlyingType::Equity, span)
     };
     Ok(UnderlyingDecl {
         name,
         asset_index,
+        underlying_type,
         span: Span::new(span.start, end_span.end),
     })
 }
@@ -817,5 +845,87 @@ product \"Test\"
             })
             .unwrap();
         assert_eq!(schedule.body.len(), 2); // let, if-else-if-else
+    }
+
+    #[test]
+    fn parse_underlying_type_keywords() {
+        let source = "\
+product \"Multi\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX    = equity(0)
+        EURUSD = fx(1)
+        WTI    = commodity(2)
+        USD_3M = rate(3)
+";
+        let product = parse_str(source).unwrap();
+        let underlyings = product
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ProductItem::Underlyings(u, _) => Some(u),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(underlyings.len(), 4);
+        assert_eq!(underlyings[0].name, "SPX");
+        assert_eq!(underlyings[0].underlying_type, UnderlyingType::Equity);
+        assert_eq!(underlyings[0].asset_index, 0);
+        assert_eq!(underlyings[1].name, "EURUSD");
+        assert_eq!(underlyings[1].underlying_type, UnderlyingType::Fx);
+        assert_eq!(underlyings[1].asset_index, 1);
+        assert_eq!(underlyings[2].name, "WTI");
+        assert_eq!(underlyings[2].underlying_type, UnderlyingType::Commodity);
+        assert_eq!(underlyings[2].asset_index, 2);
+        assert_eq!(underlyings[3].name, "USD_3M");
+        assert_eq!(underlyings[3].underlying_type, UnderlyingType::Rate);
+        assert_eq!(underlyings[3].asset_index, 3);
+    }
+
+    #[test]
+    fn parse_asset_keyword_maps_to_equity() {
+        let source = "\
+product \"Test\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX = asset(0)
+";
+        let product = parse_str(source).unwrap();
+        let underlyings = product
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ProductItem::Underlyings(u, _) => Some(u),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(underlyings[0].underlying_type, UnderlyingType::Equity);
+    }
+
+    #[test]
+    fn parse_bare_underlying_defaults_to_equity() {
+        let source = "\
+product \"Test\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX
+        SX5E
+";
+        let product = parse_str(source).unwrap();
+        let underlyings = product
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ProductItem::Underlyings(u, _) => Some(u),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(underlyings[0].underlying_type, UnderlyingType::Equity);
+        assert_eq!(underlyings[0].asset_index, 0);
+        assert_eq!(underlyings[1].underlying_type, UnderlyingType::Equity);
+        assert_eq!(underlyings[1].asset_index, 1);
     }
 }
