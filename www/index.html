@@ -911,6 +911,33 @@
       .panel-info-modal { width: 96vw; max-height: 92vh; }
       .panel-info-live { grid-template-columns: 1fr; }
     }
+
+    /* ===== DSL Editor Panels ===== */
+    .dsl-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .dsl-toolbar select, .dsl-toolbar input, .dsl-toolbar button { font-size: 11px; background: var(--bg-panel); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px; }
+    .dsl-toolbar button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+    .dsl-toolbar button:hover { filter: brightness(1.15); }
+    .dsl-toolbar label { font-size: 10px; color: var(--fg-dim); display: flex; align-items: center; gap: 3px; }
+    .dsl-editor-container { flex: 1; min-height: 0; }
+    .dsl-status-bar { display: flex; align-items: center; gap: 8px; padding: 3px 10px; border-top: 1px solid var(--border); font-size: 10px; color: var(--fg-dim); flex-shrink: 0; }
+    .dsl-status-bar .status-ok { color: var(--green); }
+    .dsl-status-bar .status-err { color: var(--red); }
+    .dsl-status-bar .status-computing { color: var(--accent); }
+
+    .dsl-result-panel { padding: 10px; overflow-y: auto; font-size: 11px; }
+    .dsl-result-panel h3 { margin: 0 0 6px; font-size: 12px; color: var(--accent); font-weight: 600; }
+    .dsl-result-panel .dsl-section { margin-bottom: 14px; }
+    .dsl-result-panel .dsl-price-display { font-size: 20px; font-weight: 700; color: var(--fg); }
+    .dsl-result-panel .dsl-stderr { font-size: 11px; color: var(--fg-dim); margin-left: 6px; }
+    .dsl-result-panel table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    .dsl-result-panel th { text-align: left; color: var(--fg-dim); padding: 3px 6px; border-bottom: 1px solid var(--border); font-weight: 500; }
+    .dsl-result-panel td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); font-variant-numeric: tabular-nums; }
+    .dsl-result-panel .dsl-product-info { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+    .dsl-result-panel .dsl-product-info dt { color: var(--fg-dim); }
+    .dsl-result-panel .dsl-product-info dd { margin: 0; }
+    .dsl-result-panel .dsl-market-info { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin-top: 4px; }
+    .dsl-result-panel .dsl-market-info dt { color: var(--fg-dim); font-size: 10px; }
+    .dsl-result-panel .dsl-market-info dd { margin: 0; font-size: 10px; }
   </style>
   <script type="importmap">
   {
@@ -919,6 +946,8 @@
     }
   }
   </script>
+  <script>var require = { paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs' } };</script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
 </head>
 <body>
   <!-- ===== Header ===== -->
@@ -964,6 +993,7 @@
       <button class="tab-btn" data-view="pricer">Pricer</button>
       <button class="tab-btn" data-view="history">History</button>
       <button class="tab-btn" data-view="dsl">DSL</button>
+      <button class="tab-btn" data-view="structuring">Structuring</button>
       <button class="tab-btn" data-view="all">All</button>
     </div>
     <button id="reset-layout" class="tab-btn" title="Reset panel layout to default">Reset Layout</button>
@@ -1753,6 +1783,18 @@
             position: { referencePanel: 'dslresults', direction: 'below' }, initialHeight: Math.round(H * 0.32) });
           dv.addPanel({ id: 'dslexamples', component: 'dslexamples', title: 'DSL Examples',
             position: { referencePanel: 'dslmarket', direction: 'below' }, initialHeight: Math.round(H * 0.32) });
+        },
+      },
+      structuring: {
+        panels: ['dsleditor', 'dslresult', 'dslpayoff'],
+        build(dv) {
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
+          dv.addPanel({ id: 'dsleditor', component: 'dsleditor', title: 'DSL Editor' });
+          dv.addPanel({ id: 'dslresult', component: 'dslresult', title: 'Pricing Result',
+            position: { referencePanel: 'dsleditor', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
+          dv.addPanel({ id: 'dslpayoff', component: 'dslpayoff', title: 'Payoff Profile',
+            position: { referencePanel: 'dslresult', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
         },
       },
       all: {
@@ -5221,6 +5263,446 @@
     }
 
     // =====================================================================
+    //  DSL Editor state
+    // =====================================================================
+    let dslSource = '';
+    let dslCompiledProduct = null;
+    let dslLastAnalysis = null;
+    let dslLastPricingResult = null;
+    let dslAnalyzeTimer = null;
+    let dslAutoRun = true;
+    let dslPricingConfig = { numPaths: 10000, numSteps: 100, seed: 42 };
+    // Promise resolvers for async worker round-trips
+    let dslHoverResolve = null, dslHoverRequestId = 0;
+    let dslCompletionsResolve = null, dslCompletionsRequestId = 0;
+    let dslGotoDefResolve = null, dslGotoDefRequestId = 0;
+    let dslRequestSeq = 0;
+
+    function dslRunPricing() {
+      if (!dslCompiledProduct) return;
+      if (panels.dsleditor) panels.dsleditor.setStatus('Computing...', 'computing');
+      computeWorker.postMessage({ type: 'dsl-price-full', payload: {
+        productJson: dslCompiledProduct,
+        marketJson: 'null',
+        numPaths: dslPricingConfig.numPaths,
+        numSteps: dslPricingConfig.numSteps,
+        seed: dslPricingConfig.seed,
+      }});
+    }
+
+    function dslSendAnalyze(source) {
+      dslSource = source;
+      computeWorker.postMessage({ type: 'dsl-analyze', payload: { source } });
+    }
+
+    const DSL_EXAMPLES = {
+      'Zero Coupon': `product "Zero Coupon"\n    notional: 1\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 5.0\n        redeem notional\n`,
+      'Fixed Coupon Note': `product "Fixed Coupon Note 3Y"\n    notional: 1_000_000\n    maturity: 3.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 3.0\n        pay notional * 0.05\n        if is_final then\n            redeem notional\n`,
+      'Reverse Convertible': `product "Reverse Convertible 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule quarterly from 0.25 to 1.0\n        pay notional * 0.025\n\n        if is_final then\n            let perf = worst_of(performances())\n            if perf >= 1.0 then\n                redeem notional\n            else\n                redeem notional * perf\n`,
+      'Barrier Rev Con': `product "Barrier Reverse Convertible 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    state\n        ki_hit: bool = false\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        pay notional * 0.02\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n`,
+      'WoF Autocall': `product "WoF Autocall 18m"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+      'Phoenix Memory': `product "Phoenix Memory 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        missed_coupons: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        if wof >= 0.70 then\n            pay notional * (0.02 + missed_coupons)\n            set missed_coupons = 0.0\n        else\n            set missed_coupons = missed_coupons + 0.02\n\n        if wof >= 1.0 and not is_final then\n            redeem notional\n\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+      'Twin-Win': `product "Twin-Win 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        if is_final then\n            if ki_hit then\n                redeem notional * perf\n            else\n                let move = perf - 1.0\n                let abs_move = max(move, 0.0 - move)\n                redeem notional * (1.0 + abs_move)\n`,
+      'Shark Fin': `product "Shark Fin 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ko_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.30 then\n            set ko_hit = true\n\n        if is_final then\n            if ko_hit then\n                pay notional * 0.10\n                redeem notional\n            else\n                let upside = max(perf - 1.0, 0.0)\n                pay notional * upside\n                redeem notional\n`,
+      'Cliquet': `product "Cliquet 1Y"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        prev_perf: float = 1.0\n        total_return: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n        let period_return = perf / prev_perf - 1.0\n        let floored = max(period_return, 0.0)\n        let capped = min(floored, 0.04)\n\n        set total_return = total_return + capped\n        set prev_perf = perf\n\n        if is_final then\n            let payout = max(total_return, 0.0)\n            pay notional * payout\n            redeem notional\n`,
+      'Range Accrual': `product "Range Accrual 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        days_in_range: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 0.80 and perf <= 1.20 then\n            set days_in_range = days_in_range + 1.0\n\n        if is_final then\n            let accrual_frac = days_in_range / 12.0\n            pay notional * 0.10 * accrual_frac\n            redeem notional\n`,
+    };
+
+    // Semantic token legend matching analysis.rs constants
+    const DSL_TOKEN_TYPES = ['keyword', 'variable', 'function', 'number', 'string', 'operator', 'enumMember', 'comment'];
+
+    // =====================================================================
+    //  DSL Editor Panel
+    // =====================================================================
+    class DslEditorPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; this._el.style.display = 'flex'; this._el.style.flexDirection = 'column'; }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = `
+          <div class="dsl-toolbar">
+            <select class="dsl-example-select"><option value="">-- Examples --</option></select>
+            <button class="dsl-run-btn">Run</button>
+            <label>Paths <input type="number" class="dsl-paths-input" value="10000" min="1000" max="500000" step="10000" style="width:60px"></label>
+            <label><input type="checkbox" class="dsl-autorun-cb" checked> Auto-run</label>
+          </div>
+          <div class="dsl-editor-container"></div>
+          <div class="dsl-status-bar"><span class="dsl-status-text">Ready</span></div>
+        `;
+        panels.dsleditor = this;
+
+        const exSel = this._el.querySelector('.dsl-example-select');
+        for (const name of Object.keys(DSL_EXAMPLES)) {
+          const opt = document.createElement('option');
+          opt.value = name; opt.textContent = name;
+          exSel.appendChild(opt);
+        }
+        exSel.addEventListener('change', () => { if (exSel.value && this._editor) { this._editor.setValue(DSL_EXAMPLES[exSel.value]); } });
+
+        this._el.querySelector('.dsl-run-btn').addEventListener('click', () => dslRunPricing());
+        this._el.querySelector('.dsl-paths-input').addEventListener('change', (e) => { dslPricingConfig.numPaths = parseInt(e.target.value) || 50000; });
+        this._el.querySelector('.dsl-autorun-cb').addEventListener('change', (e) => { dslAutoRun = e.target.checked; });
+
+        this._statusText = this._el.querySelector('.dsl-status-text');
+        this._editorContainer = this._el.querySelector('.dsl-editor-container');
+
+        // Initialize Monaco when available
+        this._initMonaco();
+
+        this._resizeObs = new ResizeObserver(() => { if (this._editor) this._editor.layout(); });
+        this._resizeObs.observe(this._el);
+      }
+      _initMonaco() {
+        if (typeof window.require !== 'function' || !window.require.config) {
+          // Monaco not yet loaded, retry
+          setTimeout(() => this._initMonaco(), 200);
+          return;
+        }
+        window.require(['vs/editor/editor.main'], (monaco) => {
+          // Register language
+          monaco.languages.register({ id: 'openferric' });
+
+          // Monarch tokenizer for basic highlighting
+          monaco.languages.setMonarchTokensProvider('openferric', {
+            keywords: ['product','notional','maturity','underlyings','state','schedule','from','to','let','if','then','else','pay','redeem','set','skip','asset','bool','float','true','false'],
+            operators: ['and','or','not'],
+            frequencies: ['monthly','quarterly','semi_annual','annual'],
+            builtins: ['worst_of','best_of','performances','price','min','max','abs','exp','log'],
+            tokenizer: {
+              root: [
+                [/\/\/.*$/, 'comment'],
+                [/"[^"]*"/, 'string'],
+                [/\b\d+(_\d+)*(\.\d+)?\b/, 'number'],
+                [/[a-zA-Z_]\w*/, { cases: { '@keywords': 'keyword', '@operators': 'operator', '@frequencies': 'enumMember', '@builtins': 'function', '@default': 'variable' } }],
+                [/[=!<>]+/, 'operator'],
+                [/[+\-*/]/, 'operator'],
+              ]
+            }
+          });
+
+          // Dark theme matching terminal colors
+          monaco.editor.defineTheme('ferric-dark', {
+            base: 'vs-dark',
+            inherit: true,
+            rules: [
+              { token: 'keyword', foreground: '569cd6', fontStyle: 'bold' },
+              { token: 'variable', foreground: '9cdcfe' },
+              { token: 'function', foreground: 'dcdcaa' },
+              { token: 'number', foreground: 'b5cea8' },
+              { token: 'string', foreground: 'ce9178' },
+              { token: 'operator', foreground: 'd4d4d4' },
+              { token: 'enumMember', foreground: '4ec9b0' },
+              { token: 'comment', foreground: '6a9955', fontStyle: 'italic' },
+            ],
+            colors: {
+              'editor.background': '#0d141d',
+              'editor.foreground': '#d4d4d4',
+              'editorLineNumber.foreground': '#464b55',
+              'editor.selectionBackground': '#264f78',
+              'editor.lineHighlightBackground': '#121a26',
+              'editorCursor.foreground': '#2fb2ff',
+            }
+          });
+
+          // Create editor
+          this._editor = monaco.editor.create(this._editorContainer, {
+            value: DSL_EXAMPLES['Zero Coupon'],
+            language: 'openferric',
+            theme: 'ferric-dark',
+            fontSize: 12,
+            minimap: { enabled: false },
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            automaticLayout: false,
+            tabSize: 4,
+            insertSpaces: true,
+            wordWrap: 'off',
+          });
+          this._monaco = monaco;
+
+          // Register language providers
+          this._registerProviders(monaco);
+
+          // On content change — debounced analysis
+          this._editor.onDidChangeModelContent(() => {
+            clearTimeout(dslAnalyzeTimer);
+            dslAnalyzeTimer = setTimeout(() => {
+              dslSendAnalyze(this._editor.getValue());
+            }, 300);
+          });
+
+          // Trigger initial analysis
+          dslSendAnalyze(this._editor.getValue());
+        });
+      }
+      _registerProviders(monaco) {
+        // Hover provider
+        monaco.languages.registerHoverProvider('openferric', {
+          provideHover: (model, position) => {
+            return new Promise((resolve) => {
+              const offset = model.getOffsetAt(position);
+              const reqId = ++dslRequestSeq;
+              dslHoverRequestId = reqId;
+              dslHoverResolve = (result) => {
+                if (!result) { resolve(null); return; }
+                const startPos = model.getPositionAt(result.start);
+                const endPos = model.getPositionAt(result.end);
+                resolve({
+                  range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+                  contents: [{ value: result.markdown }],
+                });
+              };
+              computeWorker.postMessage({ type: 'dsl-hover', payload: { source: model.getValue(), offset, requestId: reqId } });
+              setTimeout(() => { if (dslHoverRequestId === reqId) { dslHoverResolve = null; resolve(null); } }, 2000);
+            });
+          }
+        });
+
+        // Completion provider
+        monaco.languages.registerCompletionItemProvider('openferric', {
+          triggerCharacters: [' ', '.', '('],
+          provideCompletionItems: (model, position) => {
+            return new Promise((resolve) => {
+              const offset = model.getOffsetAt(position);
+              const reqId = ++dslRequestSeq;
+              dslCompletionsRequestId = reqId;
+              dslCompletionsResolve = (result) => {
+                if (!result || !Array.isArray(result)) { resolve({ suggestions: [] }); return; }
+                const word = model.getWordUntilPosition(position);
+                const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+                const kindMap = { Keyword: 17, Variable: 5, Function: 1, EnumMember: 15, Constant: 14 };
+                resolve({
+                  suggestions: result.map(c => ({
+                    label: c.label,
+                    kind: kindMap[c.kind] || 17,
+                    detail: c.detail || '',
+                    documentation: c.documentation || '',
+                    insertText: c.label,
+                    range,
+                  }))
+                });
+              };
+              computeWorker.postMessage({ type: 'dsl-completions', payload: { source: model.getValue(), offset, requestId: reqId } });
+              setTimeout(() => { if (dslCompletionsRequestId === reqId) { dslCompletionsResolve = null; resolve({ suggestions: [] }); } }, 2000);
+            });
+          }
+        });
+
+        // Definition provider
+        monaco.languages.registerDefinitionProvider('openferric', {
+          provideDefinition: (model, position) => {
+            return new Promise((resolve) => {
+              const offset = model.getOffsetAt(position);
+              const reqId = ++dslRequestSeq;
+              dslGotoDefRequestId = reqId;
+              dslGotoDefResolve = (result) => {
+                if (!result) { resolve(null); return; }
+                const startPos = model.getPositionAt(result.start);
+                const endPos = model.getPositionAt(result.end);
+                resolve({
+                  uri: model.uri,
+                  range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+                });
+              };
+              computeWorker.postMessage({ type: 'dsl-goto-def', payload: { source: model.getValue(), offset, requestId: reqId } });
+              setTimeout(() => { if (dslGotoDefRequestId === reqId) { dslGotoDefResolve = null; resolve(null); } }, 2000);
+            });
+          }
+        });
+
+        // Semantic tokens provider
+        monaco.languages.registerDocumentSemanticTokensProvider('openferric', {
+          getLegend: () => ({ tokenTypes: DSL_TOKEN_TYPES, tokenModifiers: [] }),
+          provideDocumentSemanticTokens: () => {
+            if (!dslLastAnalysis || !dslLastAnalysis.semanticTokens) return null;
+            const data = new Uint32Array(dslLastAnalysis.semanticTokens.flat());
+            return { data };
+          },
+          releaseDocumentSemanticTokens: () => {},
+        });
+      }
+      applyAnalysis(analysis) {
+        if (!this._editor || !this._monaco) return;
+        const monaco = this._monaco;
+        const model = this._editor.getModel();
+        if (!model) return;
+
+        // Set markers (diagnostics)
+        const markers = (analysis.diagnostics || []).map(d => {
+          const startPos = model.getPositionAt(d.start);
+          const endPos = model.getPositionAt(d.end);
+          return {
+            severity: d.severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
+            message: d.message,
+            startLineNumber: startPos.lineNumber, startColumn: startPos.column,
+            endLineNumber: endPos.lineNumber, endColumn: endPos.column,
+          };
+        });
+        monaco.editor.setModelMarkers(model, 'openferric', markers);
+
+        // Update status bar
+        const errs = markers.filter(m => m.severity === monaco.MarkerSeverity.Error).length;
+        if (errs > 0) {
+          this._statusText.className = 'dsl-status-text status-err';
+          this._statusText.textContent = `${errs} error${errs > 1 ? 's' : ''}`;
+        } else if (analysis.compiled) {
+          this._statusText.className = 'dsl-status-text status-ok';
+          this._statusText.textContent = 'Compiled OK';
+        } else {
+          this._statusText.className = 'dsl-status-text';
+          this._statusText.textContent = 'No errors';
+        }
+      }
+      setStatus(text, cls) {
+        if (!this._statusText) return;
+        this._statusText.className = 'dsl-status-text' + (cls ? ` status-${cls}` : '');
+        this._statusText.textContent = text;
+      }
+      updatePriceStatus(result) {
+        if (!result || !this._statusText) return;
+        this._statusText.className = 'dsl-status-text status-ok';
+        if (result.error) {
+          this._statusText.className = 'dsl-status-text status-err';
+          this._statusText.textContent = `Compiled OK | Error: ${result.error}`;
+        } else if (Number.isFinite(result.price)) {
+          this._statusText.textContent = `Compiled OK | Price: ${result.price.toFixed(2)}`;
+        }
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        if (this._editor) this._editor.dispose();
+        delete panels.dsleditor;
+      }
+    }
+
+    // =====================================================================
+    //  DSL Result Panel
+    // =====================================================================
+    class DslResultPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content dsl-result-panel'; }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = '<div style="color:var(--fg-dim);padding:20px">Run a product to see pricing results</div>';
+        panels.dslresult = this;
+        if (dslLastPricingResult) this.renderResult(dslLastPricingResult);
+      }
+      renderResult(r) {
+        if (!r) return;
+        if (r.error && !r.price) {
+          this._el.innerHTML = `<div class="dsl-section"><h3>Error</h3><div style="color:var(--red)">${esc(r.error)}</div></div>`;
+          return;
+        }
+        let html = '';
+
+        // Product info
+        html += `<div class="dsl-section"><h3>Product</h3><dl class="dsl-product-info">`;
+        if (r.productName) html += `<dt>Name</dt><dd>${esc(r.productName)}</dd>`;
+        if (r.notional != null) html += `<dt>Notional</dt><dd>${fmt(r.notional)}</dd>`;
+        if (r.maturity != null) html += `<dt>Maturity</dt><dd>${r.maturity}Y</dd>`;
+        if (r.underlyings && r.underlyings.length) html += `<dt>Underlyings</dt><dd>${r.underlyings.map(esc).join(', ')}</dd>`;
+        html += `</dl></div>`;
+
+        // Price
+        html += `<div class="dsl-section"><h3>Price</h3>`;
+        html += `<span class="dsl-price-display">${fmt(r.price)}</span>`;
+        if (r.stderr != null) html += `<span class="dsl-stderr">&plusmn; ${r.stderr.toFixed(4)}</span>`;
+        if (r.error) html += `<div style="color:var(--red);margin-top:4px">${esc(r.error)}</div>`;
+        html += `</div>`;
+
+        // Greeks
+        if (r.greeks && r.greeks.length) {
+          html += `<div class="dsl-section"><h3>Greeks</h3><table><thead><tr><th>Asset</th><th>Delta</th><th>Gamma</th><th>Vega</th><th>Theta</th><th>Rho</th><th>Vanna</th><th>Volga</th></tr></thead><tbody>`;
+          for (const g of r.greeks) {
+            html += `<tr><td>${esc(g.asset)}</td><td>${gfmt(g.delta)}</td><td>${gfmt(g.gamma)}</td><td>${gfmt(g.vega)}</td><td>${gfmt(g.theta)}</td><td>${gfmt(g.rho)}</td><td>${gfmt(g.vanna)}</td><td>${gfmt(g.volga)}</td></tr>`;
+          }
+          html += `</tbody></table></div>`;
+        }
+
+        // Cross-Greeks
+        if (r.crossGreeks && r.crossGreeks.length) {
+          html += `<div class="dsl-section"><h3>Cross-Greeks</h3><table><thead><tr><th>Asset I</th><th>Asset J</th><th>Cross-Gamma</th><th>Corr Sens</th></tr></thead><tbody>`;
+          for (const cg of r.crossGreeks) {
+            html += `<tr><td>${esc(cg.assetI)}</td><td>${esc(cg.assetJ)}</td><td>${gfmt(cg.crossGamma)}</td><td>${gfmt(cg.corrSens)}</td></tr>`;
+          }
+          html += `</tbody></table></div>`;
+        }
+
+        // Market snapshot
+        if (r.market) {
+          html += `<div class="dsl-section"><h3>Market</h3><dl class="dsl-market-info">`;
+          html += `<dt>Rate</dt><dd>${(r.market.rate * 100).toFixed(1)}%</dd>`;
+          if (r.market.assets) {
+            for (const a of r.market.assets) {
+              html += `<dt>${esc(a.name)}</dt><dd>S=${fmt(a.spot)} &sigma;=${(a.vol * 100).toFixed(1)}% q=${(a.dividendYield * 100).toFixed(1)}%</dd>`;
+            }
+          }
+          html += `</dl></div>`;
+        }
+
+        this._el.innerHTML = html;
+      }
+      dispose() { delete panels.dslresult; }
+    }
+
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function fmt(v) { return Number.isFinite(v) ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '--'; }
+    function gfmt(v) { return Number.isFinite(v) ? v.toFixed(4) : '--'; }
+
+    // =====================================================================
+    //  DSL Payoff Panel
+    // =====================================================================
+    class DslPayoffPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = '<div class="chart-area" style="width:100%;height:100%"></div>';
+        this._chartDiv = this._el.querySelector('.chart-area');
+        panels.dslpayoff = this;
+        this._resizeObs = new ResizeObserver(() => {
+          if (this._chartDiv && this._chartDiv.data) {
+            try { Plotly.Plots.resize(this._chartDiv); } catch(e) {}
+          }
+        });
+        this._resizeObs.observe(this._el);
+        if (dslLastPricingResult) this.renderPayoff(dslLastPricingResult);
+      }
+      renderPayoff(r) {
+        if (!r || !r.payoffProfile || !r.payoffProfile.length || !this._chartDiv) return;
+        const x = r.payoffProfile.map(p => p.spotPct);
+        const y = r.payoffProfile.map(p => p.pv);
+        const notional = r.notional || 0;
+        const traces = [{
+          x, y, type: 'scatter', mode: 'lines+markers',
+          line: { color: '#2fb2ff', width: 2 },
+          marker: { size: 4 },
+          name: 'PV',
+        }];
+        if (notional > 0) {
+          traces.push({
+            x: [x[0], x[x.length - 1]], y: [notional, notional],
+            type: 'scatter', mode: 'lines',
+            line: { color: '#888', width: 1, dash: 'dot' },
+            name: 'Notional',
+          });
+        }
+        const layout = {
+          paper_bgcolor: '#0d141d', plot_bgcolor: '#0d141d',
+          font: { color: '#d4d4d4', size: 10 },
+          margin: { t: 30, r: 20, b: 40, l: 60 },
+          xaxis: { title: 'Spot %', color: '#888', gridcolor: '#1a2233' },
+          yaxis: { title: 'PV', color: '#888', gridcolor: '#1a2233' },
+          showlegend: true,
+          legend: { x: 0.02, y: 0.98, font: { size: 9 } },
+        };
+        Plotly.react(this._chartDiv, traces, layout, { responsive: true, displayModeBar: false });
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        if (this._chartDiv) try { Plotly.purge(this._chartDiv); } catch(e) {}
+        delete panels.dslpayoff;
+      }
+    }
+
+    // =====================================================================
     //  Render cycle counter (tiering is done in the worker)
     // =====================================================================
     let renderCycle = 0;
@@ -5261,6 +5743,45 @@
       }
       if (e.data.type === 'dsl-greeks-result') {
         handleDslGreeksResult((e.data && e.data.payload) || {});
+      }
+      // DSL analysis results
+      if (e.data.type === 'dsl-analyze-result') {
+        dslLastAnalysis = e.data.payload;
+        if (dslLastAnalysis && dslLastAnalysis.compiled) {
+          dslCompiledProduct = JSON.stringify(dslLastAnalysis.compiled);
+        } else {
+          dslCompiledProduct = null;
+        }
+        requestAnimationFrame(() => {
+          if (panels.dsleditor) panels.dsleditor.applyAnalysis(dslLastAnalysis);
+          if (dslAutoRun && dslCompiledProduct) dslRunPricing();
+        });
+      }
+      if (e.data.type === 'dsl-hover-result') {
+        if (dslHoverResolve && e.data.requestId === dslHoverRequestId) {
+          dslHoverResolve(e.data.payload);
+          dslHoverResolve = null;
+        }
+      }
+      if (e.data.type === 'dsl-completions-result') {
+        if (dslCompletionsResolve && e.data.requestId === dslCompletionsRequestId) {
+          dslCompletionsResolve(e.data.payload);
+          dslCompletionsResolve = null;
+        }
+      }
+      if (e.data.type === 'dsl-goto-def-result') {
+        if (dslGotoDefResolve && e.data.requestId === dslGotoDefRequestId) {
+          dslGotoDefResolve(e.data.payload);
+          dslGotoDefResolve = null;
+        }
+      }
+      if (e.data.type === 'dsl-price-full-result') {
+        dslLastPricingResult = e.data.payload;
+        requestAnimationFrame(() => {
+          if (panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
+          if (panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
+          if (panels.dsleditor) panels.dsleditor.updatePriceStatus(dslLastPricingResult);
+        });
       }
     }
 
@@ -5553,9 +6074,26 @@
       const stickyRule = surfaceConfig.conventions.stickyRule || 'delta';
       const x = pts.map(p => smileXValue(p, slice, stickyRule));
       const marketIv = pts.map(p => p.market_iv);
-      const fittedIv = pts.map(p => p.fitted_iv);
       const bidIv = pts.map(p => p.bid_iv);
       const askIv = pts.map(p => p.ask_iv);
+
+      // Extended fitted curve from surface grid (covers full k-range)
+      let fittedX, fittedY;
+      const sliceIdx = calibratedSlices.findIndex(s => s.expiryCode === activeExpiry);
+      if (lastSurfaceData && lastSurfaceData.kGrid && sliceIdx >= 0) {
+        const { kGrid, flatZ, gridN } = lastSurfaceData;
+        fittedX = kGrid.map(k => {
+          if (stickyRule === 'strike') return slice.forward * Math.exp(k);
+          if (stickyRule === 'moneyness') return Math.exp(k);
+          if (stickyRule === 'delta') return 1 / (1 + Math.exp(2.3 * k));
+          return k;
+        });
+        fittedY = [];
+        for (let ki = 0; ki < gridN; ki++) fittedY.push(flatZ[sliceIdx * gridN + ki]);
+      } else {
+        fittedX = x;
+        fittedY = pts.map(p => p.fitted_iv);
+      }
 
       const traces = [];
 
@@ -5580,16 +6118,16 @@
         marker: { color: '#d8e0ea', size: 4.5 },
       });
       traces.push({
-        type: 'scatter', mode: 'lines', name: 'fitted', x, y: fittedIv,
+        type: 'scatter', mode: 'lines', name: 'fitted', x: fittedX, y: fittedY,
         line: { color: '#19d8a8', width: 2 },
       });
 
       Plotly.react(div, traces, {
         ...darkLayout,
-        uirevision: 'stable',
+        uirevision: activeExpiry,
         margin: { l: 40, r: 8, b: 30, t: 6 },
-        xaxis: { title: smileAxisTitle(stickyRule), ...axisStyle },
-        yaxis: { title: 'IV (%)', ...axisStyle },
+        xaxis: { title: smileAxisTitle(stickyRule), autorange: true, ...axisStyle },
+        yaxis: { title: 'IV (%)', autorange: true, ...axisStyle },
         legend: { orientation: 'h', y: 1.02, x: 0.01, font: { size: 9 } },
         transition: { duration: 120, easing: 'linear' },
       }, { responsive: true, displayModeBar: false });
@@ -5599,16 +6137,26 @@
       const sel = panels.smile ? panels.smile.expirySelect : null;
       if (!sel) return;
       const expiries = calibratedSlices.map(s => s.expiryCode);
-      const prev = activeExpiry;
-      sel.innerHTML = '';
-      for (const e of expiries) {
-        const opt = document.createElement('option');
-        opt.value = e; opt.textContent = e;
-        sel.appendChild(opt);
+
+      // Only rebuild DOM options when the set of expiries actually changes
+      const curOpts = Array.from(sel.options, o => o.value);
+      const needsRebuild = expiries.length !== curOpts.length ||
+        expiries.some((e, i) => e !== curOpts[i]);
+
+      if (needsRebuild) {
+        const prev = activeExpiry;
+        sel.innerHTML = '';
+        for (const e of expiries) {
+          const opt = document.createElement('option');
+          opt.value = e; opt.textContent = e;
+          sel.appendChild(opt);
+        }
+        if (expiries.length === 0) { activeExpiry = ''; return; }
+        activeExpiry = (prev && expiries.includes(prev)) ? prev : expiries[0];
+        sel.value = activeExpiry;
+      } else if (expiries.length === 0) {
+        activeExpiry = '';
       }
-      if (expiries.length === 0) { activeExpiry = ''; return; }
-      activeExpiry = (prev && expiries.includes(prev)) ? prev : expiries[0];
-      sel.value = activeExpiry;
     }
 
     // --- Black-76 Greeks Heatmap ---
@@ -6467,6 +7015,9 @@
         if (panels.dslmarket) renderDslMarketPanel();
         if (panels.dslexamples) renderDslExamplesPanel();
         if (panels.surfacecfg) renderSurfaceConfigPanel();
+        // DSL panels re-render from cached state
+        if (dslLastPricingResult && panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
+        if (dslLastPricingResult && panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
       });
     }
 
@@ -6755,6 +7306,8 @@
           case 'dslresults': return new DslResultsPanel();
           case 'dslmarket': return new DslMarketPanel();
           case 'dslexamples': return new DslExamplesPanel();
+          case 'dslresult': return new DslResultPanel();
+          case 'dslpayoff': return new DslPayoffPanel();
           default: {
             const el = document.createElement('div');
             el.className = 'dock-content';

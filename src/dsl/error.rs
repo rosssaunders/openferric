@@ -1,10 +1,12 @@
 //! DSL error types with span-based diagnostics.
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::PricingError;
 use std::fmt;
 
 /// Source span for error reporting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

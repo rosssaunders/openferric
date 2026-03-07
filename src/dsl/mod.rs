@@ -38,6 +38,7 @@
 //! assert!(result.price > 0.0);
 //! ```
 
+pub mod analysis;
 pub mod ast;
 pub mod compiler;
 pub mod engine;
