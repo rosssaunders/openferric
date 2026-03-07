@@ -1786,13 +1786,13 @@
         },
       },
       structuring: {
-        panels: ['dsleditor', 'dslresult', 'dslpayoff'],
+        panels: ['structeditor', 'dslresult', 'dslpayoff'],
         build(dv) {
           const W = window.innerWidth;
           const H = window.innerHeight - 44;
-          dv.addPanel({ id: 'dsleditor', component: 'dsleditor', title: 'DSL Editor' });
+          dv.addPanel({ id: 'structeditor', component: 'structeditor', title: 'DSL Editor' });
           dv.addPanel({ id: 'dslresult', component: 'dslresult', title: 'Pricing Result',
-            position: { referencePanel: 'dsleditor', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
+            position: { referencePanel: 'structeditor', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
           dv.addPanel({ id: 'dslpayoff', component: 'dslpayoff', title: 'Payoff Profile',
             position: { referencePanel: 'dslresult', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
         },
@@ -5280,7 +5280,7 @@
 
     function dslRunPricing() {
       if (!dslCompiledProduct) return;
-      if (panels.dsleditor) panels.dsleditor.setStatus('Computing...', 'computing');
+      if (panels.structeditor) panels.structeditor.setStatus('Computing...', 'computing');
       computeWorker.postMessage({ type: 'dsl-price-full', payload: {
         productJson: dslCompiledProduct,
         marketJson: 'null',
@@ -5295,7 +5295,7 @@
       computeWorker.postMessage({ type: 'dsl-analyze', payload: { source } });
     }
 
-    const DSL_EXAMPLES = {
+    const STRUCTURING_EXAMPLES = {
       'Zero Coupon': `product "Zero Coupon"\n    notional: 1\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 5.0\n        redeem notional\n`,
       'Fixed Coupon Note': `product "Fixed Coupon Note 3Y"\n    notional: 1_000_000\n    maturity: 3.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 3.0\n        pay notional * 0.05\n        if is_final then\n            redeem notional\n`,
       'Reverse Convertible': `product "Reverse Convertible 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule quarterly from 0.25 to 1.0\n        pay notional * 0.025\n\n        if is_final then\n            let perf = worst_of(performances())\n            if perf >= 1.0 then\n                redeem notional\n            else\n                redeem notional * perf\n`,
@@ -5312,9 +5312,9 @@
     const DSL_TOKEN_TYPES = ['keyword', 'variable', 'function', 'number', 'string', 'operator', 'enumMember', 'comment'];
 
     // =====================================================================
-    //  DSL Editor Panel
+    //  Structuring Editor Panel (Monaco + WASM analysis)
     // =====================================================================
-    class DslEditorPanel {
+    class StructuringEditorPanel {
       constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; this._el.style.display = 'flex'; this._el.style.flexDirection = 'column'; }
       get element() { return this._el; }
       init(params) {
@@ -5328,15 +5328,15 @@
           <div class="dsl-editor-container"></div>
           <div class="dsl-status-bar"><span class="dsl-status-text">Ready</span></div>
         `;
-        panels.dsleditor = this;
+        panels.structeditor = this;
 
         const exSel = this._el.querySelector('.dsl-example-select');
-        for (const name of Object.keys(DSL_EXAMPLES)) {
+        for (const name of Object.keys(STRUCTURING_EXAMPLES)) {
           const opt = document.createElement('option');
           opt.value = name; opt.textContent = name;
           exSel.appendChild(opt);
         }
-        exSel.addEventListener('change', () => { if (exSel.value && this._editor) { this._editor.setValue(DSL_EXAMPLES[exSel.value]); } });
+        exSel.addEventListener('change', () => { if (exSel.value && this._editor) { this._editor.setValue(STRUCTURING_EXAMPLES[exSel.value]); } });
 
         this._el.querySelector('.dsl-run-btn').addEventListener('click', () => dslRunPricing());
         this._el.querySelector('.dsl-paths-input').addEventListener('change', (e) => { dslPricingConfig.numPaths = parseInt(e.target.value) || 50000; });
@@ -5405,7 +5405,7 @@
 
           // Create editor
           this._editor = monaco.editor.create(this._editorContainer, {
-            value: DSL_EXAMPLES['Zero Coupon'],
+            value: STRUCTURING_EXAMPLES['Zero Coupon'],
             language: 'openferric',
             theme: 'ferric-dark',
             fontSize: 12,
@@ -5570,7 +5570,7 @@
       dispose() {
         if (this._resizeObs) this._resizeObs.disconnect();
         if (this._editor) this._editor.dispose();
-        delete panels.dsleditor;
+        delete panels.structeditor;
       }
     }
 
@@ -5753,7 +5753,7 @@
           dslCompiledProduct = null;
         }
         requestAnimationFrame(() => {
-          if (panels.dsleditor) panels.dsleditor.applyAnalysis(dslLastAnalysis);
+          if (panels.structeditor) panels.structeditor.applyAnalysis(dslLastAnalysis);
           if (dslAutoRun && dslCompiledProduct) dslRunPricing();
         });
       }
@@ -5780,7 +5780,7 @@
         requestAnimationFrame(() => {
           if (panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
           if (panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
-          if (panels.dsleditor) panels.dsleditor.updatePriceStatus(dslLastPricingResult);
+          if (panels.structeditor) panels.structeditor.updatePriceStatus(dslLastPricingResult);
         });
       }
     }
@@ -7306,6 +7306,7 @@
           case 'dslresults': return new DslResultsPanel();
           case 'dslmarket': return new DslMarketPanel();
           case 'dslexamples': return new DslExamplesPanel();
+          case 'structeditor': return new StructuringEditorPanel();
           case 'dslresult': return new DslResultPanel();
           case 'dslpayoff': return new DslPayoffPanel();
           default: {
