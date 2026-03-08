@@ -5,14 +5,22 @@
 use crate::core::{
     DiagKey, Diagnostics, Greeks, Instrument, PricingEngine, PricingError, PricingResult,
 };
-use crate::dsl::eval::evaluate_product;
-use crate::dsl::ir::CompiledProduct;
+use crate::dsl::eval::{
+    ProductExecutionPlan, build_execution_plan, evaluate_product_with_plan_in_place,
+};
+use crate::dsl::ir::{CompiledProduct, Value};
 use crate::dsl::market::{AssetMarketData, MultiAssetMarket};
 use crate::engines::monte_carlo::correlated_mc::{
-    cholesky_for_correlation, sample_correlated_normals_cholesky,
+    cholesky_for_correlation, sample_correlated_normals_cholesky_with_scratch,
 };
 use crate::market::Market;
 use crate::math::fast_rng::{FastRng, FastRngKind};
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+use crate::math::simd_math::{fast_exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+use crate::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// Per-asset stepping strategy for path generation.
 ///
@@ -61,12 +69,7 @@ impl AssetStepper {
                     diffusion: vol * sqrt_dt,
                 }
             }
-            AssetMarketData::Commodity {
-                vol,
-                kappa,
-                mu,
-                ..
-            } => Self::SchwartzOneF {
+            AssetMarketData::Commodity { vol, kappa, mu, .. } => Self::SchwartzOneF {
                 long_run_log_mean: *mu,
                 exp_neg_kappa_dt: (-kappa * dt).exp(),
                 vol_step: vol * sqrt_dt,
@@ -96,9 +99,9 @@ impl AssetStepper {
             } => {
                 // Schwartz 1-factor: d(ln S) = κ(μ - ln S) dt + σ dW
                 let log_prev = prev.ln();
-                let log_next =
-                    long_run_log_mean + exp_neg_kappa_dt * (log_prev - long_run_log_mean)
-                        + vol_step * z;
+                let log_next = long_run_log_mean
+                    + exp_neg_kappa_dt * (log_prev - long_run_log_mean)
+                    + vol_step * z;
                 log_next.exp()
             }
             Self::Vasicek {
@@ -110,6 +113,100 @@ impl AssetStepper {
                 long_run_mean + exp_neg_a_dt * (prev - long_run_mean) + vol_step * z
             }
         }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[target_feature(enable = "avx2,fma")]
+    unsafe fn step_batch_x86(self, prev: &[f64; 4], z: &[f64; 4], next: &mut [f64; 4]) {
+        use std::arch::x86_64::*;
+
+        let prev_v = unsafe { load_f64x4(prev, 0) };
+        let z_v = unsafe { _mm256_loadu_pd(z.as_ptr()) };
+
+        let next_v = unsafe {
+            match self {
+                Self::Gbm { drift, diffusion } => {
+                    let drift_v = _mm256_set1_pd(drift);
+                    let diffusion_v = _mm256_set1_pd(diffusion);
+                    let exponent = _mm256_fmadd_pd(diffusion_v, z_v, drift_v);
+                    let growth = fast_exp_f64x4(exponent);
+                    _mm256_mul_pd(prev_v, growth)
+                }
+                Self::SchwartzOneF {
+                    long_run_log_mean,
+                    exp_neg_kappa_dt,
+                    vol_step,
+                } => {
+                    let mean_v = _mm256_set1_pd(long_run_log_mean);
+                    let revert_v = _mm256_set1_pd(exp_neg_kappa_dt);
+                    let vol_v = _mm256_set1_pd(vol_step);
+                    let log_prev = ln_f64x4(prev_v);
+                    let reverted =
+                        _mm256_fmadd_pd(revert_v, _mm256_sub_pd(log_prev, mean_v), mean_v);
+                    let log_next = _mm256_fmadd_pd(vol_v, z_v, reverted);
+                    fast_exp_f64x4(log_next)
+                }
+                Self::Vasicek {
+                    long_run_mean,
+                    exp_neg_a_dt,
+                    vol_step,
+                } => {
+                    let mean_v = _mm256_set1_pd(long_run_mean);
+                    let revert_v = _mm256_set1_pd(exp_neg_a_dt);
+                    let vol_v = _mm256_set1_pd(vol_step);
+                    let reverted = _mm256_fmadd_pd(revert_v, _mm256_sub_pd(prev_v, mean_v), mean_v);
+                    _mm256_fmadd_pd(vol_v, z_v, reverted)
+                }
+            }
+        };
+
+        unsafe { store_f64x4(next, 0, next_v) };
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    unsafe fn step_batch_neon(self, prev: &[f64; 2], z: &[f64; 2], next: &mut [f64; 2]) {
+        use std::arch::aarch64::*;
+
+        let prev_v = unsafe { load_f64x2(prev, 0) };
+        let z_v = unsafe { vld1q_f64(z.as_ptr()) };
+
+        let next_v = unsafe {
+            match self {
+                Self::Gbm { drift, diffusion } => {
+                    let drift_v = vdupq_n_f64(drift);
+                    let diffusion_v = vdupq_n_f64(diffusion);
+                    let exponent = vfmaq_f64(drift_v, diffusion_v, z_v);
+                    let growth = simd_exp_f64x2(exponent);
+                    vmulq_f64(prev_v, growth)
+                }
+                Self::SchwartzOneF {
+                    long_run_log_mean,
+                    exp_neg_kappa_dt,
+                    vol_step,
+                } => {
+                    let mean_v = vdupq_n_f64(long_run_log_mean);
+                    let revert_v = vdupq_n_f64(exp_neg_kappa_dt);
+                    let vol_v = vdupq_n_f64(vol_step);
+                    let log_prev = simd_ln_f64x2(prev_v);
+                    let reverted = vfmaq_f64(mean_v, revert_v, vsubq_f64(log_prev, mean_v));
+                    let log_next = vfmaq_f64(reverted, vol_v, z_v);
+                    simd_exp_f64x2(log_next)
+                }
+                Self::Vasicek {
+                    long_run_mean,
+                    exp_neg_a_dt,
+                    vol_step,
+                } => {
+                    let mean_v = vdupq_n_f64(long_run_mean);
+                    let revert_v = vdupq_n_f64(exp_neg_a_dt);
+                    let vol_v = vdupq_n_f64(vol_step);
+                    let reverted = vfmaq_f64(mean_v, revert_v, vsubq_f64(prev_v, mean_v));
+                    vfmaq_f64(reverted, vol_v, z_v)
+                }
+            }
+        };
+
+        unsafe { store_f64x2(next, 0, next_v) };
     }
 }
 
@@ -174,7 +271,6 @@ impl DslMonteCarloEngine {
             ));
         }
 
-        let n_assets = market.assets.len();
         let n_steps = self.num_steps;
         let dt = product.maturity / n_steps as f64;
 
@@ -182,6 +278,9 @@ impl DslMonteCarloEngine {
         let (chol, _) = cholesky_for_correlation(&market.correlation)?;
 
         let initial_spots = market.initial_spots();
+        let num_locals = product.max_local_slots();
+        let execution_plan = build_execution_plan(product, n_steps, market.rate)
+            .map_err(|e| PricingError::NumericalError(e.to_string()))?;
 
         // Build per-asset steppers.
         let steppers: Vec<AssetStepper> = market
@@ -190,41 +289,44 @@ impl DslMonteCarloEngine {
             .map(|a| AssetStepper::from_asset(a, market.rate, dt))
             .collect();
 
-        let mut rng = FastRng::from_seed(self.rng_kind, self.seed);
-        let mut sum_pv = 0.0;
-        let mut sum_pv_sq = 0.0;
-        let mut corr_normals = vec![0.0; n_assets];
+        #[cfg(feature = "parallel")]
+        let chunk_stats = if should_parallelize_paths(self.num_paths) {
+            self.price_path_chunks_parallel(
+                product,
+                &initial_spots,
+                &execution_plan,
+                &chol,
+                &steppers,
+                num_locals,
+            )?
+        } else {
+            self.price_path_chunk(
+                self.num_paths,
+                self.seed,
+                product,
+                &initial_spots,
+                &execution_plan,
+                &chol,
+                &steppers,
+                num_locals,
+            )?
+        };
+        #[cfg(not(feature = "parallel"))]
+        let chunk_stats = self.price_path_chunk(
+            self.num_paths,
+            self.seed,
+            product,
+            &initial_spots,
+            &execution_plan,
+            &chol,
+            &steppers,
+            num_locals,
+        )?;
 
-        for _ in 0..self.num_paths {
-            // Generate correlated multi-asset path.
-            // path_spots[step][asset]
-            let mut path_spots = vec![vec![0.0; n_assets]; n_steps + 1];
-            for (i, &s0) in initial_spots.iter().enumerate() {
-                path_spots[0][i] = s0;
-            }
-
-            for step in 0..n_steps {
-                sample_correlated_normals_cholesky(&chol, &mut rng, &mut corr_normals)?;
-
-                for asset in 0..n_assets {
-                    let prev = path_spots[step][asset];
-                    let z = corr_normals[asset];
-                    path_spots[step + 1][asset] = steppers[asset].step(prev, z);
-                }
-            }
-
-            // Evaluate product on this path.
-            let pv = evaluate_product(product, &path_spots, &initial_spots, n_steps, market.rate)
-                .map_err(|e| PricingError::NumericalError(e.to_string()))?;
-
-            sum_pv += pv;
-            sum_pv_sq += pv * pv;
-        }
-
-        let n = self.num_paths as f64;
-        let mean = sum_pv / n;
-        let variance = if self.num_paths > 1 {
-            (sum_pv_sq - sum_pv * sum_pv / n) / (n - 1.0)
+        let n = chunk_stats.num_paths as f64;
+        let mean = chunk_stats.sum_pv / n;
+        let variance = if chunk_stats.num_paths > 1 {
+            (chunk_stats.sum_pv_sq - chunk_stats.sum_pv * chunk_stats.sum_pv / n) / (n - 1.0)
         } else {
             0.0
         };
@@ -233,6 +335,10 @@ impl DslMonteCarloEngine {
         let mut diagnostics = Diagnostics::new();
         diagnostics.insert_key(DiagKey::NumPaths, n);
         diagnostics.insert_key(DiagKey::NumSteps, n_steps as f64);
+        #[cfg(feature = "parallel")]
+        if should_parallelize_paths(self.num_paths) {
+            diagnostics.insert_key(DiagKey::NumThreads, rayon::current_num_threads() as f64);
+        }
 
         Ok(PricingResult {
             price: mean,
@@ -240,6 +346,439 @@ impl DslMonteCarloEngine {
             greeks: None,
             diagnostics,
         })
+    }
+
+    fn price_path_chunk(
+        &self,
+        num_paths: usize,
+        seed: u64,
+        product: &CompiledProduct,
+        initial_spots: &[f64],
+        plan: &ProductExecutionPlan,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+        num_locals: usize,
+    ) -> Result<ChunkStats, PricingError> {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        if should_simd_path_batch(num_paths, SIMD_X86_PATH_LANES)
+            && is_x86_feature_detected!("avx2")
+            && is_x86_feature_detected!("fma")
+        {
+            // SAFETY: Guarded by runtime AVX2+FMA detection.
+            return unsafe {
+                self.price_path_chunk_simd_x86(
+                    num_paths,
+                    seed,
+                    product,
+                    initial_spots,
+                    plan,
+                    chol,
+                    steppers,
+                    num_locals,
+                )
+            };
+        }
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        if should_simd_path_batch(num_paths, SIMD_NEON_PATH_LANES) {
+            return unsafe {
+                self.price_path_chunk_simd_neon(
+                    num_paths,
+                    seed,
+                    product,
+                    initial_spots,
+                    plan,
+                    chol,
+                    steppers,
+                    num_locals,
+                )
+            };
+        }
+
+        self.price_path_chunk_scalar(
+            num_paths,
+            seed,
+            product,
+            initial_spots,
+            plan,
+            chol,
+            steppers,
+            num_locals,
+        )
+    }
+
+    fn price_path_chunk_scalar(
+        &self,
+        num_paths: usize,
+        seed: u64,
+        product: &CompiledProduct,
+        initial_spots: &[f64],
+        plan: &ProductExecutionPlan,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+        num_locals: usize,
+    ) -> Result<ChunkStats, PricingError> {
+        if plan.snapshot_count() == 0 {
+            return Ok(ChunkStats {
+                sum_pv: 0.0,
+                sum_pv_sq: 0.0,
+                num_paths,
+            });
+        }
+
+        let n_assets = initial_spots.len();
+        let n_steps = self.num_steps;
+        let mut rng = FastRng::from_seed(self.rng_kind, seed);
+        let mut sum_pv = 0.0;
+        let mut sum_pv_sq = 0.0;
+        let mut corr_normals = vec![0.0; n_assets];
+        let mut indep_normals = vec![0.0; n_assets];
+        let mut current_spots = initial_spots.to_vec();
+        let mut next_spots = vec![0.0; n_assets];
+        let mut observation_spots = vec![vec![0.0; n_assets]; plan.snapshot_count()];
+        let mut locals = vec![Value::F64(0.0); num_locals];
+        let mut state = vec![Value::F64(0.0); product.state_vars.len()];
+        let mut stack = vec![Value::F64(0.0); plan.max_stack()];
+
+        for _ in 0..num_paths {
+            current_spots.copy_from_slice(initial_spots);
+            if let Some(snapshot_index) = plan.snapshot_index_for_step(0) {
+                observation_spots[snapshot_index].copy_from_slice(initial_spots);
+            }
+
+            for step in 0..n_steps {
+                sample_correlated_normals_cholesky_with_scratch(
+                    chol,
+                    &mut rng,
+                    &mut indep_normals,
+                    &mut corr_normals,
+                )?;
+
+                for asset in 0..n_assets {
+                    let prev = current_spots[asset];
+                    let z = corr_normals[asset];
+                    next_spots[asset] = steppers[asset].step(prev, z);
+                }
+
+                if let Some(snapshot_index) = plan.snapshot_index_for_step(step + 1) {
+                    observation_spots[snapshot_index].copy_from_slice(&next_spots);
+                }
+
+                std::mem::swap(&mut current_spots, &mut next_spots);
+            }
+
+            let pv = evaluate_product_with_plan_in_place(
+                product,
+                plan,
+                &observation_spots,
+                initial_spots,
+                &mut locals,
+                &mut state,
+                &mut stack,
+            )
+            .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+
+            sum_pv += pv;
+            sum_pv_sq += pv * pv;
+        }
+
+        Ok(ChunkStats {
+            sum_pv,
+            sum_pv_sq,
+            num_paths,
+        })
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[target_feature(enable = "avx2,fma")]
+    unsafe fn price_path_chunk_simd_x86(
+        &self,
+        num_paths: usize,
+        seed: u64,
+        product: &CompiledProduct,
+        initial_spots: &[f64],
+        plan: &ProductExecutionPlan,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+        num_locals: usize,
+    ) -> Result<ChunkStats, PricingError> {
+        const LANES: usize = SIMD_X86_PATH_LANES;
+
+        if plan.snapshot_count() == 0 {
+            return Ok(ChunkStats {
+                sum_pv: 0.0,
+                sum_pv_sq: 0.0,
+                num_paths,
+            });
+        }
+
+        let n_assets = initial_spots.len();
+        let n_steps = self.num_steps;
+        let n_state = product.state_vars.len();
+        let n_snapshots = plan.snapshot_count();
+        let mut rng = FastRng::from_seed(self.rng_kind, seed);
+        let mut sum_pv = 0.0;
+        let mut sum_pv_sq = 0.0;
+        let mut corr_normals = vec![vec![0.0; n_assets]; LANES];
+        let mut indep_normals = vec![vec![0.0; n_assets]; LANES];
+        let mut current_spots = vec![[0.0; LANES]; n_assets];
+        let mut next_spots = vec![[0.0; LANES]; n_assets];
+        let mut observation_spots = vec![vec![vec![0.0; n_assets]; n_snapshots]; LANES];
+        let mut locals = vec![vec![Value::F64(0.0); num_locals]; LANES];
+        let mut state = vec![vec![Value::F64(0.0); n_state]; LANES];
+        let mut stack = vec![vec![Value::F64(0.0); plan.max_stack()]; LANES];
+
+        let simd_paths = num_paths / LANES * LANES;
+        let mut processed = 0usize;
+        while processed < simd_paths {
+            for (asset, &spot0) in initial_spots.iter().enumerate() {
+                current_spots[asset].fill(spot0);
+            }
+            if let Some(snapshot_index) = plan.snapshot_index_for_step(0) {
+                for lane in 0..LANES {
+                    observation_spots[lane][snapshot_index].copy_from_slice(initial_spots);
+                }
+            }
+
+            for step in 0..n_steps {
+                for lane in 0..LANES {
+                    sample_correlated_normals_cholesky_with_scratch(
+                        chol,
+                        &mut rng,
+                        &mut indep_normals[lane],
+                        &mut corr_normals[lane],
+                    )?;
+                }
+
+                for asset in 0..n_assets {
+                    let z = [
+                        corr_normals[0][asset],
+                        corr_normals[1][asset],
+                        corr_normals[2][asset],
+                        corr_normals[3][asset],
+                    ];
+                    unsafe {
+                        steppers[asset].step_batch_x86(
+                            &current_spots[asset],
+                            &z,
+                            &mut next_spots[asset],
+                        )
+                    };
+                }
+
+                if let Some(snapshot_index) = plan.snapshot_index_for_step(step + 1) {
+                    for lane in 0..LANES {
+                        for asset in 0..n_assets {
+                            observation_spots[lane][snapshot_index][asset] =
+                                next_spots[asset][lane];
+                        }
+                    }
+                }
+
+                std::mem::swap(&mut current_spots, &mut next_spots);
+            }
+
+            for lane in 0..LANES {
+                let pv = evaluate_product_with_plan_in_place(
+                    product,
+                    plan,
+                    &observation_spots[lane],
+                    initial_spots,
+                    &mut locals[lane],
+                    &mut state[lane],
+                    &mut stack[lane],
+                )
+                .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+                sum_pv += pv;
+                sum_pv_sq += pv * pv;
+            }
+
+            processed += LANES;
+        }
+
+        if simd_paths < num_paths {
+            let tail = self.price_path_chunk_scalar(
+                num_paths - simd_paths,
+                seed.wrapping_add(0x9E37_79B9_7F4A_7C15),
+                product,
+                initial_spots,
+                plan,
+                chol,
+                steppers,
+                num_locals,
+            )?;
+            sum_pv += tail.sum_pv;
+            sum_pv_sq += tail.sum_pv_sq;
+        }
+
+        Ok(ChunkStats {
+            sum_pv,
+            sum_pv_sq,
+            num_paths,
+        })
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    unsafe fn price_path_chunk_simd_neon(
+        &self,
+        num_paths: usize,
+        seed: u64,
+        product: &CompiledProduct,
+        initial_spots: &[f64],
+        plan: &ProductExecutionPlan,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+        num_locals: usize,
+    ) -> Result<ChunkStats, PricingError> {
+        const LANES: usize = SIMD_NEON_PATH_LANES;
+
+        if plan.snapshot_count() == 0 {
+            return Ok(ChunkStats {
+                sum_pv: 0.0,
+                sum_pv_sq: 0.0,
+                num_paths,
+            });
+        }
+
+        let n_assets = initial_spots.len();
+        let n_steps = self.num_steps;
+        let n_state = product.state_vars.len();
+        let n_snapshots = plan.snapshot_count();
+        let mut rng = FastRng::from_seed(self.rng_kind, seed);
+        let mut sum_pv = 0.0;
+        let mut sum_pv_sq = 0.0;
+        let mut corr_normals = vec![vec![0.0; n_assets]; LANES];
+        let mut indep_normals = vec![vec![0.0; n_assets]; LANES];
+        let mut current_spots = vec![[0.0; LANES]; n_assets];
+        let mut next_spots = vec![[0.0; LANES]; n_assets];
+        let mut observation_spots = vec![vec![vec![0.0; n_assets]; n_snapshots]; LANES];
+        let mut locals = vec![vec![Value::F64(0.0); num_locals]; LANES];
+        let mut state = vec![vec![Value::F64(0.0); n_state]; LANES];
+        let mut stack = vec![vec![Value::F64(0.0); plan.max_stack()]; LANES];
+
+        let simd_paths = num_paths / LANES * LANES;
+        let mut processed = 0usize;
+        while processed < simd_paths {
+            for (asset, &spot0) in initial_spots.iter().enumerate() {
+                current_spots[asset].fill(spot0);
+            }
+            if let Some(snapshot_index) = plan.snapshot_index_for_step(0) {
+                for lane in 0..LANES {
+                    observation_spots[lane][snapshot_index].copy_from_slice(initial_spots);
+                }
+            }
+
+            for step in 0..n_steps {
+                for lane in 0..LANES {
+                    sample_correlated_normals_cholesky_with_scratch(
+                        chol,
+                        &mut rng,
+                        &mut indep_normals[lane],
+                        &mut corr_normals[lane],
+                    )?;
+                }
+
+                for asset in 0..n_assets {
+                    let z = [corr_normals[0][asset], corr_normals[1][asset]];
+                    unsafe {
+                        steppers[asset].step_batch_neon(
+                            &current_spots[asset],
+                            &z,
+                            &mut next_spots[asset],
+                        )
+                    };
+                }
+
+                if let Some(snapshot_index) = plan.snapshot_index_for_step(step + 1) {
+                    for lane in 0..LANES {
+                        for asset in 0..n_assets {
+                            observation_spots[lane][snapshot_index][asset] =
+                                next_spots[asset][lane];
+                        }
+                    }
+                }
+
+                std::mem::swap(&mut current_spots, &mut next_spots);
+            }
+
+            for lane in 0..LANES {
+                let pv = evaluate_product_with_plan_in_place(
+                    product,
+                    plan,
+                    &observation_spots[lane],
+                    initial_spots,
+                    &mut locals[lane],
+                    &mut state[lane],
+                    &mut stack[lane],
+                )
+                .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+                sum_pv += pv;
+                sum_pv_sq += pv * pv;
+            }
+
+            processed += LANES;
+        }
+
+        if simd_paths < num_paths {
+            let tail = self.price_path_chunk_scalar(
+                num_paths - simd_paths,
+                seed.wrapping_add(0x9E37_79B9_7F4A_7C15),
+                product,
+                initial_spots,
+                plan,
+                chol,
+                steppers,
+                num_locals,
+            )?;
+            sum_pv += tail.sum_pv;
+            sum_pv_sq += tail.sum_pv_sq;
+        }
+
+        Ok(ChunkStats {
+            sum_pv,
+            sum_pv_sq,
+            num_paths,
+        })
+    }
+
+    #[cfg(feature = "parallel")]
+    fn price_path_chunks_parallel(
+        &self,
+        product: &CompiledProduct,
+        initial_spots: &[f64],
+        plan: &ProductExecutionPlan,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+        num_locals: usize,
+    ) -> Result<ChunkStats, PricingError> {
+        let chunk_sizes = split_path_chunks(self.num_paths, rayon::current_num_threads());
+        let chunk_results: Vec<Result<ChunkStats, PricingError>> = chunk_sizes
+            .par_iter()
+            .enumerate()
+            .map(|(i, &chunk_paths)| {
+                let chunk_seed = self
+                    .seed
+                    .wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
+                self.price_path_chunk(
+                    chunk_paths,
+                    chunk_seed,
+                    product,
+                    initial_spots,
+                    plan,
+                    chol,
+                    steppers,
+                    num_locals,
+                )
+            })
+            .collect();
+
+        let mut total = ChunkStats::default();
+        for result in chunk_results {
+            let chunk = result?;
+            total.sum_pv += chunk.sum_pv;
+            total.sum_pv_sq += chunk.sum_pv_sq;
+            total.num_paths += chunk.num_paths;
+        }
+        Ok(total)
     }
 
     /// Compute Greeks via bump-and-reprice.
@@ -346,13 +885,15 @@ impl DslMonteCarloEngine {
         let p_up_up = self.price_multi_asset(product, &m_up_up)?.price;
 
         let mut m_up_down = market.clone();
-        m_up_down.assets[asset_index] =
-            asset_data.with_spot_bump(spot_bump).with_vol_bump(-vol_bump);
+        m_up_down.assets[asset_index] = asset_data
+            .with_spot_bump(spot_bump)
+            .with_vol_bump(-vol_bump);
         let p_up_down = self.price_multi_asset(product, &m_up_down)?.price;
 
         let mut m_down_up = market.clone();
-        m_down_up.assets[asset_index] =
-            asset_data.with_spot_bump(-spot_bump).with_vol_bump(vol_bump);
+        m_down_up.assets[asset_index] = asset_data
+            .with_spot_bump(-spot_bump)
+            .with_vol_bump(vol_bump);
         let p_down_up = self.price_multi_asset(product, &m_down_up)?.price;
 
         let mut m_down_down = market.clone();
@@ -445,6 +986,48 @@ impl DslMonteCarloEngine {
             corr_sens,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ChunkStats {
+    sum_pv: f64,
+    sum_pv_sq: f64,
+    num_paths: usize,
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+const SIMD_X86_PATH_LANES: usize = 4;
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+const SIMD_NEON_PATH_LANES: usize = 2;
+
+#[cfg(feature = "simd")]
+#[inline]
+fn should_simd_path_batch(num_paths: usize, lanes: usize) -> bool {
+    num_paths >= lanes * 4
+}
+
+#[cfg(feature = "parallel")]
+const MIN_PARALLEL_PATHS: usize = 8_192;
+#[cfg(feature = "parallel")]
+const PATH_CHUNK_SIZE: usize = 4_096;
+
+#[cfg(feature = "parallel")]
+#[inline]
+fn should_parallelize_paths(num_paths: usize) -> bool {
+    num_paths >= MIN_PARALLEL_PATHS && rayon::current_num_threads() > 1
+}
+
+#[cfg(feature = "parallel")]
+fn split_path_chunks(num_paths: usize, threads: usize) -> Vec<usize> {
+    let chunk_size = PATH_CHUNK_SIZE.max(num_paths / threads.max(1));
+    let mut remaining = num_paths;
+    let mut chunks = Vec::new();
+    while remaining > 0 {
+        let chunk = remaining.min(chunk_size);
+        chunks.push(chunk);
+        remaining -= chunk;
+    }
+    chunks
 }
 
 /// Extended per-asset greeks including higher-order sensitivities.
@@ -647,7 +1230,7 @@ mod tests {
     fn schwartz_stepper_mean_reverts() {
         // Schwartz one-factor: commodity price should mean-revert toward exp(mu).
         let stepper = AssetStepper::SchwartzOneF {
-            long_run_log_mean: (100.0_f64).ln(), // mu = ln(100)
+            long_run_log_mean: (100.0_f64).ln(),       // mu = ln(100)
             exp_neg_kappa_dt: (-2.0 * 0.01_f64).exp(), // kappa=2, dt=0.01
             vol_step: 0.30 * (0.01_f64).sqrt(),
         };
