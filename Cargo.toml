@@ -102,6 +102,10 @@ name = "mc_bench"
 harness = false
 
 [[bench]]
+name = "dsl_bench"
+harness = false
+
+[[bench]]
 name = "interpolation_bench"
 harness = false
 

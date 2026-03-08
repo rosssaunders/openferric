@@ -4,9 +4,7 @@
 //! accumulating discounted cashflows and handling early termination.
 
 use crate::dsl::error::DslError;
-use crate::dsl::ir::{
-    BinOp, BuiltinFn, CompiledProduct, Expr, Schedule, Statement, UnaryOp, Value,
-};
+use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Statement, UnaryOp, Value};
 
 /// Per-path evaluation context.
 struct EvalContext<'a> {
@@ -20,6 +18,8 @@ struct EvalContext<'a> {
     observation_date: f64,
     /// Whether this is the final observation in the schedule.
     is_final: bool,
+    /// Discount factor for the current observation date.
+    discount_factor: f64,
     /// Local variable slots.
     locals: &'a mut [Value],
     /// State variable slots (mutable across observations).
@@ -44,13 +44,206 @@ pub struct Cashflow {
     pub amount: f64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ProductExecutionPlan {
+    step_to_snapshot: Vec<usize>,
+    schedules: Vec<ScheduleExecutionPlan>,
+    snapshot_count: usize,
+    max_stack: usize,
+}
+
+impl ProductExecutionPlan {
+    #[inline]
+    pub(crate) fn snapshot_count(&self) -> usize {
+        self.snapshot_count
+    }
+
+    #[inline]
+    pub(crate) fn snapshot_index_for_step(&self, step: usize) -> Option<usize> {
+        let idx = *self.step_to_snapshot.get(step)?;
+        (idx != usize::MAX).then_some(idx)
+    }
+
+    #[inline]
+    pub(crate) fn max_stack(&self) -> usize {
+        self.max_stack
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScheduleExecutionPlan {
+    observations: Vec<ObservationPoint>,
+    program: Vec<ExecOp>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObservationPoint {
+    snapshot_index: usize,
+    observation_date: f64,
+    discount_factor: f64,
+    is_final: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExecOp {
+    PushLiteral(Value),
+    PushLocal(usize),
+    PushState(usize),
+    PushNotional,
+    PushObservationDate,
+    PushIsFinal,
+    ApplyBinOp(BinOp),
+    ApplyUnaryOp(UnaryOp),
+    WorstOfPerformances,
+    BestOfPerformances,
+    WorstOf(usize),
+    BestOf(usize),
+    Price,
+    Min,
+    Max,
+    Abs,
+    Exp,
+    Log,
+    StoreLocal(usize),
+    StoreState(usize),
+    Pay,
+    Redeem,
+    JumpIfFalse(usize),
+    Jump(usize),
+    Skip,
+}
+
+#[derive(Debug, Default)]
+struct ProgramBuilder {
+    program: Vec<ExecOp>,
+    stack_depth: usize,
+    max_stack: usize,
+}
+
+impl ProgramBuilder {
+    fn emit(&mut self, op: ExecOp, stack_delta: isize) -> usize {
+        let idx = self.program.len();
+        self.program.push(op);
+        self.adjust_stack(stack_delta);
+        idx
+    }
+
+    fn patch_jump(&mut self, idx: usize, target: usize) {
+        match &mut self.program[idx] {
+            ExecOp::JumpIfFalse(dst) | ExecOp::Jump(dst) => *dst = target,
+            _ => unreachable!("attempted to patch non-jump opcode"),
+        }
+    }
+
+    fn adjust_stack(&mut self, delta: isize) {
+        if delta < 0 {
+            self.stack_depth -= (-delta) as usize;
+        } else {
+            self.stack_depth += delta as usize;
+            self.max_stack = self.max_stack.max(self.stack_depth);
+        }
+    }
+}
+
+struct ValueStack<'a> {
+    values: &'a mut [Value],
+    len: usize,
+}
+
+impl<'a> ValueStack<'a> {
+    fn new(values: &'a mut [Value]) -> Self {
+        Self { values, len: 0 }
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    #[inline]
+    fn push(&mut self, value: Value) {
+        debug_assert!(self.len < self.values.len());
+        self.values[self.len] = value;
+        self.len += 1;
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Value {
+        debug_assert!(self.len > 0);
+        self.len -= 1;
+        self.values[self.len]
+    }
+}
+
+pub(crate) fn build_execution_plan(
+    product: &CompiledProduct,
+    num_steps: usize,
+    rate: f64,
+) -> Result<ProductExecutionPlan, DslError> {
+    let maturity = product.maturity;
+    let step_scale = if maturity > 0.0 {
+        num_steps as f64 / maturity
+    } else {
+        0.0
+    };
+    let mut step_to_snapshot = vec![usize::MAX; num_steps + 1];
+    let mut schedules = Vec::with_capacity(product.schedules.len());
+    let mut snapshot_count = 0usize;
+    let mut max_stack = 0usize;
+
+    for schedule in &product.schedules {
+        let num_dates = schedule.dates.len();
+        let mut observations = Vec::with_capacity(num_dates);
+        for (date_idx, &obs_date) in schedule.dates.iter().enumerate() {
+            let mut step_idx = if maturity > 0.0 {
+                (obs_date * step_scale).round() as usize
+            } else {
+                0
+            };
+            step_idx = step_idx.min(num_steps);
+
+            let snapshot_index = if step_to_snapshot[step_idx] == usize::MAX {
+                let idx = snapshot_count;
+                step_to_snapshot[step_idx] = idx;
+                snapshot_count += 1;
+                idx
+            } else {
+                step_to_snapshot[step_idx]
+            };
+
+            observations.push(ObservationPoint {
+                snapshot_index,
+                observation_date: obs_date,
+                discount_factor: (-rate * obs_date).exp(),
+                is_final: date_idx + 1 == num_dates,
+            });
+        }
+
+        let mut builder = ProgramBuilder::default();
+        compile_statement_block(&schedule.body, &mut builder)?;
+        debug_assert_eq!(builder.stack_depth, 0);
+        max_stack = max_stack.max(builder.max_stack);
+        schedules.push(ScheduleExecutionPlan {
+            observations,
+            program: builder.program,
+        });
+    }
+
+    Ok(ProductExecutionPlan {
+        step_to_snapshot,
+        schedules,
+        snapshot_count,
+        max_stack,
+    })
+}
+
 /// Evaluate a compiled product on a single MC path.
 ///
 /// `path_spots[t][asset]` gives the spot price of each underlying at each
 /// time step. The first index is the time step (0 = initial), the second
 /// is the asset index.
 ///
-/// Returns the vector of cashflows generated on this path.
+/// Returns the present value generated on this path.
 pub fn evaluate_product(
     product: &CompiledProduct,
     path_spots: &[Vec<f64>],
@@ -58,22 +251,89 @@ pub fn evaluate_product(
     num_steps: usize,
     rate: f64,
 ) -> Result<f64, DslError> {
+    let plan = build_execution_plan(product, num_steps, rate)?;
     let num_locals = product.max_local_slots();
     let mut locals = vec![Value::F64(0.0); num_locals];
-    let mut state: Vec<Value> = product.state_vars.iter().map(|sv| sv.initial).collect();
+    let mut state = vec![Value::F64(0.0); product.state_vars.len()];
+    let mut stack = vec![Value::F64(0.0); plan.max_stack()];
+
+    evaluate_product_in_place(
+        product,
+        &plan,
+        path_spots,
+        initial_spots,
+        &mut locals,
+        &mut state,
+        &mut stack,
+    )
+}
+
+pub(crate) fn evaluate_product_in_place(
+    product: &CompiledProduct,
+    plan: &ProductExecutionPlan,
+    path_spots: &[Vec<f64>],
+    initial_spots: &[f64],
+    locals: &mut [Value],
+    state: &mut [Value],
+    stack: &mut [Value],
+) -> Result<f64, DslError> {
+    let mut observation_spots = vec![Vec::new(); plan.snapshot_count()];
+    for (step_idx, spots) in path_spots.iter().enumerate() {
+        if let Some(snapshot_index) = plan.snapshot_index_for_step(step_idx) {
+            observation_spots[snapshot_index] = spots.clone();
+        }
+    }
+
+    evaluate_product_with_plan_in_place(
+        product,
+        plan,
+        &observation_spots,
+        initial_spots,
+        locals,
+        state,
+        stack,
+    )
+}
+
+pub(crate) fn evaluate_product_with_plan_in_place(
+    product: &CompiledProduct,
+    plan: &ProductExecutionPlan,
+    observation_spots: &[Vec<f64>],
+    initial_spots: &[f64],
+    locals: &mut [Value],
+    state: &mut [Value],
+    stack: &mut [Value],
+) -> Result<f64, DslError> {
+    if state.len() != product.state_vars.len() {
+        return Err(DslError::EvalError(format!(
+            "state scratch length {} does not match product state count {}",
+            state.len(),
+            product.state_vars.len()
+        )));
+    }
+    if stack.len() < plan.max_stack() {
+        return Err(DslError::EvalError(format!(
+            "stack scratch length {} is smaller than required stack {}",
+            stack.len(),
+            plan.max_stack()
+        )));
+    }
+    for (dst, sv) in state.iter_mut().zip(product.state_vars.iter()) {
+        *dst = sv.initial;
+    }
 
     let mut pv = 0.0;
+    let mut value_stack = ValueStack::new(stack);
 
-    for schedule in &product.schedules {
-        let outcome = evaluate_schedule(
+    for schedule_plan in &plan.schedules {
+        let outcome = execute_schedule(
             product,
-            schedule,
-            path_spots,
+            schedule_plan,
+            observation_spots,
             initial_spots,
-            num_steps,
-            rate,
-            &mut locals,
-            &mut state,
+            locals,
+            state,
+            &mut value_stack,
             &mut pv,
         )?;
         if matches!(
@@ -87,55 +347,40 @@ pub fn evaluate_product(
     Ok(pv)
 }
 
-fn evaluate_schedule(
+fn execute_schedule(
     product: &CompiledProduct,
-    schedule: &Schedule,
-    path_spots: &[Vec<f64>],
+    plan: &ScheduleExecutionPlan,
+    observation_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    num_steps: usize,
-    rate: f64,
     locals: &mut [Value],
     state: &mut [Value],
+    stack: &mut ValueStack<'_>,
     pv: &mut f64,
 ) -> Result<ObservationResult, DslError> {
-    let maturity = product.maturity;
-    let num_dates = schedule.dates.len();
-
-    for (date_idx, &obs_date) in schedule.dates.iter().enumerate() {
-        let is_final = date_idx == num_dates - 1;
-
-        // Map observation date to path step index.
-        let step_idx = if maturity > 0.0 {
-            ((obs_date / maturity) * num_steps as f64).round() as usize
-        } else {
-            0
-        };
-        let step_idx = step_idx.min(path_spots.len() - 1);
-
-        let spots = &path_spots[step_idx];
+    for observation in &plan.observations {
+        let spots = observation_spots
+            .get(observation.snapshot_index)
+            .ok_or_else(|| {
+                DslError::EvalError(format!(
+                    "missing observation snapshot {}",
+                    observation.snapshot_index
+                ))
+            })?;
         // Reset locals for each observation date.
-        for local in locals.iter_mut() {
-            *local = Value::F64(0.0);
-        }
+        locals.fill(Value::F64(0.0));
 
         let mut ctx = EvalContext {
             spots,
             initial_spots,
             notional: product.notional,
-            observation_date: obs_date,
-            is_final,
+            observation_date: observation.observation_date,
+            is_final: observation.is_final,
+            discount_factor: observation.discount_factor,
             locals,
             state,
         };
 
-        let mut cashflows = Vec::new();
-        let result = execute_statements(&schedule.body, &mut ctx, &mut cashflows)?;
-
-        // Discount and accumulate cashflows.
-        for cf in &cashflows {
-            let cf_df = (-rate * cf.time).exp();
-            *pv += cf.amount * cf_df;
-        }
+        let result = execute_program(&plan.program, &mut ctx, stack, pv)?;
 
         match result {
             ObservationResult::Redeemed | ObservationResult::Skipped => return Ok(result),
@@ -146,89 +391,318 @@ fn evaluate_schedule(
     Ok(ObservationResult::Continue)
 }
 
-fn execute_statements(
+fn compile_statement_block(
     stmts: &[Statement],
-    ctx: &mut EvalContext<'_>,
-    cashflows: &mut Vec<Cashflow>,
-) -> Result<ObservationResult, DslError> {
+    builder: &mut ProgramBuilder,
+) -> Result<(), DslError> {
     for stmt in stmts {
-        let result = execute_statement(stmt, ctx, cashflows)?;
-        match result {
-            ObservationResult::Continue => {}
-            other => return Ok(other),
-        }
+        compile_statement(stmt, builder)?;
     }
-    Ok(ObservationResult::Continue)
+    Ok(())
 }
 
-fn execute_statement(
-    stmt: &Statement,
-    ctx: &mut EvalContext<'_>,
-    cashflows: &mut Vec<Cashflow>,
-) -> Result<ObservationResult, DslError> {
+fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(), DslError> {
+    let entry_stack = builder.stack_depth;
+
     match stmt {
         Statement::Let { slot, expr } => {
-            let val = eval_expr(expr, ctx)?;
-            ctx.locals[*slot] = val;
-            Ok(ObservationResult::Continue)
+            compile_expr(expr, builder)?;
+            builder.emit(ExecOp::StoreLocal(*slot), -1);
         }
         Statement::If {
             condition,
             then_body,
             else_body,
         } => {
-            let cond = eval_expr(condition, ctx)?;
-            if cond.as_bool() {
-                execute_statements(then_body, ctx, cashflows)
+            compile_expr(condition, builder)?;
+            let jump_if_false = builder.emit(ExecOp::JumpIfFalse(usize::MAX), -1);
+            compile_statement_block(then_body, builder)?;
+            if else_body.is_empty() {
+                builder.patch_jump(jump_if_false, builder.program.len());
             } else {
-                execute_statements(else_body, ctx, cashflows)
+                let jump_end = builder.emit(ExecOp::Jump(usize::MAX), 0);
+                let else_start = builder.program.len();
+                builder.patch_jump(jump_if_false, else_start);
+                compile_statement_block(else_body, builder)?;
+                builder.patch_jump(jump_end, builder.program.len());
             }
         }
         Statement::Pay { amount } => {
-            let val = eval_expr(amount, ctx)?.as_f64();
-            cashflows.push(Cashflow {
-                time: ctx.observation_date,
-                amount: val,
-            });
-            Ok(ObservationResult::Continue)
+            compile_expr(amount, builder)?;
+            builder.emit(ExecOp::Pay, -1);
         }
         Statement::Redeem { amount } => {
-            let val = eval_expr(amount, ctx)?.as_f64();
-            cashflows.push(Cashflow {
-                time: ctx.observation_date,
-                amount: val,
-            });
-            Ok(ObservationResult::Redeemed)
+            compile_expr(amount, builder)?;
+            builder.emit(ExecOp::Redeem, -1);
         }
         Statement::SetState { slot, expr } => {
-            let val = eval_expr(expr, ctx)?;
-            ctx.state[*slot] = val;
-            Ok(ObservationResult::Continue)
+            compile_expr(expr, builder)?;
+            builder.emit(ExecOp::StoreState(*slot), -1);
         }
-        Statement::Skip => Ok(ObservationResult::Skipped),
+        Statement::Skip => {
+            builder.emit(ExecOp::Skip, 0);
+        }
     }
+
+    debug_assert_eq!(builder.stack_depth, entry_stack);
+    Ok(())
 }
 
-#[inline]
-fn eval_expr(expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<Value, DslError> {
+fn compile_expr(expr: &Expr, builder: &mut ProgramBuilder) -> Result<(), DslError> {
     match expr {
-        Expr::Literal(v) => Ok(*v),
-        Expr::LocalVar(slot) => Ok(ctx.locals[*slot]),
-        Expr::StateVar(slot) => Ok(ctx.state[*slot]),
-        Expr::Notional => Ok(Value::F64(ctx.notional)),
-        Expr::ObservationDate => Ok(Value::F64(ctx.observation_date)),
-        Expr::IsFinal => Ok(Value::Bool(ctx.is_final)),
+        Expr::Literal(v) => {
+            builder.emit(ExecOp::PushLiteral(*v), 1);
+        }
+        Expr::LocalVar(slot) => {
+            builder.emit(ExecOp::PushLocal(*slot), 1);
+        }
+        Expr::StateVar(slot) => {
+            builder.emit(ExecOp::PushState(*slot), 1);
+        }
+        Expr::Notional => {
+            builder.emit(ExecOp::PushNotional, 1);
+        }
+        Expr::ObservationDate => {
+            builder.emit(ExecOp::PushObservationDate, 1);
+        }
+        Expr::IsFinal => {
+            builder.emit(ExecOp::PushIsFinal, 1);
+        }
         Expr::BinOp { op, lhs, rhs } => {
-            let l = eval_expr(lhs, ctx)?;
-            let r = eval_expr(rhs, ctx)?;
-            Ok(eval_binop(*op, l, r))
+            compile_expr(lhs, builder)?;
+            compile_expr(rhs, builder)?;
+            builder.emit(ExecOp::ApplyBinOp(*op), -1);
         }
         Expr::UnaryOp { op, operand } => {
-            let v = eval_expr(operand, ctx)?;
-            Ok(eval_unaryop(*op, v))
+            compile_expr(operand, builder)?;
+            builder.emit(ExecOp::ApplyUnaryOp(*op), 0);
         }
-        Expr::Call { func, args } => eval_builtin(*func, args, ctx),
+        Expr::Call { func, args } => compile_builtin(*func, args, builder)?,
     }
+
+    Ok(())
+}
+
+fn compile_builtin(
+    func: BuiltinFn,
+    args: &[Expr],
+    builder: &mut ProgramBuilder,
+) -> Result<(), DslError> {
+    match func {
+        BuiltinFn::Performances => {
+            return Err(DslError::EvalError(
+                "performances() cannot be used standalone; wrap in worst_of() or best_of()"
+                    .to_string(),
+            ));
+        }
+        BuiltinFn::WorstOf => {
+            if args.len() == 1
+                && matches!(
+                    &args[0],
+                    Expr::Call {
+                        func: BuiltinFn::Performances,
+                        ..
+                    }
+                )
+            {
+                builder.emit(ExecOp::WorstOfPerformances, 1);
+            } else {
+                for arg in args {
+                    compile_expr(arg, builder)?;
+                }
+                builder.emit(ExecOp::WorstOf(args.len()), 1 - args.len() as isize);
+            }
+        }
+        BuiltinFn::BestOf => {
+            if args.len() == 1
+                && matches!(
+                    &args[0],
+                    Expr::Call {
+                        func: BuiltinFn::Performances,
+                        ..
+                    }
+                )
+            {
+                builder.emit(ExecOp::BestOfPerformances, 1);
+            } else {
+                for arg in args {
+                    compile_expr(arg, builder)?;
+                }
+                builder.emit(ExecOp::BestOf(args.len()), 1 - args.len() as isize);
+            }
+        }
+        BuiltinFn::Price => {
+            if args.len() != 1 {
+                return Err(DslError::EvalError(
+                    "price() requires an asset index".to_string(),
+                ));
+            }
+            compile_expr(&args[0], builder)?;
+            builder.emit(ExecOp::Price, 0);
+        }
+        BuiltinFn::Min => {
+            if args.len() != 2 {
+                return Err(DslError::EvalError(
+                    "min() requires 2 arguments".to_string(),
+                ));
+            }
+            compile_expr(&args[0], builder)?;
+            compile_expr(&args[1], builder)?;
+            builder.emit(ExecOp::Min, -1);
+        }
+        BuiltinFn::Max => {
+            if args.len() != 2 {
+                return Err(DslError::EvalError(
+                    "max() requires 2 arguments".to_string(),
+                ));
+            }
+            compile_expr(&args[0], builder)?;
+            compile_expr(&args[1], builder)?;
+            builder.emit(ExecOp::Max, -1);
+        }
+        BuiltinFn::Abs => {
+            if args.len() != 1 {
+                return Err(DslError::EvalError("abs() requires 1 argument".to_string()));
+            }
+            compile_expr(&args[0], builder)?;
+            builder.emit(ExecOp::Abs, 0);
+        }
+        BuiltinFn::Exp => {
+            if args.len() != 1 {
+                return Err(DslError::EvalError("exp() requires 1 argument".to_string()));
+            }
+            compile_expr(&args[0], builder)?;
+            builder.emit(ExecOp::Exp, 0);
+        }
+        BuiltinFn::Log => {
+            if args.len() != 1 {
+                return Err(DslError::EvalError("log() requires 1 argument".to_string()));
+            }
+            compile_expr(&args[0], builder)?;
+            builder.emit(ExecOp::Log, 0);
+        }
+    }
+
+    Ok(())
+}
+
+fn execute_program(
+    program: &[ExecOp],
+    ctx: &mut EvalContext<'_>,
+    stack: &mut ValueStack<'_>,
+    pv: &mut f64,
+) -> Result<ObservationResult, DslError> {
+    stack.clear();
+    let mut pc = 0usize;
+
+    while pc < program.len() {
+        match program[pc] {
+            ExecOp::PushLiteral(value) => stack.push(value),
+            ExecOp::PushLocal(slot) => stack.push(ctx.locals[slot]),
+            ExecOp::PushState(slot) => stack.push(ctx.state[slot]),
+            ExecOp::PushNotional => stack.push(Value::F64(ctx.notional)),
+            ExecOp::PushObservationDate => stack.push(Value::F64(ctx.observation_date)),
+            ExecOp::PushIsFinal => stack.push(Value::Bool(ctx.is_final)),
+            ExecOp::ApplyBinOp(op) => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(eval_binop(op, lhs, rhs));
+            }
+            ExecOp::ApplyUnaryOp(op) => {
+                let value = stack.pop();
+                stack.push(eval_unaryop(op, value));
+            }
+            ExecOp::WorstOfPerformances => {
+                stack.push(Value::F64(compute_worst_of_performance(ctx)));
+            }
+            ExecOp::BestOfPerformances => {
+                stack.push(Value::F64(compute_best_of_performance(ctx)));
+            }
+            ExecOp::WorstOf(arg_count) => {
+                let mut min_val = f64::INFINITY;
+                for _ in 0..arg_count {
+                    let value = stack.pop().as_f64();
+                    if value < min_val {
+                        min_val = value;
+                    }
+                }
+                stack.push(Value::F64(min_val));
+            }
+            ExecOp::BestOf(arg_count) => {
+                let mut max_val = f64::NEG_INFINITY;
+                for _ in 0..arg_count {
+                    let value = stack.pop().as_f64();
+                    if value > max_val {
+                        max_val = value;
+                    }
+                }
+                stack.push(Value::F64(max_val));
+            }
+            ExecOp::Price => {
+                let idx = stack.pop().as_f64() as usize;
+                if idx >= ctx.spots.len() {
+                    return Err(DslError::EvalError(format!(
+                        "asset index {idx} out of range (have {} assets)",
+                        ctx.spots.len()
+                    )));
+                }
+                stack.push(Value::F64(ctx.spots[idx]));
+            }
+            ExecOp::Min => {
+                let rhs = stack.pop().as_f64();
+                let lhs = stack.pop().as_f64();
+                stack.push(Value::F64(lhs.min(rhs)));
+            }
+            ExecOp::Max => {
+                let rhs = stack.pop().as_f64();
+                let lhs = stack.pop().as_f64();
+                stack.push(Value::F64(lhs.max(rhs)));
+            }
+            ExecOp::Abs => {
+                let value = stack.pop().as_f64();
+                stack.push(Value::F64(value.abs()));
+            }
+            ExecOp::Exp => {
+                let value = stack.pop().as_f64();
+                stack.push(Value::F64(value.exp()));
+            }
+            ExecOp::Log => {
+                let value = stack.pop().as_f64();
+                stack.push(Value::F64(value.ln()));
+            }
+            ExecOp::StoreLocal(slot) => {
+                ctx.locals[slot] = stack.pop();
+            }
+            ExecOp::StoreState(slot) => {
+                ctx.state[slot] = stack.pop();
+            }
+            ExecOp::Pay => {
+                let value = stack.pop().as_f64();
+                *pv += value * ctx.discount_factor;
+            }
+            ExecOp::Redeem => {
+                let value = stack.pop().as_f64();
+                *pv += value * ctx.discount_factor;
+                return Ok(ObservationResult::Redeemed);
+            }
+            ExecOp::JumpIfFalse(target) => {
+                if !stack.pop().as_bool() {
+                    pc = target;
+                    continue;
+                }
+            }
+            ExecOp::Jump(target) => {
+                pc = target;
+                continue;
+            }
+            ExecOp::Skip => return Ok(ObservationResult::Skipped),
+        }
+
+        pc += 1;
+    }
+
+    debug_assert_eq!(stack.len, 0);
+    Ok(ObservationResult::Continue)
 }
 
 #[inline]
@@ -256,126 +730,6 @@ fn eval_unaryop(op: UnaryOp, val: Value) -> Value {
     match op {
         UnaryOp::Neg => Value::F64(-val.as_f64()),
         UnaryOp::Not => Value::Bool(!val.as_bool()),
-    }
-}
-
-fn eval_builtin(
-    func: BuiltinFn,
-    args: &[Expr],
-    ctx: &mut EvalContext<'_>,
-) -> Result<Value, DslError> {
-    match func {
-        BuiltinFn::Performances => {
-            // Returns a pseudo-value; only meaningful as argument to worst_of/best_of.
-            // We encode the performance vector as the first performance value.
-            // This is handled specially by worst_of/best_of.
-            Err(DslError::EvalError(
-                "performances() cannot be used standalone; wrap in worst_of() or best_of()"
-                    .to_string(),
-            ))
-        }
-        BuiltinFn::WorstOf => {
-            // If the argument is performances(), compute worst-of performance.
-            if args.len() == 1
-                && matches!(
-                    &args[0],
-                    Expr::Call {
-                        func: BuiltinFn::Performances,
-                        ..
-                    }
-                )
-            {
-                let wof = compute_worst_of_performance(ctx);
-                return Ok(Value::F64(wof));
-            }
-            // Otherwise, evaluate all args and take min.
-            let mut min_val = f64::INFINITY;
-            for arg in args {
-                let v = eval_expr(arg, ctx)?.as_f64();
-                if v < min_val {
-                    min_val = v;
-                }
-            }
-            Ok(Value::F64(min_val))
-        }
-        BuiltinFn::BestOf => {
-            if args.len() == 1
-                && matches!(
-                    &args[0],
-                    Expr::Call {
-                        func: BuiltinFn::Performances,
-                        ..
-                    }
-                )
-            {
-                let bof = compute_best_of_performance(ctx);
-                return Ok(Value::F64(bof));
-            }
-            let mut max_val = f64::NEG_INFINITY;
-            for arg in args {
-                let v = eval_expr(arg, ctx)?.as_f64();
-                if v > max_val {
-                    max_val = v;
-                }
-            }
-            Ok(Value::F64(max_val))
-        }
-        BuiltinFn::Price => {
-            if args.is_empty() {
-                return Err(DslError::EvalError(
-                    "price() requires an asset index".to_string(),
-                ));
-            }
-            let idx = eval_expr(&args[0], ctx)?.as_f64() as usize;
-            if idx >= ctx.spots.len() {
-                return Err(DslError::EvalError(format!(
-                    "asset index {idx} out of range (have {} assets)",
-                    ctx.spots.len()
-                )));
-            }
-            Ok(Value::F64(ctx.spots[idx]))
-        }
-        BuiltinFn::Min => {
-            if args.len() != 2 {
-                return Err(DslError::EvalError(
-                    "min() requires 2 arguments".to_string(),
-                ));
-            }
-            let a = eval_expr(&args[0], ctx)?.as_f64();
-            let b = eval_expr(&args[1], ctx)?.as_f64();
-            Ok(Value::F64(a.min(b)))
-        }
-        BuiltinFn::Max => {
-            if args.len() != 2 {
-                return Err(DslError::EvalError(
-                    "max() requires 2 arguments".to_string(),
-                ));
-            }
-            let a = eval_expr(&args[0], ctx)?.as_f64();
-            let b = eval_expr(&args[1], ctx)?.as_f64();
-            Ok(Value::F64(a.max(b)))
-        }
-        BuiltinFn::Abs => {
-            if args.len() != 1 {
-                return Err(DslError::EvalError("abs() requires 1 argument".to_string()));
-            }
-            let v = eval_expr(&args[0], ctx)?.as_f64();
-            Ok(Value::F64(v.abs()))
-        }
-        BuiltinFn::Exp => {
-            if args.len() != 1 {
-                return Err(DslError::EvalError("exp() requires 1 argument".to_string()));
-            }
-            let v = eval_expr(&args[0], ctx)?.as_f64();
-            Ok(Value::F64(v.exp()))
-        }
-        BuiltinFn::Log => {
-            if args.len() != 1 {
-                return Err(DslError::EvalError("log() requires 1 argument".to_string()));
-            }
-            let v = eval_expr(&args[0], ctx)?.as_f64();
-            Ok(Value::F64(v.ln()))
-        }
     }
 }
 
