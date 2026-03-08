@@ -534,8 +534,8 @@ impl DslMonteCarloEngine {
                 current_spots[asset].fill(spot0);
             }
             if let Some(snapshot_index) = plan.snapshot_index_for_step(0) {
-                for lane in 0..LANES {
-                    observation_spots[lane][snapshot_index].copy_from_slice(initial_spots);
+                for lane_observations in observation_spots.iter_mut().take(LANES) {
+                    lane_observations[snapshot_index].copy_from_slice(initial_spots);
                 }
             }
 
@@ -566,10 +566,14 @@ impl DslMonteCarloEngine {
                 }
 
                 if let Some(snapshot_index) = plan.snapshot_index_for_step(step + 1) {
-                    for lane in 0..LANES {
-                        for asset in 0..n_assets {
-                            observation_spots[lane][snapshot_index][asset] =
-                                next_spots[asset][lane];
+                    for (lane, lane_observations) in
+                        observation_spots.iter_mut().enumerate().take(LANES)
+                    {
+                        let lane_snapshot = &mut lane_observations[snapshot_index];
+                        for (asset, asset_next_spots) in
+                            next_spots.iter().enumerate().take(n_assets)
+                        {
+                            lane_snapshot[asset] = asset_next_spots[lane];
                         }
                     }
                 }
@@ -1253,7 +1257,7 @@ mod tests {
         // Vasicek: rate should mean-revert toward long_run_mean.
         let stepper = AssetStepper::Vasicek {
             long_run_mean: 0.05,
-            exp_neg_a_dt: (-1.0 * 0.01_f64).exp(), // a=1, dt=0.01
+            exp_neg_a_dt: (-0.01_f64).exp(), // a=1, dt=0.01
             vol_step: 0.01 * (0.01_f64).sqrt(),
         };
         // Starting above mean: r=0.10. With z=0 should pull down.
