@@ -37,18 +37,33 @@ pub fn sample_correlated_normals_cholesky(
     rng: &mut FastRng,
     out: &mut [f64],
 ) -> Result<(), PricingError> {
+    let mut indep = vec![0.0; chol.len()];
+    sample_correlated_normals_cholesky_with_scratch(chol, rng, &mut indep, out)
+}
+
+/// Samples one vector of correlated normals using caller-provided scratch space.
+pub fn sample_correlated_normals_cholesky_with_scratch(
+    chol: &[Vec<f64>],
+    rng: &mut FastRng,
+    indep: &mut [f64],
+    out: &mut [f64],
+) -> Result<(), PricingError> {
     if chol.is_empty() || out.len() != chol.len() {
         return Err(PricingError::InvalidInput(
             "output length must match cholesky dimension".to_string(),
         ));
     }
+    if indep.len() != chol.len() {
+        return Err(PricingError::InvalidInput(
+            "scratch length must match cholesky dimension".to_string(),
+        ));
+    }
 
-    let mut indep = vec![0.0; chol.len()];
-    for z in &mut indep {
+    for z in indep.iter_mut() {
         *z = sample_standard_normal(rng);
     }
 
-    correlate_normals(chol, &indep, out);
+    correlate_normals(chol, indep, out);
     Ok(())
 }
 

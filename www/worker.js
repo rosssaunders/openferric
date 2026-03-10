@@ -685,7 +685,7 @@ function computeSurfaceData(slices, packed, cfg) {
     if (kMax - kMin < 0.01) { kMin -= 0.25; kMax += 0.25; }
   }
 
-  const gridN = 15;
+  const gridN = 50;
   const kGrid = [];
   for (let i = 0; i < gridN; i++) kGrid.push(kMin + (kMax - kMin) * i / (gridN - 1));
   const tGrid = slices.map(s => s.T);
@@ -766,7 +766,7 @@ function computeSurfaceData(slices, packed, cfg) {
     xAxisTitle = 'Call Delta';
   }
 
-  return { xGrid, xAxisTitle, tGrid, flatZ, gridN, marketX, marketY, marketZ, marketText, stickyRule };
+  return { xGrid, xAxisTitle, tGrid, flatZ, gridN, kGrid, marketX, marketY, marketZ, marketText, stickyRule };
 }
 
 function computeGreeksData(slices, packed, spotPrice) {
@@ -1649,6 +1649,71 @@ self.onmessage = function(e) {
     if (!wasmReady) return;
     const result = computePricerResult(payload || {});
     self.postMessage({ type: 'pricer-result', payload: result });
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  //  DSL analysis / pricing handlers
+  // -----------------------------------------------------------------------
+  if (type === 'dsl-analyze') {
+    if (!wasmReady) return;
+    try {
+      const result = JSON.parse(wasm.dsl_analyze(payload.source));
+      self.postMessage({ type: 'dsl-analyze-result', payload: result });
+    } catch (e) {
+      self.postMessage({ type: 'dsl-analyze-result', payload: { diagnostics: [{ severity: 'error', message: e.toString(), start: 0, end: 0 }], semanticTokens: [], compiled: null } });
+    }
+    return;
+  }
+
+  if (type === 'dsl-hover') {
+    if (!wasmReady) return;
+    try {
+      const result = JSON.parse(wasm.dsl_hover(payload.source, payload.offset));
+      self.postMessage({ type: 'dsl-hover-result', payload: result, requestId: payload.requestId });
+    } catch (e) {
+      self.postMessage({ type: 'dsl-hover-result', payload: null, requestId: payload.requestId });
+    }
+    return;
+  }
+
+  if (type === 'dsl-completions') {
+    if (!wasmReady) return;
+    try {
+      const result = JSON.parse(wasm.dsl_completions(payload.source, payload.offset));
+      self.postMessage({ type: 'dsl-completions-result', payload: result, requestId: payload.requestId });
+    } catch (e) {
+      self.postMessage({ type: 'dsl-completions-result', payload: [], requestId: payload.requestId });
+    }
+    return;
+  }
+
+  if (type === 'dsl-goto-def') {
+    if (!wasmReady) return;
+    try {
+      const result = JSON.parse(wasm.dsl_goto_definition(payload.source, payload.offset));
+      self.postMessage({ type: 'dsl-goto-def-result', payload: result, requestId: payload.requestId });
+    } catch (e) {
+      self.postMessage({ type: 'dsl-goto-def-result', payload: null, requestId: payload.requestId });
+    }
+    return;
+  }
+
+  if (type === 'dsl-price-full') {
+    if (!wasmReady) return;
+    try {
+      const { productJson, marketJson, numPaths, numSteps, seed } = payload;
+      const result = JSON.parse(wasm.dsl_price_full(
+        productJson,
+        marketJson || 'null',
+        numPaths ?? 10000,
+        numSteps ?? 100,
+        BigInt(seed ?? 42)
+      ));
+      self.postMessage({ type: 'dsl-price-full-result', payload: result });
+    } catch (e) {
+      self.postMessage({ type: 'dsl-price-full-result', payload: { error: e.toString() } });
+    }
     return;
   }
 

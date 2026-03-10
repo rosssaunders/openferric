@@ -246,6 +246,107 @@
     .flow-metrics .k { color: var(--muted); }
     .flow-metrics .v { font-family: var(--mono); text-align: right; }
 
+    /* ---- Historical Panels ---- */
+    .history-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 4px;
+      font-size: 10px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .history-toolbar select,
+    .history-toolbar .tab-btn {
+      font-size: 10px;
+      padding: 2px 6px;
+    }
+    .history-toolbar .tab-btn.active {
+      background: rgba(47,178,255,0.22);
+      color: var(--accent);
+      border-color: rgba(47,178,255,0.5);
+    }
+    .history-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 2px 8px;
+      font-size: 10px;
+      margin-bottom: 4px;
+      flex-shrink: 0;
+    }
+    .history-stats .k { color: var(--muted); }
+    .history-stats .v { text-align: right; font-family: var(--mono); }
+    .history-table-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid rgba(142,161,184,0.15);
+      border-radius: 6px;
+      background: rgba(7,10,15,0.55);
+      padding: 0 4px;
+    }
+    .history-table-wrap table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+    }
+    .history-table-wrap th {
+      position: sticky;
+      top: 0;
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      z-index: 1;
+    }
+    .history-table-wrap td,
+    .history-table-wrap th {
+      white-space: nowrap;
+      font-family: var(--mono);
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(142,161,184,0.12);
+      text-align: right;
+    }
+    .history-table-wrap td:first-child,
+    .history-table-wrap th:first-child {
+      text-align: left;
+      font-family: var(--sans);
+    }
+    .hist-buy { color: #22c55e; }
+    .hist-sell { color: #ef4444; }
+    .history-chart-wrap {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 6px;
+      background: #070a0f;
+      overflow: hidden;
+    }
+    .history-chart {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .history-tooltip {
+      position: absolute;
+      pointer-events: none;
+      z-index: 5;
+      padding: 5px 7px;
+      border-radius: 4px;
+      border: 1px solid rgba(142,161,184,0.35);
+      background: rgba(7,10,15,0.94);
+      color: var(--fg);
+      font-size: 10px;
+      font-family: var(--mono);
+      white-space: nowrap;
+      display: none;
+    }
+    .history-empty {
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+      font-family: var(--mono);
+    }
+
     /* ---- Strategy Builder ---- */
     .strategy-split { display: flex; gap: 6px; flex: 1; min-height: 0; overflow: hidden; }
     .strategy-legs { flex: 0 0 40%; overflow: auto; min-height: 0; display: flex; flex-direction: column; }
@@ -392,130 +493,7 @@
       }
     }
 
-    /* ---- DSL Panels ---- */
-    .dsl-editor-host {
-      flex: 1;
-      min-height: 0;
-      border: 1px solid rgba(142,161,184,0.18);
-      border-radius: 6px;
-      overflow: hidden;
-      background: #070a0f;
-    }
-    .dsl-editor-loading {
-      flex: 1;
-      min-height: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--muted);
-      font-size: 11px;
-      font-family: var(--mono);
-      border: 1px dashed rgba(142,161,184,0.3);
-      border-radius: 6px;
-      background: rgba(0,0,0,0.2);
-    }
-    .dsl-results-wrap {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex: 1;
-      min-height: 0;
-      overflow: auto;
-      padding-right: 2px;
-    }
-    .dsl-status {
-      font-size: 11px;
-      font-family: var(--mono);
-      border-radius: 4px;
-      padding: 4px 6px;
-      border: 1px solid rgba(142,161,184,0.24);
-      background: rgba(0,0,0,0.2);
-    }
-    .dsl-status.success {
-      color: var(--accent2);
-      border-color: rgba(25,216,168,0.5);
-      background: rgba(25,216,168,0.08);
-    }
-    .dsl-status.error {
-      color: var(--danger);
-      border-color: rgba(255,122,122,0.5);
-      background: rgba(255,122,122,0.08);
-    }
-    .dsl-status.pending {
-      color: var(--warn);
-      border-color: rgba(255,179,71,0.5);
-      background: rgba(255,179,71,0.08);
-    }
-    .dsl-kv {
-      display: grid;
-      grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
-      gap: 4px 8px;
-      font-size: 10px;
-      border: 1px solid rgba(142,161,184,0.18);
-      border-radius: 6px;
-      padding: 6px;
-      background: rgba(0,0,0,0.2);
-    }
-    .dsl-kv .k {
-      color: var(--muted);
-      text-transform: lowercase;
-      white-space: nowrap;
-    }
-    .dsl-kv .v {
-      text-align: right;
-      font-family: var(--mono);
-      overflow-wrap: anywhere;
-    }
-    .dsl-greeks-wrap {
-      border: 1px solid rgba(142,161,184,0.18);
-      border-radius: 6px;
-      background: rgba(0,0,0,0.2);
-      overflow: auto;
-      max-height: 200px;
-      padding: 0 4px;
-    }
-    .dsl-greeks-wrap th {
-      position: sticky;
-      top: 0;
-      background: color-mix(in srgb, var(--panel) 92%, black);
-      z-index: 1;
-    }
-    .dsl-greeks-wrap th,
-    .dsl-greeks-wrap td {
-      font-size: 10px;
-      white-space: nowrap;
-    }
-    .dsl-json-wrap {
-      border: 1px solid rgba(142,161,184,0.18);
-      border-radius: 6px;
-      background: rgba(0,0,0,0.2);
-      padding: 6px;
-      font-size: 10px;
-      overflow: auto;
-      min-height: 0;
-      flex: 1;
-    }
-    .dsl-json-wrap details {
-      margin-left: 10px;
-    }
-    .dsl-json-wrap summary {
-      cursor: pointer;
-      color: var(--accent);
-      font-family: var(--mono);
-      line-height: 1.4;
-      user-select: none;
-    }
-    .dsl-json-wrap .dsl-json-leaf {
-      color: var(--fg);
-      font-family: var(--mono);
-      line-height: 1.4;
-      margin-left: 20px;
-      overflow-wrap: anywhere;
-    }
-    .dsl-json-wrap .dsl-json-empty {
-      color: var(--muted);
-      font-family: var(--mono);
-    }
+    /* ---- DSL Market ---- */
     .dsl-market-wrap {
       display: flex;
       flex-direction: column;
@@ -555,32 +533,6 @@
       color: var(--muted);
       font-family: var(--mono);
     }
-    .dsl-examples-wrap {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex: 1;
-      min-height: 0;
-      overflow: auto;
-      padding-right: 2px;
-    }
-    .dsl-examples-wrap select {
-      width: 100%;
-      font-size: 10px;
-      padding: 4px 6px;
-      font-family: var(--mono);
-    }
-    .dsl-examples-meta {
-      font-size: 10px;
-      color: var(--muted);
-      font-family: var(--mono);
-      border: 1px solid rgba(142,161,184,0.18);
-      border-radius: 6px;
-      padding: 6px;
-      background: rgba(0,0,0,0.2);
-      line-height: 1.4;
-    }
-
     /* ---- Dockview theme overrides ---- */
     .dockview-theme-abyss {
       --dv-group-view-background-color: var(--panel);
@@ -810,6 +762,33 @@
       .panel-info-modal { width: 96vw; max-height: 92vh; }
       .panel-info-live { grid-template-columns: 1fr; }
     }
+
+    /* ===== DSL Editor Panels ===== */
+    .dsl-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .dsl-toolbar select, .dsl-toolbar input, .dsl-toolbar button { font-size: 11px; background: var(--bg-panel); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px; }
+    .dsl-toolbar button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+    .dsl-toolbar button:hover { filter: brightness(1.15); }
+    .dsl-toolbar label { font-size: 10px; color: var(--fg-dim); display: flex; align-items: center; gap: 3px; }
+    .dsl-editor-container { flex: 1; min-height: 0; }
+    .dsl-status-bar { display: flex; align-items: center; gap: 8px; padding: 3px 10px; border-top: 1px solid var(--border); font-size: 10px; color: var(--fg-dim); flex-shrink: 0; }
+    .dsl-status-bar .status-ok { color: var(--green); }
+    .dsl-status-bar .status-err { color: var(--red); }
+    .dsl-status-bar .status-computing { color: var(--accent); }
+
+    .dsl-result-panel { padding: 10px; overflow-y: auto; font-size: 11px; }
+    .dsl-result-panel h3 { margin: 0 0 6px; font-size: 12px; color: var(--accent); font-weight: 600; }
+    .dsl-result-panel .dsl-section { margin-bottom: 14px; }
+    .dsl-result-panel .dsl-price-display { font-size: 20px; font-weight: 700; color: var(--fg); }
+    .dsl-result-panel .dsl-stderr { font-size: 11px; color: var(--fg-dim); margin-left: 6px; }
+    .dsl-result-panel table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    .dsl-result-panel th { text-align: left; color: var(--fg-dim); padding: 3px 6px; border-bottom: 1px solid var(--border); font-weight: 500; }
+    .dsl-result-panel td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); font-variant-numeric: tabular-nums; }
+    .dsl-result-panel .dsl-product-info { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+    .dsl-result-panel .dsl-product-info dt { color: var(--fg-dim); }
+    .dsl-result-panel .dsl-product-info dd { margin: 0; }
+    .dsl-result-panel .dsl-market-info { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin-top: 4px; }
+    .dsl-result-panel .dsl-market-info dt { color: var(--fg-dim); font-size: 10px; }
+    .dsl-result-panel .dsl-market-info dd { margin: 0; font-size: 10px; }
   </style>
   <script type="importmap">
   {
@@ -818,6 +797,8 @@
     }
   }
   </script>
+  <script>var require = { paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs' } };</script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
 </head>
 <body>
   <!-- ===== Header ===== -->
@@ -861,7 +842,8 @@
       <button class="tab-btn" data-view="scanner">Scanner</button>
       <button class="tab-btn" data-view="trading">Trading</button>
       <button class="tab-btn" data-view="pricer">Pricer</button>
-      <button class="tab-btn" data-view="dsl">DSL</button>
+      <button class="tab-btn" data-view="history">History</button>
+      <button class="tab-btn" data-view="structuring">Structuring</button>
       <button class="tab-btn" data-view="all">All</button>
     </div>
     <button id="reset-layout" class="tab-btn" title="Reset panel layout to default">Reset Layout</button>
@@ -990,6 +972,102 @@
       return raw > 3.0 ? raw / 100.0 : raw;
     }
 
+    class HistoricalDataService {
+      constructor(baseUrl) {
+        this.baseUrl = baseUrl;
+        this.cache = new Map();
+      }
+      buildUrl(endpoint, params = {}) {
+        const qp = new URLSearchParams();
+        for (const [k, v] of Object.entries(params)) {
+          if (v === undefined || v === null || v === '') continue;
+          qp.set(k, String(v));
+        }
+        return `${this.baseUrl}/${endpoint}?${qp.toString()}`;
+      }
+      async fetchJson(endpoint, params = {}, ttlMs = 0) {
+        const cacheKey = endpoint + '::' + JSON.stringify(params);
+        if (ttlMs > 0) {
+          const hit = this.cache.get(cacheKey);
+          if (hit && Date.now() - hit.ts < ttlMs) return hit.value;
+        }
+        const resp = await fetch(this.buildUrl(endpoint, params));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${endpoint}`);
+        const json = await resp.json();
+        if (json.error) throw new Error(json.error.message || `Deribit error ${endpoint}`);
+        if (ttlMs > 0) this.cache.set(cacheKey, { ts: Date.now(), value: json });
+        return json;
+      }
+      async getTradingviewChartData({ instrument, startTs, endTs, resolution, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_tradingview_chart_data', {
+          instrument_name: instrument,
+          start_timestamp: startTs,
+          end_timestamp: endTs,
+          resolution,
+        }, ttlMs);
+        return json.result || null;
+      }
+      async getHistoricalVolatility({ currency, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_historical_volatility', { currency }, ttlMs);
+        return Array.isArray(json.result) ? json.result : [];
+      }
+      async getVolatilityIndexData({ currency, startTs, endTs, resolution, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_volatility_index_data', {
+          currency,
+          start_timestamp: startTs,
+          end_timestamp: endTs,
+          resolution,
+        }, ttlMs);
+        const result = json.result || {};
+        return Array.isArray(result.data) ? result.data : [];
+      }
+      async getFundingRateHistory({ instrument, startTs, endTs, ttlMs = 0 }) {
+        const json = await this.fetchJson('get_funding_rate_history', {
+          instrument_name: instrument,
+          start_timestamp: startTs,
+          end_timestamp: endTs,
+        }, ttlMs);
+        return Array.isArray(json.result) ? json.result : [];
+      }
+      async getLastTradesByCurrencyAndTime({
+        currency,
+        kind = 'option',
+        startTs,
+        endTs,
+        count = 1000,
+        sorting = 'desc',
+        maxPages = 3,
+        ttlMs = 0,
+      }) {
+        let pageEndTs = endTs;
+        const out = [];
+        for (let page = 0; page < maxPages; page++) {
+          const json = await this.fetchJson('get_last_trades_by_currency_and_time', {
+            currency,
+            kind,
+            start_timestamp: startTs,
+            end_timestamp: pageEndTs,
+            count,
+            sorting,
+          }, page === 0 ? ttlMs : 0);
+          const res = json.result || {};
+          const trades = Array.isArray(res.trades) ? res.trades : [];
+          if (trades.length === 0) break;
+          out.push(...trades);
+          if (!res.has_more) break;
+          const oldestTs = Math.min(...trades.map((t) => Number(t.timestamp)).filter((n) => Number.isFinite(n)));
+          if (!Number.isFinite(oldestTs) || oldestTs <= startTs) break;
+          pageEndTs = oldestTs - 1;
+        }
+        const dedupe = new Map();
+        for (const trade of out) {
+          const key = `${trade.trade_id || ''}|${trade.timestamp || ''}|${trade.instrument_name || ''}`;
+          dedupe.set(key, trade);
+        }
+        return [...dedupe.values()].sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+      }
+    }
+
     // =====================================================================
     //  Currency State
     // =====================================================================
@@ -1064,191 +1142,6 @@
       productType: 'barrier-ko',
     };
 
-    // DSL state
-    const DSL_MONACO_BASE_URL = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min';
-    const DSL_MARKER_OWNER = 'openferric-dsl';
-    let monacoLoaderPromise = null;
-    let monacoRef = null;
-    let monacoLanguageReady = false;
-    let dslCompileTimer = null;
-    let dslPriceTimer = null;
-    let dslCompileSeq = 0;
-    let dslPricingSeq = 0;
-    const dslState = {
-      source: '',
-      activeExampleId: '',
-      compilePending: false,
-      compileResult: null,
-      compiledProduct: null,
-      compiledProductJson: '',
-      pricingPending: false,
-      priceResult: null,
-      greeksResults: [],
-      marketInputs: {
-        spots: '100',
-        vols: '0.2',
-        rate: '0.05',
-        dividendYields: '0',
-        numPaths: '100000',
-        numSteps: '252',
-        seed: '42',
-      },
-      currentCompileRequestId: 0,
-      currentPricingRequestId: 0,
-    };
-    const DSL_EXAMPLES = [
-      {
-        id: "01_zero_coupon",
-        title: "01 Zero Coupon",
-        source: "// Zero Coupon Bond\n// Simplest possible product: redeem notional at maturity, no coupons.\n// PV = notional * exp(-r * T)\n\nproduct \"Zero Coupon\"\n    notional: 1\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 5.0\n        redeem notional\n",
-      },
-      {
-        id: "02_fixed_coupon_note",
-        title: "02 Fixed Coupon Note",
-        source: "// Fixed Coupon Note\n// Pays a fixed 5% annual coupon and redeems at par at maturity.\n// No equity linkage — pure fixed income in DSL form.\n\nproduct \"Fixed Coupon Note 3Y\"\n    notional: 1_000_000\n    maturity: 3.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 3.0\n        pay notional * 0.05\n        if is_final then\n            redeem notional\n",
-      },
-      {
-        id: "03_forward",
-        title: "03 Forward",
-        source: "// Equity Forward\n// At maturity, pays (S(T)/S(0) - 1) * notional.\n// Long exposure to the underlying with no premium.\n\nproduct \"Equity Forward 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n        pay notional * (perf - 1.0)\n        redeem notional\n",
-      },
-      {
-        id: "04_reverse_convertible",
-        title: "04 Reverse Convertible",
-        source: "// Reverse Convertible\n// Pays an enhanced coupon (10% p.a.) in exchange for downside risk.\n// At maturity: if spot >= strike (100%), redeem at par.\n// If spot < strike, investor receives notional * (S(T)/S(0)),\n// i.e., they \"bought\" the stock at strike.\n\nproduct \"Reverse Convertible 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule quarterly from 0.25 to 1.0\n        // Enhanced coupon paid quarterly\n        pay notional * 0.025\n\n        if is_final then\n            let perf = worst_of(performances())\n            if perf >= 1.0 then\n                redeem notional\n            else\n                redeem notional * perf\n",
-      },
-      {
-        id: "05_barrier_reverse_convertible",
-        title: "05 Barrier Reverse Convertible",
-        source: "// Barrier Reverse Convertible (BRC)\n// Like a reverse convertible but with knock-in protection.\n// Downside only applies if a barrier (60%) is ever breached.\n// If barrier never touched, investor receives full notional regardless\n// of final spot level.\n\nproduct \"Barrier Reverse Convertible 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    state\n        ki_hit: bool = false\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        // Continuous barrier observation (approximated at observation dates)\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Enhanced coupon\n        pay notional * 0.02\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
-      },
-      {
-        id: "06_autocallable_worst_of",
-        title: "06 Autocallable Worst Of",
-        source: "// Worst-of Autocallable (3 underlyings, 18 months)\n// Classic autocallable on a basket of 3 indices.\n// Quarterly observations:\n//   - If worst-of performance >= 100%, early redeem + coupon\n//   - Knock-in barrier at 60%\n//   - At maturity: coupon always paid; if KI hit and WoF < 100%,\n//     redeem at WoF level; otherwise redeem at par\n\nproduct \"WoF Autocall 18m\"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Early autocall (not on final date)\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        // Maturity\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
-      },
-      {
-        id: "07_step_down_autocallable",
-        title: "07 Step Down Autocallable",
-        source: "// Step-Down Autocallable\n// Autocall barrier decreases over time, making early redemption\n// progressively easier. Common in declining-vol environments.\n//\n// Barriers: Q1=105%, Q2=100%, Q3=95%, Q4=90%, Q5=85%, Q6=80%\n// Coupon: 8% p.a.\n// KI barrier: 55%\n\nproduct \"Step-Down Autocall 18m\"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        // Step-down autocall barriers using observation_date to determine quarter\n        // Q1 (0.25): 105%, Q2 (0.50): 100%, Q3 (0.75): 95%\n        // Q4 (1.00): 90%, Q5 (1.25): 85%, Q6 (1.50): 80%\n        let barrier = 1.05 - observation_date * 0.2 + 0.05\n\n        if wof >= barrier and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 0.80 then\n                redeem notional * wof\n            else\n                redeem notional\n",
-      },
-      {
-        id: "08_phoenix_memory_coupon",
-        title: "08 Phoenix Memory Coupon",
-        source: "// Phoenix with Memory Coupons\n// Pays a coupon when worst-of performance is above the coupon barrier (70%).\n// Missed coupons accumulate and are paid when the barrier is next breached.\n// This \"memory\" feature is highly valued by investors.\n//\n// Coupon barrier: 70%\n// KI barrier: 60%\n// Autocall barrier: 100%\n// Coupon: 2% per quarter (8% p.a.)\n\nproduct \"Phoenix Memory 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        missed_coupons: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let wof = worst_of(performances())\n\n        // Knock-in observation\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Coupon with memory\n        if wof >= 0.70 then\n            pay notional * (0.02 + missed_coupons)\n            set missed_coupons = 0.0\n        else\n            set missed_coupons = missed_coupons + 0.02\n\n        // Early autocall (not on final date)\n        if wof >= 1.0 and not is_final then\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
-      },
-      {
-        id: "09_athena_autocallable",
-        title: "09 Athena Autocallable",
-        source: "// Athena (Zero-Coupon Autocallable)\n// No periodic coupons — instead, a single premium is paid at redemption.\n// The premium grows with time: the later the autocall, the larger the payout.\n// Simpler structure favored for its clean payoff profile.\n//\n// Premium: 5% per period (cumulative)\n// Autocall barrier: 100%\n// KI barrier: 60%\n\nproduct \"Athena 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        // Autocall with cumulative premium\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.05 * observation_date / 0.5\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                pay notional * 0.05 * 4.0\n                redeem notional\n",
-      },
-      {
-        id: "10_snowball_note",
-        title: "10 Snowball Note",
-        source: "// Snowball Note\n// Coupon \"snowballs\" — each period's coupon is the previous coupon plus a\n// fixed increment, but only if the underlying is above the coupon barrier.\n// If below, the coupon resets to zero and starts snowballing again.\n//\n// Increment: 1% per quarter\n// Coupon barrier: 80%\n// KI barrier: 60%\n\nproduct \"Snowball 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        current_coupon: float = 0.0\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Snowball coupon logic\n        if perf >= 0.80 then\n            set current_coupon = current_coupon + 0.01\n            pay notional * current_coupon\n        else\n            set current_coupon = 0.0\n\n        // Maturity\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
-      },
-      {
-        id: "11_digital_coupon_note",
-        title: "11 Digital Coupon Note",
-        source: "// Digital Coupon Note\n// Pays a fixed coupon if the underlying is above the digital barrier,\n// zero otherwise. No memory feature. Capital at risk if KI barrier\n// is breached.\n//\n// Digital barrier: 80%\n// Coupon: 3% per quarter (12% p.a. conditional)\n// KI barrier: 55%\n\nproduct \"Digital Coupon Note 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.55 then\n            set ki_hit = true\n\n        // Digital coupon: all or nothing\n        if perf >= 0.80 then\n            pay notional * 0.03\n\n        // Maturity\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
-      },
-      {
-        id: "12_twin_win",
-        title: "12 Twin Win",
-        source: "// Twin-Win Certificate\n// Profits from both upward and downward moves of the underlying.\n// At maturity: pays abs(performance - 1) as a bonus.\n// BUT if a knock-in barrier is breached, downside protection is lost\n// and the investor participates in the full downside.\n//\n// KI barrier: 60%\n// Participation: 100% both ways (when no KI)\n\nproduct \"Twin-Win 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Barrier monitoring\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Maturity payoff\n        if is_final then\n            if ki_hit then\n                // KI hit: straight equity participation\n                redeem notional * perf\n            else\n                // No KI: profit from abs move\n                let move = perf - 1.0\n                let abs_move = max(move, 0.0 - move)\n                redeem notional * (1.0 + abs_move)\n",
-      },
-      {
-        id: "13_capital_protected_note",
-        title: "13 Capital Protected Note",
-        source: "// Capital Protected Note (CPN)\n// 100% capital protection at maturity plus participation in upside.\n// Investor never loses principal, but upside is capped or has\n// reduced participation to fund the protection.\n//\n// Protection: 100%\n// Upside participation: 60%\n// Cap: 130% of notional total return\n\nproduct \"Capital Protected Note 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 2.0 to 2.0\n        let perf = worst_of(performances())\n\n        // Upside participation, capped\n        let upside = max(perf - 1.0, 0.0) * 0.60\n        let capped_upside = min(upside, 0.30)\n\n        pay notional * capped_upside\n        redeem notional\n",
-      },
-      {
-        id: "14_bonus_certificate",
-        title: "14 Bonus Certificate",
-        source: "// Bonus Certificate\n// Offers a minimum return (bonus level) as long as the barrier is never\n// breached. If barrier is breached, the certificate tracks the underlying\n// 1:1 from inception.\n//\n// Bonus level: 120% (i.e., min 20% return)\n// Barrier: 70%\n// No cap on upside\n\nproduct \"Bonus Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        barrier_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.70 then\n            set barrier_hit = true\n\n        if is_final then\n            if barrier_hit then\n                // Barrier hit: 1:1 participation\n                redeem notional * perf\n            else\n                // Barrier not hit: at least bonus level\n                let payout = max(perf, 1.20)\n                redeem notional * payout\n",
-      },
-      {
-        id: "15_cliquet",
-        title: "15 Cliquet",
-        source: "// Cliquet (Ratchet) Option\n// Accumulates capped and floored periodic returns.\n// Each period, the return is max(floor, min(cap, periodic_return)).\n// At maturity, pays notional * sum_of_capped_returns.\n//\n// This approximation uses observation-to-observation returns via\n// the performance ratio.\n//\n// Local floor: 0% (no negative contribution)\n// Local cap: 4% per quarter\n// Global floor: 0% (minimum total payout is zero)\n\nproduct \"Cliquet 1Y\"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state  \n        prev_perf: float = 1.0\n        total_return: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        // Periodic return relative to previous observation\n        let period_return = perf / prev_perf - 1.0\n\n        // Apply local floor and cap\n        let floored = max(period_return, 0.0)\n        let capped = min(floored, 0.04)\n\n        set total_return = total_return + capped\n        set prev_perf = perf\n\n        if is_final then\n            // Global floor at zero\n            let payout = max(total_return, 0.0)\n            pay notional * payout\n            redeem notional\n",
-      },
-      {
-        id: "16_accumulator_tarf",
-        title: "16 Accumulator Tarf",
-        source: "// Accumulator (TARF — Target Accrual Redemption Forward)\n// Monthly observations. When the spot is within a range, the investor\n// accumulates units at a discounted price. Once the total accumulated\n// profit hits a target, the structure terminates.\n//\n// Range: 90% – 110% of initial spot\n// Accumulation per period: notional * 0.0833 * (perf - 1.0)\n// Target cap: 10% of notional\n\nproduct \"Accumulator TARF 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        accumulated_profit: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if accumulated_profit < 0.10 then\n            if perf >= 0.90 and perf <= 1.10 then\n                let period_pnl = 0.0833 * (perf - 1.0)\n                set accumulated_profit = accumulated_profit + max(period_pnl, 0.0)\n                pay notional * period_pnl\n\n        // Target hit — knock out\n        if accumulated_profit >= 0.10 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n",
-      },
-      {
-        id: "17_range_accrual",
-        title: "17 Range Accrual",
-        source: "// Equity Range Accrual\n// Pays a coupon proportional to the fraction of observation dates\n// where the underlying stays within a range.\n//\n// Range: 80% – 120% of initial spot\n// Max coupon: 10% p.a. * accrual fraction\n// Monthly monitoring (12 dates)\n\nproduct \"Range Accrual 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        days_in_range: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 0.80 and perf <= 1.20 then\n            set days_in_range = days_in_range + 1.0\n\n        if is_final then\n            let accrual_frac = days_in_range / 12.0\n            pay notional * 0.10 * accrual_frac\n            redeem notional\n",
-      },
-      {
-        id: "18_shark_fin",
-        title: "18 Shark Fin",
-        source: "// Shark Fin Note\n// Capital protected with capped upside participation.\n// If the underlying ever breaches an upper barrier (knock-out),\n// the upside is capped at a rebate level instead of full participation.\n//\n// Upper KO barrier: 130%\n// Participation (no KO): 100% of upside\n// Rebate (if KO): fixed 10%\n// Downside: 100% protected\n\nproduct \"Shark Fin 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ko_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Upper barrier monitoring\n        if perf >= 1.30 then\n            set ko_hit = true\n\n        if is_final then\n            if ko_hit then\n                // Knocked out: pay rebate only\n                pay notional * 0.10\n                redeem notional\n            else\n                // No KO: participate in upside, protected on downside\n                let upside = max(perf - 1.0, 0.0)\n                pay notional * upside\n                redeem notional\n",
-      },
-      {
-        id: "19_outperformance_certificate",
-        title: "19 Outperformance Certificate",
-        source: "// Outperformance Certificate\n// Leveraged participation in the upside above the strike.\n// Below strike, investor participates 1:1 in the downside.\n//\n// Strike: 100%\n// Upside participation: 150%\n// No cap, no capital protection\n\nproduct \"Outperformance Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            // Leveraged upside\n            let upside = (perf - 1.0) * 1.50\n            redeem notional * (1.0 + upside)\n        else\n            // 1:1 downside\n            redeem notional * perf\n",
-      },
-      {
-        id: "20_wedding_cake",
-        title: "20 Wedding Cake",
-        source: "// Wedding Cake (Multi-Barrier Coupon)\n// Coupon depends on which \"tier\" the worst-of performance falls into.\n// Higher performance tiers pay higher coupons.\n//\n// Tier 1: WoF >= 100% → 3% coupon\n// Tier 2: WoF >= 80%  → 2% coupon\n// Tier 3: WoF >= 60%  → 1% coupon\n// Below 60%: no coupon + KI risk\n//\n// KI barrier: 50%\n\nproduct \"Wedding Cake 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.50 then\n            set ki_hit = true\n\n        // Tiered coupon structure\n        if wof >= 1.0 then\n            pay notional * 0.03\n        else if wof >= 0.80 then\n            pay notional * 0.02\n        else if wof >= 0.60 then\n            pay notional * 0.01\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
-      },
-      {
-        id: "21_best_of_call",
-        title: "21 Best Of Call",
-        source: "// Best-of Call on Basket\n// At maturity, pays the best performance among 3 underlyings.\n// Investor profits from the strongest-performing asset.\n// Capital at risk (no protection).\n//\n// This is essentially a rainbow option (best-of call).\n\nproduct \"Best-of Call 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n\n        // Pay upside of best performer\n        let payout = max(bof - 1.0, 0.0)\n        pay notional * payout\n        redeem notional\n",
-      },
-      {
-        id: "22_worst_of_put",
-        title: "22 Worst Of Put",
-        source: "// Worst-of Put\n// At maturity, pays max(0, strike - worst_of_performance) * notional.\n// The investor is long a put on the worst-performing asset.\n// Strike at 100%.\n\nproduct \"Worst-of Put 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    schedule annual from 1.0 to 1.0\n        let wof = worst_of(performances())\n        let put_payout = max(1.0 - wof, 0.0)\n        pay notional * put_payout\n        redeem notional\n",
-      },
-      {
-        id: "23_express_certificate",
-        title: "23 Express Certificate",
-        source: "// Express Certificate\n// Similar to an autocallable but with a growing redemption premium.\n// Each observation date, if the underlying is above par,\n// the product redeems at an increasing premium.\n//\n// Period 1 (6m): redeem at 103%\n// Period 2 (12m): redeem at 106%\n// Period 3 (18m): redeem at 109%\n// Period 4 (24m, final): redeem at 112% or at performance if KI hit\n//\n// KI barrier: 65%\n\nproduct \"Express Certificate 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.65 then\n            set ki_hit = true\n\n        // Express redemption with growing premium\n        let premium = 1.0 + 0.03 * observation_date / 0.5\n\n        if perf >= 1.0 and not is_final then\n            redeem notional * premium\n\n        if is_final then\n            if perf >= 1.0 then\n                redeem notional * premium\n            else if ki_hit then\n                redeem notional * perf\n            else\n                redeem notional\n",
-      },
-      {
-        id: "24_lookback_coupon",
-        title: "24 Lookback Coupon",
-        source: "// Lookback-Style Coupon Note\n// Tracks the maximum performance seen across observation dates.\n// At maturity, pays a coupon based on the highest watermark achieved.\n// Principal always returned (capital protected).\n//\n// Coupon: 50% participation in max observed performance above par.\n\nproduct \"Lookback Coupon 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        max_perf: float = 1.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Track high watermark\n        if perf > max_perf then\n            set max_perf = perf\n\n        if is_final then\n            // Pay coupon based on best performance seen\n            let upside = max(max_perf - 1.0, 0.0) * 0.50\n            pay notional * upside\n            redeem notional\n",
-      },
-      {
-        id: "25_callable_note",
-        title: "25 Callable Note",
-        source: "// Callable Yield Note\n// Issuer has the right to call (redeem early) the note at any\n// observation date. Modeled here as automatic call when the\n// underlying is above a call trigger (105%).\n// Pays a high fixed coupon each period as compensation for call risk.\n//\n// Coupon: 3% per quarter (12% p.a.)\n// Call trigger: 105%\n\nproduct \"Callable Yield Note 2Y\"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        // Fixed coupon each period\n        pay notional * 0.03\n\n        // Issuer calls if above trigger\n        if perf >= 1.05 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n",
-      },
-      {
-        id: "26_asian_payout",
-        title: "26 Asian Payout",
-        source: "// Asian Payout Note\n// Payout at maturity is based on the average performance across\n// all observation dates, rather than final spot.\n// Averaging reduces the impact of spot manipulation and vol.\n//\n// Participation: 100% of average performance above strike\n// Strike: 100%\n// Monthly averaging over 1 year (12 observations)\n\nproduct \"Asian Payout 1Y\"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        sum_perf: float = 0.0\n        num_obs: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n        set sum_perf = sum_perf + perf\n        set num_obs = num_obs + 1.0\n\n        if is_final then\n            let avg_perf = sum_perf / num_obs\n            let payout = max(avg_perf - 1.0, 0.0)\n            pay notional * payout\n            redeem notional\n",
-      },
-      {
-        id: "27_airbag_certificate",
-        title: "27 Airbag Certificate",
-        source: "// Airbag Certificate\n// Provides cushioned downside exposure. The investor participates 1:1\n// in the upside. On the downside, losses are reduced by the \"airbag\"\n// ratio: the investor's entry point is effectively lowered.\n//\n// Buffer zone: first 30% of losses are absorbed\n// Below buffer: 1:1 participation from the buffer level\n// Upside: 1:1 uncapped participation\n//\n// Example: if perf = 0.60, investor gets 0.60/0.70 = 0.857 (not 0.60)\n\nproduct \"Airbag Certificate 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            // 1:1 upside\n            redeem notional * perf\n        else if perf >= 0.70 then\n            // Within buffer: no loss\n            redeem notional\n        else\n            // Below buffer: airbag ratio\n            redeem notional * perf / 0.70\n",
-      },
-      {
-        id: "28_double_barrier_ki_ko",
-        title: "28 Double Barrier Ki Ko",
-        source: "// Double Barrier (Knock-In / Knock-Out)\n// Combines an upper knock-out barrier with a lower knock-in barrier.\n// If upper barrier is hit, the structure terminates with a rebate.\n// If lower barrier is hit, capital is at risk at maturity.\n// Neither hit: full notional + coupon.\n//\n// Upper KO: 140%\n// Lower KI: 60%\n// KO rebate: 5%\n// Coupon: 8% p.a.\n\nproduct \"Double Barrier KIKO 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        // Lower knock-in\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        // Upper knock-out\n        if perf >= 1.40 and not is_final then\n            pay notional * 0.05\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n",
-      },
-      {
-        id: "29_dispersion_note",
-        title: "29 Dispersion Note",
-        source: "// Dispersion Note\n// Pays a coupon proportional to the spread between the best and worst\n// performing assets. The wider the dispersion, the higher the coupon.\n// Investors profit from divergence in the basket.\n//\n// Coupon: notional * (best_of - worst_of) * participation\n// Participation: 50%\n// Capital protected\n\nproduct \"Dispersion Note 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n        let wof = worst_of(performances())\n        let spread = bof - wof\n\n        pay notional * spread * 0.50\n        redeem notional\n",
-      },
-      {
-        id: "30_napoleon",
-        title: "30 Napoleon",
-        source: "// Napoleon (Worst-of Digital Autocallable)\n// Monthly observations. Each month pays a fixed coupon only if\n// the worst-of performance is above the digital barrier.\n// Features autocall and KI barrier.\n//\n// Digital barrier: 85%\n// Coupon: 1% per month (12% p.a. conditional)\n// Autocall: 100% (semi-annual only, every 6th observation)\n// KI: 55%\n\nproduct \"Napoleon 1Y\"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n        obs_count: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let wof = worst_of(performances())\n        set obs_count = obs_count + 1.0\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        // Digital coupon\n        if wof >= 0.85 then\n            pay notional * 0.01\n\n        // Semi-annual autocall check (obs 6)\n        if obs_count == 6.0 and wof >= 1.0 then\n            redeem notional\n\n        // Maturity\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n",
-      },
-    ];
-    const DSL_EXAMPLE_MAP = new Map(DSL_EXAMPLES.map((x) => [x.id, x]));
 
     // =====================================================================
     //  Surface Config State
@@ -1529,18 +1422,32 @@
             position: { referencePanel: 'surfacecfg', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
         },
       },
-      dsl: {
-        panels: ['dsleditor', 'dslresults', 'dslmarket', 'dslexamples'],
+      history: {
+        panels: ['pricechart', 'histvol', 'tradeflow', 'funding'],
         build(dv) {
           const W = window.innerWidth;
           const H = window.innerHeight - 44;
-          dv.addPanel({ id: 'dsleditor', component: 'dsleditor', title: 'OpenFerric DSL Editor' });
-          dv.addPanel({ id: 'dslresults', component: 'dslresults', title: 'DSL Results',
-            position: { referencePanel: 'dsleditor', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
-          dv.addPanel({ id: 'dslmarket', component: 'dslmarket', title: 'DSL Market',
-            position: { referencePanel: 'dslresults', direction: 'below' }, initialHeight: Math.round(H * 0.32) });
-          dv.addPanel({ id: 'dslexamples', component: 'dslexamples', title: 'DSL Examples',
-            position: { referencePanel: 'dslmarket', direction: 'below' }, initialHeight: Math.round(H * 0.32) });
+          dv.addPanel({ id: 'pricechart', component: 'pricechart', title: 'Price Chart' });
+          dv.addPanel({ id: 'histvol', component: 'histvol', title: 'Historical Volatility',
+            position: { referencePanel: 'pricechart', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
+          dv.addPanel({ id: 'tradeflow', component: 'tradeflow', title: 'Option Trade Flow',
+            position: { referencePanel: 'pricechart', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
+          dv.addPanel({ id: 'funding', component: 'funding', title: 'Funding History',
+            position: { referencePanel: 'histvol', direction: 'below' }, initialHeight: Math.round(H * 0.5) });
+        },
+      },
+      structuring: {
+        panels: ['structeditor', 'dslresult', 'dslpayoff', 'structmarket'],
+        build(dv) {
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
+          dv.addPanel({ id: 'structeditor', component: 'structeditor', title: 'DSL Editor' });
+          dv.addPanel({ id: 'dslresult', component: 'dslresult', title: 'Pricing Result',
+            position: { referencePanel: 'structeditor', direction: 'right' }, initialWidth: Math.round(W * 0.4) });
+          dv.addPanel({ id: 'structmarket', component: 'structmarket', title: 'Market',
+            position: { referencePanel: 'structeditor', direction: 'below' }, initialHeight: Math.round(H * 0.28) });
+          dv.addPanel({ id: 'dslpayoff', component: 'dslpayoff', title: 'Payoff Profile',
+            position: { referencePanel: 'dslresult', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
         },
       },
       all: {
@@ -3056,7 +2963,7 @@
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.funding; }
     }
 
-    class TradeFlowPanel {
+    class LiveTradeFlowPanel {
       constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
       get element() { return this._el; }
       init(params) {
@@ -3139,6 +3046,768 @@
         fetchHistoricalVol();
       }
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.volcone; }
+    }
+
+    const HISTORY_RANGE_MS = Object.freeze({
+      '1h': 60 * 60 * 1000,
+      '4h': 4 * 60 * 60 * 1000,
+      '24h': 24 * 60 * 60 * 1000,
+      '1d': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000,
+      '90d': 90 * 24 * 60 * 60 * 1000,
+      '1y': 365 * 24 * 60 * 60 * 1000,
+    });
+
+    function historyLinePanelCurrencyDefault() {
+      return activeCurrency.startsWith('ETH') ? 'ETH' : 'BTC';
+    }
+
+    function historyResizeCanvas(canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(16, Math.floor(rect.width));
+      const height = Math.max(16, Math.floor(rect.height));
+      const dpr = window.devicePixelRatio || 1;
+      const rawW = Math.floor(width * dpr);
+      const rawH = Math.floor(height * dpr);
+      if (canvas.width !== rawW || canvas.height !== rawH) {
+        canvas.width = rawW;
+        canvas.height = rawH;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, width, height };
+    }
+
+    function historyNearestPoint(points, targetTs) {
+      if (!Array.isArray(points) || points.length === 0) return null;
+      let best = points[0];
+      let bestDiff = Math.abs(points[0].ts - targetTs);
+      for (let i = 1; i < points.length; i++) {
+        const d = Math.abs(points[i].ts - targetTs);
+        if (d < bestDiff) {
+          bestDiff = d;
+          best = points[i];
+        }
+      }
+      return best;
+    }
+
+    function historyFormatTs(ts) {
+      if (!Number.isFinite(ts)) return '--';
+      return new Date(ts).toLocaleString();
+    }
+
+    function historyDrawGrid(ctx, area, xTicks = 6, yTicks = 5) {
+      ctx.save();
+      ctx.strokeStyle = '#1a2332';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= xTicks; i++) {
+        const x = area.x + (i / xTicks) * area.w;
+        ctx.beginPath();
+        ctx.moveTo(x, area.y);
+        ctx.lineTo(x, area.y + area.h);
+        ctx.stroke();
+      }
+      for (let i = 0; i <= yTicks; i++) {
+        const y = area.y + (i / yTicks) * area.h;
+        ctx.beginPath();
+        ctx.moveTo(area.x, y);
+        ctx.lineTo(area.x + area.w, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function historyDrawLineChart(canvas, tooltipEl, lines, hoverState, valueSuffix = '%') {
+      const { ctx, width, height } = historyResizeCanvas(canvas);
+      ctx.fillStyle = '#070a0f';
+      ctx.fillRect(0, 0, width, height);
+
+      const area = { x: 46, y: 16, w: Math.max(10, width - 58), h: Math.max(10, height - 38) };
+      historyDrawGrid(ctx, area, 6, 5);
+
+      const points = [];
+      for (const line of lines || []) {
+        if (!line || !Array.isArray(line.data)) continue;
+        for (const pt of line.data) {
+          if (!pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.v)) continue;
+          points.push(pt);
+        }
+      }
+      if (points.length < 2) {
+        ctx.fillStyle = '#8ea1b8';
+        ctx.font = '11px "JetBrains Mono"';
+        ctx.textAlign = 'center';
+        ctx.fillText('No historical data in selected window', width * 0.5, height * 0.5);
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+
+      const minTs = Math.min(...points.map((p) => p.ts));
+      const maxTs = Math.max(...points.map((p) => p.ts));
+      let minV = Math.min(...points.map((p) => p.v));
+      let maxV = Math.max(...points.map((p) => p.v));
+      if (!Number.isFinite(minV) || !Number.isFinite(maxV)) {
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+      const pad = Math.max(0.1, (maxV - minV) * 0.12);
+      minV -= pad;
+      maxV += pad;
+      if (maxV - minV < 1e-9) { maxV += 1; minV -= 1; }
+
+      const xFromTs = (ts) => area.x + ((ts - minTs) / Math.max(1, maxTs - minTs)) * area.w;
+      const yFromV = (v) => area.y + (1 - ((v - minV) / Math.max(1e-9, maxV - minV))) * area.h;
+
+      for (const line of lines || []) {
+        if (!line || !Array.isArray(line.data) || line.data.length < 2) continue;
+        ctx.save();
+        ctx.strokeStyle = line.color || '#2fb2ff';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash(line.dashed ? [4, 3] : []);
+        let started = false;
+        for (const pt of line.data) {
+          if (!Number.isFinite(pt.ts) || !Number.isFinite(pt.v)) continue;
+          const x = xFromTs(pt.ts);
+          const y = yFromV(pt.v);
+          if (!started) {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            started = true;
+          } else ctx.lineTo(x, y);
+        }
+        if (started) ctx.stroke();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = '#8ea1b8';
+      ctx.font = '10px "JetBrains Mono"';
+      ctx.textAlign = 'left';
+      ctx.fillText(minV.toFixed(2) + valueSuffix, 6, area.y + area.h);
+      ctx.fillText(maxV.toFixed(2) + valueSuffix, 6, area.y + 8);
+      ctx.textAlign = 'center';
+      ctx.fillText(new Date(minTs).toLocaleDateString(), area.x, height - 6);
+      ctx.fillText(new Date(maxTs).toLocaleDateString(), area.x + area.w, height - 6);
+
+      let legendX = area.x + 4;
+      const legendY = 8;
+      for (const line of lines || []) {
+        ctx.fillStyle = line.color || '#2fb2ff';
+        ctx.fillRect(legendX, legendY, 8, 2);
+        legendX += 12;
+        ctx.fillStyle = '#8ea1b8';
+        ctx.textAlign = 'left';
+        ctx.fillText(line.name || 'Series', legendX, legendY + 4);
+        legendX += (line.name || 'Series').length * 6 + 12;
+      }
+
+      if (!hoverState || hoverState.x < area.x || hoverState.x > area.x + area.w || hoverState.y < area.y || hoverState.y > area.y + area.h) {
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+      const hoverTs = minTs + ((hoverState.x - area.x) / area.w) * (maxTs - minTs);
+      const nearest = [];
+      for (const line of lines || []) {
+        if (!line || !Array.isArray(line.data) || line.data.length === 0) continue;
+        const hit = historyNearestPoint(line.data, hoverTs);
+        if (hit) nearest.push({ line, hit });
+      }
+      if (nearest.length === 0) {
+        if (tooltipEl) tooltipEl.style.display = 'none';
+        return;
+      }
+      const anchor = nearest[0].hit;
+      const cx = xFromTs(anchor.ts);
+      ctx.strokeStyle = 'rgba(142,161,184,0.55)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(cx, area.y);
+      ctx.lineTo(cx, area.y + area.h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      for (const row of nearest) {
+        const cy = yFromV(row.hit.v);
+        ctx.beginPath();
+        ctx.fillStyle = row.line.color || '#2fb2ff';
+        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (!tooltipEl) return;
+      const html = [`<div>${historyFormatTs(anchor.ts)}</div>`];
+      for (const row of nearest) {
+        html.push(`<div style="color:${row.line.color || '#2fb2ff'}">${row.line.name}: ${row.hit.v.toFixed(2)}${valueSuffix}</div>`);
+      }
+      tooltipEl.innerHTML = html.join('');
+      tooltipEl.style.display = 'block';
+      const left = Math.max(6, Math.min(width - 180, hoverState.x + 10));
+      const top = Math.max(6, Math.min(height - 52, hoverState.y - 10));
+      tooltipEl.style.left = left + 'px';
+      tooltipEl.style.top = top + 'px';
+    }
+
+    class HistVolPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.hover = null;
+        this.lines = [];
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Historical Volatility</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>currency</label><select class="hv-currency"><option value="BTC">BTC</option><option value="ETH">ETH</option></select>'
+          + '<label>range</label><select class="hv-range"><option value="7d">7d</option><option value="30d" selected>30d</option><option value="90d">90d</option><option value="1y">1y</option></select>'
+          + '<button class="tab-btn hv-refresh">Refresh</button>'
+          + '</div>'
+          + '<div class="history-chart-wrap"><canvas class="history-chart"></canvas><div class="history-tooltip"></div></div>';
+        this.currencySel = this._el.querySelector('.hv-currency');
+        this.rangeSel = this._el.querySelector('.hv-range');
+        this.refreshBtn = this._el.querySelector('.hv-refresh');
+        this.canvas = this._el.querySelector('.history-chart');
+        this.tooltip = this._el.querySelector('.history-tooltip');
+        this.chartWrap = this._el.querySelector('.history-chart-wrap');
+        this.currencySel.value = historyLinePanelCurrencyDefault();
+        panels.histvol = this;
+
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.currencySel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.canvas.addEventListener('mousemove', (e) => {
+          const rect = this.canvas.getBoundingClientRect();
+          this.hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          this.draw();
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+          this.hover = null;
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          this.draw();
+        });
+        this._resizeObs = new ResizeObserver(() => { this.draw(); });
+        this._resizeObs.observe(this._el);
+        this.refresh();
+      }
+      buildHvLines(points) {
+        if (!Array.isArray(points) || points.length < 2) return [];
+        const grouped = new Map();
+        for (const row of points) {
+          if (!Array.isArray(row) || row.length < 2) continue;
+          const ts = Number(row[0]);
+          const v = Number(row[1]);
+          if (!Number.isFinite(ts) || !Number.isFinite(v) || v <= 0) continue;
+          if (!grouped.has(ts)) grouped.set(ts, []);
+          grouped.get(ts).push(v);
+        }
+        const timestamps = [...grouped.keys()].sort((a, b) => a - b);
+        if (timestamps.length < 2) return [];
+        let maxWindows = 0;
+        for (const ts of timestamps) maxWindows = Math.max(maxWindows, grouped.get(ts).length);
+        const out = [];
+        if (maxWindows > 1) {
+          for (let w = 0; w < Math.min(4, maxWindows); w++) {
+            const lineData = [];
+            for (const ts of timestamps) {
+              const val = grouped.get(ts)[w];
+              if (Number.isFinite(val)) lineData.push({ ts, v: val });
+            }
+            if (lineData.length > 1) {
+              out.push({ name: `HV W${w + 1}`, color: ['#2fb2ff', '#19d8a8', '#ffb347', '#ff7a7a'][w % 4], data: lineData });
+            }
+          }
+        } else {
+          const base = timestamps.map((ts) => ({ ts, v: grouped.get(ts)[0] }));
+          const makeMA = (windowLen, label, color) => {
+            if (base.length <= windowLen) return null;
+            let sum = 0;
+            const line = [];
+            for (let i = 0; i < base.length; i++) {
+              sum += base[i].v;
+              if (i >= windowLen) sum -= base[i - windowLen].v;
+              if (i >= windowLen - 1) {
+                line.push({ ts: base[i].ts, v: sum / windowLen });
+              }
+            }
+            return line.length > 1 ? { name: label, color, data: line } : null;
+          };
+          out.push({ name: 'HV', color: '#2fb2ff', data: base });
+          const ma24 = makeMA(24, 'HV 24h', '#19d8a8');
+          const ma168 = makeMA(168, 'HV 7d', '#ffb347');
+          if (ma24) out.push(ma24);
+          if (ma168) out.push(ma168);
+        }
+        return out;
+      }
+      async refresh() {
+        if (!historicalDataService) return;
+        this.refreshBtn.disabled = true;
+        this.refreshBtn.textContent = 'Loading...';
+        try {
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['30d'];
+          const endTs = Date.now();
+          const startTs = endTs - rangeMs;
+          const currency = this.currencySel.value || 'BTC';
+          const [hvRes, dvolRes] = await Promise.all([
+            historicalDataService.getHistoricalVolatility({ currency, ttlMs: 15000 }),
+            historicalDataService.getVolatilityIndexData({ currency, startTs, endTs, resolution: 3600, ttlMs: 15000 }),
+          ]);
+          let hvRows = Array.isArray(hvRes) ? hvRes : [];
+          hvRows = hvRows.filter((r) => Array.isArray(r) && Number(r[0]) >= startTs && Number(r[0]) <= endTs);
+          const lines = this.buildHvLines(hvRows);
+          const dvolData = Array.isArray(dvolRes)
+            ? dvolRes.map((d) => ({ ts: Number(d.tick), v: Number(d.close) })).filter((d) => Number.isFinite(d.ts) && Number.isFinite(d.v))
+            : [];
+          if (dvolData.length > 1) {
+            lines.push({ name: 'DVOL', color: '#ff7a7a', data: dvolData, dashed: true });
+          }
+          this.lines = lines;
+          this.draw();
+        } catch (e) {
+          console.warn('[histvol] refresh failed:', e);
+          this.lines = [];
+          this.draw();
+        } finally {
+          this.refreshBtn.disabled = false;
+          this.refreshBtn.textContent = 'Refresh';
+        }
+      }
+      draw() {
+        historyDrawLineChart(this.canvas, this.tooltip, this.lines, this.hover, '%');
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.histvol;
+      }
+    }
+
+    class PriceChartPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.candles = [];
+        this.hover = null;
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Price Chart</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>instrument</label>'
+          + '<select class="pc-instrument"><option value="BTC-PERPETUAL" selected>BTC-PERPETUAL</option><option value="ETH-PERPETUAL">ETH-PERPETUAL</option></select>'
+          + '<label>res</label>'
+          + '<select class="pc-res"><option value="1">1m</option><option value="5" selected>5m</option><option value="15">15m</option><option value="60">1h</option><option value="240">4h</option><option value="1D">1D</option></select>'
+          + '<label>range</label>'
+          + '<select class="pc-range"><option value="1d">1d</option><option value="7d" selected>7d</option><option value="30d">30d</option><option value="90d">90d</option></select>'
+          + '<button class="tab-btn pc-refresh">Refresh</button>'
+          + '</div>'
+          + '<div class="history-chart-wrap"><canvas class="history-chart"></canvas><div class="history-tooltip"></div></div>';
+        this.instrumentSel = this._el.querySelector('.pc-instrument');
+        this.resSel = this._el.querySelector('.pc-res');
+        this.rangeSel = this._el.querySelector('.pc-range');
+        this.refreshBtn = this._el.querySelector('.pc-refresh');
+        this.canvas = this._el.querySelector('.history-chart');
+        this.tooltip = this._el.querySelector('.history-tooltip');
+        this.chartWrap = this._el.querySelector('.history-chart-wrap');
+        panels.pricechart = this;
+
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.instrumentSel.addEventListener('change', () => { this.refresh(); });
+        this.resSel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.canvas.addEventListener('mousemove', (e) => {
+          const rect = this.canvas.getBoundingClientRect();
+          this.hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          this.draw();
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+          this.hover = null;
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          this.draw();
+        });
+        this._resizeObs = new ResizeObserver(() => { this.draw(); });
+        this._resizeObs.observe(this._el);
+        this.refresh();
+      }
+      async refresh() {
+        if (!historicalDataService) return;
+        this.refreshBtn.disabled = true;
+        this.refreshBtn.textContent = 'Loading...';
+        try {
+          const endTs = Date.now();
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['7d'];
+          const startTs = endTs - rangeMs;
+          const result = await historicalDataService.getTradingviewChartData({
+            instrument: this.instrumentSel.value,
+            startTs,
+            endTs,
+            resolution: this.resSel.value,
+            ttlMs: 8000,
+          });
+          const ticks = Array.isArray(result?.ticks) ? result.ticks : [];
+          const open = Array.isArray(result?.open) ? result.open : [];
+          const high = Array.isArray(result?.high) ? result.high : [];
+          const low = Array.isArray(result?.low) ? result.low : [];
+          const close = Array.isArray(result?.close) ? result.close : [];
+          const volume = Array.isArray(result?.volume) ? result.volume : [];
+          const n = Math.min(ticks.length, open.length, high.length, low.length, close.length, volume.length);
+          const rows = [];
+          for (let i = 0; i < n; i++) {
+            const ts = Number(ticks[i]);
+            const o = Number(open[i]);
+            const h = Number(high[i]);
+            const l = Number(low[i]);
+            const c = Number(close[i]);
+            const v = Number(volume[i]);
+            if (!Number.isFinite(ts) || !Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
+            rows.push({ ts, o, h, l, c, v: Number.isFinite(v) ? Math.max(0, v) : 0 });
+          }
+          rows.sort((a, b) => a.ts - b.ts);
+          this.candles = rows;
+          this.draw();
+        } catch (e) {
+          console.warn('[pricechart] refresh failed:', e);
+          this.candles = [];
+          this.draw();
+        } finally {
+          this.refreshBtn.disabled = false;
+          this.refreshBtn.textContent = 'Refresh';
+        }
+      }
+      draw() {
+        const { ctx, width, height } = historyResizeCanvas(this.canvas);
+        ctx.fillStyle = '#070a0f';
+        ctx.fillRect(0, 0, width, height);
+
+        const candles = this.candles;
+        const priceArea = { x: 50, y: 12, w: Math.max(10, width - 62), h: Math.max(10, Math.floor(height * 0.68)) };
+        const volArea = { x: priceArea.x, y: priceArea.y + priceArea.h + 8, w: priceArea.w, h: Math.max(10, height - (priceArea.y + priceArea.h + 24)) };
+        historyDrawGrid(ctx, priceArea, 6, 5);
+        historyDrawGrid(ctx, volArea, 6, 2);
+
+        if (!Array.isArray(candles) || candles.length < 2) {
+          ctx.fillStyle = '#8ea1b8';
+          ctx.font = '11px "JetBrains Mono"';
+          ctx.textAlign = 'center';
+          ctx.fillText('No OHLCV data in selected window', width * 0.5, height * 0.5);
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          return;
+        }
+
+        let low = Infinity;
+        let high = -Infinity;
+        let maxVol = 0;
+        for (const c of candles) {
+          if (c.l < low) low = c.l;
+          if (c.h > high) high = c.h;
+          if (c.v > maxVol) maxVol = c.v;
+        }
+        const pPad = Math.max(1e-6, (high - low) * 0.08);
+        low -= pPad;
+        high += pPad;
+        const tsMin = candles[0].ts;
+        const tsMax = candles[candles.length - 1].ts;
+        const xFromIndex = (i) => priceArea.x + (i / Math.max(1, candles.length - 1)) * priceArea.w;
+        const yFromPrice = (v) => priceArea.y + (1 - ((v - low) / Math.max(1e-9, high - low))) * priceArea.h;
+        const yFromVol = (v) => volArea.y + volArea.h - (v / Math.max(1, maxVol)) * volArea.h;
+        const bodyW = Math.max(1, Math.min(10, (priceArea.w / candles.length) * 0.7));
+
+        for (let i = 0; i < candles.length; i++) {
+          const c = candles[i];
+          const x = xFromIndex(i);
+          const yHigh = yFromPrice(c.h);
+          const yLow = yFromPrice(c.l);
+          const yOpen = yFromPrice(c.o);
+          const yClose = yFromPrice(c.c);
+          const color = c.c >= c.o ? '#22c55e' : '#ef4444';
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, yHigh);
+          ctx.lineTo(x, yLow);
+          ctx.stroke();
+
+          const top = Math.min(yOpen, yClose);
+          const hBody = Math.max(1, Math.abs(yClose - yOpen));
+          ctx.fillStyle = color;
+          ctx.fillRect(x - bodyW * 0.5, top, bodyW, hBody);
+
+          ctx.fillStyle = color;
+          const vy = yFromVol(c.v);
+          ctx.fillRect(x - bodyW * 0.5, vy, bodyW, volArea.y + volArea.h - vy);
+        }
+
+        ctx.fillStyle = '#8ea1b8';
+        ctx.font = '10px "JetBrains Mono"';
+        ctx.textAlign = 'left';
+        ctx.fillText(high.toFixed(2), 6, priceArea.y + 8);
+        ctx.fillText(low.toFixed(2), 6, priceArea.y + priceArea.h);
+        ctx.fillText('V ' + maxVol.toFixed(0), 6, volArea.y + 10);
+        ctx.textAlign = 'center';
+        ctx.fillText(new Date(tsMin).toLocaleDateString(), priceArea.x, height - 6);
+        ctx.fillText(new Date(tsMax).toLocaleDateString(), priceArea.x + priceArea.w, height - 6);
+
+        if (!this.hover || this.hover.x < priceArea.x || this.hover.x > priceArea.x + priceArea.w || this.hover.y < priceArea.y || this.hover.y > volArea.y + volArea.h) {
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          return;
+        }
+        let idx = Math.round(((this.hover.x - priceArea.x) / priceArea.w) * (candles.length - 1));
+        idx = Math.max(0, Math.min(candles.length - 1, idx));
+        const hit = candles[idx];
+        const cx = xFromIndex(idx);
+        const cy = yFromPrice(hit.c);
+
+        ctx.strokeStyle = 'rgba(142,161,184,0.6)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(cx, priceArea.y);
+        ctx.lineTo(cx, volArea.y + volArea.h);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(priceArea.x, this.hover.y);
+        ctx.lineTo(priceArea.x + priceArea.w, this.hover.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.fillStyle = '#2fb2ff';
+        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (!this.tooltip) return;
+        this.tooltip.innerHTML =
+          `<div>${historyFormatTs(hit.ts)}</div>`
+          + `<div>O ${hit.o.toFixed(2)} H ${hit.h.toFixed(2)}</div>`
+          + `<div>L ${hit.l.toFixed(2)} C ${hit.c.toFixed(2)}</div>`
+          + `<div>V ${hit.v.toFixed(2)}</div>`;
+        this.tooltip.style.display = 'block';
+        const left = Math.max(6, Math.min(width - 170, this.hover.x + 10));
+        const top = Math.max(6, Math.min(height - 68, this.hover.y - 10));
+        this.tooltip.style.left = left + 'px';
+        this.tooltip.style.top = top + 'px';
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.pricechart;
+      }
+    }
+
+    class TradeFlowPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.autoOn = true;
+        this.rows = [];
+        this._autoTimer = null;
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Option Trade Flow</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>currency</label><select class="htf-currency"><option value="BTC">BTC</option><option value="ETH">ETH</option></select>'
+          + '<label>range</label><select class="htf-range"><option value="1h">1h</option><option value="4h">4h</option><option value="24h" selected>24h</option></select>'
+          + '<button class="tab-btn htf-refresh">Refresh</button>'
+          + '<button class="tab-btn htf-auto active">Auto On</button>'
+          + '</div>'
+          + '<div class="history-stats">'
+          + '<div class="k">total volume</div><div class="v htf-total">--</div>'
+          + '<div class="k">buy/sell ratio</div><div class="v htf-ratio">--</div>'
+          + '<div class="k">avg IV</div><div class="v htf-iv">--</div>'
+          + '</div>'
+          + '<div class="history-table-wrap"><table><thead><tr><th>time</th><th>instrument</th><th>side</th><th>amount</th><th>price</th><th>IV</th><th>index</th></tr></thead><tbody></tbody></table></div>';
+        this.currencySel = this._el.querySelector('.htf-currency');
+        this.rangeSel = this._el.querySelector('.htf-range');
+        this.refreshBtn = this._el.querySelector('.htf-refresh');
+        this.autoBtn = this._el.querySelector('.htf-auto');
+        this.totalEl = this._el.querySelector('.htf-total');
+        this.ratioEl = this._el.querySelector('.htf-ratio');
+        this.ivEl = this._el.querySelector('.htf-iv');
+        this.tbody = this._el.querySelector('tbody');
+        this.currencySel.value = historyLinePanelCurrencyDefault();
+        panels.tradeflowhist = this;
+
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.currencySel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.autoBtn.addEventListener('click', () => {
+          this.autoOn = !this.autoOn;
+          this.autoBtn.classList.toggle('active', this.autoOn);
+          this.autoBtn.textContent = this.autoOn ? 'Auto On' : 'Auto Off';
+          this.resetAutoTimer();
+        });
+        this.resetAutoTimer();
+        this.refresh();
+      }
+      resetAutoTimer() {
+        clearInterval(this._autoTimer);
+        if (this.autoOn) this._autoTimer = setInterval(() => { this.refresh(true); }, 15000);
+      }
+      async refresh(isAuto = false) {
+        if (!historicalDataService) return;
+        if (!isAuto) {
+          this.refreshBtn.disabled = true;
+          this.refreshBtn.textContent = 'Loading...';
+        }
+        try {
+          const endTs = Date.now();
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['24h'];
+          const startTs = endTs - rangeMs;
+          const trades = await historicalDataService.getLastTradesByCurrencyAndTime({
+            currency: this.currencySel.value,
+            kind: 'option',
+            startTs,
+            endTs,
+            count: 1000,
+            sorting: 'desc',
+            maxPages: 4,
+            ttlMs: isAuto ? 0 : 5000,
+          });
+          this.rows = Array.isArray(trades) ? trades.slice(0, 400) : [];
+          this.renderRows();
+        } catch (e) {
+          console.warn('[history-tradeflow] refresh failed:', e);
+          this.rows = [];
+          this.renderRows();
+        } finally {
+          if (!isAuto) {
+            this.refreshBtn.disabled = false;
+            this.refreshBtn.textContent = 'Refresh';
+          }
+        }
+      }
+      renderRows() {
+        const rows = this.rows || [];
+        let totalVol = 0;
+        let buyVol = 0;
+        let sellVol = 0;
+        let ivSum = 0;
+        let ivN = 0;
+        this.tbody.innerHTML = '';
+        for (const t of rows) {
+          const amount = Number(t.amount);
+          const price = Number(t.price);
+          const iv = Number(t.iv);
+          const idx = Number(t.index_price);
+          const direction = String(t.direction || '').toLowerCase();
+          const tr = document.createElement('tr');
+          const cls = direction === 'buy' ? 'hist-buy' : 'hist-sell';
+          tr.innerHTML =
+            `<td>${new Date(Number(t.timestamp || Date.now())).toLocaleTimeString()}</td>`
+            + `<td>${t.instrument_name || '--'}</td>`
+            + `<td class="${cls}">${direction || '--'}</td>`
+            + `<td>${Number.isFinite(amount) ? amount.toFixed(2) : '--'}</td>`
+            + `<td>${Number.isFinite(price) ? pFmt.format(price) : '--'}</td>`
+            + `<td>${Number.isFinite(iv) ? (normalizeIv(iv) * 100).toFixed(1) + '%' : '--'}</td>`
+            + `<td>${Number.isFinite(idx) ? pFmt.format(idx) : '--'}</td>`;
+          this.tbody.appendChild(tr);
+
+          if (Number.isFinite(amount)) {
+            totalVol += amount;
+            if (direction === 'buy') buyVol += amount;
+            else if (direction === 'sell') sellVol += amount;
+          }
+          const ivNorm = normalizeIv(iv);
+          if (Number.isFinite(ivNorm)) { ivSum += ivNorm; ivN++; }
+        }
+        if (this.totalEl) this.totalEl.textContent = totalVol.toFixed(2);
+        if (this.ratioEl) this.ratioEl.textContent = sellVol > 0 ? (buyVol / sellVol).toFixed(2) : '--';
+        if (this.ivEl) this.ivEl.textContent = ivN > 0 ? ((ivSum / ivN) * 100).toFixed(2) + '%' : '--';
+      }
+      dispose() {
+        clearInterval(this._autoTimer);
+        delete panels.tradeflowhist;
+      }
+    }
+
+    class FundingPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+        this.hover = null;
+        this.lines = [];
+      }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Funding History</div></div>'
+          + '<div class="history-toolbar">'
+          + '<label>instrument</label><select class="hf-instrument"><option value="BTC-PERPETUAL" selected>BTC-PERPETUAL</option><option value="ETH-PERPETUAL">ETH-PERPETUAL</option></select>'
+          + '<label>range</label><select class="hf-range"><option value="7d" selected>7d</option><option value="30d">30d</option><option value="90d">90d</option></select>'
+          + '<button class="tab-btn hf-refresh">Refresh</button>'
+          + '</div>'
+          + '<div class="history-chart-wrap"><canvas class="history-chart"></canvas><div class="history-tooltip"></div></div>';
+        this.instrumentSel = this._el.querySelector('.hf-instrument');
+        this.rangeSel = this._el.querySelector('.hf-range');
+        this.refreshBtn = this._el.querySelector('.hf-refresh');
+        this.canvas = this._el.querySelector('.history-chart');
+        this.tooltip = this._el.querySelector('.history-tooltip');
+        panels.fundinghist = this;
+
+        this.instrumentSel.value = activeCurrency.startsWith('ETH') ? 'ETH-PERPETUAL' : 'BTC-PERPETUAL';
+        this.refreshBtn.addEventListener('click', () => { this.refresh(); });
+        this.instrumentSel.addEventListener('change', () => { this.refresh(); });
+        this.rangeSel.addEventListener('change', () => { this.refresh(); });
+        this.canvas.addEventListener('mousemove', (e) => {
+          const rect = this.canvas.getBoundingClientRect();
+          this.hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          this.draw();
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+          this.hover = null;
+          if (this.tooltip) this.tooltip.style.display = 'none';
+          this.draw();
+        });
+        this._resizeObs = new ResizeObserver(() => { this.draw(); });
+        this._resizeObs.observe(this._el);
+        this.refresh();
+      }
+      async refresh() {
+        if (!historicalDataService) return;
+        this.refreshBtn.disabled = true;
+        this.refreshBtn.textContent = 'Loading...';
+        try {
+          const endTs = Date.now();
+          const rangeMs = HISTORY_RANGE_MS[this.rangeSel.value] || HISTORY_RANGE_MS['7d'];
+          const startTs = endTs - rangeMs;
+          const rows = await historicalDataService.getFundingRateHistory({
+            instrument: this.instrumentSel.value,
+            startTs,
+            endTs,
+            ttlMs: 12000,
+          });
+          const points = Array.isArray(rows)
+            ? rows
+              .map((r) => ({ ts: Number(r.timestamp), r8h: Number(r.interest_8h) * 100, r1h: Number(r.interest_1h) * 100 }))
+              .filter((r) => Number.isFinite(r.ts))
+              .sort((a, b) => a.ts - b.ts)
+            : [];
+          this.lines = [
+            { name: '8h', color: '#2fb2ff', data: points.filter((p) => Number.isFinite(p.r8h)).map((p) => ({ ts: p.ts, v: p.r8h })) },
+            { name: '1h', color: '#19d8a8', data: points.filter((p) => Number.isFinite(p.r1h)).map((p) => ({ ts: p.ts, v: p.r1h })) },
+          ].filter((line) => line.data.length > 1);
+          this.draw();
+        } catch (e) {
+          console.warn('[history-funding] refresh failed:', e);
+          this.lines = [];
+          this.draw();
+        } finally {
+          this.refreshBtn.disabled = false;
+          this.refreshBtn.textContent = 'Refresh';
+        }
+      }
+      draw() {
+        historyDrawLineChart(this.canvas, this.tooltip, this.lines, this.hover, '%');
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        delete panels.fundinghist;
+      }
     }
 
     class StrategyPanel {
@@ -3371,34 +4040,6 @@
       }
     }
 
-    function ensureDslInitialSource() {
-      if (dslState.source) return;
-      if (DSL_EXAMPLES.length === 0) return;
-      dslState.source = DSL_EXAMPLES[0].source;
-      dslState.activeExampleId = DSL_EXAMPLES[0].id;
-    }
-
-    function dslNormalizeCompileError(rawErr) {
-      if (!rawErr) return null;
-      if (typeof rawErr === 'string') {
-        return { kind: 'error', message: rawErr, span_start: 0, span_end: 0 };
-      }
-      return {
-        kind: rawErr.kind || 'error',
-        message: rawErr.message || 'Unknown compile error',
-        span_start: Number.isFinite(rawErr.span_start) ? rawErr.span_start : 0,
-        span_end: Number.isFinite(rawErr.span_end) ? rawErr.span_end : 0,
-      };
-    }
-
-    function dslFormatNumber(value, digits = 6) {
-      if (!Number.isFinite(value)) return '--';
-      if (Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.0001)) {
-        return value.toExponential(4);
-      }
-      return value.toFixed(digits);
-    }
-
     function dslParseNumberList(raw, fallback) {
       const txt = String(raw ?? '');
       const parts = txt.split(',').map((x) => x.trim()).filter((x) => x.length > 0);
@@ -3445,675 +4086,7 @@
       return Math.max(1, n);
     }
 
-    function buildDslPricingPayload() {
-      const parsedSpots = dslParseNumberList(dslState.marketInputs.spots, [100.0]);
-      const parsedVols = dslParseNumberList(dslState.marketInputs.vols, [0.2]);
-      const parsedDivs = dslParseNumberList(dslState.marketInputs.dividendYields, [0.0]);
-      const nAssets = inferDslAssetCount(dslState.compiledProduct, parsedSpots, parsedVols, parsedDivs);
-      const spots = dslExpandArray(parsedSpots, nAssets, 100.0);
-      const vols = dslExpandArray(parsedVols, nAssets, 0.2);
-      const dividendYields = dslExpandArray(parsedDivs, nAssets, 0.0);
-      const rate = Number.isFinite(parseFloat(dslState.marketInputs.rate)) ? parseFloat(dslState.marketInputs.rate) : 0.05;
-      const numPaths = dslParsePositiveInt(dslState.marketInputs.numPaths, 100000, 1);
-      const numSteps = dslParsePositiveInt(dslState.marketInputs.numSteps, 252, 1);
-      const seed = dslParsePositiveInt(dslState.marketInputs.seed, 42, 0, Number.MAX_SAFE_INTEGER);
 
-      const correlations = [];
-      for (let i = 0; i < nAssets; i++) {
-        const row = [];
-        for (let j = 0; j < nAssets; j++) row.push(i === j ? 1.0 : 0.0);
-        correlations.push(row);
-      }
-
-      const assets = [];
-      for (let i = 0; i < nAssets; i++) {
-        assets.push({ spot: spots[i], vol: vols[i], dividend_yield: dividendYields[i] });
-      }
-      const market = {
-        assets,
-        correlation: correlations,
-        rate,
-      };
-
-      return {
-        assetCount: nAssets,
-        numPaths,
-        numSteps,
-        seed,
-        market,
-        marketJson: JSON.stringify(market),
-      };
-    }
-
-    function dslSetCompileMarkers(errObj) {
-      if (!monacoRef || !panels.dsleditor || !panels.dsleditor.editor) return;
-      const model = panels.dsleditor.editor.getModel();
-      if (!model) return;
-
-      const markers = [];
-      if (errObj && Number.isFinite(errObj.span_start)) {
-        const maxOffset = model.getValueLength();
-        let startOffset = Math.max(0, Math.min(maxOffset, errObj.span_start));
-        let endOffset = Number.isFinite(errObj.span_end) ? Math.max(0, Math.min(maxOffset, errObj.span_end)) : startOffset + 1;
-        if (endOffset <= startOffset) endOffset = Math.min(maxOffset, startOffset + 1);
-        const startPos = model.getPositionAt(startOffset);
-        const endPos = model.getPositionAt(endOffset);
-        markers.push({
-          severity: monacoRef.MarkerSeverity.Error,
-          message: (errObj.kind ? errObj.kind + ': ' : '') + (errObj.message || 'compile error'),
-          startLineNumber: startPos.lineNumber,
-          startColumn: startPos.column,
-          endLineNumber: endPos.lineNumber,
-          endColumn: endPos.column,
-        });
-      }
-
-      monacoRef.editor.setModelMarkers(model, DSL_MARKER_OWNER, markers);
-    }
-
-    function scheduleDslCompile(delayMs = 500) {
-      clearTimeout(dslCompileTimer);
-      dslCompileTimer = setTimeout(() => {
-        triggerDslCompile();
-      }, delayMs);
-    }
-
-    function scheduleDslReprice(delayMs = 500) {
-      clearTimeout(dslPriceTimer);
-      dslPriceTimer = setTimeout(() => {
-        triggerDslPricing();
-      }, delayMs);
-    }
-
-    function triggerDslCompile() {
-      ensureDslInitialSource();
-      if (panels.dsleditor && panels.dsleditor.editor) {
-        dslState.source = panels.dsleditor.editor.getValue();
-      }
-      const source = dslState.source || '';
-      const requestId = ++dslCompileSeq;
-      dslState.currentCompileRequestId = requestId;
-      dslState.compilePending = true;
-      renderDslResultsPanel();
-
-      computeWorker.postMessage({
-        type: 'dsl-compile',
-        payload: {
-          requestId,
-          source,
-        },
-      });
-    }
-
-    function triggerDslPricing() {
-      if (!dslState.compiledProductJson) {
-        dslState.pricingPending = false;
-        dslState.priceResult = null;
-        dslState.greeksResults = [];
-        renderDslResultsPanel();
-        return;
-      }
-
-      const pricing = buildDslPricingPayload();
-      const requestId = ++dslPricingSeq;
-      dslState.currentPricingRequestId = requestId;
-      dslState.pricingPending = true;
-      dslState.priceResult = { pending: true };
-      dslState.greeksResults = Array.from({ length: pricing.assetCount }, () => ({ pending: true }));
-      renderDslResultsPanel();
-
-      const payloadBase = {
-        requestId,
-        productJson: dslState.compiledProductJson,
-        marketJson: pricing.marketJson,
-        numPaths: pricing.numPaths,
-        numSteps: pricing.numSteps,
-        seed: pricing.seed,
-      };
-
-      computeWorker.postMessage({
-        type: 'dsl-price',
-        payload: payloadBase,
-      });
-
-      for (let i = 0; i < pricing.assetCount; i++) {
-        computeWorker.postMessage({
-          type: 'dsl-greeks',
-          payload: {
-            ...payloadBase,
-            assetIndex: i,
-          },
-        });
-      }
-    }
-
-    function handleDslCompileResult(payload) {
-      const requestId = Number(payload.requestId);
-      if (Number.isFinite(requestId) && requestId < dslState.currentCompileRequestId) return;
-      dslState.compilePending = false;
-      dslState.compileResult = payload.result || null;
-
-      if (dslState.compileResult && dslState.compileResult.ok) {
-        dslState.compiledProduct = dslState.compileResult.ok;
-        try {
-          dslState.compiledProductJson = JSON.stringify(dslState.compiledProduct);
-        } catch (e) {
-          dslState.compiledProduct = null;
-          dslState.compiledProductJson = '';
-          dslState.compileResult = { err: { kind: 'serialize', message: 'failed to serialize compiled product', span_start: 0, span_end: 0 } };
-        }
-      } else {
-        dslState.compiledProduct = null;
-        dslState.compiledProductJson = '';
-        dslState.priceResult = null;
-        dslState.greeksResults = [];
-        dslState.pricingPending = false;
-      }
-
-      const compileErr = dslNormalizeCompileError(dslState.compileResult && dslState.compileResult.err);
-      dslSetCompileMarkers(compileErr);
-      renderDslResultsPanel();
-      renderDslMarketPanel();
-
-      if (dslState.compiledProductJson) {
-        scheduleDslReprice(0);
-      }
-    }
-
-    function handleDslPriceResult(payload) {
-      const requestId = Number(payload.requestId);
-      if (Number.isFinite(requestId) && requestId < dslState.currentPricingRequestId) return;
-      dslState.priceResult = payload.result || { err: 'missing price result' };
-      const anyPendingGreeks = dslState.greeksResults.some((row) => row && row.pending);
-      dslState.pricingPending = !!anyPendingGreeks;
-      renderDslResultsPanel();
-    }
-
-    function handleDslGreeksResult(payload) {
-      const requestId = Number(payload.requestId);
-      if (Number.isFinite(requestId) && requestId < dslState.currentPricingRequestId) return;
-      const idx = Number(payload.assetIndex);
-      if (!Number.isFinite(idx) || idx < 0) return;
-      if (!Array.isArray(dslState.greeksResults)) dslState.greeksResults = [];
-      dslState.greeksResults[idx] = payload.result || { err: 'missing greeks result' };
-      const anyPendingGreeks = dslState.greeksResults.some((row) => row && row.pending);
-      const pricePending = !dslState.priceResult || dslState.priceResult.pending;
-      dslState.pricingPending = anyPendingGreeks || pricePending;
-      renderDslResultsPanel();
-    }
-
-    function renderDslJsonTree(rootEl, value, key = 'compiled_product', depth = 0) {
-      if (!rootEl) return;
-      if (value === null || typeof value !== 'object') {
-        const leaf = document.createElement('div');
-        leaf.className = 'dsl-json-leaf';
-        leaf.textContent = `${key}: ${JSON.stringify(value)}`;
-        rootEl.appendChild(leaf);
-        return;
-      }
-
-      const details = document.createElement('details');
-      if (depth <= 1) details.open = true;
-      const summary = document.createElement('summary');
-      if (Array.isArray(value)) summary.textContent = `${key} [${value.length}]`;
-      else summary.textContent = `${key} {${Object.keys(value).length}}`;
-      details.appendChild(summary);
-
-      if (Array.isArray(value)) {
-        if (value.length === 0) {
-          const empty = document.createElement('div');
-          empty.className = 'dsl-json-leaf';
-          empty.textContent = '(empty)';
-          details.appendChild(empty);
-        } else {
-          value.forEach((item, idx) => renderDslJsonTree(details, item, `[${idx}]`, depth + 1));
-        }
-      } else {
-        const keys = Object.keys(value);
-        if (keys.length === 0) {
-          const empty = document.createElement('div');
-          empty.className = 'dsl-json-leaf';
-          empty.textContent = '(empty)';
-          details.appendChild(empty);
-        } else {
-          for (const childKey of keys) {
-            renderDslJsonTree(details, value[childKey], childKey, depth + 1);
-          }
-        }
-      }
-      rootEl.appendChild(details);
-    }
-
-    function renderDslResultsPanel() {
-      const p = panels.dslresults;
-      if (!p) return;
-
-      const compileErr = dslNormalizeCompileError(dslState.compileResult && dslState.compileResult.err);
-      if (dslState.compilePending) {
-        p.statusEl.className = 'dsl-status pending';
-        p.statusEl.textContent = 'Compiling...';
-      } else if (dslState.compileResult && dslState.compileResult.ok) {
-        p.statusEl.className = 'dsl-status success';
-        p.statusEl.textContent = 'Compile success';
-      } else if (compileErr) {
-        p.statusEl.className = 'dsl-status error';
-        const spanText = (Number.isFinite(compileErr.span_start) || Number.isFinite(compileErr.span_end))
-          ? ` [span ${compileErr.span_start || 0}-${compileErr.span_end || 0}]`
-          : '';
-        p.statusEl.textContent = `${compileErr.kind}: ${compileErr.message}${spanText}`;
-      } else {
-        p.statusEl.className = 'dsl-status';
-        p.statusEl.textContent = 'Idle';
-      }
-
-      if (!dslState.compiledProductJson) {
-        p.priceEl.textContent = '--';
-        p.stderrEl.textContent = '--';
-      } else if (dslState.priceResult && dslState.priceResult.err) {
-        p.priceEl.textContent = 'error';
-        p.stderrEl.textContent = String(dslState.priceResult.err);
-      } else if (dslState.priceResult && Number.isFinite(dslState.priceResult.price)) {
-        p.priceEl.textContent = dslFormatNumber(dslState.priceResult.price, 6);
-        p.stderrEl.textContent = Number.isFinite(dslState.priceResult.stderr)
-          ? dslFormatNumber(dslState.priceResult.stderr, 6)
-          : '--';
-      } else if (dslState.pricingPending) {
-        p.priceEl.textContent = '...';
-        p.stderrEl.textContent = '...';
-      } else {
-        p.priceEl.textContent = '--';
-        p.stderrEl.textContent = '--';
-      }
-
-      p.greeksBody.innerHTML = '';
-      if (!dslState.compiledProductJson) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = '<td>--</td><td colspan="4">compile a product</td>';
-        p.greeksBody.appendChild(tr);
-      } else if (!dslState.greeksResults || dslState.greeksResults.length === 0) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = '<td>--</td><td colspan="4">waiting...</td>';
-        p.greeksBody.appendChild(tr);
-      } else {
-        dslState.greeksResults.forEach((row, idx) => {
-          const tr = document.createElement('tr');
-          if (!row || row.pending) {
-            tr.innerHTML = `<td>${idx}</td><td colspan="4">...</td>`;
-          } else if (row.err) {
-            tr.innerHTML = `<td>${idx}</td><td colspan="4">${String(row.err)}</td>`;
-          } else {
-            tr.innerHTML = `<td>${idx}</td>`
-              + `<td>${dslFormatNumber(row.delta, 6)}</td>`
-              + `<td>${dslFormatNumber(row.gamma, 6)}</td>`
-              + `<td>${dslFormatNumber(row.vega, 6)}</td>`
-              + `<td>${dslFormatNumber(row.rho, 6)}</td>`;
-          }
-          p.greeksBody.appendChild(tr);
-        });
-      }
-
-      p.jsonTree.innerHTML = '';
-      if (dslState.compiledProduct) {
-        renderDslJsonTree(p.jsonTree, dslState.compiledProduct);
-      } else {
-        const empty = document.createElement('div');
-        empty.className = 'dsl-json-empty';
-        empty.textContent = 'No compiled product';
-        p.jsonTree.appendChild(empty);
-      }
-    }
-
-    function renderDslMarketPanel() {
-      const p = panels.dslmarket;
-      if (!p) return;
-      p.spotsInput.value = dslState.marketInputs.spots;
-      p.volsInput.value = dslState.marketInputs.vols;
-      p.rateInput.value = dslState.marketInputs.rate;
-      p.divsInput.value = dslState.marketInputs.dividendYields;
-      p.pathsInput.value = dslState.marketInputs.numPaths;
-      p.stepsInput.value = dslState.marketInputs.numSteps;
-      p.seedInput.value = dslState.marketInputs.seed;
-
-      const parsedSpots = dslParseNumberList(dslState.marketInputs.spots, [100.0]);
-      const parsedVols = dslParseNumberList(dslState.marketInputs.vols, [0.2]);
-      const parsedDivs = dslParseNumberList(dslState.marketInputs.dividendYields, [0.0]);
-      const nAssets = inferDslAssetCount(dslState.compiledProduct, parsedSpots, parsedVols, parsedDivs);
-      p.noteEl.textContent = `asset count: ${nAssets} | market format: {"assets":[{"spot":..,"vol":..,"dividend_yield":..}],"correlation":[[..]],"rate":0.05}`;
-    }
-
-    function renderDslExamplesPanel() {
-      const p = panels.dslexamples;
-      if (!p) return;
-      p.selectEl.value = dslState.activeExampleId || (DSL_EXAMPLES[0] ? DSL_EXAMPLES[0].id : '');
-      p.metaEl.textContent = `${DSL_EXAMPLES.length} examples embedded inline`;
-    }
-
-    function loadDslExample(exampleId) {
-      const example = DSL_EXAMPLE_MAP.get(exampleId) || DSL_EXAMPLES[0];
-      if (!example) return;
-      dslState.activeExampleId = example.id;
-      dslState.source = example.source;
-      if (panels.dslexamples) renderDslExamplesPanel();
-      if (panels.dsleditor && panels.dsleditor.editor) {
-        const cur = panels.dsleditor.editor.getValue();
-        if (cur !== example.source) {
-          panels.dsleditor.editor.setValue(example.source);
-        } else {
-          scheduleDslCompile(0);
-        }
-      } else {
-        scheduleDslCompile(0);
-      }
-    }
-
-    function setupOpenferricMonaco(monaco) {
-      if (monacoLanguageReady) return;
-      monaco.languages.register({ id: 'openferric' });
-      monaco.languages.setMonarchTokensProvider('openferric', {
-        keywords: [
-          'product', 'notional', 'maturity', 'underlyings', 'state', 'schedule',
-          'if', 'then', 'else', 'elif', 'let', 'pay', 'redeem', 'set',
-          'and', 'or', 'not', 'true', 'false',
-          'quarterly', 'monthly', 'annual', 'semi_annual', 'daily', 'weekly',
-        ],
-        builtins: [
-          'asset', 'worst_of', 'best_of', 'avg_of', 'performances', 'performance',
-          'observation_date', 'is_final', 'notional',
-        ],
-        tokenizer: {
-          root: [
-            [/\/\/.*$/, 'comment'],
-            [/\"(?:[^\"\\]|\\.)*\"/, 'string'],
-            [/\b\d[\d_]*(\.\d[\d_]*)?\b/, 'number'],
-            [/[{}()\[\]]/, '@brackets'],
-            [/[,:]/, 'delimiter'],
-            [/[=+\-*\/<>!]+/, 'operator'],
-            [/[a-zA-Z_][\w]*/, {
-              cases: {
-                '@keywords': 'keyword',
-                '@builtins': 'type.identifier',
-                '@default': 'identifier',
-              }
-            }],
-          ],
-        },
-      });
-      monaco.editor.defineTheme('openferric-terminal', {
-        base: 'vs-dark',
-        inherit: true,
-        rules: [
-          { token: 'comment', foreground: '7c8da2' },
-          { token: 'keyword', foreground: '2fb2ff', fontStyle: 'bold' },
-          { token: 'type.identifier', foreground: '19d8a8' },
-          { token: 'string', foreground: 'ffb347' },
-          { token: 'number', foreground: 'f3dca2' },
-          { token: 'operator', foreground: 'd8e0ea' },
-          { token: 'identifier', foreground: 'd8e0ea' },
-        ],
-        colors: {
-          'editor.background': '#070a0f',
-          'editor.foreground': '#d8e0ea',
-          'editorLineNumber.foreground': '#4d5e73',
-          'editorLineNumber.activeForeground': '#8ea1b8',
-          'editorCursor.foreground': '#2fb2ff',
-          'editor.selectionBackground': '#1a3f5c66',
-          'editor.inactiveSelectionBackground': '#1a3f5c44',
-          'editorIndentGuide.background': '#1b2634',
-          'editorIndentGuide.activeBackground': '#2b3b4f',
-          'editorLineHighlightBackground': '#0e142020',
-        },
-      });
-      monacoLanguageReady = true;
-    }
-
-    function loadMonaco() {
-      if (monacoRef && monacoRef.editor) return Promise.resolve(monacoRef);
-      if (monacoLoaderPromise) return monacoLoaderPromise;
-
-      monacoLoaderPromise = new Promise((resolve, reject) => {
-        const loadEditorMain = () => {
-          const req = window.require;
-          if (!req || !req.config) {
-            reject(new Error('Monaco AMD loader unavailable'));
-            return;
-          }
-
-          window.MonacoEnvironment = {
-            getWorkerUrl() {
-              const src = `self.MonacoEnvironment={baseUrl:'${DSL_MONACO_BASE_URL}/'};importScripts('${DSL_MONACO_BASE_URL}/vs/base/worker/workerMain.js');`;
-              return `data:text/javascript;charset=utf-8,${encodeURIComponent(src)}`;
-            },
-          };
-
-          req.config({ paths: { vs: `${DSL_MONACO_BASE_URL}/vs` } });
-          req(['vs/editor/editor.main'], () => {
-            monacoRef = window.monaco;
-            setupOpenferricMonaco(monacoRef);
-            resolve(monacoRef);
-          }, reject);
-        };
-
-        if (window.monaco && window.monaco.editor && window.require) {
-          monacoRef = window.monaco;
-          setupOpenferricMonaco(monacoRef);
-          resolve(monacoRef);
-          return;
-        }
-
-        const existing = document.querySelector('script[data-monaco-loader="1"]');
-        if (existing) {
-          existing.addEventListener('load', loadEditorMain, { once: true });
-          existing.addEventListener('error', reject, { once: true });
-          return;
-        }
-
-        const script = document.createElement('script');
-        script.src = `${DSL_MONACO_BASE_URL}/vs/loader.min.js`;
-        script.async = true;
-        script.dataset.monacoLoader = '1';
-        script.addEventListener('load', loadEditorMain, { once: true });
-        script.addEventListener('error', () => reject(new Error('failed to load Monaco loader')), { once: true });
-        document.head.appendChild(script);
-      });
-      return monacoLoaderPromise;
-    }
-
-    class DslEditorPanel {
-      constructor() {
-        this._el = document.createElement('div');
-        this._el.className = 'dock-content';
-        this.editor = null;
-      }
-      get element() { return this._el; }
-      init(params) {
-        ensureDslInitialSource();
-        this._el.innerHTML =
-          '<div class="panel-head">'
-          + '<div class="panel-title">OpenFerric DSL Editor</div>'
-          + '</div>'
-          + '<div class="dsl-editor-loading">Loading Monaco editor...</div>';
-        this.loadingEl = this._el.querySelector('.dsl-editor-loading');
-        panels.dsleditor = this;
-
-        loadMonaco().then((monaco) => {
-          if (!panels.dsleditor || panels.dsleditor !== this) return;
-          this.loadingEl.className = 'dsl-editor-host';
-          this.loadingEl.textContent = '';
-
-          if (!dslState.editorModel || dslState.editorModel.isDisposed()) {
-            dslState.editorModel = monaco.editor.createModel(dslState.source || '', 'openferric');
-          }
-
-          this.editor = monaco.editor.create(this.loadingEl, {
-            model: dslState.editorModel,
-            theme: 'openferric-terminal',
-            automaticLayout: true,
-            minimap: { enabled: false },
-            fontFamily: '"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace',
-            fontSize: 12,
-            lineHeight: 18,
-            smoothScrolling: true,
-            scrollBeyondLastLine: false,
-            renderWhitespace: 'selection',
-            tabSize: 4,
-            insertSpaces: true,
-          });
-
-          this._changeListener = this.editor.onDidChangeModelContent(() => {
-            dslState.source = this.editor.getValue();
-            scheduleDslCompile(500);
-          });
-
-          if (dslState.compileResult && dslState.compileResult.err) {
-            dslSetCompileMarkers(dslNormalizeCompileError(dslState.compileResult.err));
-          } else {
-            dslSetCompileMarkers(null);
-          }
-
-          if (!dslState.compileResult) scheduleDslCompile(0);
-        }).catch((err) => {
-          if (this.loadingEl) this.loadingEl.textContent = 'Monaco failed: ' + (err && err.message ? err.message : err);
-        });
-      }
-      dispose() {
-        if (this._changeListener) this._changeListener.dispose();
-        if (this.editor) this.editor.dispose();
-        delete panels.dsleditor;
-      }
-    }
-
-    class DslResultsPanel {
-      constructor() {
-        this._el = document.createElement('div');
-        this._el.className = 'dock-content';
-      }
-      get element() { return this._el; }
-      init(params) {
-        this._el.innerHTML =
-          '<div class="panel-head">'
-          + '<div class="panel-title">DSL Results</div>'
-          + '</div>'
-          + '<div class="dsl-results-wrap">'
-          + '<div class="dsl-status">Idle</div>'
-          + '<div class="dsl-kv">'
-          + '<div class="k">price</div><div class="v dsl-price-val">--</div>'
-          + '<div class="k">stderr</div><div class="v dsl-stderr-val">--</div>'
-          + '</div>'
-          + '<div class="dsl-greeks-wrap"><table>'
-          + '<thead><tr><th>asset</th><th>delta</th><th>gamma</th><th>vega</th><th>rho</th></tr></thead>'
-          + '<tbody></tbody></table></div>'
-          + '<details open><summary style="font-family:var(--mono);color:var(--accent);cursor:pointer;">compiled product JSON</summary>'
-          + '<div class="dsl-json-wrap"></div></details>'
-          + '</div>';
-        this.statusEl = this._el.querySelector('.dsl-status');
-        this.priceEl = this._el.querySelector('.dsl-price-val');
-        this.stderrEl = this._el.querySelector('.dsl-stderr-val');
-        this.greeksBody = this._el.querySelector('tbody');
-        this.jsonTree = this._el.querySelector('.dsl-json-wrap');
-        panels.dslresults = this;
-        renderDslResultsPanel();
-      }
-      dispose() { delete panels.dslresults; }
-    }
-
-    class DslMarketPanel {
-      constructor() {
-        this._el = document.createElement('div');
-        this._el.className = 'dock-content';
-      }
-      get element() { return this._el; }
-      init(params) {
-        this._el.innerHTML =
-          '<div class="panel-head">'
-          + '<div class="panel-title">DSL Market</div>'
-          + '</div>'
-          + '<div class="dsl-market-wrap">'
-          + '<div class="dsl-market-grid">'
-          + '<label>spots</label><input type="text" class="dsl-m-spots" placeholder="100, 100">'
-          + '<label>vols</label><input type="text" class="dsl-m-vols" placeholder="0.2, 0.2">'
-          + '<label>rate</label><input type="text" class="dsl-m-rate" placeholder="0.05">'
-          + '<label>dividend_yields</label><input type="text" class="dsl-m-divs" placeholder="0, 0">'
-          + '<label>num paths</label><input type="text" class="dsl-m-paths" placeholder="100000">'
-          + '<label>num steps</label><input type="text" class="dsl-m-steps" placeholder="252">'
-          + '<label>seed</label><input type="text" class="dsl-m-seed" placeholder="42">'
-          + '</div>'
-          + '<div class="dsl-market-note"></div>'
-          + '</div>';
-
-        this.spotsInput = this._el.querySelector('.dsl-m-spots');
-        this.volsInput = this._el.querySelector('.dsl-m-vols');
-        this.rateInput = this._el.querySelector('.dsl-m-rate');
-        this.divsInput = this._el.querySelector('.dsl-m-divs');
-        this.pathsInput = this._el.querySelector('.dsl-m-paths');
-        this.stepsInput = this._el.querySelector('.dsl-m-steps');
-        this.seedInput = this._el.querySelector('.dsl-m-seed');
-        this.noteEl = this._el.querySelector('.dsl-market-note');
-        panels.dslmarket = this;
-
-        const wireInput = (el, key) => {
-          el.addEventListener('input', () => {
-            dslState.marketInputs[key] = el.value;
-            scheduleDslReprice(500);
-            renderDslMarketPanel();
-          });
-        };
-        wireInput(this.spotsInput, 'spots');
-        wireInput(this.volsInput, 'vols');
-        wireInput(this.rateInput, 'rate');
-        wireInput(this.divsInput, 'dividendYields');
-        wireInput(this.pathsInput, 'numPaths');
-        wireInput(this.stepsInput, 'numSteps');
-        wireInput(this.seedInput, 'seed');
-
-        renderDslMarketPanel();
-      }
-      dispose() { delete panels.dslmarket; }
-    }
-
-    class DslExamplesPanel {
-      constructor() {
-        this._el = document.createElement('div');
-        this._el.className = 'dock-content';
-      }
-      get element() { return this._el; }
-      init(params) {
-        ensureDslInitialSource();
-        this._el.innerHTML =
-          '<div class="panel-head">'
-          + '<div class="panel-title">DSL Examples</div>'
-          + '</div>'
-          + '<div class="dsl-examples-wrap">'
-          + '<select class="dsl-example-select" size="12"></select>'
-          + '<button class="tab-btn dsl-example-load">Load Selected</button>'
-          + '<div class="dsl-examples-meta"></div>'
-          + '</div>';
-        this.selectEl = this._el.querySelector('.dsl-example-select');
-        this.loadBtn = this._el.querySelector('.dsl-example-load');
-        this.metaEl = this._el.querySelector('.dsl-examples-meta');
-        panels.dslexamples = this;
-
-        this.selectEl.innerHTML = '';
-        for (const ex of DSL_EXAMPLES) {
-          const opt = document.createElement('option');
-          opt.value = ex.id;
-          opt.textContent = ex.title;
-          this.selectEl.appendChild(opt);
-        }
-        if (!dslState.activeExampleId && DSL_EXAMPLES.length > 0) dslState.activeExampleId = DSL_EXAMPLES[0].id;
-
-        this.loadBtn.addEventListener('click', () => {
-          loadDslExample(this.selectEl.value);
-        });
-        this.selectEl.addEventListener('dblclick', () => {
-          loadDslExample(this.selectEl.value);
-        });
-        this.selectEl.addEventListener('change', () => {
-          loadDslExample(this.selectEl.value);
-        });
-        renderDslExamplesPanel();
-      }
-      dispose() { delete panels.dslexamples; }
-    }
 
     function exportSurfaceConfigJson() {
       const payload = deepClone(surfaceConfig);
@@ -4247,6 +4220,569 @@
     }
 
     // =====================================================================
+    //  DSL Editor state
+    // =====================================================================
+    let dslSource = '';
+    let dslCompiledProduct = null;
+    let dslLastAnalysis = null;
+    let dslLastPricingResult = null;
+    let dslAnalyzeTimer = null;
+    let dslAutoRun = true;
+    let dslPricingConfig = { spots: '100', vols: '0.2', rate: '0.05', dividendYields: '0', numPaths: 10000, numSteps: 100, seed: 42 };
+    // Promise resolvers for async worker round-trips
+    let dslHoverResolve = null, dslHoverRequestId = 0;
+    let dslCompletionsResolve = null, dslCompletionsRequestId = 0;
+    let dslGotoDefResolve = null, dslGotoDefRequestId = 0;
+    let dslRequestSeq = 0;
+
+    function dslBuildMarketJson() {
+      const parsedSpots = dslParseNumberList(dslPricingConfig.spots, [100.0]);
+      const parsedVols = dslParseNumberList(dslPricingConfig.vols, [0.2]);
+      const parsedDivs = dslParseNumberList(dslPricingConfig.dividendYields, [0.0]);
+      let compiledProduct = null;
+      try { if (dslCompiledProduct) compiledProduct = JSON.parse(dslCompiledProduct); } catch(e) {}
+      const nAssets = inferDslAssetCount(compiledProduct, parsedSpots, parsedVols, parsedDivs);
+      const spots = dslExpandArray(parsedSpots, nAssets, 100.0);
+      const vols = dslExpandArray(parsedVols, nAssets, 0.2);
+      const dividendYields = dslExpandArray(parsedDivs, nAssets, 0.0);
+      const rate = Number.isFinite(parseFloat(dslPricingConfig.rate)) ? parseFloat(dslPricingConfig.rate) : 0.05;
+      const correlations = [];
+      for (let i = 0; i < nAssets; i++) {
+        const row = [];
+        for (let j = 0; j < nAssets; j++) row.push(i === j ? 1.0 : 0.0);
+        correlations.push(row);
+      }
+      const assets = [];
+      for (let i = 0; i < nAssets; i++) {
+        assets.push({ type: "Equity", spot: spots[i], vol: vols[i], dividend_yield: dividendYields[i] });
+      }
+      return JSON.stringify({ assets, correlation: correlations, rate });
+    }
+
+    function dslRunPricing() {
+      if (!dslCompiledProduct) return;
+      if (panels.structeditor) panels.structeditor.setStatus('Computing...', 'computing');
+      computeWorker.postMessage({ type: 'dsl-price-full', payload: {
+        productJson: dslCompiledProduct,
+        marketJson: dslBuildMarketJson(),
+        numPaths: dslPricingConfig.numPaths,
+        numSteps: dslPricingConfig.numSteps,
+        seed: dslPricingConfig.seed,
+      }});
+    }
+
+    function dslSendAnalyze(source) {
+      dslSource = source;
+      computeWorker.postMessage({ type: 'dsl-analyze', payload: { source } });
+    }
+
+    const STRUCTURING_EXAMPLES = {
+      'Zero Coupon': `product "Zero Coupon"\n    notional: 1\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 5.0\n        redeem notional\n`,
+      'Fixed Coupon Note': `product "Fixed Coupon Note 3Y"\n    notional: 1_000_000\n    maturity: 3.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 3.0\n        pay notional * 0.05\n        if is_final then\n            redeem notional\n`,
+      'Forward': `product "Equity Forward 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n        pay notional * (perf - 1.0)\n        redeem notional\n`,
+      'Reverse Convertible': `product "Reverse Convertible 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    schedule quarterly from 0.25 to 1.0\n        pay notional * 0.025\n\n        if is_final then\n            let perf = worst_of(performances())\n            if perf >= 1.0 then\n                redeem notional\n            else\n                redeem notional * perf\n`,
+      'Barrier Rev Con': `product "Barrier Reverse Convertible 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n    underlyings\n        SPX = asset(0)\n    state\n        ki_hit: bool = false\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        pay notional * 0.02\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n`,
+      'WoF Autocall': `product "WoF Autocall 18m"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+      'Step Down Autocall': `product "Step-Down Autocall 18m"\n    notional: 1_000_000\n    maturity: 1.5\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.5\n        let wof = worst_of(performances())\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        let barrier = 1.05 - observation_date * 0.2 + 0.05\n\n        if wof >= barrier and not is_final then\n            pay notional * 0.08 * observation_date\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08 * 1.5\n            if ki_hit and wof < 0.80 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+      'Phoenix Memory': `product "Phoenix Memory 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        missed_coupons: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        if wof >= 0.70 then\n            pay notional * (0.02 + missed_coupons)\n            set missed_coupons = 0.0\n        else\n            set missed_coupons = missed_coupons + 0.02\n\n        if wof >= 1.0 and not is_final then\n            redeem notional\n\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+      'Athena': `product "Athena 2Y"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.60 then\n            set ki_hit = true\n\n        if wof >= 1.0 and not is_final then\n            pay notional * 0.05 * observation_date / 0.5\n            redeem notional\n\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                pay notional * 0.05 * 4.0\n                redeem notional\n`,
+      'Snowball': `product "Snowball 2Y"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n        current_coupon: float = 0.0\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        if perf >= 0.80 then\n            set current_coupon = current_coupon + 0.01\n            pay notional * current_coupon\n        else\n            set current_coupon = 0.0\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n`,
+      'Digital Coupon': `product "Digital Coupon Note 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.55 then\n            set ki_hit = true\n\n        if perf >= 0.80 then\n            pay notional * 0.03\n\n        if is_final then\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n`,
+      'Twin-Win': `product "Twin-Win 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        if is_final then\n            if ki_hit then\n                redeem notional * perf\n            else\n                let move = perf - 1.0\n                let abs_move = max(move, 0.0 - move)\n                redeem notional * (1.0 + abs_move)\n`,
+      'Capital Protected': `product "Capital Protected Note 2Y"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 2.0 to 2.0\n        let perf = worst_of(performances())\n\n        let upside = max(perf - 1.0, 0.0) * 0.60\n        let capped_upside = min(upside, 0.30)\n\n        pay notional * capped_upside\n        redeem notional\n`,
+      'Bonus Certificate': `product "Bonus Certificate 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        barrier_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.70 then\n            set barrier_hit = true\n\n        if is_final then\n            if barrier_hit then\n                redeem notional * perf\n            else\n                let payout = max(perf, 1.20)\n                redeem notional * payout\n`,
+      'Cliquet': `product "Cliquet 1Y"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        prev_perf: float = 1.0\n        total_return: float = 0.0\n\n    schedule quarterly from 0.25 to 1.0\n        let perf = worst_of(performances())\n        let period_return = perf / prev_perf - 1.0\n        let floored = max(period_return, 0.0)\n        let capped = min(floored, 0.04)\n\n        set total_return = total_return + capped\n        set prev_perf = perf\n\n        if is_final then\n            let payout = max(total_return, 0.0)\n            pay notional * payout\n            redeem notional\n`,
+      'Accumulator TARF': `product "Accumulator TARF 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        accumulated_profit: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if accumulated_profit < 0.10 then\n            if perf >= 0.90 and perf <= 1.10 then\n                let period_pnl = 0.0833 * (perf - 1.0)\n                set accumulated_profit = accumulated_profit + max(period_pnl, 0.0)\n                pay notional * period_pnl\n\n        if accumulated_profit >= 0.10 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n`,
+      'Range Accrual': `product "Range Accrual 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        days_in_range: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 0.80 and perf <= 1.20 then\n            set days_in_range = days_in_range + 1.0\n\n        if is_final then\n            let accrual_frac = days_in_range / 12.0\n            pay notional * 0.10 * accrual_frac\n            redeem notional\n`,
+      'Shark Fin': `product "Shark Fin 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ko_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.30 then\n            set ko_hit = true\n\n        if is_final then\n            if ko_hit then\n                pay notional * 0.10\n                redeem notional\n            else\n                let upside = max(perf - 1.0, 0.0)\n                pay notional * upside\n                redeem notional\n`,
+      'Outperformance': `product "Outperformance Certificate 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            let upside = (perf - 1.0) * 1.50\n            redeem notional * (1.0 + upside)\n        else\n            redeem notional * perf\n`,
+      'Wedding Cake': `product "Wedding Cake 2Y"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    state\n        ki_hit: bool = false\n\n    schedule quarterly from 0.25 to 2.0\n        let wof = worst_of(performances())\n\n        if wof <= 0.50 then\n            set ki_hit = true\n\n        if wof >= 1.0 then\n            pay notional * 0.03\n        else if wof >= 0.80 then\n            pay notional * 0.02\n        else if wof >= 0.60 then\n            pay notional * 0.01\n\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+      'Best Of Call': `product "Best-of Call 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n\n        let payout = max(bof - 1.0, 0.0)\n        pay notional * payout\n        redeem notional\n`,
+      'Worst Of Put': `product "Worst-of Put 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    schedule annual from 1.0 to 1.0\n        let wof = worst_of(performances())\n        let put_payout = max(1.0 - wof, 0.0)\n        pay notional * put_payout\n        redeem notional\n`,
+      'Express Certificate': `product "Express Certificate 2Y"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule semi_annual from 0.5 to 2.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.65 then\n            set ki_hit = true\n\n        let premium = 1.0 + 0.03 * observation_date / 0.5\n\n        if perf >= 1.0 and not is_final then\n            redeem notional * premium\n\n        if is_final then\n            if perf >= 1.0 then\n                redeem notional * premium\n            else if ki_hit then\n                redeem notional * perf\n            else\n                redeem notional\n`,
+      'Lookback Coupon': `product "Lookback Coupon 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        max_perf: float = 1.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf > max_perf then\n            set max_perf = perf\n\n        if is_final then\n            let upside = max(max_perf - 1.0, 0.0) * 0.50\n            pay notional * upside\n            redeem notional\n`,
+      'Callable Note': `product "Callable Yield Note 2Y"\n    notional: 1_000_000\n    maturity: 2.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule quarterly from 0.25 to 2.0\n        let perf = worst_of(performances())\n\n        pay notional * 0.03\n\n        if perf >= 1.05 and not is_final then\n            redeem notional\n\n        if is_final then\n            redeem notional\n`,
+      'Asian Payout': `product "Asian Payout 1Y"\n    notional: 1\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        sum_perf: float = 0.0\n        num_obs: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n        set sum_perf = sum_perf + perf\n        set num_obs = num_obs + 1.0\n\n        if is_final then\n            let avg_perf = sum_perf / num_obs\n            let payout = max(avg_perf - 1.0, 0.0)\n            pay notional * payout\n            redeem notional\n`,
+      'Airbag Certificate': `product "Airbag Certificate 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    schedule annual from 1.0 to 1.0\n        let perf = worst_of(performances())\n\n        if perf >= 1.0 then\n            redeem notional * perf\n        else if perf >= 0.70 then\n            redeem notional\n        else\n            redeem notional * perf / 0.70\n`,
+      'Double Barrier KIKO': `product "Double Barrier KIKO 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX = asset(0)\n\n    state\n        ki_hit: bool = false\n\n    schedule monthly from 0.0833 to 1.0\n        let perf = worst_of(performances())\n\n        if perf <= 0.60 then\n            set ki_hit = true\n\n        if perf >= 1.40 and not is_final then\n            pay notional * 0.05\n            redeem notional\n\n        if is_final then\n            pay notional * 0.08\n            if ki_hit and perf < 1.0 then\n                redeem notional * perf\n            else\n                redeem notional\n`,
+      'Dispersion Note': `product "Dispersion Note 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n        NKY  = asset(2)\n\n    schedule annual from 1.0 to 1.0\n        let bof = best_of(performances())\n        let wof = worst_of(performances())\n        let spread = bof - wof\n\n        pay notional * spread * 0.50\n        redeem notional\n`,
+      'Napoleon': `product "Napoleon 1Y"\n    notional: 1_000_000\n    maturity: 1.0\n\n    underlyings\n        SPX  = asset(0)\n        SX5E = asset(1)\n\n    state\n        ki_hit: bool = false\n        obs_count: float = 0.0\n\n    schedule monthly from 0.0833 to 1.0\n        let wof = worst_of(performances())\n        set obs_count = obs_count + 1.0\n\n        if wof <= 0.55 then\n            set ki_hit = true\n\n        if wof >= 0.85 then\n            pay notional * 0.01\n\n        if obs_count == 6.0 and wof >= 1.0 then\n            redeem notional\n\n        if is_final then\n            if ki_hit and wof < 1.0 then\n                redeem notional * wof\n            else\n                redeem notional\n`,
+    };
+
+    // Semantic token legend matching analysis.rs constants
+    const DSL_TOKEN_TYPES = ['keyword', 'variable', 'function', 'number', 'string', 'operator', 'enumMember', 'comment'];
+
+    // =====================================================================
+    //  Structuring Editor Panel (Monaco + WASM analysis)
+    // =====================================================================
+    class StructuringEditorPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; this._el.style.display = 'flex'; this._el.style.flexDirection = 'column'; }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = `
+          <div class="dsl-toolbar">
+            <select class="dsl-example-select"><option value="">-- Examples --</option></select>
+            <button class="dsl-run-btn">Run</button>
+            <label>Paths <input type="number" class="dsl-paths-input" value="10000" min="1000" max="500000" step="10000" style="width:60px"></label>
+            <label><input type="checkbox" class="dsl-autorun-cb" checked> Auto-run</label>
+          </div>
+          <div class="dsl-editor-container"></div>
+          <div class="dsl-status-bar"><span class="dsl-status-text">Ready</span></div>
+        `;
+        panels.structeditor = this;
+
+        const exSel = this._el.querySelector('.dsl-example-select');
+        for (const name of Object.keys(STRUCTURING_EXAMPLES)) {
+          const opt = document.createElement('option');
+          opt.value = name; opt.textContent = name;
+          exSel.appendChild(opt);
+        }
+        exSel.addEventListener('change', () => { if (exSel.value && this._editor) { this._editor.setValue(STRUCTURING_EXAMPLES[exSel.value]); } });
+
+        this._el.querySelector('.dsl-run-btn').addEventListener('click', () => dslRunPricing());
+        this._el.querySelector('.dsl-paths-input').addEventListener('change', (e) => { dslPricingConfig.numPaths = parseInt(e.target.value) || 50000; });
+        this._el.querySelector('.dsl-autorun-cb').addEventListener('change', (e) => { dslAutoRun = e.target.checked; });
+
+        this._statusText = this._el.querySelector('.dsl-status-text');
+        this._editorContainer = this._el.querySelector('.dsl-editor-container');
+
+        // Initialize Monaco when available
+        this._initMonaco();
+
+        this._resizeObs = new ResizeObserver(() => { if (this._editor) this._editor.layout(); });
+        this._resizeObs.observe(this._el);
+      }
+      _initMonaco() {
+        if (typeof window.require !== 'function' || !window.require.config) {
+          // Monaco not yet loaded, retry
+          setTimeout(() => this._initMonaco(), 200);
+          return;
+        }
+        window.require(['vs/editor/editor.main'], (monaco) => {
+          // Register language
+          monaco.languages.register({ id: 'openferric' });
+
+          // Monarch tokenizer for basic highlighting
+          monaco.languages.setMonarchTokensProvider('openferric', {
+            keywords: ['product','notional','maturity','underlyings','state','schedule','from','to','let','if','then','else','pay','redeem','set','skip','asset','bool','float','true','false'],
+            operators: ['and','or','not'],
+            frequencies: ['monthly','quarterly','semi_annual','annual'],
+            builtins: ['worst_of','best_of','performances','price','min','max','abs','exp','log'],
+            tokenizer: {
+              root: [
+                [/\/\/.*$/, 'comment'],
+                [/"[^"]*"/, 'string'],
+                [/\b\d+(_\d+)*(\.\d+)?\b/, 'number'],
+                [/[a-zA-Z_]\w*/, { cases: { '@keywords': 'keyword', '@operators': 'operator', '@frequencies': 'enumMember', '@builtins': 'function', '@default': 'variable' } }],
+                [/[=!<>]+/, 'operator'],
+                [/[+\-*/]/, 'operator'],
+              ]
+            }
+          });
+
+          // Dark theme matching terminal colors
+          monaco.editor.defineTheme('ferric-dark', {
+            base: 'vs-dark',
+            inherit: true,
+            rules: [
+              { token: 'keyword', foreground: '569cd6', fontStyle: 'bold' },
+              { token: 'variable', foreground: '9cdcfe' },
+              { token: 'function', foreground: 'dcdcaa' },
+              { token: 'number', foreground: 'b5cea8' },
+              { token: 'string', foreground: 'ce9178' },
+              { token: 'operator', foreground: 'd4d4d4' },
+              { token: 'enumMember', foreground: '4ec9b0' },
+              { token: 'comment', foreground: '6a9955', fontStyle: 'italic' },
+            ],
+            colors: {
+              'editor.background': '#0d141d',
+              'editor.foreground': '#d4d4d4',
+              'editorLineNumber.foreground': '#464b55',
+              'editor.selectionBackground': '#264f78',
+              'editor.lineHighlightBackground': '#121a26',
+              'editorCursor.foreground': '#2fb2ff',
+            }
+          });
+
+          // Create editor
+          this._editor = monaco.editor.create(this._editorContainer, {
+            value: STRUCTURING_EXAMPLES['Zero Coupon'],
+            language: 'openferric',
+            theme: 'ferric-dark',
+            fontSize: 12,
+            minimap: { enabled: false },
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            automaticLayout: false,
+            tabSize: 4,
+            insertSpaces: true,
+            wordWrap: 'off',
+          });
+          this._monaco = monaco;
+
+          // Register language providers
+          this._registerProviders(monaco);
+
+          // On content change — debounced analysis
+          this._editor.onDidChangeModelContent(() => {
+            clearTimeout(dslAnalyzeTimer);
+            dslAnalyzeTimer = setTimeout(() => {
+              dslSendAnalyze(this._editor.getValue());
+            }, 300);
+          });
+
+          // Trigger initial analysis
+          dslSendAnalyze(this._editor.getValue());
+        });
+      }
+      _registerProviders(monaco) {
+        // Hover provider
+        monaco.languages.registerHoverProvider('openferric', {
+          provideHover: (model, position) => {
+            return new Promise((resolve) => {
+              const offset = model.getOffsetAt(position);
+              const reqId = ++dslRequestSeq;
+              dslHoverRequestId = reqId;
+              dslHoverResolve = (result) => {
+                if (!result) { resolve(null); return; }
+                const startPos = model.getPositionAt(result.start);
+                const endPos = model.getPositionAt(result.end);
+                resolve({
+                  range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+                  contents: [{ value: result.markdown }],
+                });
+              };
+              computeWorker.postMessage({ type: 'dsl-hover', payload: { source: model.getValue(), offset, requestId: reqId } });
+              setTimeout(() => { if (dslHoverRequestId === reqId) { dslHoverResolve = null; resolve(null); } }, 2000);
+            });
+          }
+        });
+
+        // Completion provider
+        monaco.languages.registerCompletionItemProvider('openferric', {
+          triggerCharacters: [' ', '.', '('],
+          provideCompletionItems: (model, position) => {
+            return new Promise((resolve) => {
+              const offset = model.getOffsetAt(position);
+              const reqId = ++dslRequestSeq;
+              dslCompletionsRequestId = reqId;
+              dslCompletionsResolve = (result) => {
+                if (!result || !Array.isArray(result)) { resolve({ suggestions: [] }); return; }
+                const word = model.getWordUntilPosition(position);
+                const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+                const kindMap = { Keyword: 17, Variable: 5, Function: 1, EnumMember: 15, Constant: 14 };
+                resolve({
+                  suggestions: result.map(c => ({
+                    label: c.label,
+                    kind: kindMap[c.kind] || 17,
+                    detail: c.detail || '',
+                    documentation: c.documentation || '',
+                    insertText: c.label,
+                    range,
+                  }))
+                });
+              };
+              computeWorker.postMessage({ type: 'dsl-completions', payload: { source: model.getValue(), offset, requestId: reqId } });
+              setTimeout(() => { if (dslCompletionsRequestId === reqId) { dslCompletionsResolve = null; resolve({ suggestions: [] }); } }, 2000);
+            });
+          }
+        });
+
+        // Definition provider
+        monaco.languages.registerDefinitionProvider('openferric', {
+          provideDefinition: (model, position) => {
+            return new Promise((resolve) => {
+              const offset = model.getOffsetAt(position);
+              const reqId = ++dslRequestSeq;
+              dslGotoDefRequestId = reqId;
+              dslGotoDefResolve = (result) => {
+                if (!result) { resolve(null); return; }
+                const startPos = model.getPositionAt(result.start);
+                const endPos = model.getPositionAt(result.end);
+                resolve({
+                  uri: model.uri,
+                  range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+                });
+              };
+              computeWorker.postMessage({ type: 'dsl-goto-def', payload: { source: model.getValue(), offset, requestId: reqId } });
+              setTimeout(() => { if (dslGotoDefRequestId === reqId) { dslGotoDefResolve = null; resolve(null); } }, 2000);
+            });
+          }
+        });
+
+        // Semantic tokens provider
+        monaco.languages.registerDocumentSemanticTokensProvider('openferric', {
+          getLegend: () => ({ tokenTypes: DSL_TOKEN_TYPES, tokenModifiers: [] }),
+          provideDocumentSemanticTokens: () => {
+            if (!dslLastAnalysis || !dslLastAnalysis.semanticTokens) return null;
+            const data = new Uint32Array(dslLastAnalysis.semanticTokens.flat());
+            return { data };
+          },
+          releaseDocumentSemanticTokens: () => {},
+        });
+      }
+      applyAnalysis(analysis) {
+        if (!this._editor || !this._monaco) return;
+        const monaco = this._monaco;
+        const model = this._editor.getModel();
+        if (!model) return;
+
+        // Set markers (diagnostics)
+        const markers = (analysis.diagnostics || []).map(d => {
+          const startPos = model.getPositionAt(d.start);
+          const endPos = model.getPositionAt(d.end);
+          return {
+            severity: d.severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
+            message: d.message,
+            startLineNumber: startPos.lineNumber, startColumn: startPos.column,
+            endLineNumber: endPos.lineNumber, endColumn: endPos.column,
+          };
+        });
+        monaco.editor.setModelMarkers(model, 'openferric', markers);
+
+        // Update status bar
+        const errs = markers.filter(m => m.severity === monaco.MarkerSeverity.Error).length;
+        if (errs > 0) {
+          this._statusText.className = 'dsl-status-text status-err';
+          this._statusText.textContent = `${errs} error${errs > 1 ? 's' : ''}`;
+        } else if (analysis.compiled) {
+          this._statusText.className = 'dsl-status-text status-ok';
+          this._statusText.textContent = 'Compiled OK';
+        } else {
+          this._statusText.className = 'dsl-status-text';
+          this._statusText.textContent = 'No errors';
+        }
+      }
+      setStatus(text, cls) {
+        if (!this._statusText) return;
+        this._statusText.className = 'dsl-status-text' + (cls ? ` status-${cls}` : '');
+        this._statusText.textContent = text;
+      }
+      updatePriceStatus(result) {
+        if (!result || !this._statusText) return;
+        this._statusText.className = 'dsl-status-text status-ok';
+        if (result.error) {
+          this._statusText.className = 'dsl-status-text status-err';
+          this._statusText.textContent = `Compiled OK | Error: ${result.error}`;
+        } else if (Number.isFinite(result.price)) {
+          this._statusText.textContent = `Compiled OK | Price: ${result.price.toFixed(2)}`;
+        }
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        if (this._editor) this._editor.dispose();
+        delete panels.structeditor;
+      }
+    }
+
+    // =====================================================================
+    //  DSL Result Panel
+    // =====================================================================
+    class DslResultPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content dsl-result-panel'; }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = '<div style="color:var(--fg-dim);padding:20px">Run a product to see pricing results</div>';
+        panels.dslresult = this;
+        if (dslLastPricingResult) this.renderResult(dslLastPricingResult);
+      }
+      renderResult(r) {
+        if (!r) return;
+        if (r.error && !r.price) {
+          this._el.innerHTML = `<div class="dsl-section"><h3>Error</h3><div style="color:var(--red)">${esc(r.error)}</div></div>`;
+          return;
+        }
+        let html = '';
+
+        // Product info
+        html += `<div class="dsl-section"><h3>Product</h3><dl class="dsl-product-info">`;
+        if (r.productName) html += `<dt>Name</dt><dd>${esc(r.productName)}</dd>`;
+        if (r.notional != null) html += `<dt>Notional</dt><dd>${fmt(r.notional)}</dd>`;
+        if (r.maturity != null) html += `<dt>Maturity</dt><dd>${r.maturity}Y</dd>`;
+        if (r.underlyings && r.underlyings.length) html += `<dt>Underlyings</dt><dd>${r.underlyings.map(esc).join(', ')}</dd>`;
+        html += `</dl></div>`;
+
+        // Price
+        html += `<div class="dsl-section"><h3>Price</h3>`;
+        html += `<span class="dsl-price-display">${fmt(r.price)}</span>`;
+        if (r.stderr != null) html += `<span class="dsl-stderr">&plusmn; ${r.stderr.toFixed(4)}</span>`;
+        if (r.error) html += `<div style="color:var(--red);margin-top:4px">${esc(r.error)}</div>`;
+        html += `</div>`;
+
+        // Greeks
+        if (r.greeks && r.greeks.length) {
+          html += `<div class="dsl-section"><h3>Greeks</h3><table><thead><tr><th>Asset</th><th>Delta</th><th>Gamma</th><th>Vega</th><th>Theta</th><th>Rho</th><th>Vanna</th><th>Volga</th></tr></thead><tbody>`;
+          for (const g of r.greeks) {
+            html += `<tr><td>${esc(g.asset)}</td><td>${gfmt(g.delta)}</td><td>${gfmt(g.gamma)}</td><td>${gfmt(g.vega)}</td><td>${gfmt(g.theta)}</td><td>${gfmt(g.rho)}</td><td>${gfmt(g.vanna)}</td><td>${gfmt(g.volga)}</td></tr>`;
+          }
+          html += `</tbody></table></div>`;
+        }
+
+        // Cross-Greeks
+        if (r.crossGreeks && r.crossGreeks.length) {
+          html += `<div class="dsl-section"><h3>Cross-Greeks</h3><table><thead><tr><th>Asset I</th><th>Asset J</th><th>Cross-Gamma</th><th>Corr Sens</th></tr></thead><tbody>`;
+          for (const cg of r.crossGreeks) {
+            html += `<tr><td>${esc(cg.assetI)}</td><td>${esc(cg.assetJ)}</td><td>${gfmt(cg.crossGamma)}</td><td>${gfmt(cg.corrSens)}</td></tr>`;
+          }
+          html += `</tbody></table></div>`;
+        }
+
+        // Market snapshot
+        if (r.market) {
+          html += `<div class="dsl-section"><h3>Market</h3><dl class="dsl-market-info">`;
+          html += `<dt>Rate</dt><dd>${(r.market.rate * 100).toFixed(1)}%</dd>`;
+          if (r.market.assets) {
+            for (const a of r.market.assets) {
+              html += `<dt>${esc(a.name)}</dt><dd>S=${fmt(a.spot)} &sigma;=${(a.vol * 100).toFixed(1)}% q=${(a.dividendYield * 100).toFixed(1)}%</dd>`;
+            }
+          }
+          html += `</dl></div>`;
+        }
+
+        this._el.innerHTML = html;
+      }
+      dispose() { delete panels.dslresult; }
+    }
+
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function fmt(v) { return Number.isFinite(v) ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '--'; }
+    function gfmt(v) { return Number.isFinite(v) ? v.toFixed(4) : '--'; }
+
+    // =====================================================================
+    //  DSL Payoff Panel
+    // =====================================================================
+    class DslPayoffPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML = '<div class="chart-area" style="width:100%;height:100%"></div>';
+        this._chartDiv = this._el.querySelector('.chart-area');
+        panels.dslpayoff = this;
+        this._resizeObs = new ResizeObserver(() => {
+          if (this._chartDiv && this._chartDiv.data) {
+            try { Plotly.Plots.resize(this._chartDiv); } catch(e) {}
+          }
+        });
+        this._resizeObs.observe(this._el);
+        if (dslLastPricingResult) this.renderPayoff(dslLastPricingResult);
+      }
+      renderPayoff(r) {
+        if (!r || !r.payoffProfile || !r.payoffProfile.length || !this._chartDiv) return;
+        const x = r.payoffProfile.map(p => p.spotPct);
+        const y = r.payoffProfile.map(p => p.pv);
+        const notional = r.notional || 0;
+        const traces = [{
+          x, y, type: 'scatter', mode: 'lines+markers',
+          line: { color: '#2fb2ff', width: 2 },
+          marker: { size: 4 },
+          name: 'PV',
+        }];
+        if (notional > 0) {
+          traces.push({
+            x: [x[0], x[x.length - 1]], y: [notional, notional],
+            type: 'scatter', mode: 'lines',
+            line: { color: '#888', width: 1, dash: 'dot' },
+            name: 'Notional',
+          });
+        }
+        const layout = {
+          paper_bgcolor: '#0d141d', plot_bgcolor: '#0d141d',
+          font: { color: '#d4d4d4', size: 10 },
+          margin: { t: 30, r: 20, b: 40, l: 60 },
+          xaxis: { title: 'Spot %', color: '#888', gridcolor: '#1a2233' },
+          yaxis: { title: 'PV', color: '#888', gridcolor: '#1a2233' },
+          showlegend: true,
+          legend: { x: 0.02, y: 0.98, font: { size: 9 } },
+        };
+        Plotly.react(this._chartDiv, traces, layout, { responsive: true, displayModeBar: false });
+      }
+      dispose() {
+        if (this._resizeObs) this._resizeObs.disconnect();
+        if (this._chartDiv) try { Plotly.purge(this._chartDiv); } catch(e) {}
+        delete panels.dslpayoff;
+      }
+    }
+
+    // =====================================================================
+    //  Structuring Market Panel
+    // =====================================================================
+    class StructuringMarketPanel {
+      constructor() {
+        this._el = document.createElement('div');
+        this._el.className = 'dock-content';
+      }
+      get element() { return this._el; }
+      init(params) {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Market</div></div>'
+          + '<div class="dsl-market-wrap">'
+          + '<div class="dsl-market-grid">'
+          + '<label>spots</label><input type="text" class="dsl-m-spots" placeholder="100, 100">'
+          + '<label>vols</label><input type="text" class="dsl-m-vols" placeholder="0.2, 0.2">'
+          + '<label>rate</label><input type="text" class="dsl-m-rate" placeholder="0.05">'
+          + '<label>dividend yields</label><input type="text" class="dsl-m-divs" placeholder="0, 0">'
+          + '<label>num paths</label><input type="number" class="dsl-m-paths" min="1000" max="500000" step="10000">'
+          + '<label>num steps</label><input type="number" class="dsl-m-steps" min="10" max="1000" step="10">'
+          + '<label>seed</label><input type="number" class="dsl-m-seed" min="0">'
+          + '</div>'
+          + '<div class="dsl-market-note"></div>'
+          + '</div>';
+
+        this._spotsInput = this._el.querySelector('.dsl-m-spots');
+        this._volsInput = this._el.querySelector('.dsl-m-vols');
+        this._rateInput = this._el.querySelector('.dsl-m-rate');
+        this._divsInput = this._el.querySelector('.dsl-m-divs');
+        this._pathsInput = this._el.querySelector('.dsl-m-paths');
+        this._stepsInput = this._el.querySelector('.dsl-m-steps');
+        this._seedInput = this._el.querySelector('.dsl-m-seed');
+        this._noteEl = this._el.querySelector('.dsl-market-note');
+        panels.structmarket = this;
+
+        // Set initial values
+        this._spotsInput.value = dslPricingConfig.spots;
+        this._volsInput.value = dslPricingConfig.vols;
+        this._rateInput.value = dslPricingConfig.rate;
+        this._divsInput.value = dslPricingConfig.dividendYields;
+        this._pathsInput.value = dslPricingConfig.numPaths;
+        this._stepsInput.value = dslPricingConfig.numSteps;
+        this._seedInput.value = dslPricingConfig.seed;
+
+        const wireText = (el, key) => {
+          el.addEventListener('input', () => {
+            dslPricingConfig[key] = el.value;
+            dslRunPricing();
+          });
+        };
+        wireText(this._spotsInput, 'spots');
+        wireText(this._volsInput, 'vols');
+        wireText(this._rateInput, 'rate');
+        wireText(this._divsInput, 'dividendYields');
+
+        const wireNum = (el, key) => {
+          el.addEventListener('change', () => {
+            dslPricingConfig[key] = parseInt(el.value) || dslPricingConfig[key];
+            dslRunPricing();
+          });
+        };
+        wireNum(this._pathsInput, 'numPaths');
+        wireNum(this._stepsInput, 'numSteps');
+        wireNum(this._seedInput, 'seed');
+
+        this._updateNote();
+      }
+      _updateNote() {
+        const parsedSpots = dslParseNumberList(dslPricingConfig.spots, [100.0]);
+        const parsedVols = dslParseNumberList(dslPricingConfig.vols, [0.2]);
+        const parsedDivs = dslParseNumberList(dslPricingConfig.dividendYields, [0.0]);
+        let compiledProduct = null;
+        try { if (dslCompiledProduct) compiledProduct = JSON.parse(dslCompiledProduct); } catch(e) {}
+        const nAssets = inferDslAssetCount(compiledProduct, parsedSpots, parsedVols, parsedDivs);
+        this._noteEl.textContent = `Inferred assets: ${nAssets}`;
+      }
+      dispose() { delete panels.structmarket; }
+    }
+
+    // =====================================================================
     //  Render cycle counter (tiering is done in the worker)
     // =====================================================================
     let renderCycle = 0;
@@ -4277,16 +4813,44 @@
         requestAnimationFrame(() => renderPricerPanelData(payload));
         return;
       }
-      if (e.data.type === 'dsl-compile-result') {
-        handleDslCompileResult((e.data && e.data.payload) || {});
-        return;
+      // DSL analysis results
+      if (e.data.type === 'dsl-analyze-result') {
+        dslLastAnalysis = e.data.payload;
+        if (dslLastAnalysis && dslLastAnalysis.compiled) {
+          dslCompiledProduct = JSON.stringify(dslLastAnalysis.compiled);
+        } else {
+          dslCompiledProduct = null;
+        }
+        requestAnimationFrame(() => {
+          if (panels.structeditor) panels.structeditor.applyAnalysis(dslLastAnalysis);
+          if (dslAutoRun && dslCompiledProduct) dslRunPricing();
+        });
       }
-      if (e.data.type === 'dsl-price-result') {
-        handleDslPriceResult((e.data && e.data.payload) || {});
-        return;
+      if (e.data.type === 'dsl-hover-result') {
+        if (dslHoverResolve && e.data.requestId === dslHoverRequestId) {
+          dslHoverResolve(e.data.payload);
+          dslHoverResolve = null;
+        }
       }
-      if (e.data.type === 'dsl-greeks-result') {
-        handleDslGreeksResult((e.data && e.data.payload) || {});
+      if (e.data.type === 'dsl-completions-result') {
+        if (dslCompletionsResolve && e.data.requestId === dslCompletionsRequestId) {
+          dslCompletionsResolve(e.data.payload);
+          dslCompletionsResolve = null;
+        }
+      }
+      if (e.data.type === 'dsl-goto-def-result') {
+        if (dslGotoDefResolve && e.data.requestId === dslGotoDefRequestId) {
+          dslGotoDefResolve(e.data.payload);
+          dslGotoDefResolve = null;
+        }
+      }
+      if (e.data.type === 'dsl-price-full-result') {
+        dslLastPricingResult = e.data.payload;
+        requestAnimationFrame(() => {
+          if (panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
+          if (panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
+          if (panels.structeditor) panels.structeditor.updatePriceStatus(dslLastPricingResult);
+        });
       }
     }
 
@@ -4579,9 +5143,26 @@
       const stickyRule = surfaceConfig.conventions.stickyRule || 'delta';
       const x = pts.map(p => smileXValue(p, slice, stickyRule));
       const marketIv = pts.map(p => p.market_iv);
-      const fittedIv = pts.map(p => p.fitted_iv);
       const bidIv = pts.map(p => p.bid_iv);
       const askIv = pts.map(p => p.ask_iv);
+
+      // Extended fitted curve from surface grid (covers full k-range)
+      let fittedX, fittedY;
+      const sliceIdx = calibratedSlices.findIndex(s => s.expiryCode === activeExpiry);
+      if (lastSurfaceData && lastSurfaceData.kGrid && sliceIdx >= 0) {
+        const { kGrid, flatZ, gridN } = lastSurfaceData;
+        fittedX = kGrid.map(k => {
+          if (stickyRule === 'strike') return slice.forward * Math.exp(k);
+          if (stickyRule === 'moneyness') return Math.exp(k);
+          if (stickyRule === 'delta') return 1 / (1 + Math.exp(2.3 * k));
+          return k;
+        });
+        fittedY = [];
+        for (let ki = 0; ki < gridN; ki++) fittedY.push(flatZ[sliceIdx * gridN + ki]);
+      } else {
+        fittedX = x;
+        fittedY = pts.map(p => p.fitted_iv);
+      }
 
       const traces = [];
 
@@ -4606,16 +5187,16 @@
         marker: { color: '#d8e0ea', size: 4.5 },
       });
       traces.push({
-        type: 'scatter', mode: 'lines', name: 'fitted', x, y: fittedIv,
+        type: 'scatter', mode: 'lines', name: 'fitted', x: fittedX, y: fittedY,
         line: { color: '#19d8a8', width: 2 },
       });
 
       Plotly.react(div, traces, {
         ...darkLayout,
-        uirevision: 'stable',
+        uirevision: activeExpiry,
         margin: { l: 40, r: 8, b: 30, t: 6 },
-        xaxis: { title: smileAxisTitle(stickyRule), ...axisStyle },
-        yaxis: { title: 'IV (%)', ...axisStyle },
+        xaxis: { title: smileAxisTitle(stickyRule), autorange: true, ...axisStyle },
+        yaxis: { title: 'IV (%)', autorange: true, ...axisStyle },
         legend: { orientation: 'h', y: 1.02, x: 0.01, font: { size: 9 } },
         transition: { duration: 120, easing: 'linear' },
       }, { responsive: true, displayModeBar: false });
@@ -4625,16 +5206,26 @@
       const sel = panels.smile ? panels.smile.expirySelect : null;
       if (!sel) return;
       const expiries = calibratedSlices.map(s => s.expiryCode);
-      const prev = activeExpiry;
-      sel.innerHTML = '';
-      for (const e of expiries) {
-        const opt = document.createElement('option');
-        opt.value = e; opt.textContent = e;
-        sel.appendChild(opt);
+
+      // Only rebuild DOM options when the set of expiries actually changes
+      const curOpts = Array.from(sel.options, o => o.value);
+      const needsRebuild = expiries.length !== curOpts.length ||
+        expiries.some((e, i) => e !== curOpts[i]);
+
+      if (needsRebuild) {
+        const prev = activeExpiry;
+        sel.innerHTML = '';
+        for (const e of expiries) {
+          const opt = document.createElement('option');
+          opt.value = e; opt.textContent = e;
+          sel.appendChild(opt);
+        }
+        if (expiries.length === 0) { activeExpiry = ''; return; }
+        activeExpiry = (prev && expiries.includes(prev)) ? prev : expiries[0];
+        sel.value = activeExpiry;
+      } else if (expiries.length === 0) {
+        activeExpiry = '';
       }
-      if (expiries.length === 0) { activeExpiry = ''; return; }
-      activeExpiry = (prev && expiries.includes(prev)) ? prev : expiries[0];
-      sel.value = activeExpiry;
     }
 
     // --- Black-76 Greeks Heatmap ---
@@ -4894,10 +5485,14 @@
       try {
         const perpInstrument = currencyConfig.prefix + 'PERPETUAL';
         const endTs = Date.now(), startTs = endTs - 7 * 24 * 60 * 60 * 1000;
-        const resp = await fetch(`${DERIBIT_REST}/get_funding_rate_history?instrument_name=${perpInstrument}&start_timestamp=${startTs}&end_timestamp=${endTs}`);
-        const data = await resp.json();
-        if (data.result) {
-          fundingState.history = data.result.map(r => ({ timestamp: r.timestamp, rate: r.interest_8h || 0 }));
+        const rows = await historicalDataService.getFundingRateHistory({
+          instrument: perpInstrument,
+          startTs,
+          endTs,
+          ttlMs: 12000,
+        });
+        if (rows) {
+          fundingState.history = rows.map(r => ({ timestamp: r.timestamp, rate: r.interest_8h || 0 }));
           renderFunding();
         }
       } catch (e) { console.warn('[funding] fetch failed:', e); }
@@ -5048,9 +5643,11 @@
     // =====================================================================
     async function fetchHistoricalVol() {
       try {
-        const resp = await fetch(`${DERIBIT_REST}/get_historical_volatility?currency=${currencyConfig.base || currencyConfig.apiCurrency}`);
-        const data = await resp.json();
-        if (data.result) { historicalVolData = data.result; renderVolCone(); }
+        historicalVolData = await historicalDataService.getHistoricalVolatility({
+          currency: currencyConfig.base || currencyConfig.apiCurrency,
+          ttlMs: 20000,
+        });
+        renderVolCone();
       } catch (e) { console.warn('[volcone] fetch failed:', e); }
     }
 
@@ -5483,10 +6080,10 @@
         if (panels.tradeflow) renderTradeFlow();
         if (lastStrategyResult && panels.strategy) renderStrategyPayoff(lastStrategyResult);
         if (panels.pricer) renderPricerPanelData(lastPricerResult);
-        if (panels.dslresults) renderDslResultsPanel();
-        if (panels.dslmarket) renderDslMarketPanel();
-        if (panels.dslexamples) renderDslExamplesPanel();
         if (panels.surfacecfg) renderSurfaceConfigPanel();
+        // DSL panels re-render from cached state
+        if (dslLastPricingResult && panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
+        if (dslLastPricingResult && panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
       });
     }
 
@@ -5535,6 +6132,7 @@
     // =====================================================================
     const DERIBIT_REST = 'https://www.deribit.com/api/v2/public';
     const DERIBIT_WS = 'wss://www.deribit.com/ws/api/v2';
+    const historicalDataService = new HistoricalDataService(DERIBIT_REST);
 
     const statusPill = document.getElementById('status-pill');
     function setStatus(state, text) {
@@ -5763,15 +6361,17 @@
           case 'surfacecfg': return new SurfaceConfigPanel();
           case 'scanner': return new ScannerPanel();
           case 'forwardvol': return new ForwardVolPanel();
-          case 'funding': return new FundingBasisPanel();
-          case 'tradeflow': return new TradeFlowPanel();
+          case 'funding': return activeView === 'history' ? new FundingPanel() : new FundingBasisPanel();
+          case 'tradeflow': return activeView === 'history' ? new TradeFlowPanel() : new LiveTradeFlowPanel();
           case 'volcone': return new VolConePanel();
+          case 'histvol': return new HistVolPanel();
+          case 'pricechart': return new PriceChartPanel();
           case 'strategy': return new StrategyPanel();
           case 'pricer': return new PricerPanel();
-          case 'dsleditor': return new DslEditorPanel();
-          case 'dslresults': return new DslResultsPanel();
-          case 'dslmarket': return new DslMarketPanel();
-          case 'dslexamples': return new DslExamplesPanel();
+          case 'structeditor': return new StructuringEditorPanel();
+          case 'structmarket': return new StructuringMarketPanel();
+          case 'dslresult': return new DslResultPanel();
+          case 'dslpayoff': return new DslPayoffPanel();
           default: {
             const el = document.createElement('div');
             el.className = 'dock-content';

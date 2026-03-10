@@ -38,6 +38,7 @@
 //! assert!(result.price > 0.0);
 //! ```
 
+pub mod analysis;
 pub mod ast;
 pub mod compiler;
 pub mod engine;
@@ -53,7 +54,7 @@ pub use compiler::compile;
 pub use engine::{DslMonteCarloEngine, DslProduct};
 pub use error::DslError;
 pub use ir::CompiledProduct;
-pub use market::{AssetData, MultiAssetMarket};
+pub use market::{AssetMarketData, MultiAssetMarket};
 
 /// Parse and compile a DSL source string into a `CompiledProduct`.
 ///
@@ -67,7 +68,7 @@ pub fn parse_and_compile(source: &str) -> Result<CompiledProduct, DslError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::market::AssetData;
+    use crate::dsl::market::AssetMarketData;
 
     #[test]
     fn end_to_end_simple_forward() {
@@ -140,17 +141,17 @@ product \"WoF Autocall 18m\"
 
         let market = MultiAssetMarket {
             assets: vec![
-                AssetData {
+                AssetMarketData::Equity {
                     spot: 100.0,
                     vol: 0.20,
                     dividend_yield: 0.02,
                 },
-                AssetData {
+                AssetMarketData::Equity {
                     spot: 100.0,
                     vol: 0.22,
                     dividend_yield: 0.03,
                 },
-                AssetData {
+                AssetMarketData::Equity {
                     spot: 100.0,
                     vol: 0.25,
                     dividend_yield: 0.01,

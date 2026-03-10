@@ -1,6 +1,6 @@
 use openferric::dsl::engine::DslMonteCarloEngine;
 use openferric::dsl::ir::CompiledProduct;
-use openferric::dsl::market::{AssetData, MultiAssetMarket};
+use openferric::dsl::market::{AssetMarketData, MultiAssetMarket};
 use tower_lsp::lsp_types::*;
 
 use crate::backend::PricingConfig;
@@ -98,7 +98,7 @@ pub fn build_market(
     {
         // Pad assets if the product needs more.
         while market.assets.len() < num_underlyings {
-            market.assets.push(AssetData {
+            market.assets.push(AssetMarketData::Equity {
                 spot: 100.0,
                 vol: 0.20,
                 dividend_yield: 0.02,
@@ -113,8 +113,8 @@ pub fn build_market(
     }
 
     // Default market.
-    let assets: Vec<AssetData> = (0..num_underlyings)
-        .map(|_| AssetData {
+    let assets: Vec<AssetMarketData> = (0..num_underlyings)
+        .map(|_| AssetMarketData::Equity {
             spot: 100.0,
             vol: 0.20,
             dividend_yield: 0.02,

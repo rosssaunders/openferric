@@ -385,7 +385,9 @@ fn compute_pricing_payload(
         let scale = pct / 100.0;
         let mut bumped_market = market.clone();
         for asset in &mut bumped_market.assets {
-            asset.spot *= scale;
+            let base_val = asset.initial_value();
+            let bump = base_val * (scale - 1.0);
+            *asset = asset.with_spot_bump(bump);
         }
         let pv = payoff_engine
             .price_multi_asset(product, &bumped_market)
@@ -405,9 +407,9 @@ fn compute_pricing_payload(
                 let a = &market.assets[i];
                 AssetSnapshot {
                     name: u.name.clone(),
-                    spot: a.spot,
-                    vol: a.vol,
-                    dividend_yield: a.dividend_yield,
+                    spot: a.initial_value(),
+                    vol: a.vol(),
+                    dividend_yield: 0.0,
                 }
             })
             .collect(),

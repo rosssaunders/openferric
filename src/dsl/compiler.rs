@@ -90,6 +90,7 @@ pub fn compile(ast: &ProductDef) -> Result<CompiledProduct, DslError> {
                     underlying_defs.push(UnderlyingDef {
                         name: decl.name.clone(),
                         asset_index: decl.asset_index,
+                        underlying_type: decl.underlying_type,
                     });
                 }
             }

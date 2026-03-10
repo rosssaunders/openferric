@@ -1,5 +1,11 @@
 [workspace]
-members = [".", "openferric-wasm", "openferric-python", "openferric-lsp"]
+members = [
+    ".",
+    "openferric-wasm",
+    "openferric-python",
+    "openferric-lsp",
+    "openferric-mcp",
+]
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"
@@ -93,6 +99,10 @@ harness = false
 
 [[bench]]
 name = "mc_bench"
+harness = false
+
+[[bench]]
+name = "dsl_bench"
 harness = false
 
 [[bench]]
