@@ -7,7 +7,12 @@ members = [
     "openferric-mcp",
 ]
 
+[workspace.lints.rust]
+unused_must_use = "deny"
+
 [workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"
 too_many_arguments = "allow"
 type_complexity = "allow"
 

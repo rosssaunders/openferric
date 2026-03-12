@@ -4,6 +4,11 @@
   "description": "Language support for OpenFerric structured product DSL via LSP",
   "version": "0.2.0",
   "publisher": "openferric",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rosssaunders/openferric"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },

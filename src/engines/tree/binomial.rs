@@ -102,7 +102,6 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
 
         // Fast path: for European / American we avoid the Vec lookup entirely.
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
-        let is_bermudan = bermudan_flags.is_some();
 
         // Multiplicative recurrence replaces O(steps^2) powf() calls with multiplications.
         // spot * u^j * d^(steps-j) = spot * d^steps * (u/d)^j
@@ -124,9 +123,8 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
 
         let mut base = market.spot * d.powi((self.steps - 1) as i32);
         for i in (0..self.steps).rev() {
-            let can_exercise = if is_bermudan {
-                // SAFETY: bermudan_flags is Some when is_bermudan is true.
-                unsafe { bermudan_flags.as_ref().unwrap_unchecked()[i] }
+            let can_exercise = if let Some(flags) = &bermudan_flags {
+                flags[i]
             } else {
                 is_american
             };
