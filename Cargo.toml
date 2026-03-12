@@ -71,7 +71,7 @@ num-complex = "0.4"
 rustfft = "6"
 realfft = "3"
 statrs = "0.18"
-wgpu = { version = "24", optional = true }
+wgpu = { version = "28", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
