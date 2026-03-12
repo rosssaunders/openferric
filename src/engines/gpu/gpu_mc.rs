@@ -132,18 +132,16 @@ async fn init_gpu_context() -> Result<GpuContext, String> {
             force_fallback_adapter: false,
         })
         .await
-        .ok_or("No GPU adapter found")?;
+        .map_err(|e| format!("No GPU adapter found: {e}"))?;
 
     let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("openferric MC"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        )
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("openferric MC"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        })
         .await
         .map_err(|e| format!("Failed to create GPU device: {e}"))?;
 
@@ -182,7 +180,7 @@ async fn init_gpu_context() -> Result<GpuContext, String> {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("MC pipeline layout"),
         bind_group_layouts: &[&bind_group_layout],
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
 
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -298,7 +296,9 @@ mod native {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| format!("GPU poll failed: {e}"))?;
         receiver
             .recv()
             .map_err(|e| format!("GPU readback failed: {e}"))?
@@ -406,7 +406,7 @@ mod wasm {
         // because the browser needs a real event-loop tick to complete the GPU
         // buffer map and fire our callback.
         loop {
-            device.poll(wgpu::Maintain::Poll);
+            let _ = device.poll(wgpu::PollType::Poll);
             if done.get().is_some() {
                 break;
             }
