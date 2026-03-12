@@ -126,7 +126,10 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
         for i in (0..self.steps).rev() {
             let can_exercise = if is_bermudan {
                 // SAFETY: bermudan_flags is Some when is_bermudan is true.
-                unsafe { bermudan_flags.as_ref().unwrap_unchecked()[i] }
+                #[allow(unsafe_code)]
+                unsafe {
+                    bermudan_flags.as_ref().unwrap_unchecked()[i]
+                }
             } else {
                 is_american
             };
