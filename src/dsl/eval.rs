@@ -2,38 +2,106 @@
 //!
 //! Walks the IR statement tree for each observation date on each MC path,
 //! accumulating discounted cashflows and handling early termination.
+//!
+//! Bytecode is encoded as 4-byte packed [`Instruction`] values with a
+//! separate constant pool for f64 literals.
 
 use crate::dsl::error::DslError;
 use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Statement, UnaryOp, Value};
 
+// ── Packed instruction format ──────────────────────────────────────
+
+/// A single 4-byte packed VM instruction.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+struct Instruction {
+    opcode: u8,
+    flags: u8,
+    operand: u16,
+}
+
+const _: () = assert!(std::mem::size_of::<Instruction>() == 4);
+
+/// Compiled bytecode program with an associated constant pool.
+#[derive(Debug, Clone)]
+struct Program {
+    code: Vec<Instruction>,
+    constants: Vec<f64>,
+}
+
+/// Opcode constants organised by family.
+mod opcode {
+    // 0x00–0x0F: Control
+    pub const JUMP: u8 = 0x01;
+    pub const JUMP_FALSE: u8 = 0x02;
+    pub const SKIP: u8 = 0x03;
+
+    // 0x10–0x1F: Load
+    pub const PUSH_CONST: u8 = 0x10;
+    pub const PUSH_LOCAL: u8 = 0x11;
+    pub const PUSH_STATE: u8 = 0x12;
+    pub const PUSH_NOTIONAL: u8 = 0x13;
+    pub const PUSH_DATE: u8 = 0x14;
+    pub const PUSH_IS_FINAL: u8 = 0x15;
+    pub const PUSH_TRUE: u8 = 0x16;
+    pub const PUSH_FALSE: u8 = 0x17;
+
+    // 0x20–0x2F: Store
+    pub const STORE_LOCAL: u8 = 0x20;
+    pub const STORE_STATE: u8 = 0x21;
+
+    // 0x30–0x3F: Arithmetic
+    pub const ADD: u8 = 0x30;
+    pub const SUB: u8 = 0x31;
+    pub const MUL: u8 = 0x32;
+    pub const DIV: u8 = 0x33;
+    pub const NEG: u8 = 0x34;
+    pub const ABS: u8 = 0x35;
+    pub const EXP: u8 = 0x36;
+    pub const LOG: u8 = 0x37;
+    pub const MIN: u8 = 0x38;
+    pub const MAX: u8 = 0x39;
+
+    // 0x40–0x4F: Comparison / Logic
+    pub const EQ: u8 = 0x40;
+    pub const NE: u8 = 0x41;
+    pub const LT: u8 = 0x42;
+    pub const LE: u8 = 0x43;
+    pub const GT: u8 = 0x44;
+    pub const GE: u8 = 0x45;
+    pub const AND: u8 = 0x46;
+    pub const OR: u8 = 0x47;
+    pub const NOT: u8 = 0x48;
+
+    // 0x50–0x5F: Domain
+    pub const PAY: u8 = 0x50;
+    pub const REDEEM: u8 = 0x51;
+    pub const PRICE: u8 = 0x52;
+    pub const WORST_OF: u8 = 0x53;
+    pub const BEST_OF: u8 = 0x54;
+    pub const WORST_OF_PERF: u8 = 0x55;
+    pub const BEST_OF_PERF: u8 = 0x56;
+}
+
+// ── Evaluation context ─────────────────────────────────────────────
+
 /// Per-path evaluation context.
 struct EvalContext<'a> {
-    /// Current spot prices for each underlying at the current time step.
     spots: &'a [f64],
-    /// Initial spot prices (t=0) for computing performances.
     initial_spots: &'a [f64],
-    /// Product notional.
     notional: f64,
-    /// Current observation date (year fraction).
     observation_date: f64,
-    /// Whether this is the final observation in the schedule.
     is_final: bool,
-    /// Discount factor for the current observation date.
     discount_factor: f64,
-    /// Local variable slots.
     locals: &'a mut [Value],
-    /// State variable slots (mutable across observations).
     state: &'a mut [Value],
 }
 
 /// Result of evaluating one observation date.
 #[derive(Debug)]
 enum ObservationResult {
-    /// Continue to next observation.
     Continue,
-    /// Product redeemed — stop processing further dates.
     Redeemed,
-    /// Skip remaining observations.
     Skipped,
 }
 
@@ -43,6 +111,8 @@ pub struct Cashflow {
     pub time: f64,
     pub amount: f64,
 }
+
+// ── Execution plan ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProductExecutionPlan {
@@ -73,7 +143,7 @@ impl ProductExecutionPlan {
 #[derive(Debug, Clone)]
 struct ScheduleExecutionPlan {
     observations: Vec<ObservationPoint>,
-    program: Vec<ExecOp>,
+    program: Program,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,54 +154,52 @@ struct ObservationPoint {
     is_final: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ExecOp {
-    PushLiteral(Value),
-    PushLocal(usize),
-    PushState(usize),
-    PushNotional,
-    PushObservationDate,
-    PushIsFinal,
-    ApplyBinOp(BinOp),
-    ApplyUnaryOp(UnaryOp),
-    WorstOfPerformances,
-    BestOfPerformances,
-    WorstOf(usize),
-    BestOf(usize),
-    Price,
-    Min,
-    Max,
-    Abs,
-    Exp,
-    Log,
-    StoreLocal(usize),
-    StoreState(usize),
-    Pay,
-    Redeem,
-    JumpIfFalse(usize),
-    Jump(usize),
-    Skip,
-}
+// ── Program builder ────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 struct ProgramBuilder {
-    program: Vec<ExecOp>,
+    code: Vec<Instruction>,
+    constants: Vec<f64>,
     stack_depth: usize,
     max_stack: usize,
 }
 
 impl ProgramBuilder {
-    fn emit(&mut self, op: ExecOp, stack_delta: isize) -> usize {
-        let idx = self.program.len();
-        self.program.push(op);
+    fn emit(&mut self, opcode: u8, operand: u16, stack_delta: isize) -> usize {
+        let idx = self.code.len();
+        self.code.push(Instruction {
+            opcode,
+            flags: 0,
+            operand,
+        });
         self.adjust_stack(stack_delta);
         idx
     }
 
+    fn add_constant(&mut self, value: f64) -> u16 {
+        let bits = value.to_bits();
+        for (i, c) in self.constants.iter().enumerate() {
+            if c.to_bits() == bits {
+                return i as u16;
+            }
+        }
+        let idx = self.constants.len();
+        self.constants.push(value);
+        idx as u16
+    }
+
     fn patch_jump(&mut self, idx: usize, target: usize) {
-        match &mut self.program[idx] {
-            ExecOp::JumpIfFalse(dst) | ExecOp::Jump(dst) => *dst = target,
-            _ => unreachable!("attempted to patch non-jump opcode"),
+        debug_assert!(
+            self.code[idx].opcode == opcode::JUMP || self.code[idx].opcode == opcode::JUMP_FALSE,
+            "attempted to patch non-jump opcode"
+        );
+        self.code[idx].operand = target as u16;
+    }
+
+    fn build(self) -> Program {
+        Program {
+            code: self.code,
+            constants: self.constants,
         }
     }
 
@@ -144,6 +212,8 @@ impl ProgramBuilder {
         }
     }
 }
+
+// ── Value stack ────────────────────────────────────────────────────
 
 struct ValueStack<'a> {
     values: &'a mut [Value],
@@ -174,6 +244,8 @@ impl<'a> ValueStack<'a> {
         self.values[self.len]
     }
 }
+
+// ── Plan construction ──────────────────────────────────────────────
 
 pub(crate) fn build_execution_plan(
     product: &CompiledProduct,
@@ -225,7 +297,7 @@ pub(crate) fn build_execution_plan(
         max_stack = max_stack.max(builder.max_stack);
         schedules.push(ScheduleExecutionPlan {
             observations,
-            program: builder.program,
+            program: builder.build(),
         });
     }
 
@@ -237,13 +309,8 @@ pub(crate) fn build_execution_plan(
     })
 }
 
-/// Evaluate a compiled product on a single MC path.
-///
-/// `path_spots[t][asset]` gives the spot price of each underlying at each
-/// time step. The first index is the time step (0 = initial), the second
-/// is the asset index.
-///
-/// Returns the present value generated on this path.
+// ── Public evaluation entry points ─────────────────────────────────
+
 pub fn evaluate_product(
     product: &CompiledProduct,
     path_spots: &[Vec<f64>],
@@ -366,7 +433,6 @@ fn execute_schedule(
                     observation.snapshot_index
                 ))
             })?;
-        // Reset locals for each observation date.
         locals.fill(Value::F64(0.0));
 
         let mut ctx = EvalContext {
@@ -391,6 +457,8 @@ fn execute_schedule(
     Ok(ObservationResult::Continue)
 }
 
+// ── Compilation: IR → packed bytecode ──────────────────────────────
+
 fn compile_statement_block(
     stmts: &[Statement],
     builder: &mut ProgramBuilder,
@@ -407,7 +475,7 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
     match stmt {
         Statement::Let { slot, expr } => {
             compile_expr(expr, builder)?;
-            builder.emit(ExecOp::StoreLocal(*slot), -1);
+            builder.emit(opcode::STORE_LOCAL, *slot as u16, -1);
         }
         Statement::If {
             condition,
@@ -415,32 +483,32 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
             else_body,
         } => {
             compile_expr(condition, builder)?;
-            let jump_if_false = builder.emit(ExecOp::JumpIfFalse(usize::MAX), -1);
+            let jump_if_false = builder.emit(opcode::JUMP_FALSE, u16::MAX, -1);
             compile_statement_block(then_body, builder)?;
             if else_body.is_empty() {
-                builder.patch_jump(jump_if_false, builder.program.len());
+                builder.patch_jump(jump_if_false, builder.code.len());
             } else {
-                let jump_end = builder.emit(ExecOp::Jump(usize::MAX), 0);
-                let else_start = builder.program.len();
+                let jump_end = builder.emit(opcode::JUMP, u16::MAX, 0);
+                let else_start = builder.code.len();
                 builder.patch_jump(jump_if_false, else_start);
                 compile_statement_block(else_body, builder)?;
-                builder.patch_jump(jump_end, builder.program.len());
+                builder.patch_jump(jump_end, builder.code.len());
             }
         }
         Statement::Pay { amount } => {
             compile_expr(amount, builder)?;
-            builder.emit(ExecOp::Pay, -1);
+            builder.emit(opcode::PAY, 0, -1);
         }
         Statement::Redeem { amount } => {
             compile_expr(amount, builder)?;
-            builder.emit(ExecOp::Redeem, -1);
+            builder.emit(opcode::REDEEM, 0, -1);
         }
         Statement::SetState { slot, expr } => {
             compile_expr(expr, builder)?;
-            builder.emit(ExecOp::StoreState(*slot), -1);
+            builder.emit(opcode::STORE_STATE, *slot as u16, -1);
         }
         Statement::Skip => {
-            builder.emit(ExecOp::Skip, 0);
+            builder.emit(opcode::SKIP, 0, 0);
         }
     }
 
@@ -450,32 +518,41 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
 
 fn compile_expr(expr: &Expr, builder: &mut ProgramBuilder) -> Result<(), DslError> {
     match expr {
-        Expr::Literal(v) => {
-            builder.emit(ExecOp::PushLiteral(*v), 1);
-        }
+        Expr::Literal(v) => match v {
+            Value::F64(x) => {
+                let idx = builder.add_constant(*x);
+                builder.emit(opcode::PUSH_CONST, idx, 1);
+            }
+            Value::Bool(true) => {
+                builder.emit(opcode::PUSH_TRUE, 0, 1);
+            }
+            Value::Bool(false) => {
+                builder.emit(opcode::PUSH_FALSE, 0, 1);
+            }
+        },
         Expr::LocalVar(slot) => {
-            builder.emit(ExecOp::PushLocal(*slot), 1);
+            builder.emit(opcode::PUSH_LOCAL, *slot as u16, 1);
         }
         Expr::StateVar(slot) => {
-            builder.emit(ExecOp::PushState(*slot), 1);
+            builder.emit(opcode::PUSH_STATE, *slot as u16, 1);
         }
         Expr::Notional => {
-            builder.emit(ExecOp::PushNotional, 1);
+            builder.emit(opcode::PUSH_NOTIONAL, 0, 1);
         }
         Expr::ObservationDate => {
-            builder.emit(ExecOp::PushObservationDate, 1);
+            builder.emit(opcode::PUSH_DATE, 0, 1);
         }
         Expr::IsFinal => {
-            builder.emit(ExecOp::PushIsFinal, 1);
+            builder.emit(opcode::PUSH_IS_FINAL, 0, 1);
         }
         Expr::BinOp { op, lhs, rhs } => {
             compile_expr(lhs, builder)?;
             compile_expr(rhs, builder)?;
-            builder.emit(ExecOp::ApplyBinOp(*op), -1);
+            builder.emit(binop_opcode(*op), 0, -1);
         }
         Expr::UnaryOp { op, operand } => {
             compile_expr(operand, builder)?;
-            builder.emit(ExecOp::ApplyUnaryOp(*op), 0);
+            builder.emit(unaryop_opcode(*op), 0, 0);
         }
         Expr::Call { func, args } => compile_builtin(*func, args, builder)?,
     }
@@ -505,12 +582,12 @@ fn compile_builtin(
                     }
                 )
             {
-                builder.emit(ExecOp::WorstOfPerformances, 1);
+                builder.emit(opcode::WORST_OF_PERF, 0, 1);
             } else {
                 for arg in args {
                     compile_expr(arg, builder)?;
                 }
-                builder.emit(ExecOp::WorstOf(args.len()), 1 - args.len() as isize);
+                builder.emit(opcode::WORST_OF, args.len() as u16, 1 - args.len() as isize);
             }
         }
         BuiltinFn::BestOf => {
@@ -523,12 +600,12 @@ fn compile_builtin(
                     }
                 )
             {
-                builder.emit(ExecOp::BestOfPerformances, 1);
+                builder.emit(opcode::BEST_OF_PERF, 0, 1);
             } else {
                 for arg in args {
                     compile_expr(arg, builder)?;
                 }
-                builder.emit(ExecOp::BestOf(args.len()), 1 - args.len() as isize);
+                builder.emit(opcode::BEST_OF, args.len() as u16, 1 - args.len() as isize);
             }
         }
         BuiltinFn::Price => {
@@ -538,7 +615,7 @@ fn compile_builtin(
                 ));
             }
             compile_expr(&args[0], builder)?;
-            builder.emit(ExecOp::Price, 0);
+            builder.emit(opcode::PRICE, 0, 0);
         }
         BuiltinFn::Min => {
             if args.len() != 2 {
@@ -548,7 +625,7 @@ fn compile_builtin(
             }
             compile_expr(&args[0], builder)?;
             compile_expr(&args[1], builder)?;
-            builder.emit(ExecOp::Min, -1);
+            builder.emit(opcode::MIN, 0, -1);
         }
         BuiltinFn::Max => {
             if args.len() != 2 {
@@ -558,87 +635,219 @@ fn compile_builtin(
             }
             compile_expr(&args[0], builder)?;
             compile_expr(&args[1], builder)?;
-            builder.emit(ExecOp::Max, -1);
+            builder.emit(opcode::MAX, 0, -1);
         }
         BuiltinFn::Abs => {
             if args.len() != 1 {
                 return Err(DslError::EvalError("abs() requires 1 argument".to_string()));
             }
             compile_expr(&args[0], builder)?;
-            builder.emit(ExecOp::Abs, 0);
+            builder.emit(opcode::ABS, 0, 0);
         }
         BuiltinFn::Exp => {
             if args.len() != 1 {
                 return Err(DslError::EvalError("exp() requires 1 argument".to_string()));
             }
             compile_expr(&args[0], builder)?;
-            builder.emit(ExecOp::Exp, 0);
+            builder.emit(opcode::EXP, 0, 0);
         }
         BuiltinFn::Log => {
             if args.len() != 1 {
                 return Err(DslError::EvalError("log() requires 1 argument".to_string()));
             }
             compile_expr(&args[0], builder)?;
-            builder.emit(ExecOp::Log, 0);
+            builder.emit(opcode::LOG, 0, 0);
         }
     }
 
     Ok(())
 }
 
+#[inline]
+fn binop_opcode(op: BinOp) -> u8 {
+    match op {
+        BinOp::Add => opcode::ADD,
+        BinOp::Sub => opcode::SUB,
+        BinOp::Mul => opcode::MUL,
+        BinOp::Div => opcode::DIV,
+        BinOp::Eq => opcode::EQ,
+        BinOp::Ne => opcode::NE,
+        BinOp::Lt => opcode::LT,
+        BinOp::Le => opcode::LE,
+        BinOp::Gt => opcode::GT,
+        BinOp::Ge => opcode::GE,
+        BinOp::And => opcode::AND,
+        BinOp::Or => opcode::OR,
+    }
+}
+
+#[inline]
+fn unaryop_opcode(op: UnaryOp) -> u8 {
+    match op {
+        UnaryOp::Neg => opcode::NEG,
+        UnaryOp::Not => opcode::NOT,
+    }
+}
+
+// ── Bytecode interpreter ───────────────────────────────────────────
+
 fn execute_program(
-    program: &[ExecOp],
+    program: &Program,
     ctx: &mut EvalContext<'_>,
     stack: &mut ValueStack<'_>,
     pv: &mut f64,
 ) -> Result<ObservationResult, DslError> {
     stack.clear();
+    let code = &program.code;
+    let constants = &program.constants;
     let mut pc = 0usize;
 
-    while pc < program.len() {
-        match program[pc] {
-            ExecOp::PushLiteral(value) => stack.push(value),
-            ExecOp::PushLocal(slot) => stack.push(ctx.locals[slot]),
-            ExecOp::PushState(slot) => stack.push(ctx.state[slot]),
-            ExecOp::PushNotional => stack.push(Value::F64(ctx.notional)),
-            ExecOp::PushObservationDate => stack.push(Value::F64(ctx.observation_date)),
-            ExecOp::PushIsFinal => stack.push(Value::Bool(ctx.is_final)),
-            ExecOp::ApplyBinOp(op) => {
+    while pc < code.len() {
+        let inst = code[pc];
+        match inst.opcode {
+            // ── Load ───────────────────────────────────────────
+            opcode::PUSH_CONST => stack.push(Value::F64(constants[inst.operand as usize])),
+            opcode::PUSH_TRUE => stack.push(Value::Bool(true)),
+            opcode::PUSH_FALSE => stack.push(Value::Bool(false)),
+            opcode::PUSH_LOCAL => stack.push(ctx.locals[inst.operand as usize]),
+            opcode::PUSH_STATE => stack.push(ctx.state[inst.operand as usize]),
+            opcode::PUSH_NOTIONAL => stack.push(Value::F64(ctx.notional)),
+            opcode::PUSH_DATE => stack.push(Value::F64(ctx.observation_date)),
+            opcode::PUSH_IS_FINAL => stack.push(Value::Bool(ctx.is_final)),
+
+            // ── Arithmetic ─────────────────────────────────────
+            opcode::ADD => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(eval_binop(op, lhs, rhs));
+                stack.push(Value::F64(lhs.as_f64() + rhs.as_f64()));
             }
-            ExecOp::ApplyUnaryOp(op) => {
-                let value = stack.pop();
-                stack.push(eval_unaryop(op, value));
+            opcode::SUB => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::F64(lhs.as_f64() - rhs.as_f64()));
             }
-            ExecOp::WorstOfPerformances => {
+            opcode::MUL => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::F64(lhs.as_f64() * rhs.as_f64()));
+            }
+            opcode::DIV => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                let r = rhs.as_f64();
+                stack.push(Value::F64(if r == 0.0 {
+                    f64::NAN
+                } else {
+                    lhs.as_f64() / r
+                }));
+            }
+            opcode::NEG => {
+                let v = stack.pop();
+                stack.push(Value::F64(-v.as_f64()));
+            }
+            opcode::ABS => {
+                let v = stack.pop().as_f64();
+                stack.push(Value::F64(v.abs()));
+            }
+            opcode::EXP => {
+                let v = stack.pop().as_f64();
+                stack.push(Value::F64(v.exp()));
+            }
+            opcode::LOG => {
+                let v = stack.pop().as_f64();
+                stack.push(Value::F64(v.ln()));
+            }
+            opcode::MIN => {
+                let rhs = stack.pop().as_f64();
+                let lhs = stack.pop().as_f64();
+                stack.push(Value::F64(lhs.min(rhs)));
+            }
+            opcode::MAX => {
+                let rhs = stack.pop().as_f64();
+                let lhs = stack.pop().as_f64();
+                stack.push(Value::F64(lhs.max(rhs)));
+            }
+
+            // ── Comparison / Logic ─────────────────────────────
+            opcode::EQ => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(
+                    (lhs.as_f64() - rhs.as_f64()).abs() < f64::EPSILON,
+                ));
+            }
+            opcode::NE => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(
+                    (lhs.as_f64() - rhs.as_f64()).abs() >= f64::EPSILON,
+                ));
+            }
+            opcode::LT => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(lhs.as_f64() < rhs.as_f64()));
+            }
+            opcode::LE => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(lhs.as_f64() <= rhs.as_f64()));
+            }
+            opcode::GT => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(lhs.as_f64() > rhs.as_f64()));
+            }
+            opcode::GE => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(lhs.as_f64() >= rhs.as_f64()));
+            }
+            opcode::AND => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(lhs.as_bool() && rhs.as_bool()));
+            }
+            opcode::OR => {
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(Value::Bool(lhs.as_bool() || rhs.as_bool()));
+            }
+            opcode::NOT => {
+                let v = stack.pop();
+                stack.push(Value::Bool(!v.as_bool()));
+            }
+
+            // ── Domain ─────────────────────────────────────────
+            opcode::WORST_OF_PERF => {
                 stack.push(Value::F64(compute_worst_of_performance(ctx)));
             }
-            ExecOp::BestOfPerformances => {
+            opcode::BEST_OF_PERF => {
                 stack.push(Value::F64(compute_best_of_performance(ctx)));
             }
-            ExecOp::WorstOf(arg_count) => {
+            opcode::WORST_OF => {
+                let arg_count = inst.operand as usize;
                 let mut min_val = f64::INFINITY;
                 for _ in 0..arg_count {
-                    let value = stack.pop().as_f64();
-                    if value < min_val {
-                        min_val = value;
+                    let v = stack.pop().as_f64();
+                    if v < min_val {
+                        min_val = v;
                     }
                 }
                 stack.push(Value::F64(min_val));
             }
-            ExecOp::BestOf(arg_count) => {
+            opcode::BEST_OF => {
+                let arg_count = inst.operand as usize;
                 let mut max_val = f64::NEG_INFINITY;
                 for _ in 0..arg_count {
-                    let value = stack.pop().as_f64();
-                    if value > max_val {
-                        max_val = value;
+                    let v = stack.pop().as_f64();
+                    if v > max_val {
+                        max_val = v;
                     }
                 }
                 stack.push(Value::F64(max_val));
             }
-            ExecOp::Price => {
+            opcode::PRICE => {
                 let idx = stack.pop().as_f64() as usize;
                 if idx >= ctx.spots.len() {
                     return Err(DslError::EvalError(format!(
@@ -648,54 +857,45 @@ fn execute_program(
                 }
                 stack.push(Value::F64(ctx.spots[idx]));
             }
-            ExecOp::Min => {
-                let rhs = stack.pop().as_f64();
-                let lhs = stack.pop().as_f64();
-                stack.push(Value::F64(lhs.min(rhs)));
+
+            // ── Store ──────────────────────────────────────────
+            opcode::STORE_LOCAL => {
+                ctx.locals[inst.operand as usize] = stack.pop();
             }
-            ExecOp::Max => {
-                let rhs = stack.pop().as_f64();
-                let lhs = stack.pop().as_f64();
-                stack.push(Value::F64(lhs.max(rhs)));
+            opcode::STORE_STATE => {
+                ctx.state[inst.operand as usize] = stack.pop();
             }
-            ExecOp::Abs => {
-                let value = stack.pop().as_f64();
-                stack.push(Value::F64(value.abs()));
+
+            // ── Side-effects ───────────────────────────────────
+            opcode::PAY => {
+                let v = stack.pop().as_f64();
+                *pv += v * ctx.discount_factor;
             }
-            ExecOp::Exp => {
-                let value = stack.pop().as_f64();
-                stack.push(Value::F64(value.exp()));
-            }
-            ExecOp::Log => {
-                let value = stack.pop().as_f64();
-                stack.push(Value::F64(value.ln()));
-            }
-            ExecOp::StoreLocal(slot) => {
-                ctx.locals[slot] = stack.pop();
-            }
-            ExecOp::StoreState(slot) => {
-                ctx.state[slot] = stack.pop();
-            }
-            ExecOp::Pay => {
-                let value = stack.pop().as_f64();
-                *pv += value * ctx.discount_factor;
-            }
-            ExecOp::Redeem => {
-                let value = stack.pop().as_f64();
-                *pv += value * ctx.discount_factor;
+            opcode::REDEEM => {
+                let v = stack.pop().as_f64();
+                *pv += v * ctx.discount_factor;
                 return Ok(ObservationResult::Redeemed);
             }
-            ExecOp::JumpIfFalse(target) => {
+
+            // ── Control flow ───────────────────────────────────
+            opcode::JUMP_FALSE => {
                 if !stack.pop().as_bool() {
-                    pc = target;
+                    pc = inst.operand as usize;
                     continue;
                 }
             }
-            ExecOp::Jump(target) => {
-                pc = target;
+            opcode::JUMP => {
+                pc = inst.operand as usize;
                 continue;
             }
-            ExecOp::Skip => return Ok(ObservationResult::Skipped),
+            opcode::SKIP => return Ok(ObservationResult::Skipped),
+
+            _ => {
+                return Err(DslError::EvalError(format!(
+                    "unknown opcode 0x{:02x}",
+                    inst.opcode
+                )));
+            }
         }
 
         pc += 1;
@@ -705,33 +905,7 @@ fn execute_program(
     Ok(ObservationResult::Continue)
 }
 
-#[inline]
-fn eval_binop(op: BinOp, lhs: Value, rhs: Value) -> Value {
-    let l = lhs.as_f64();
-    let r = rhs.as_f64();
-    match op {
-        BinOp::Add => Value::F64(l + r),
-        BinOp::Sub => Value::F64(l - r),
-        BinOp::Mul => Value::F64(l * r),
-        BinOp::Div => Value::F64(if r == 0.0 { f64::NAN } else { l / r }),
-        BinOp::Eq => Value::Bool((l - r).abs() < f64::EPSILON),
-        BinOp::Ne => Value::Bool((l - r).abs() >= f64::EPSILON),
-        BinOp::Lt => Value::Bool(l < r),
-        BinOp::Le => Value::Bool(l <= r),
-        BinOp::Gt => Value::Bool(l > r),
-        BinOp::Ge => Value::Bool(l >= r),
-        BinOp::And => Value::Bool(lhs.as_bool() && rhs.as_bool()),
-        BinOp::Or => Value::Bool(lhs.as_bool() || rhs.as_bool()),
-    }
-}
-
-#[inline]
-fn eval_unaryop(op: UnaryOp, val: Value) -> Value {
-    match op {
-        UnaryOp::Neg => Value::F64(-val.as_f64()),
-        UnaryOp::Not => Value::Bool(!val.as_bool()),
-    }
-}
+// ── Helpers ────────────────────────────────────────────────────────
 
 #[inline]
 fn compute_worst_of_performance(ctx: &EvalContext<'_>) -> f64 {
@@ -761,10 +935,17 @@ fn compute_best_of_performance(ctx: &EvalContext<'_>) -> f64 {
     bof
 }
 
+// ── Tests ──────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dsl::ir::*;
+
+    #[test]
+    fn instruction_is_four_bytes() {
+        assert_eq!(std::mem::size_of::<Instruction>(), 4);
+    }
 
     /// Helper: build a simple product that pays notional * coupon_rate * obs_date
     /// if worst-of performance >= autocall_barrier, and redeems notional.
