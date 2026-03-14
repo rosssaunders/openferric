@@ -8,6 +8,10 @@
 
 use crate::dsl::error::DslError;
 use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Statement, UnaryOp, Value};
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+use crate::math::simd_math::{fast_exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+use crate::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
 
 // ── Bool-as-f64 convention ────────────────────────────────────────
 const TRUE_F64: f64 = 1.0;
@@ -438,7 +442,31 @@ fn execute_schedule(
     stack: &mut ValueStack<'_>,
     pv: &mut f64,
 ) -> Result<ObservationResult, DslError> {
-    for observation in &plan.observations {
+    execute_schedule_from_observation(
+        product,
+        plan,
+        observation_spots,
+        initial_spots,
+        locals,
+        state,
+        stack,
+        pv,
+        0,
+    )
+}
+
+fn execute_schedule_from_observation(
+    product: &CompiledProduct,
+    plan: &ScheduleExecutionPlan,
+    observation_spots: &[Vec<f64>],
+    initial_spots: &[f64],
+    locals: &mut [f64],
+    state: &mut [f64],
+    stack: &mut ValueStack<'_>,
+    pv: &mut f64,
+    start_observation: usize,
+) -> Result<ObservationResult, DslError> {
+    for observation in plan.observations.iter().skip(start_observation) {
         let spots = observation_spots
             .get(observation.snapshot_index)
             .ok_or_else(|| {
@@ -469,6 +497,1044 @@ fn execute_schedule(
     }
 
     Ok(ObservationResult::Continue)
+}
+
+#[cfg(all(feature = "simd", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn find_branch_merge(code: &[Instruction], false_target: usize) -> usize {
+    if false_target > 0 && false_target <= code.len() {
+        let candidate = code[false_target - 1];
+        if candidate.opcode == opcode::JUMP {
+            let merge = candidate.operand as usize;
+            if merge >= false_target {
+                return merge;
+            }
+        }
+    }
+    false_target
+}
+
+#[inline]
+#[cfg(all(feature = "simd", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn validate_batch_scratch<const LANES: usize>(
+    product: &CompiledProduct,
+    plan: &ProductExecutionPlan,
+    locals_len: usize,
+    state: &[[f64; LANES]],
+    stack_len: usize,
+) -> Result<(), DslError> {
+    if locals_len < product.max_local_slots() {
+        return Err(DslError::EvalError(format!(
+            "locals scratch length {} is smaller than required locals {}",
+            locals_len,
+            product.max_local_slots()
+        )));
+    }
+    if state.len() != product.state_vars.len() {
+        return Err(DslError::EvalError(format!(
+            "state scratch length {} does not match product state count {}",
+            state.len(),
+            product.state_vars.len()
+        )));
+    }
+    if stack_len < plan.max_stack() {
+        return Err(DslError::EvalError(format!(
+            "stack scratch length {} is smaller than required stack {}",
+            stack_len,
+            plan.max_stack()
+        )));
+    }
+    Ok(())
+}
+
+#[inline]
+#[cfg(all(feature = "simd", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn init_state_batch<const LANES: usize>(
+    product: &CompiledProduct,
+    state: &mut [[f64; LANES]],
+) -> Result<(), DslError> {
+    if state.len() != product.state_vars.len() {
+        return Err(DslError::EvalError(format!(
+            "state scratch length {} does not match product state count {}",
+            state.len(),
+            product.state_vars.len()
+        )));
+    }
+    for (dst, sv) in state.iter_mut().zip(product.state_vars.iter()) {
+        dst.fill(sv.initial.as_f64());
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+const SIMD_BATCH_LANES_X86: usize = 4;
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+struct BatchEvalContextX86<'a> {
+    spots: &'a [[f64; SIMD_BATCH_LANES_X86]],
+    initial_spots: &'a [f64],
+    notional: f64,
+    observation_date: f64,
+    is_final: bool,
+    discount_factor: f64,
+    locals: &'a mut [[f64; SIMD_BATCH_LANES_X86]],
+    state: &'a mut [[f64; SIMD_BATCH_LANES_X86]],
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+struct SimdValueStackX86<'a> {
+    values: &'a mut [[f64; SIMD_BATCH_LANES_X86]],
+    len: usize,
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+impl<'a> SimdValueStackX86<'a> {
+    fn new(values: &'a mut [[f64; SIMD_BATCH_LANES_X86]]) -> Self {
+        Self { values, len: 0 }
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    #[inline]
+    unsafe fn push_reg(&mut self, value: std::arch::x86_64::__m256d) {
+        debug_assert!(self.len < self.values.len());
+        unsafe { store_f64x4(&mut self.values[self.len], 0, value) };
+        self.len += 1;
+    }
+
+    #[inline]
+    fn push_array(&mut self, value: [f64; SIMD_BATCH_LANES_X86]) {
+        debug_assert!(self.len < self.values.len());
+        self.values[self.len] = value;
+        self.len += 1;
+    }
+
+    #[inline]
+    unsafe fn pop_reg(&mut self) -> std::arch::x86_64::__m256d {
+        debug_assert!(self.len > 0);
+        self.len -= 1;
+        unsafe { load_f64x4(&self.values[self.len], 0) }
+    }
+
+    #[inline]
+    fn pop_array(&mut self) -> [f64; SIMD_BATCH_LANES_X86] {
+        debug_assert!(self.len > 0);
+        self.len -= 1;
+        self.values[self.len]
+    }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn x86_splat(value: f64) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::_mm256_set1_pd;
+    unsafe { _mm256_set1_pd(value) }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn x86_abs(value: std::arch::x86_64::__m256d) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::{_mm256_andnot_pd, _mm256_set1_pd};
+    unsafe { _mm256_andnot_pd(_mm256_set1_pd(-0.0), value) }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn x86_bool_mask(value: std::arch::x86_64::__m256d) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::{_CMP_NEQ_OQ, _mm256_cmp_pd, _mm256_setzero_pd};
+    unsafe { _mm256_cmp_pd(value, _mm256_setzero_pd(), _CMP_NEQ_OQ) }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn x86_mask_from_bits(bits: u8) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::{_mm256_castsi256_pd, _mm256_set_epi64x};
+    let bit = |lane: usize| {
+        if bits & (1 << lane) != 0 {
+            -1_i64
+        } else {
+            0_i64
+        }
+    };
+    unsafe { _mm256_castsi256_pd(_mm256_set_epi64x(bit(3), bit(2), bit(1), bit(0))) }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn masked_write_x86(
+    dst: &mut [f64; SIMD_BATCH_LANES_X86],
+    value: std::arch::x86_64::__m256d,
+    active_mask: std::arch::x86_64::__m256d,
+) {
+    use std::arch::x86_64::_mm256_blendv_pd;
+    let current = unsafe { load_f64x4(dst, 0) };
+    let blended = unsafe { _mm256_blendv_pd(current, value, active_mask) };
+    unsafe { store_f64x4(dst, 0, blended) };
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+pub(crate) fn evaluate_product_with_plan_batch_x86(
+    product: &CompiledProduct,
+    plan: &ProductExecutionPlan,
+    observation_spots: &[Vec<[f64; SIMD_BATCH_LANES_X86]>],
+    initial_spots: &[f64],
+    locals: &mut [[f64; SIMD_BATCH_LANES_X86]],
+    state: &mut [[f64; SIMD_BATCH_LANES_X86]],
+    stack: &mut [[f64; SIMD_BATCH_LANES_X86]],
+) -> Result<[f64; SIMD_BATCH_LANES_X86], DslError> {
+    validate_batch_scratch(product, plan, locals.len(), state, stack.len())?;
+    init_state_batch(product, state)?;
+
+    let mut pv = [0.0; SIMD_BATCH_LANES_X86];
+    let mut value_stack = SimdValueStackX86::new(stack);
+    let mut live_bits = 0b1111_u8;
+
+    for schedule_plan in &plan.schedules {
+        for observation in &schedule_plan.observations {
+            if live_bits == 0 {
+                return Ok(pv);
+            }
+
+            for slot in locals.iter_mut() {
+                slot.fill(0.0);
+            }
+
+            let spots = observation_spots
+                .get(observation.snapshot_index)
+                .ok_or_else(|| {
+                    DslError::EvalError(format!(
+                        "missing observation snapshot {}",
+                        observation.snapshot_index
+                    ))
+                })?;
+
+            let mut ctx = BatchEvalContextX86 {
+                spots,
+                initial_spots,
+                notional: product.notional,
+                observation_date: observation.observation_date,
+                is_final: observation.is_final,
+                discount_factor: observation.discount_factor,
+                locals,
+                state,
+            };
+            value_stack.clear();
+            live_bits = unsafe {
+                execute_program_batch_x86_range(
+                    &schedule_plan.program,
+                    &mut ctx,
+                    &mut value_stack,
+                    &mut pv,
+                    live_bits,
+                    0,
+                    schedule_plan.program.code.len(),
+                )
+            }?;
+            debug_assert_eq!(value_stack.len, 0);
+        }
+    }
+
+    Ok(pv)
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn execute_program_batch_x86_range(
+    program: &Program,
+    ctx: &mut BatchEvalContextX86<'_>,
+    stack: &mut SimdValueStackX86<'_>,
+    pv: &mut [f64; SIMD_BATCH_LANES_X86],
+    mut active_bits: u8,
+    start_pc: usize,
+    end_pc: usize,
+) -> Result<u8, DslError> {
+    use std::arch::x86_64::*;
+
+    let code = &program.code;
+    let constants = &program.constants;
+    let one = unsafe { x86_splat(TRUE_F64) };
+    let zero = _mm256_setzero_pd();
+    let nan = unsafe { x86_splat(f64::NAN) };
+    let discount = unsafe { x86_splat(ctx.discount_factor) };
+    let mut pc = start_pc;
+
+    while pc < end_pc && active_bits != 0 {
+        let active_mask = unsafe { x86_mask_from_bits(active_bits) };
+        let inst = code[pc];
+        match inst.opcode {
+            opcode::PUSH_CONST => unsafe {
+                stack.push_reg(x86_splat(constants[inst.operand as usize]))
+            },
+            opcode::PUSH_TRUE => unsafe { stack.push_reg(one) },
+            opcode::PUSH_FALSE => unsafe { stack.push_reg(zero) },
+            opcode::PUSH_LOCAL => unsafe {
+                stack.push_reg(load_f64x4(&ctx.locals[inst.operand as usize], 0))
+            },
+            opcode::PUSH_STATE => unsafe {
+                stack.push_reg(load_f64x4(&ctx.state[inst.operand as usize], 0))
+            },
+            opcode::PUSH_NOTIONAL => unsafe { stack.push_reg(x86_splat(ctx.notional)) },
+            opcode::PUSH_DATE => unsafe { stack.push_reg(x86_splat(ctx.observation_date)) },
+            opcode::PUSH_IS_FINAL => unsafe {
+                stack.push_reg(x86_splat(bool_to_f64(ctx.is_final)))
+            },
+
+            opcode::ADD => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_add_pd(lhs, rhs));
+            },
+            opcode::SUB => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_sub_pd(lhs, rhs));
+            },
+            opcode::MUL => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_mul_pd(lhs, rhs));
+            },
+            opcode::DIV => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let quotient = _mm256_div_pd(lhs, rhs);
+                let zero_mask = _mm256_cmp_pd(rhs, zero, _CMP_EQ_OQ);
+                stack.push_reg(_mm256_blendv_pd(quotient, nan, zero_mask));
+            },
+            opcode::NEG => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(_mm256_sub_pd(zero, value));
+            },
+            opcode::ABS => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(x86_abs(value));
+            },
+            opcode::EXP => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(fast_exp_f64x4(value));
+            },
+            opcode::LOG => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(ln_f64x4(value));
+            },
+            opcode::MIN => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_min_pd(lhs, rhs));
+            },
+            opcode::MAX => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_max_pd(lhs, rhs));
+            },
+
+            opcode::EQ => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let diff = x86_abs(_mm256_sub_pd(lhs, rhs));
+                let mask = _mm256_cmp_pd(diff, x86_splat(f64::EPSILON), _CMP_LT_OQ);
+                stack.push_reg(_mm256_and_pd(mask, one));
+            },
+            opcode::NE => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let diff = x86_abs(_mm256_sub_pd(lhs, rhs));
+                let mask = _mm256_cmp_pd(diff, x86_splat(f64::EPSILON), _CMP_GE_OQ);
+                stack.push_reg(_mm256_and_pd(mask, one));
+            },
+            opcode::LT => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_and_pd(_mm256_cmp_pd(lhs, rhs, _CMP_LT_OQ), one));
+            },
+            opcode::LE => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_and_pd(_mm256_cmp_pd(lhs, rhs, _CMP_LE_OQ), one));
+            },
+            opcode::GT => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_and_pd(_mm256_cmp_pd(lhs, rhs, _CMP_GT_OQ), one));
+            },
+            opcode::GE => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(_mm256_and_pd(_mm256_cmp_pd(lhs, rhs, _CMP_GE_OQ), one));
+            },
+            opcode::AND => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let mask = _mm256_and_pd(x86_bool_mask(lhs), x86_bool_mask(rhs));
+                stack.push_reg(_mm256_and_pd(mask, one));
+            },
+            opcode::OR => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let mask = _mm256_or_pd(x86_bool_mask(lhs), x86_bool_mask(rhs));
+                stack.push_reg(_mm256_and_pd(mask, one));
+            },
+            opcode::NOT => unsafe {
+                let value = stack.pop_reg();
+                let mask = _mm256_cmp_pd(value, zero, _CMP_EQ_OQ);
+                stack.push_reg(_mm256_and_pd(mask, one));
+            },
+
+            opcode::WORST_OF_PERF => unsafe {
+                stack.push_reg(compute_worst_of_performance_batch_x86(
+                    ctx.spots,
+                    ctx.initial_spots,
+                ));
+            },
+            opcode::BEST_OF_PERF => unsafe {
+                stack.push_reg(compute_best_of_performance_batch_x86(
+                    ctx.spots,
+                    ctx.initial_spots,
+                ));
+            },
+            opcode::WORST_OF => unsafe {
+                let arg_count = inst.operand as usize;
+                let mut min_value = x86_splat(f64::INFINITY);
+                for _ in 0..arg_count {
+                    min_value = _mm256_min_pd(min_value, stack.pop_reg());
+                }
+                stack.push_reg(min_value);
+            },
+            opcode::BEST_OF => unsafe {
+                let arg_count = inst.operand as usize;
+                let mut max_value = x86_splat(f64::NEG_INFINITY);
+                for _ in 0..arg_count {
+                    max_value = _mm256_max_pd(max_value, stack.pop_reg());
+                }
+                stack.push_reg(max_value);
+            },
+            opcode::PRICE => {
+                let idxs = stack.pop_array();
+                let mut values = [0.0; SIMD_BATCH_LANES_X86];
+                for lane in 0..SIMD_BATCH_LANES_X86 {
+                    let idx = idxs[lane] as usize;
+                    if idx >= ctx.spots.len() {
+                        return Err(DslError::EvalError(format!(
+                            "asset index {idx} out of range (have {} assets)",
+                            ctx.spots.len()
+                        )));
+                    }
+                    values[lane] = ctx.spots[idx][lane];
+                }
+                stack.push_array(values);
+            }
+
+            opcode::STORE_LOCAL => unsafe {
+                let value = stack.pop_reg();
+                masked_write_x86(&mut ctx.locals[inst.operand as usize], value, active_mask);
+            },
+            opcode::STORE_STATE => unsafe {
+                let value = stack.pop_reg();
+                masked_write_x86(&mut ctx.state[inst.operand as usize], value, active_mask);
+            },
+
+            opcode::PAY => unsafe {
+                let value = stack.pop_reg();
+                let add = _mm256_and_pd(_mm256_mul_pd(value, discount), active_mask);
+                let pv_reg = _mm256_add_pd(load_f64x4(pv, 0), add);
+                store_f64x4(pv, 0, pv_reg);
+            },
+            opcode::REDEEM => unsafe {
+                let value = stack.pop_reg();
+                let add = _mm256_and_pd(_mm256_mul_pd(value, discount), active_mask);
+                let pv_reg = _mm256_add_pd(load_f64x4(pv, 0), add);
+                store_f64x4(pv, 0, pv_reg);
+                active_bits = 0;
+                break;
+            },
+
+            opcode::JUMP_FALSE => unsafe {
+                let cond = stack.pop_reg();
+                let false_bits = (_mm256_movemask_pd(_mm256_and_pd(
+                    _mm256_cmp_pd(cond, zero, _CMP_EQ_OQ),
+                    active_mask,
+                )) as u8)
+                    & active_bits;
+                if false_bits == active_bits {
+                    pc = inst.operand as usize;
+                    continue;
+                }
+                if false_bits != 0 {
+                    let true_bits = active_bits & !false_bits;
+                    let merge_pc = find_branch_merge(code, inst.operand as usize);
+                    let saved_len = stack.len;
+                    let true_remaining = execute_program_batch_x86_range(
+                        program,
+                        ctx,
+                        stack,
+                        pv,
+                        true_bits,
+                        pc + 1,
+                        merge_pc,
+                    )?;
+                    debug_assert_eq!(stack.len, saved_len);
+                    let false_remaining = execute_program_batch_x86_range(
+                        program,
+                        ctx,
+                        stack,
+                        pv,
+                        false_bits,
+                        inst.operand as usize,
+                        merge_pc,
+                    )?;
+                    debug_assert_eq!(stack.len, saved_len);
+                    active_bits = true_remaining | false_remaining;
+                    pc = merge_pc;
+                    continue;
+                }
+            },
+            opcode::JUMP => {
+                pc = inst.operand as usize;
+                continue;
+            }
+            opcode::SKIP => {
+                active_bits = 0;
+                break;
+            }
+
+            _ => {
+                return Err(DslError::EvalError(format!(
+                    "unknown opcode 0x{:02x}",
+                    inst.opcode
+                )));
+            }
+        }
+
+        pc += 1;
+    }
+
+    Ok(active_bits)
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn compute_worst_of_performance_batch_x86(
+    spots: &[[f64; SIMD_BATCH_LANES_X86]],
+    initial_spots: &[f64],
+) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::*;
+
+    let mut wof = unsafe { x86_splat(f64::INFINITY) };
+    for (asset, lane_spots) in spots.iter().enumerate() {
+        if asset < initial_spots.len() && initial_spots[asset] > 0.0 {
+            let spot = unsafe { load_f64x4(lane_spots, 0) };
+            let inv_initial = unsafe { x86_splat(1.0 / initial_spots[asset]) };
+            let perf = _mm256_mul_pd(spot, inv_initial);
+            wof = _mm256_min_pd(wof, perf);
+        }
+    }
+    wof
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn compute_best_of_performance_batch_x86(
+    spots: &[[f64; SIMD_BATCH_LANES_X86]],
+    initial_spots: &[f64],
+) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::*;
+
+    let mut bof = unsafe { x86_splat(f64::NEG_INFINITY) };
+    for (asset, lane_spots) in spots.iter().enumerate() {
+        if asset < initial_spots.len() && initial_spots[asset] > 0.0 {
+            let spot = unsafe { load_f64x4(lane_spots, 0) };
+            let inv_initial = unsafe { x86_splat(1.0 / initial_spots[asset]) };
+            let perf = _mm256_mul_pd(spot, inv_initial);
+            bof = _mm256_max_pd(bof, perf);
+        }
+    }
+    bof
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+const SIMD_BATCH_LANES_NEON: usize = 2;
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+struct BatchEvalContextNeon<'a> {
+    spots: &'a [[f64; SIMD_BATCH_LANES_NEON]],
+    initial_spots: &'a [f64],
+    notional: f64,
+    observation_date: f64,
+    is_final: bool,
+    discount_factor: f64,
+    locals: &'a mut [[f64; SIMD_BATCH_LANES_NEON]],
+    state: &'a mut [[f64; SIMD_BATCH_LANES_NEON]],
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+struct SimdValueStackNeon<'a> {
+    values: &'a mut [[f64; SIMD_BATCH_LANES_NEON]],
+    len: usize,
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+impl<'a> SimdValueStackNeon<'a> {
+    fn new(values: &'a mut [[f64; SIMD_BATCH_LANES_NEON]]) -> Self {
+        Self { values, len: 0 }
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    #[inline]
+    unsafe fn push_reg(&mut self, value: std::arch::aarch64::float64x2_t) {
+        debug_assert!(self.len < self.values.len());
+        unsafe { store_f64x2(&mut self.values[self.len], 0, value) };
+        self.len += 1;
+    }
+
+    #[inline]
+    fn push_array(&mut self, value: [f64; SIMD_BATCH_LANES_NEON]) {
+        debug_assert!(self.len < self.values.len());
+        self.values[self.len] = value;
+        self.len += 1;
+    }
+
+    #[inline]
+    unsafe fn pop_reg(&mut self) -> std::arch::aarch64::float64x2_t {
+        debug_assert!(self.len > 0);
+        self.len -= 1;
+        unsafe { load_f64x2(&self.values[self.len], 0) }
+    }
+
+    #[inline]
+    fn pop_array(&mut self) -> [f64; SIMD_BATCH_LANES_NEON] {
+        debug_assert!(self.len > 0);
+        self.len -= 1;
+        self.values[self.len]
+    }
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[inline]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn neon_mask_bits(mask: std::arch::aarch64::uint64x2_t) -> u8 {
+    use std::arch::aarch64::*;
+    let mut lanes = [0_u64; SIMD_BATCH_LANES_NEON];
+    unsafe { vst1q_u64(lanes.as_mut_ptr(), mask) };
+    let mut bits = 0_u8;
+    for (lane, value) in lanes.iter().enumerate() {
+        if *value != 0 {
+            bits |= 1 << lane;
+        }
+    }
+    bits
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[inline]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn neon_mask_from_bits(bits: u8) -> std::arch::aarch64::uint64x2_t {
+    use std::arch::aarch64::*;
+    let lanes = [
+        if bits & 0b01 != 0 { u64::MAX } else { 0 },
+        if bits & 0b10 != 0 { u64::MAX } else { 0 },
+    ];
+    unsafe { vld1q_u64(lanes.as_ptr()) }
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[inline]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn neon_bool_mask(value: std::arch::aarch64::float64x2_t) -> std::arch::aarch64::uint64x2_t {
+    use std::arch::aarch64::*;
+    unsafe { veorq_u64(vceqq_f64(value, vdupq_n_f64(0.0)), vdupq_n_u64(u64::MAX)) }
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[inline]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn masked_write_neon(
+    dst: &mut [f64; SIMD_BATCH_LANES_NEON],
+    value: std::arch::aarch64::float64x2_t,
+    active_mask: std::arch::aarch64::uint64x2_t,
+) {
+    use std::arch::aarch64::*;
+    let current = unsafe { load_f64x2(dst, 0) };
+    let blended = unsafe { vbslq_f64(active_mask, value, current) };
+    unsafe { store_f64x2(dst, 0, blended) };
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+pub(crate) fn evaluate_product_with_plan_batch_neon(
+    product: &CompiledProduct,
+    plan: &ProductExecutionPlan,
+    observation_spots: &[Vec<[f64; SIMD_BATCH_LANES_NEON]>],
+    initial_spots: &[f64],
+    locals: &mut [[f64; SIMD_BATCH_LANES_NEON]],
+    state: &mut [[f64; SIMD_BATCH_LANES_NEON]],
+    stack: &mut [[f64; SIMD_BATCH_LANES_NEON]],
+) -> Result<[f64; SIMD_BATCH_LANES_NEON], DslError> {
+    validate_batch_scratch(product, plan, locals.len(), state, stack.len())?;
+    init_state_batch(product, state)?;
+
+    let mut pv = [0.0; SIMD_BATCH_LANES_NEON];
+    let mut value_stack = SimdValueStackNeon::new(stack);
+    let mut live_bits = 0b11_u8;
+
+    for schedule_plan in &plan.schedules {
+        for observation in &schedule_plan.observations {
+            if live_bits == 0 {
+                return Ok(pv);
+            }
+
+            for slot in locals.iter_mut() {
+                slot.fill(0.0);
+            }
+
+            let spots = observation_spots
+                .get(observation.snapshot_index)
+                .ok_or_else(|| {
+                    DslError::EvalError(format!(
+                        "missing observation snapshot {}",
+                        observation.snapshot_index
+                    ))
+                })?;
+
+            let mut ctx = BatchEvalContextNeon {
+                spots,
+                initial_spots,
+                notional: product.notional,
+                observation_date: observation.observation_date,
+                is_final: observation.is_final,
+                discount_factor: observation.discount_factor,
+                locals,
+                state,
+            };
+            value_stack.clear();
+            live_bits = unsafe {
+                execute_program_batch_neon_range(
+                    &schedule_plan.program,
+                    &mut ctx,
+                    &mut value_stack,
+                    &mut pv,
+                    live_bits,
+                    0,
+                    schedule_plan.program.code.len(),
+                )
+            }?;
+            debug_assert_eq!(value_stack.len, 0);
+        }
+    }
+
+    Ok(pv)
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn execute_program_batch_neon_range(
+    program: &Program,
+    ctx: &mut BatchEvalContextNeon<'_>,
+    stack: &mut SimdValueStackNeon<'_>,
+    pv: &mut [f64; SIMD_BATCH_LANES_NEON],
+    mut active_bits: u8,
+    start_pc: usize,
+    end_pc: usize,
+) -> Result<u8, DslError> {
+    use std::arch::aarch64::*;
+
+    let code = &program.code;
+    let constants = &program.constants;
+    let one = vdupq_n_f64(TRUE_F64);
+    let zero = vdupq_n_f64(0.0);
+    let nan = vdupq_n_f64(f64::NAN);
+    let discount = vdupq_n_f64(ctx.discount_factor);
+    let mut pc = start_pc;
+
+    while pc < end_pc && active_bits != 0 {
+        let active_mask = unsafe { neon_mask_from_bits(active_bits) };
+        let inst = code[pc];
+        match inst.opcode {
+            opcode::PUSH_CONST => unsafe {
+                stack.push_reg(vdupq_n_f64(constants[inst.operand as usize]))
+            },
+            opcode::PUSH_TRUE => unsafe { stack.push_reg(one) },
+            opcode::PUSH_FALSE => unsafe { stack.push_reg(zero) },
+            opcode::PUSH_LOCAL => unsafe {
+                stack.push_reg(load_f64x2(&ctx.locals[inst.operand as usize], 0))
+            },
+            opcode::PUSH_STATE => unsafe {
+                stack.push_reg(load_f64x2(&ctx.state[inst.operand as usize], 0))
+            },
+            opcode::PUSH_NOTIONAL => unsafe { stack.push_reg(vdupq_n_f64(ctx.notional)) },
+            opcode::PUSH_DATE => unsafe { stack.push_reg(vdupq_n_f64(ctx.observation_date)) },
+            opcode::PUSH_IS_FINAL => unsafe {
+                stack.push_reg(vdupq_n_f64(bool_to_f64(ctx.is_final)))
+            },
+
+            opcode::ADD => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vaddq_f64(lhs, rhs));
+            },
+            opcode::SUB => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vsubq_f64(lhs, rhs));
+            },
+            opcode::MUL => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vmulq_f64(lhs, rhs));
+            },
+            opcode::DIV => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let quotient = vdivq_f64(lhs, rhs);
+                let zero_mask = vceqq_f64(rhs, zero);
+                stack.push_reg(vbslq_f64(zero_mask, nan, quotient));
+            },
+            opcode::NEG => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(vnegq_f64(value));
+            },
+            opcode::ABS => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(vabsq_f64(value));
+            },
+            opcode::EXP => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(simd_exp_f64x2(value));
+            },
+            opcode::LOG => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(simd_ln_f64x2(value));
+            },
+            opcode::MIN => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vminq_f64(lhs, rhs));
+            },
+            opcode::MAX => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vmaxq_f64(lhs, rhs));
+            },
+
+            opcode::EQ => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let diff = vabsq_f64(vsubq_f64(lhs, rhs));
+                let mask = vcltq_f64(diff, vdupq_n_f64(f64::EPSILON));
+                stack.push_reg(vbslq_f64(mask, one, zero));
+            },
+            opcode::NE => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let diff = vabsq_f64(vsubq_f64(lhs, rhs));
+                let mask = vcgeq_f64(diff, vdupq_n_f64(f64::EPSILON));
+                stack.push_reg(vbslq_f64(mask, one, zero));
+            },
+            opcode::LT => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vbslq_f64(vcltq_f64(lhs, rhs), one, zero));
+            },
+            opcode::LE => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vbslq_f64(vcleq_f64(lhs, rhs), one, zero));
+            },
+            opcode::GT => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vbslq_f64(vcgtq_f64(lhs, rhs), one, zero));
+            },
+            opcode::GE => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                stack.push_reg(vbslq_f64(vcgeq_f64(lhs, rhs), one, zero));
+            },
+            opcode::AND => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let mask = vandq_u64(neon_bool_mask(lhs), neon_bool_mask(rhs));
+                stack.push_reg(vbslq_f64(mask, one, zero));
+            },
+            opcode::OR => unsafe {
+                let rhs = stack.pop_reg();
+                let lhs = stack.pop_reg();
+                let mask = vorrq_u64(neon_bool_mask(lhs), neon_bool_mask(rhs));
+                stack.push_reg(vbslq_f64(mask, one, zero));
+            },
+            opcode::NOT => unsafe {
+                let value = stack.pop_reg();
+                stack.push_reg(vbslq_f64(vceqq_f64(value, zero), one, zero));
+            },
+
+            opcode::WORST_OF_PERF => unsafe {
+                stack.push_reg(compute_worst_of_performance_batch_neon(
+                    ctx.spots,
+                    ctx.initial_spots,
+                ));
+            },
+            opcode::BEST_OF_PERF => unsafe {
+                stack.push_reg(compute_best_of_performance_batch_neon(
+                    ctx.spots,
+                    ctx.initial_spots,
+                ));
+            },
+            opcode::WORST_OF => unsafe {
+                let arg_count = inst.operand as usize;
+                let mut min_value = vdupq_n_f64(f64::INFINITY);
+                for _ in 0..arg_count {
+                    min_value = vminq_f64(min_value, stack.pop_reg());
+                }
+                stack.push_reg(min_value);
+            },
+            opcode::BEST_OF => unsafe {
+                let arg_count = inst.operand as usize;
+                let mut max_value = vdupq_n_f64(f64::NEG_INFINITY);
+                for _ in 0..arg_count {
+                    max_value = vmaxq_f64(max_value, stack.pop_reg());
+                }
+                stack.push_reg(max_value);
+            },
+            opcode::PRICE => {
+                let idxs = stack.pop_array();
+                let mut values = [0.0; SIMD_BATCH_LANES_NEON];
+                for lane in 0..SIMD_BATCH_LANES_NEON {
+                    let idx = idxs[lane] as usize;
+                    if idx >= ctx.spots.len() {
+                        return Err(DslError::EvalError(format!(
+                            "asset index {idx} out of range (have {} assets)",
+                            ctx.spots.len()
+                        )));
+                    }
+                    values[lane] = ctx.spots[idx][lane];
+                }
+                stack.push_array(values);
+            }
+
+            opcode::STORE_LOCAL => unsafe {
+                let value = stack.pop_reg();
+                masked_write_neon(&mut ctx.locals[inst.operand as usize], value, active_mask);
+            },
+            opcode::STORE_STATE => unsafe {
+                let value = stack.pop_reg();
+                masked_write_neon(&mut ctx.state[inst.operand as usize], value, active_mask);
+            },
+
+            opcode::PAY => unsafe {
+                let value = stack.pop_reg();
+                let add = vbslq_f64(active_mask, vmulq_f64(value, discount), zero);
+                let pv_reg = vaddq_f64(load_f64x2(pv, 0), add);
+                store_f64x2(pv, 0, pv_reg);
+            },
+            opcode::REDEEM => unsafe {
+                let value = stack.pop_reg();
+                let add = vbslq_f64(active_mask, vmulq_f64(value, discount), zero);
+                let pv_reg = vaddq_f64(load_f64x2(pv, 0), add);
+                store_f64x2(pv, 0, pv_reg);
+                active_bits = 0;
+                break;
+            },
+
+            opcode::JUMP_FALSE => unsafe {
+                let cond = stack.pop_reg();
+                let false_mask = vandq_u64(vceqq_f64(cond, zero), active_mask);
+                let false_bits = neon_mask_bits(false_mask) & active_bits;
+                if false_bits == active_bits {
+                    pc = inst.operand as usize;
+                    continue;
+                }
+                if false_bits != 0 {
+                    let true_bits = active_bits & !false_bits;
+                    let merge_pc = find_branch_merge(code, inst.operand as usize);
+                    let saved_len = stack.len;
+                    let true_remaining = execute_program_batch_neon_range(
+                        program,
+                        ctx,
+                        stack,
+                        pv,
+                        true_bits,
+                        pc + 1,
+                        merge_pc,
+                    )?;
+                    debug_assert_eq!(stack.len, saved_len);
+                    let false_remaining = execute_program_batch_neon_range(
+                        program,
+                        ctx,
+                        stack,
+                        pv,
+                        false_bits,
+                        inst.operand as usize,
+                        merge_pc,
+                    )?;
+                    debug_assert_eq!(stack.len, saved_len);
+                    active_bits = true_remaining | false_remaining;
+                    pc = merge_pc;
+                    continue;
+                }
+            },
+            opcode::JUMP => {
+                pc = inst.operand as usize;
+                continue;
+            }
+            opcode::SKIP => {
+                active_bits = 0;
+                break;
+            }
+
+            _ => {
+                return Err(DslError::EvalError(format!(
+                    "unknown opcode 0x{:02x}",
+                    inst.opcode
+                )));
+            }
+        }
+
+        pc += 1;
+    }
+
+    Ok(active_bits)
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn compute_worst_of_performance_batch_neon(
+    spots: &[[f64; SIMD_BATCH_LANES_NEON]],
+    initial_spots: &[f64],
+) -> std::arch::aarch64::float64x2_t {
+    use std::arch::aarch64::*;
+
+    let mut wof = vdupq_n_f64(f64::INFINITY);
+    for (asset, lane_spots) in spots.iter().enumerate() {
+        if asset < initial_spots.len() && initial_spots[asset] > 0.0 {
+            let spot = unsafe { load_f64x2(lane_spots, 0) };
+            let perf = vmulq_f64(spot, vdupq_n_f64(1.0 / initial_spots[asset]));
+            wof = vminq_f64(wof, perf);
+        }
+    }
+    wof
+}
+
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn compute_best_of_performance_batch_neon(
+    spots: &[[f64; SIMD_BATCH_LANES_NEON]],
+    initial_spots: &[f64],
+) -> std::arch::aarch64::float64x2_t {
+    use std::arch::aarch64::*;
+
+    let mut bof = vdupq_n_f64(f64::NEG_INFINITY);
+    for (asset, lane_spots) in spots.iter().enumerate() {
+        if asset < initial_spots.len() && initial_spots[asset] > 0.0 {
+            let spot = unsafe { load_f64x2(lane_spots, 0) };
+            let perf = vmulq_f64(spot, vdupq_n_f64(1.0 / initial_spots[asset]));
+            bof = vmaxq_f64(bof, perf);
+        }
+    }
+    bof
 }
 
 // ── Compilation: IR → packed bytecode ──────────────────────────────
@@ -1247,5 +2313,80 @@ mod tests {
         let pv = evaluate_product(&product, &path_spots, &initial_spots, num_steps, 0.0).unwrap();
         // redeem 100 * 0.90 = 90, rate=0 so no discounting
         assert!((pv - 90.0).abs() < 0.01, "expected 90.0, got {pv}");
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[test]
+    fn batched_x86_matches_scalar_when_lanes_diverge() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
+            return;
+        }
+
+        let product = make_simple_autocallable(1_000_000.0, 1.0, vec![0.5, 1.0], 1.0, 0.08, 0.60);
+        let plan = build_execution_plan(&product, 2, 0.05).unwrap();
+        let initial_spots = vec![100.0];
+
+        let lane_paths = [
+            vec![vec![100.0], vec![105.0], vec![105.0]],
+            vec![vec![100.0], vec![90.0], vec![90.0]],
+            vec![vec![100.0], vec![55.0], vec![80.0]],
+            vec![vec![100.0], vec![100.0], vec![100.0]],
+        ];
+
+        let mut observation_spots =
+            vec![vec![[0.0; SIMD_BATCH_LANES_X86]; initial_spots.len()]; plan.snapshot_count()];
+        for (step, _) in lane_paths[0].iter().enumerate() {
+            if let Some(snapshot_index) = plan.snapshot_index_for_step(step) {
+                for asset in 0..initial_spots.len() {
+                    for lane in 0..SIMD_BATCH_LANES_X86 {
+                        observation_spots[snapshot_index][asset][lane] =
+                            lane_paths[lane][step][asset];
+                    }
+                }
+            }
+        }
+
+        let mut locals = vec![[0.0; SIMD_BATCH_LANES_X86]; product.max_local_slots()];
+        let mut state = vec![[0.0; SIMD_BATCH_LANES_X86]; product.state_vars.len()];
+        let mut stack = vec![[0.0; SIMD_BATCH_LANES_X86]; plan.max_stack()];
+
+        let batched = evaluate_product_with_plan_batch_x86(
+            &product,
+            &plan,
+            &observation_spots,
+            &initial_spots,
+            &mut locals,
+            &mut state,
+            &mut stack,
+        )
+        .unwrap();
+
+        for lane in 0..SIMD_BATCH_LANES_X86 {
+            let mut lane_locals = vec![0.0; product.max_local_slots()];
+            let mut lane_state = vec![0.0; product.state_vars.len()];
+            let mut lane_stack = vec![0.0; plan.max_stack()];
+            let mut scalar_observation_spots =
+                vec![vec![0.0; initial_spots.len()]; plan.snapshot_count()];
+            for (step, _) in lane_paths[lane].iter().enumerate() {
+                if let Some(snapshot_index) = plan.snapshot_index_for_step(step) {
+                    scalar_observation_spots[snapshot_index] = lane_paths[lane][step].clone();
+                }
+            }
+            let scalar = evaluate_product_with_plan_in_place(
+                &product,
+                &plan,
+                &scalar_observation_spots,
+                &initial_spots,
+                &mut lane_locals,
+                &mut lane_state,
+                &mut lane_stack,
+            )
+            .unwrap();
+            assert!(
+                (batched[lane] - scalar).abs() < 1e-8,
+                "lane {lane}: expected {scalar}, got {}",
+                batched[lane]
+            );
+        }
     }
 }

@@ -5,6 +5,10 @@
 use crate::core::{
     DiagKey, Diagnostics, Greeks, Instrument, PricingEngine, PricingError, PricingResult,
 };
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+use crate::dsl::eval::evaluate_product_with_plan_batch_neon;
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+use crate::dsl::eval::evaluate_product_with_plan_batch_x86;
 use crate::dsl::eval::{
     ProductExecutionPlan, build_execution_plan, evaluate_product_with_plan_in_place,
 };
@@ -522,10 +526,10 @@ impl DslMonteCarloEngine {
         let mut indep_normals = vec![vec![0.0; n_assets]; LANES];
         let mut current_spots = vec![[0.0; LANES]; n_assets];
         let mut next_spots = vec![[0.0; LANES]; n_assets];
-        let mut observation_spots = vec![vec![vec![0.0; n_assets]; n_snapshots]; LANES];
-        let mut locals = vec![vec![0.0_f64; num_locals]; LANES];
-        let mut state = vec![vec![0.0_f64; n_state]; LANES];
-        let mut stack = vec![vec![0.0_f64; plan.max_stack()]; LANES];
+        let mut observation_spots = vec![vec![[0.0; LANES]; n_assets]; n_snapshots];
+        let mut locals = vec![[0.0_f64; LANES]; num_locals];
+        let mut state = vec![[0.0_f64; LANES]; n_state];
+        let mut stack = vec![[0.0_f64; LANES]; plan.max_stack()];
 
         let simd_paths = num_paths / LANES * LANES;
         let mut processed = 0usize;
@@ -534,8 +538,8 @@ impl DslMonteCarloEngine {
                 current_spots[asset].fill(spot0);
             }
             if let Some(snapshot_index) = plan.snapshot_index_for_step(0) {
-                for lane_observations in observation_spots.iter_mut().take(LANES) {
-                    lane_observations[snapshot_index].copy_from_slice(initial_spots);
+                for (asset, &spot0) in initial_spots.iter().enumerate() {
+                    observation_spots[snapshot_index][asset].fill(spot0);
                 }
             }
 
@@ -566,32 +570,26 @@ impl DslMonteCarloEngine {
                 }
 
                 if let Some(snapshot_index) = plan.snapshot_index_for_step(step + 1) {
-                    for (lane, lane_observations) in
-                        observation_spots.iter_mut().enumerate().take(LANES)
-                    {
-                        let lane_snapshot = &mut lane_observations[snapshot_index];
-                        for (asset, asset_next_spots) in
-                            next_spots.iter().enumerate().take(n_assets)
-                        {
-                            lane_snapshot[asset] = asset_next_spots[lane];
-                        }
+                    for (asset, asset_next_spots) in next_spots.iter().enumerate().take(n_assets) {
+                        observation_spots[snapshot_index][asset] = *asset_next_spots;
                     }
                 }
 
                 std::mem::swap(&mut current_spots, &mut next_spots);
             }
 
-            for lane in 0..LANES {
-                let pv = evaluate_product_with_plan_in_place(
-                    product,
-                    plan,
-                    &observation_spots[lane],
-                    initial_spots,
-                    &mut locals[lane],
-                    &mut state[lane],
-                    &mut stack[lane],
-                )
-                .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+            let pv_batch = evaluate_product_with_plan_batch_x86(
+                product,
+                plan,
+                &observation_spots,
+                initial_spots,
+                &mut locals,
+                &mut state,
+                &mut stack,
+            )
+            .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+
+            for pv in pv_batch {
                 sum_pv += pv;
                 sum_pv_sq += pv * pv;
             }
@@ -654,10 +652,10 @@ impl DslMonteCarloEngine {
         let mut indep_normals = vec![vec![0.0; n_assets]; LANES];
         let mut current_spots = vec![[0.0; LANES]; n_assets];
         let mut next_spots = vec![[0.0; LANES]; n_assets];
-        let mut observation_spots = vec![vec![vec![0.0; n_assets]; n_snapshots]; LANES];
-        let mut locals = vec![vec![0.0_f64; num_locals]; LANES];
-        let mut state = vec![vec![0.0_f64; n_state]; LANES];
-        let mut stack = vec![vec![0.0_f64; plan.max_stack()]; LANES];
+        let mut observation_spots = vec![vec![[0.0; LANES]; n_assets]; n_snapshots];
+        let mut locals = vec![[0.0_f64; LANES]; num_locals];
+        let mut state = vec![[0.0_f64; LANES]; n_state];
+        let mut stack = vec![[0.0_f64; LANES]; plan.max_stack()];
 
         let simd_paths = num_paths / LANES * LANES;
         let mut processed = 0usize;
@@ -666,8 +664,8 @@ impl DslMonteCarloEngine {
                 current_spots[asset].fill(spot0);
             }
             if let Some(snapshot_index) = plan.snapshot_index_for_step(0) {
-                for lane in 0..LANES {
-                    observation_spots[lane][snapshot_index].copy_from_slice(initial_spots);
+                for (asset, &spot0) in initial_spots.iter().enumerate() {
+                    observation_spots[snapshot_index][asset].fill(spot0);
                 }
             }
 
@@ -693,28 +691,26 @@ impl DslMonteCarloEngine {
                 }
 
                 if let Some(snapshot_index) = plan.snapshot_index_for_step(step + 1) {
-                    for lane in 0..LANES {
-                        for asset in 0..n_assets {
-                            observation_spots[lane][snapshot_index][asset] =
-                                next_spots[asset][lane];
-                        }
+                    for (asset, asset_next_spots) in next_spots.iter().enumerate().take(n_assets) {
+                        observation_spots[snapshot_index][asset] = *asset_next_spots;
                     }
                 }
 
                 std::mem::swap(&mut current_spots, &mut next_spots);
             }
 
-            for lane in 0..LANES {
-                let pv = evaluate_product_with_plan_in_place(
-                    product,
-                    plan,
-                    &observation_spots[lane],
-                    initial_spots,
-                    &mut locals[lane],
-                    &mut state[lane],
-                    &mut stack[lane],
-                )
-                .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+            let pv_batch = evaluate_product_with_plan_batch_neon(
+                product,
+                plan,
+                &observation_spots,
+                initial_spots,
+                &mut locals,
+                &mut state,
+                &mut stack,
+            )
+            .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+
+            for pv in pv_batch {
                 sum_pv += pv;
                 sum_pv_sq += pv * pv;
             }
