@@ -79,6 +79,8 @@ pollster = { version = "0.4", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { version = "0.4", optional = true }
+getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 approx = "0.5"
