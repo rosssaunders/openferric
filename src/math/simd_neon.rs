@@ -10,6 +10,7 @@
 //!
 //! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 #![cfg(all(feature = "simd", target_arch = "aarch64"))]
+#![allow(unsafe_op_in_unsafe_fn)]
 
 //! Shared AArch64 NEON SIMD math utilities for 2-lane `f64` vectors.
 
