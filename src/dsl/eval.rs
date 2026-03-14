@@ -4,7 +4,7 @@
 //! accumulating discounted cashflows and handling early termination.
 
 use crate::dsl::error::DslError;
-use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Statement, UnaryOp, Value};
+use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Statement, UnaryOp};
 
 /// Per-path evaluation context.
 struct EvalContext<'a> {
@@ -21,9 +21,9 @@ struct EvalContext<'a> {
     /// Discount factor for the current observation date.
     discount_factor: f64,
     /// Local variable slots.
-    locals: &'a mut [Value],
+    locals: &'a mut [f64],
     /// State variable slots (mutable across observations).
-    state: &'a mut [Value],
+    state: &'a mut [f64],
 }
 
 /// Result of evaluating one observation date.
@@ -86,7 +86,7 @@ struct ObservationPoint {
 
 #[derive(Debug, Clone, Copy)]
 enum ExecOp {
-    PushLiteral(Value),
+    PushLiteral(f64),
     PushLocal(usize),
     PushState(usize),
     PushNotional,
@@ -146,12 +146,12 @@ impl ProgramBuilder {
 }
 
 struct ValueStack<'a> {
-    values: &'a mut [Value],
+    values: &'a mut [f64],
     len: usize,
 }
 
 impl<'a> ValueStack<'a> {
-    fn new(values: &'a mut [Value]) -> Self {
+    fn new(values: &'a mut [f64]) -> Self {
         Self { values, len: 0 }
     }
 
@@ -161,14 +161,14 @@ impl<'a> ValueStack<'a> {
     }
 
     #[inline]
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: f64) {
         debug_assert!(self.len < self.values.len());
         self.values[self.len] = value;
         self.len += 1;
     }
 
     #[inline]
-    fn pop(&mut self) -> Value {
+    fn pop(&mut self) -> f64 {
         debug_assert!(self.len > 0);
         self.len -= 1;
         self.values[self.len]
@@ -253,9 +253,9 @@ pub fn evaluate_product(
 ) -> Result<f64, DslError> {
     let plan = build_execution_plan(product, num_steps, rate)?;
     let num_locals = product.max_local_slots();
-    let mut locals = vec![Value::F64(0.0); num_locals];
-    let mut state = vec![Value::F64(0.0); product.state_vars.len()];
-    let mut stack = vec![Value::F64(0.0); plan.max_stack()];
+    let mut locals = vec![0.0; num_locals];
+    let mut state = vec![0.0; product.state_vars.len()];
+    let mut stack = vec![0.0; plan.max_stack()];
 
     evaluate_product_in_place(
         product,
@@ -273,9 +273,9 @@ pub(crate) fn evaluate_product_in_place(
     plan: &ProductExecutionPlan,
     path_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    locals: &mut [Value],
-    state: &mut [Value],
-    stack: &mut [Value],
+    locals: &mut [f64],
+    state: &mut [f64],
+    stack: &mut [f64],
 ) -> Result<f64, DslError> {
     let mut observation_spots = vec![Vec::new(); plan.snapshot_count()];
     for (step_idx, spots) in path_spots.iter().enumerate() {
@@ -300,9 +300,9 @@ pub(crate) fn evaluate_product_with_plan_in_place(
     plan: &ProductExecutionPlan,
     observation_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    locals: &mut [Value],
-    state: &mut [Value],
-    stack: &mut [Value],
+    locals: &mut [f64],
+    state: &mut [f64],
+    stack: &mut [f64],
 ) -> Result<f64, DslError> {
     if state.len() != product.state_vars.len() {
         return Err(DslError::EvalError(format!(
@@ -319,7 +319,7 @@ pub(crate) fn evaluate_product_with_plan_in_place(
         )));
     }
     for (dst, sv) in state.iter_mut().zip(product.state_vars.iter()) {
-        *dst = sv.initial;
+        *dst = sv.initial.as_f64();
     }
 
     let mut pv = 0.0;
@@ -352,8 +352,8 @@ fn execute_schedule(
     plan: &ScheduleExecutionPlan,
     observation_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    locals: &mut [Value],
-    state: &mut [Value],
+    locals: &mut [f64],
+    state: &mut [f64],
     stack: &mut ValueStack<'_>,
     pv: &mut f64,
 ) -> Result<ObservationResult, DslError> {
@@ -367,7 +367,7 @@ fn execute_schedule(
                 ))
             })?;
         // Reset locals for each observation date.
-        locals.fill(Value::F64(0.0));
+        locals.fill(0.0);
 
         let mut ctx = EvalContext {
             spots,
@@ -451,7 +451,7 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
 fn compile_expr(expr: &Expr, builder: &mut ProgramBuilder) -> Result<(), DslError> {
     match expr {
         Expr::Literal(v) => {
-            builder.emit(ExecOp::PushLiteral(*v), 1);
+            builder.emit(ExecOp::PushLiteral(v.as_f64()), 1);
         }
         Expr::LocalVar(slot) => {
             builder.emit(ExecOp::PushLocal(*slot), 1);
@@ -600,9 +600,9 @@ fn execute_program(
             ExecOp::PushLiteral(value) => stack.push(value),
             ExecOp::PushLocal(slot) => stack.push(ctx.locals[slot]),
             ExecOp::PushState(slot) => stack.push(ctx.state[slot]),
-            ExecOp::PushNotional => stack.push(Value::F64(ctx.notional)),
-            ExecOp::PushObservationDate => stack.push(Value::F64(ctx.observation_date)),
-            ExecOp::PushIsFinal => stack.push(Value::Bool(ctx.is_final)),
+            ExecOp::PushNotional => stack.push(ctx.notional),
+            ExecOp::PushObservationDate => stack.push(ctx.observation_date),
+            ExecOp::PushIsFinal => stack.push(bool_to_f64(ctx.is_final)),
             ExecOp::ApplyBinOp(op) => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
@@ -613,62 +613,62 @@ fn execute_program(
                 stack.push(eval_unaryop(op, value));
             }
             ExecOp::WorstOfPerformances => {
-                stack.push(Value::F64(compute_worst_of_performance(ctx)));
+                stack.push(compute_worst_of_performance(ctx));
             }
             ExecOp::BestOfPerformances => {
-                stack.push(Value::F64(compute_best_of_performance(ctx)));
+                stack.push(compute_best_of_performance(ctx));
             }
             ExecOp::WorstOf(arg_count) => {
                 let mut min_val = f64::INFINITY;
                 for _ in 0..arg_count {
-                    let value = stack.pop().as_f64();
+                    let value = stack.pop();
                     if value < min_val {
                         min_val = value;
                     }
                 }
-                stack.push(Value::F64(min_val));
+                stack.push(min_val);
             }
             ExecOp::BestOf(arg_count) => {
                 let mut max_val = f64::NEG_INFINITY;
                 for _ in 0..arg_count {
-                    let value = stack.pop().as_f64();
+                    let value = stack.pop();
                     if value > max_val {
                         max_val = value;
                     }
                 }
-                stack.push(Value::F64(max_val));
+                stack.push(max_val);
             }
             ExecOp::Price => {
-                let idx = stack.pop().as_f64() as usize;
+                let idx = stack.pop() as usize;
                 if idx >= ctx.spots.len() {
                     return Err(DslError::EvalError(format!(
                         "asset index {idx} out of range (have {} assets)",
                         ctx.spots.len()
                     )));
                 }
-                stack.push(Value::F64(ctx.spots[idx]));
+                stack.push(ctx.spots[idx]);
             }
             ExecOp::Min => {
-                let rhs = stack.pop().as_f64();
-                let lhs = stack.pop().as_f64();
-                stack.push(Value::F64(lhs.min(rhs)));
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(lhs.min(rhs));
             }
             ExecOp::Max => {
-                let rhs = stack.pop().as_f64();
-                let lhs = stack.pop().as_f64();
-                stack.push(Value::F64(lhs.max(rhs)));
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(lhs.max(rhs));
             }
             ExecOp::Abs => {
-                let value = stack.pop().as_f64();
-                stack.push(Value::F64(value.abs()));
+                let value = stack.pop();
+                stack.push(value.abs());
             }
             ExecOp::Exp => {
-                let value = stack.pop().as_f64();
-                stack.push(Value::F64(value.exp()));
+                let value = stack.pop();
+                stack.push(value.exp());
             }
             ExecOp::Log => {
-                let value = stack.pop().as_f64();
-                stack.push(Value::F64(value.ln()));
+                let value = stack.pop();
+                stack.push(value.ln());
             }
             ExecOp::StoreLocal(slot) => {
                 ctx.locals[slot] = stack.pop();
@@ -677,16 +677,16 @@ fn execute_program(
                 ctx.state[slot] = stack.pop();
             }
             ExecOp::Pay => {
-                let value = stack.pop().as_f64();
+                let value = stack.pop();
                 *pv += value * ctx.discount_factor;
             }
             ExecOp::Redeem => {
-                let value = stack.pop().as_f64();
+                let value = stack.pop();
                 *pv += value * ctx.discount_factor;
                 return Ok(ObservationResult::Redeemed);
             }
             ExecOp::JumpIfFalse(target) => {
-                if !stack.pop().as_bool() {
+                if stack.pop() == 0.0 {
                     pc = target;
                     continue;
                 }
@@ -706,31 +706,40 @@ fn execute_program(
 }
 
 #[inline]
-fn eval_binop(op: BinOp, lhs: Value, rhs: Value) -> Value {
-    let l = lhs.as_f64();
-    let r = rhs.as_f64();
+fn eval_binop(op: BinOp, lhs: f64, rhs: f64) -> f64 {
     match op {
-        BinOp::Add => Value::F64(l + r),
-        BinOp::Sub => Value::F64(l - r),
-        BinOp::Mul => Value::F64(l * r),
-        BinOp::Div => Value::F64(if r == 0.0 { f64::NAN } else { l / r }),
-        BinOp::Eq => Value::Bool((l - r).abs() < f64::EPSILON),
-        BinOp::Ne => Value::Bool((l - r).abs() >= f64::EPSILON),
-        BinOp::Lt => Value::Bool(l < r),
-        BinOp::Le => Value::Bool(l <= r),
-        BinOp::Gt => Value::Bool(l > r),
-        BinOp::Ge => Value::Bool(l >= r),
-        BinOp::And => Value::Bool(lhs.as_bool() && rhs.as_bool()),
-        BinOp::Or => Value::Bool(lhs.as_bool() || rhs.as_bool()),
+        BinOp::Add => lhs + rhs,
+        BinOp::Sub => lhs - rhs,
+        BinOp::Mul => lhs * rhs,
+        BinOp::Div => {
+            if rhs == 0.0 {
+                f64::NAN
+            } else {
+                lhs / rhs
+            }
+        }
+        BinOp::Eq => bool_to_f64((lhs - rhs).abs() < f64::EPSILON),
+        BinOp::Ne => bool_to_f64((lhs - rhs).abs() >= f64::EPSILON),
+        BinOp::Lt => bool_to_f64(lhs < rhs),
+        BinOp::Le => bool_to_f64(lhs <= rhs),
+        BinOp::Gt => bool_to_f64(lhs > rhs),
+        BinOp::Ge => bool_to_f64(lhs >= rhs),
+        BinOp::And => bool_to_f64(lhs != 0.0 && rhs != 0.0),
+        BinOp::Or => bool_to_f64(lhs != 0.0 || rhs != 0.0),
     }
 }
 
 #[inline]
-fn eval_unaryop(op: UnaryOp, val: Value) -> Value {
+fn eval_unaryop(op: UnaryOp, val: f64) -> f64 {
     match op {
-        UnaryOp::Neg => Value::F64(-val.as_f64()),
-        UnaryOp::Not => Value::Bool(!val.as_bool()),
+        UnaryOp::Neg => -val,
+        UnaryOp::Not => bool_to_f64(val == 0.0),
     }
+}
+
+#[inline]
+fn bool_to_f64(value: bool) -> f64 {
+    if value { 1.0 } else { 0.0 }
 }
 
 #[inline]

@@ -8,7 +8,7 @@ use crate::core::{
 use crate::dsl::eval::{
     ProductExecutionPlan, build_execution_plan, evaluate_product_with_plan_in_place,
 };
-use crate::dsl::ir::{CompiledProduct, Value};
+use crate::dsl::ir::CompiledProduct;
 use crate::dsl::market::{AssetMarketData, MultiAssetMarket};
 use crate::engines::monte_carlo::correlated_mc::{
     cholesky_for_correlation, sample_correlated_normals_cholesky_with_scratch,
@@ -435,9 +435,9 @@ impl DslMonteCarloEngine {
         let mut current_spots = initial_spots.to_vec();
         let mut next_spots = vec![0.0; n_assets];
         let mut observation_spots = vec![vec![0.0; n_assets]; plan.snapshot_count()];
-        let mut locals = vec![Value::F64(0.0); num_locals];
-        let mut state = vec![Value::F64(0.0); product.state_vars.len()];
-        let mut stack = vec![Value::F64(0.0); plan.max_stack()];
+        let mut locals = vec![0.0; num_locals];
+        let mut state = vec![0.0; product.state_vars.len()];
+        let mut stack = vec![0.0; plan.max_stack()];
 
         for _ in 0..num_paths {
             current_spots.copy_from_slice(initial_spots);
@@ -523,9 +523,9 @@ impl DslMonteCarloEngine {
         let mut current_spots = vec![[0.0; LANES]; n_assets];
         let mut next_spots = vec![[0.0; LANES]; n_assets];
         let mut observation_spots = vec![vec![vec![0.0; n_assets]; n_snapshots]; LANES];
-        let mut locals = vec![vec![Value::F64(0.0); num_locals]; LANES];
-        let mut state = vec![vec![Value::F64(0.0); n_state]; LANES];
-        let mut stack = vec![vec![Value::F64(0.0); plan.max_stack()]; LANES];
+        let mut locals = vec![vec![0.0; num_locals]; LANES];
+        let mut state = vec![vec![0.0; n_state]; LANES];
+        let mut stack = vec![vec![0.0; plan.max_stack()]; LANES];
 
         let simd_paths = num_paths / LANES * LANES;
         let mut processed = 0usize;
@@ -655,9 +655,9 @@ impl DslMonteCarloEngine {
         let mut current_spots = vec![[0.0; LANES]; n_assets];
         let mut next_spots = vec![[0.0; LANES]; n_assets];
         let mut observation_spots = vec![vec![vec![0.0; n_assets]; n_snapshots]; LANES];
-        let mut locals = vec![vec![Value::F64(0.0); num_locals]; LANES];
-        let mut state = vec![vec![Value::F64(0.0); n_state]; LANES];
-        let mut stack = vec![vec![Value::F64(0.0); plan.max_stack()]; LANES];
+        let mut locals = vec![vec![0.0; num_locals]; LANES];
+        let mut state = vec![vec![0.0; n_state]; LANES];
+        let mut stack = vec![vec![0.0; plan.max_stack()]; LANES];
 
         let simd_paths = num_paths / LANES * LANES;
         let mut processed = 0usize;
