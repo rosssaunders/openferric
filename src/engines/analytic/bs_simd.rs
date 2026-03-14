@@ -256,6 +256,7 @@ fn bs_greeks_scalar(
 }
 
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[allow(unsafe_op_in_unsafe_fn)]
 mod neon_impl {
     use std::arch::aarch64::*;
 
