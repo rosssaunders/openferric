@@ -9,6 +9,20 @@
 use crate::dsl::error::DslError;
 use crate::dsl::ir::{BinOp, BuiltinFn, CompiledProduct, Expr, Statement, UnaryOp, Value};
 
+// ── Bool-as-f64 convention ────────────────────────────────────────
+const TRUE_F64: f64 = 1.0;
+const FALSE_F64: f64 = 0.0;
+
+#[inline]
+fn bool_to_f64(b: bool) -> f64 {
+    if b { TRUE_F64 } else { FALSE_F64 }
+}
+
+#[inline]
+fn f64_to_bool(v: f64) -> bool {
+    v != 0.0
+}
+
 // ── Packed instruction format ──────────────────────────────────────
 
 /// A single 4-byte packed VM instruction.
@@ -93,8 +107,8 @@ struct EvalContext<'a> {
     observation_date: f64,
     is_final: bool,
     discount_factor: f64,
-    locals: &'a mut [Value],
-    state: &'a mut [Value],
+    locals: &'a mut [f64],
+    state: &'a mut [f64],
 }
 
 /// Result of evaluating one observation date.
@@ -216,12 +230,12 @@ impl ProgramBuilder {
 // ── Value stack ────────────────────────────────────────────────────
 
 struct ValueStack<'a> {
-    values: &'a mut [Value],
+    values: &'a mut [f64],
     len: usize,
 }
 
 impl<'a> ValueStack<'a> {
-    fn new(values: &'a mut [Value]) -> Self {
+    fn new(values: &'a mut [f64]) -> Self {
         Self { values, len: 0 }
     }
 
@@ -231,14 +245,14 @@ impl<'a> ValueStack<'a> {
     }
 
     #[inline]
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: f64) {
         debug_assert!(self.len < self.values.len());
         self.values[self.len] = value;
         self.len += 1;
     }
 
     #[inline]
-    fn pop(&mut self) -> Value {
+    fn pop(&mut self) -> f64 {
         debug_assert!(self.len > 0);
         self.len -= 1;
         self.values[self.len]
@@ -320,9 +334,9 @@ pub fn evaluate_product(
 ) -> Result<f64, DslError> {
     let plan = build_execution_plan(product, num_steps, rate)?;
     let num_locals = product.max_local_slots();
-    let mut locals = vec![Value::F64(0.0); num_locals];
-    let mut state = vec![Value::F64(0.0); product.state_vars.len()];
-    let mut stack = vec![Value::F64(0.0); plan.max_stack()];
+    let mut locals = vec![0.0_f64; num_locals];
+    let mut state = vec![0.0_f64; product.state_vars.len()];
+    let mut stack = vec![0.0_f64; plan.max_stack()];
 
     evaluate_product_in_place(
         product,
@@ -340,9 +354,9 @@ pub(crate) fn evaluate_product_in_place(
     plan: &ProductExecutionPlan,
     path_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    locals: &mut [Value],
-    state: &mut [Value],
-    stack: &mut [Value],
+    locals: &mut [f64],
+    state: &mut [f64],
+    stack: &mut [f64],
 ) -> Result<f64, DslError> {
     let mut observation_spots = vec![Vec::new(); plan.snapshot_count()];
     for (step_idx, spots) in path_spots.iter().enumerate() {
@@ -367,9 +381,9 @@ pub(crate) fn evaluate_product_with_plan_in_place(
     plan: &ProductExecutionPlan,
     observation_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    locals: &mut [Value],
-    state: &mut [Value],
-    stack: &mut [Value],
+    locals: &mut [f64],
+    state: &mut [f64],
+    stack: &mut [f64],
 ) -> Result<f64, DslError> {
     if state.len() != product.state_vars.len() {
         return Err(DslError::EvalError(format!(
@@ -386,7 +400,7 @@ pub(crate) fn evaluate_product_with_plan_in_place(
         )));
     }
     for (dst, sv) in state.iter_mut().zip(product.state_vars.iter()) {
-        *dst = sv.initial;
+        *dst = sv.initial.as_f64();
     }
 
     let mut pv = 0.0;
@@ -419,8 +433,8 @@ fn execute_schedule(
     plan: &ScheduleExecutionPlan,
     observation_spots: &[Vec<f64>],
     initial_spots: &[f64],
-    locals: &mut [Value],
-    state: &mut [Value],
+    locals: &mut [f64],
+    state: &mut [f64],
     stack: &mut ValueStack<'_>,
     pv: &mut f64,
 ) -> Result<ObservationResult, DslError> {
@@ -433,7 +447,7 @@ fn execute_schedule(
                     observation.snapshot_index
                 ))
             })?;
-        locals.fill(Value::F64(0.0));
+        locals.fill(0.0);
 
         let mut ctx = EvalContext {
             spots,
@@ -706,156 +720,147 @@ fn execute_program(
         let inst = code[pc];
         match inst.opcode {
             // ── Load ───────────────────────────────────────────
-            opcode::PUSH_CONST => stack.push(Value::F64(constants[inst.operand as usize])),
-            opcode::PUSH_TRUE => stack.push(Value::Bool(true)),
-            opcode::PUSH_FALSE => stack.push(Value::Bool(false)),
+            opcode::PUSH_CONST => stack.push(constants[inst.operand as usize]),
+            opcode::PUSH_TRUE => stack.push(TRUE_F64),
+            opcode::PUSH_FALSE => stack.push(FALSE_F64),
             opcode::PUSH_LOCAL => stack.push(ctx.locals[inst.operand as usize]),
             opcode::PUSH_STATE => stack.push(ctx.state[inst.operand as usize]),
-            opcode::PUSH_NOTIONAL => stack.push(Value::F64(ctx.notional)),
-            opcode::PUSH_DATE => stack.push(Value::F64(ctx.observation_date)),
-            opcode::PUSH_IS_FINAL => stack.push(Value::Bool(ctx.is_final)),
+            opcode::PUSH_NOTIONAL => stack.push(ctx.notional),
+            opcode::PUSH_DATE => stack.push(ctx.observation_date),
+            opcode::PUSH_IS_FINAL => stack.push(bool_to_f64(ctx.is_final)),
 
             // ── Arithmetic ─────────────────────────────────────
             opcode::ADD => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::F64(lhs.as_f64() + rhs.as_f64()));
+                stack.push(lhs + rhs);
             }
             opcode::SUB => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::F64(lhs.as_f64() - rhs.as_f64()));
+                stack.push(lhs - rhs);
             }
             opcode::MUL => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::F64(lhs.as_f64() * rhs.as_f64()));
+                stack.push(lhs * rhs);
             }
             opcode::DIV => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                let r = rhs.as_f64();
-                stack.push(Value::F64(if r == 0.0 {
-                    f64::NAN
-                } else {
-                    lhs.as_f64() / r
-                }));
+                stack.push(if rhs == 0.0 { f64::NAN } else { lhs / rhs });
             }
             opcode::NEG => {
                 let v = stack.pop();
-                stack.push(Value::F64(-v.as_f64()));
+                stack.push(-v);
             }
             opcode::ABS => {
-                let v = stack.pop().as_f64();
-                stack.push(Value::F64(v.abs()));
+                let v = stack.pop();
+                stack.push(v.abs());
             }
             opcode::EXP => {
-                let v = stack.pop().as_f64();
-                stack.push(Value::F64(v.exp()));
+                let v = stack.pop();
+                stack.push(v.exp());
             }
             opcode::LOG => {
-                let v = stack.pop().as_f64();
-                stack.push(Value::F64(v.ln()));
+                let v = stack.pop();
+                stack.push(v.ln());
             }
             opcode::MIN => {
-                let rhs = stack.pop().as_f64();
-                let lhs = stack.pop().as_f64();
-                stack.push(Value::F64(lhs.min(rhs)));
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(lhs.min(rhs));
             }
             opcode::MAX => {
-                let rhs = stack.pop().as_f64();
-                let lhs = stack.pop().as_f64();
-                stack.push(Value::F64(lhs.max(rhs)));
+                let rhs = stack.pop();
+                let lhs = stack.pop();
+                stack.push(lhs.max(rhs));
             }
 
             // ── Comparison / Logic ─────────────────────────────
             opcode::EQ => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(
-                    (lhs.as_f64() - rhs.as_f64()).abs() < f64::EPSILON,
-                ));
+                stack.push(bool_to_f64((lhs - rhs).abs() < f64::EPSILON));
             }
             opcode::NE => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(
-                    (lhs.as_f64() - rhs.as_f64()).abs() >= f64::EPSILON,
-                ));
+                stack.push(bool_to_f64((lhs - rhs).abs() >= f64::EPSILON));
             }
             opcode::LT => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(lhs.as_f64() < rhs.as_f64()));
+                stack.push(bool_to_f64(lhs < rhs));
             }
             opcode::LE => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(lhs.as_f64() <= rhs.as_f64()));
+                stack.push(bool_to_f64(lhs <= rhs));
             }
             opcode::GT => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(lhs.as_f64() > rhs.as_f64()));
+                stack.push(bool_to_f64(lhs > rhs));
             }
             opcode::GE => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(lhs.as_f64() >= rhs.as_f64()));
+                stack.push(bool_to_f64(lhs >= rhs));
             }
             opcode::AND => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(lhs.as_bool() && rhs.as_bool()));
+                stack.push(bool_to_f64(f64_to_bool(lhs) && f64_to_bool(rhs)));
             }
             opcode::OR => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(Value::Bool(lhs.as_bool() || rhs.as_bool()));
+                stack.push(bool_to_f64(f64_to_bool(lhs) || f64_to_bool(rhs)));
             }
             opcode::NOT => {
                 let v = stack.pop();
-                stack.push(Value::Bool(!v.as_bool()));
+                stack.push(bool_to_f64(!f64_to_bool(v)));
             }
 
             // ── Domain ─────────────────────────────────────────
             opcode::WORST_OF_PERF => {
-                stack.push(Value::F64(compute_worst_of_performance(ctx)));
+                stack.push(compute_worst_of_performance(ctx));
             }
             opcode::BEST_OF_PERF => {
-                stack.push(Value::F64(compute_best_of_performance(ctx)));
+                stack.push(compute_best_of_performance(ctx));
             }
             opcode::WORST_OF => {
                 let arg_count = inst.operand as usize;
                 let mut min_val = f64::INFINITY;
                 for _ in 0..arg_count {
-                    let v = stack.pop().as_f64();
+                    let v = stack.pop();
                     if v < min_val {
                         min_val = v;
                     }
                 }
-                stack.push(Value::F64(min_val));
+                stack.push(min_val);
             }
             opcode::BEST_OF => {
                 let arg_count = inst.operand as usize;
                 let mut max_val = f64::NEG_INFINITY;
                 for _ in 0..arg_count {
-                    let v = stack.pop().as_f64();
+                    let v = stack.pop();
                     if v > max_val {
                         max_val = v;
                     }
                 }
-                stack.push(Value::F64(max_val));
+                stack.push(max_val);
             }
             opcode::PRICE => {
-                let idx = stack.pop().as_f64() as usize;
+                let idx = stack.pop() as usize;
                 if idx >= ctx.spots.len() {
                     return Err(DslError::EvalError(format!(
                         "asset index {idx} out of range (have {} assets)",
                         ctx.spots.len()
                     )));
                 }
-                stack.push(Value::F64(ctx.spots[idx]));
+                stack.push(ctx.spots[idx]);
             }
 
             // ── Store ──────────────────────────────────────────
@@ -868,18 +873,18 @@ fn execute_program(
 
             // ── Side-effects ───────────────────────────────────
             opcode::PAY => {
-                let v = stack.pop().as_f64();
+                let v = stack.pop();
                 *pv += v * ctx.discount_factor;
             }
             opcode::REDEEM => {
-                let v = stack.pop().as_f64();
+                let v = stack.pop();
                 *pv += v * ctx.discount_factor;
                 return Ok(ObservationResult::Redeemed);
             }
 
             // ── Control flow ───────────────────────────────────
             opcode::JUMP_FALSE => {
-                if !stack.pop().as_bool() {
+                if stack.pop() == 0.0 {
                     pc = inst.operand as usize;
                     continue;
                 }
