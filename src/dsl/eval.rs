@@ -3,7 +3,7 @@
 //! Walks the IR statement tree for each observation date on each MC path,
 //! accumulating discounted cashflows and handling early termination.
 //!
-//! Bytecode is encoded as 4-byte packed [`Instruction`] values with a
+//! Bytecode is encoded as 4-byte packed `Instruction` values with a
 //! separate constant pool for f64 literals.
 
 use crate::dsl::error::DslError;
