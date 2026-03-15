@@ -305,7 +305,7 @@ pub fn fbm_path_cholesky(
     seed: u64,
 ) -> Result<Vec<f64>, String> {
     let generator = CholeskyFbmGenerator::new(hurst, maturity, n_steps)?;
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let mut z_backbone = vec![0.0_f64; n_steps];
     let mut path = vec![0.0_f64; n_steps + 1];
 
@@ -324,7 +324,7 @@ pub fn fbm_path_hybrid(
     seed: u64,
 ) -> Result<Vec<f64>, String> {
     let generator = HybridFbmGenerator::new(hurst, maturity, n_steps)?;
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let mut z_backbone = vec![0.0_f64; n_steps];
     let mut z_correction = vec![0.0_f64; n_steps];
     let mut path = vec![0.0_f64; n_steps + 1];
@@ -349,7 +349,7 @@ fn sample_fbm_path(
     scheme: FbmScheme,
 ) -> Result<Vec<f64>, String> {
     let generator = FbmGenerator::with_scheme(hurst, maturity, n_steps, scheme)?;
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let mut z_backbone = vec![0.0_f64; n_steps];
     let mut z_correction = vec![0.0_f64; n_steps];
     let mut path = vec![0.0_f64; n_steps + 1];
@@ -429,7 +429,7 @@ fn simulate_terminal_spots(
 
     for pair in 0..(n_paths / 2) {
         let mut rng = FastRng::from_seed(
-            FastRngKind::Xoshiro256PlusPlus,
+            FastRngKind::Philox4x32,
             resolve_stream_seed(seed, pair, true),
         );
 
@@ -480,7 +480,7 @@ fn simulate_terminal_spots(
 
     if n_paths % 2 == 1 {
         let mut rng = FastRng::from_seed(
-            FastRngKind::Xoshiro256PlusPlus,
+            FastRngKind::Philox4x32,
             resolve_stream_seed(seed, n_paths / 2, true),
         );
         for i in 0..n_steps {
@@ -769,10 +769,8 @@ mod tests {
         let mut sum_sq = 0.0;
 
         for i in 0..n_paths {
-            let mut rng = FastRng::from_seed(
-                FastRngKind::Xoshiro256PlusPlus,
-                resolve_stream_seed(77, i, true),
-            );
+            let mut rng =
+                FastRng::from_seed(FastRngKind::Philox4x32, resolve_stream_seed(77, i, true));
             for zi in &mut z {
                 *zi = sample_standard_normal(&mut rng);
             }
@@ -813,10 +811,8 @@ mod tests {
         let mut inc2 = Vec::with_capacity(n_paths);
 
         for i in 0..n_paths {
-            let mut rng = FastRng::from_seed(
-                FastRngKind::Xoshiro256PlusPlus,
-                resolve_stream_seed(81, i, true),
-            );
+            let mut rng =
+                FastRng::from_seed(FastRngKind::Philox4x32, resolve_stream_seed(81, i, true));
             for zi in &mut z {
                 *zi = sample_standard_normal(&mut rng);
             }

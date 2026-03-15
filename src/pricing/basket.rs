@@ -325,7 +325,7 @@ pub fn price_outperformance_basket_mc(
         };
     }
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, MC_SEED);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, MC_SEED);
     let mut indep = vec![0.0; spots.len()];
     let mut corr_z = vec![0.0; spots.len()];
     let mut terminal = vec![0.0; spots.len()];
@@ -400,7 +400,7 @@ pub fn price_quanto_basket_mc(
         };
     }
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, MC_SEED);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, MC_SEED);
     let mut indep = vec![0.0; spots.len()];
     let mut corr_z = vec![0.0; spots.len()];
     let mut terminal = vec![0.0; spots.len()];
@@ -635,7 +635,7 @@ fn simulate_basket_once_matrix(
         .collect::<Vec<_>>();
     let vol_t = vols.iter().map(|v| v * sqrt_t).collect::<Vec<_>>();
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let mut indep = vec![0.0_f64; n_assets];
     let mut corr = vec![0.0_f64; n_assets];
     let mut uniforms = vec![0.0_f64; n_assets];
@@ -713,7 +713,7 @@ fn simulate_basket_once_factor(
         .collect::<Vec<_>>();
     let vol_t = vols.iter().map(|v| v * sqrt_t).collect::<Vec<_>>();
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let mut normals = vec![0.0_f64; n_assets];
     let mut uniforms = vec![0.0_f64; n_assets];
     let mut terminal = vec![0.0_f64; n_assets];

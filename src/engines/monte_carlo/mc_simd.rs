@@ -51,7 +51,7 @@ pub fn simulate_gbm_paths_soa_scalar(
     let dt = t / num_steps as f64;
     let drift = (r - q - 0.5 * vol * vol) * dt;
     let diffusion = vol * dt.sqrt();
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
 
     for step in 0..num_steps {
         let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
@@ -161,7 +161,7 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     num_steps: usize,
     seed: u64,
 ) -> SoaPaths {
-    use crate::math::fast_rng::Xoshiro256PlusPlus;
+    use crate::math::fast_rng::Philox4x32;
     use std::arch::x86_64::*;
 
     assert!(num_paths > 0, "num_paths must be > 0");
@@ -177,7 +177,7 @@ unsafe fn simulate_gbm_paths_soa_avx2(
     let drift_v = unsafe { splat_f64x4(drift) };
     let diffusion_v = unsafe { splat_f64x4(diffusion) };
 
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+    let mut rng = Philox4x32::seed_from_u64(seed);
 
     // Pre-allocate a normal buffer for batch SIMD inverse CDF.
     // Sized to handle one full step's worth of paths (rounded up to multiple of 4).

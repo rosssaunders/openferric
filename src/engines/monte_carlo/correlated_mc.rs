@@ -101,7 +101,7 @@ mod tests {
         let model = FactorCorrelationModel::OneFactor {
             loadings: vec![0.6, 0.5, 0.4],
         };
-        let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 42);
+        let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, 42);
         let mut z = vec![0.0; 3];
 
         sample_correlated_normals_factor(&model, &mut rng, &mut z).unwrap();

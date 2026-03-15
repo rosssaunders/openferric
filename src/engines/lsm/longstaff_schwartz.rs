@@ -18,7 +18,7 @@ use crate::core::{
 use crate::instruments::{BarrierOption, BermudanOption, VanillaOption};
 use crate::market::Market;
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
-use crate::math::fast_rng::{Xoshiro256PlusPlus, uniform_open01};
+use crate::math::fast_rng::{Philox4x32, uniform_open01};
 use crate::models::Heston;
 
 /// Dynamics used by the Bermudan LSM path simulation.
@@ -200,7 +200,7 @@ impl LongstaffSchwartzEngine {
         let raw_stride = self.num_steps + 1;
         let stride = (raw_stride + 7) & !7;
         let mut paths = vec![0.0_f64; self.num_paths * stride];
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
+        let mut rng = Philox4x32::seed_from_u64(self.seed);
 
         match self.dynamics {
             LsmDynamics::Gbm => {
@@ -464,7 +464,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         let stride = (raw_stride + 7) & !7;
         let mut paths = vec![0.0_f64; self.num_paths * stride];
 
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
+        let mut rng = Philox4x32::seed_from_u64(self.seed);
 
         // Use batch SIMD inverse CDF when available.
         #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -661,7 +661,7 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
         let step_vol = vol * dt.sqrt();
         let discount = (-market.rate * instrument.expiry).exp();
 
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
+        let mut rng = Philox4x32::seed_from_u64(self.seed);
         let mut pv = Vec::with_capacity(self.num_paths);
 
         // Reuse a single path buffer instead of allocating per-path.

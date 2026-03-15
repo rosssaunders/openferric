@@ -247,7 +247,7 @@ impl DslMonteCarloEngine {
             num_paths,
             num_steps,
             seed,
-            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            rng_kind: FastRngKind::Philox4x32,
         }
     }
 

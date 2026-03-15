@@ -30,7 +30,7 @@ pub use correlation::*;
 pub use fast_norm::{
     beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,
 };
-pub use fast_rng::{FastRng, FastRngKind};
+pub use fast_rng::{FastRng, FastRngKind, Philox4x32, philox_normal, philox_random};
 pub use functions::*;
 pub use interpolation::*;
 pub use sobol::SobolSequence;

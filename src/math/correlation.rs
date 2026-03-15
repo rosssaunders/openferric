@@ -677,7 +677,7 @@ mod tests {
             vec![0.2, -0.3, 1.0],
         ];
         let chol = cholesky_lower_psd(&corr, 1.0e-12).expect("cholesky");
-        let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 7);
+        let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, 7);
         let mut u = vec![0.0; 3];
 
         sample_copula_uniforms_from_cholesky(

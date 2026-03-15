@@ -407,7 +407,7 @@ fn locate_bounds(grid: &[f64], x: f64) -> (usize, usize, f64) {
 fn mc_call_price(spot: f64, strike: f64, time: f64, vol: f64, num_paths: usize, seed: u64) -> f64 {
     use openferric::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let drift = -0.5 * vol * vol * time;
     let diff = vol * time.sqrt();
 

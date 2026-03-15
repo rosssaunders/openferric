@@ -164,8 +164,8 @@ fn bench_mc_european_rng_backends(c: &mut Criterion) {
     let mut group = c.benchmark_group("mc_european_50k_rng_backend");
     group.sample_size(10);
 
-    let xoshiro = MonteCarloPricingEngine::new(50_000, 252, 42)
-        .with_rng_kind(FastRngKind::Xoshiro256PlusPlus);
+    let xoshiro =
+        MonteCarloPricingEngine::new(50_000, 252, 42).with_rng_kind(FastRngKind::Philox4x32);
     let chacha = MonteCarloPricingEngine::new(50_000, 252, 42).with_rng_kind(FastRngKind::StdRng);
 
     group.bench_function("xoshiro256plusplus", |b| {

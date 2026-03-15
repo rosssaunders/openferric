@@ -139,7 +139,7 @@ impl MonteCarloEngine {
             antithetic: false,
             control_variate: None,
             seed,
-            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            rng_kind: FastRngKind::Philox4x32,
             reproducible: true,
         }
     }

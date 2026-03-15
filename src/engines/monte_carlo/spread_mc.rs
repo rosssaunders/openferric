@@ -39,7 +39,7 @@ impl SpreadMonteCarloEngine {
             num_paths,
             seed,
             antithetic: true,
-            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            rng_kind: FastRngKind::Philox4x32,
             reproducible: true,
         }
     }

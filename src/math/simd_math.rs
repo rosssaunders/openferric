@@ -433,10 +433,7 @@ pub unsafe fn inv_norm_cdf_batch_avx2(uniforms: &mut [f64]) {
 /// Caller must ensure AVX2+FMA are available (runtime check).
 #[inline]
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn fill_normals_simd(
-    rng: &mut crate::math::fast_rng::Xoshiro256PlusPlus,
-    buf: &mut [f64],
-) {
+pub unsafe fn fill_normals_simd(rng: &mut crate::math::fast_rng::Philox4x32, buf: &mut [f64]) {
     // Step 1: Fill with uniform open (ε, 1−ε) values.
     let eps = f64::EPSILON;
     let hi = 1.0 - eps;

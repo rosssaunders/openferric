@@ -20,7 +20,7 @@ use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::{DividendSchedule, Market};
 use crate::math::arena::PricingArena;
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
-use crate::math::fast_rng::{FastRngKind, Xoshiro256PlusPlus, uniform_open01};
+use crate::math::fast_rng::{FastRngKind, Philox4x32, uniform_open01};
 use crate::mc::{ControlVariate, GbmPathGenerator, MonteCarloEngine, PathGenerator};
 use crate::models::Gbm;
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
@@ -251,7 +251,7 @@ pub fn mc_european_with_arena(
     let strike = instrument.strike;
     let spot = market.spot;
 
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(ARENA_MC_SEED);
+    let mut rng = Philox4x32::seed_from_u64(ARENA_MC_SEED);
     let mut i = 0;
 
     // SIMD fast path: process 4 paths at a time with AVX2 fast_exp_f64x4.
@@ -351,7 +351,7 @@ pub fn mc_european_with_arena(
 #[target_feature(enable = "avx2,fma")]
 #[allow(clippy::too_many_arguments)]
 unsafe fn mc_exact_avx2_inner(
-    rng: &mut Xoshiro256PlusPlus,
+    rng: &mut Philox4x32,
     payoff_buffer: &mut [f64],
     n_paths: usize,
     spot: f64,
@@ -599,7 +599,7 @@ impl MonteCarloPricingEngine {
             num_paths,
             num_steps,
             seed,
-            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            rng_kind: FastRngKind::Philox4x32,
             reproducible: true,
             variance_reduction: VarianceReduction::None,
         }
@@ -665,7 +665,7 @@ impl ArithmeticAsianMC {
             paths,
             steps,
             seed,
-            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            rng_kind: FastRngKind::Philox4x32,
             reproducible: true,
             control_variate: true,
         }

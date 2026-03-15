@@ -103,7 +103,7 @@ fn simulate_chunk_exact_scalar(
     n_paths: usize,
     chunk_seed: u64,
 ) -> (f64, f64, usize) {
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, chunk_seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, chunk_seed);
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
@@ -165,11 +165,11 @@ unsafe fn simulate_chunk_exact_avx2(
     n_paths: usize,
     chunk_seed: u64,
 ) -> (f64, f64, usize) {
-    use crate::math::fast_rng::Xoshiro256PlusPlus;
+    use crate::math::fast_rng::Philox4x32;
     use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4};
     use std::arch::x86_64::*;
 
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(chunk_seed);
+    let mut rng = Philox4x32::seed_from_u64(chunk_seed);
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
 
@@ -243,7 +243,7 @@ unsafe fn simulate_chunk_exact_avx2(
 
     // Scalar tail
     let mut fast_rng = FastRng::from_seed(
-        FastRngKind::Xoshiro256PlusPlus,
+        FastRngKind::Philox4x32,
         chunk_seed.wrapping_add(0x1234_5678),
     );
     for _ in 0..remaining {

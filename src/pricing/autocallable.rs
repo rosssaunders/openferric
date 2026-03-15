@@ -471,7 +471,7 @@ fn simulate_autocallable_paths(
         .map(|v| v * sqrt_dt)
         .collect::<Vec<_>>();
 
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
+    let mut rng = FastRng::from_seed(FastRngKind::Philox4x32, seed);
     let mut indep = vec![0.0_f64; n_assets];
     let mut corr = vec![0.0_f64; n_assets];
     let mut state = prepared.initial_spots.clone();

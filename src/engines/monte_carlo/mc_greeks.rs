@@ -42,7 +42,7 @@ impl MonteCarloGreeksEngine {
             seed,
             antithetic: true,
             spot_bump_rel: 1.0e-2,
-            rng_kind: FastRngKind::Xoshiro256PlusPlus,
+            rng_kind: FastRngKind::Philox4x32,
             reproducible: true,
         }
     }
