@@ -1769,7 +1769,418 @@ fn unaryop_opcode(op: UnaryOp) -> u8 {
     }
 }
 
-// ── Bytecode interpreter ───────────────────────────────────────────
+// ── Bytecode interpreter: function pointer dispatch ─────────────────
+
+/// VM state passed to each opcode handler by mutable reference.
+struct VmState<'a, 'b, 'c> {
+    stack: &'a mut ValueStack<'b>,
+    ctx: &'a mut EvalContext<'c>,
+    constants: &'a [f64],
+    pv: &'a mut f64,
+}
+
+/// Result of executing a single instruction handler.
+enum StepResult {
+    /// Advance PC by 1.
+    Next,
+    /// Jump to the given PC.
+    Jump(usize),
+    /// Observation terminated: product redeemed.
+    Redeemed,
+    /// Observation terminated: remaining observations skipped.
+    Skipped,
+}
+
+/// Handler function pointer type for the dispatch table.
+type Handler = fn(Instruction, &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError>;
+
+// ── Individual opcode handlers ─────────────────────────────────────
+
+// Control flow
+
+#[inline]
+fn op_jump(inst: Instruction, _vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    Ok(StepResult::Jump(inst.operand as usize))
+}
+
+#[inline]
+fn op_jump_false(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    if vm.stack.pop() == 0.0 {
+        Ok(StepResult::Jump(inst.operand as usize))
+    } else {
+        Ok(StepResult::Next)
+    }
+}
+
+#[inline]
+fn op_skip(_inst: Instruction, _vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    Ok(StepResult::Skipped)
+}
+
+// Load/Push
+
+#[inline]
+fn op_push_const(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.stack.push(vm.constants[inst.operand as usize]);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_local(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.stack.push(vm.ctx.locals[inst.operand as usize]);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_state(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.stack.push(vm.ctx.state[inst.operand as usize]);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_notional(
+    _inst: Instruction,
+    vm: &mut VmState<'_, '_, '_>,
+) -> Result<StepResult, DslError> {
+    vm.stack.push(vm.ctx.notional);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_date(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.stack.push(vm.ctx.observation_date);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_is_final(
+    _inst: Instruction,
+    vm: &mut VmState<'_, '_, '_>,
+) -> Result<StepResult, DslError> {
+    vm.stack.push(bool_to_f64(vm.ctx.is_final));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_true(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.stack.push(TRUE_F64);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_push_false(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.stack.push(FALSE_F64);
+    Ok(StepResult::Next)
+}
+
+// Store
+
+#[inline]
+fn op_store_local(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.ctx.locals[inst.operand as usize] = vm.stack.pop();
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_store_state(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    vm.ctx.state[inst.operand as usize] = vm.stack.pop();
+    Ok(StepResult::Next)
+}
+
+// Arithmetic
+
+#[inline]
+fn op_add(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(lhs + rhs);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_sub(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(lhs - rhs);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_mul(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(lhs * rhs);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_div(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(if rhs == 0.0 { f64::NAN } else { lhs / rhs });
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_neg(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    vm.stack.push(-v);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_abs(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    vm.stack.push(v.abs());
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_exp(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    vm.stack.push(v.exp());
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_log(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    vm.stack.push(v.ln());
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_min(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(lhs.min(rhs));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_max(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(lhs.max(rhs));
+    Ok(StepResult::Next)
+}
+
+// Comparison / Logic
+
+#[inline]
+fn op_eq(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(bool_to_f64((lhs - rhs).abs() < f64::EPSILON));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_ne(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack
+        .push(bool_to_f64((lhs - rhs).abs() >= f64::EPSILON));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_lt(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(bool_to_f64(lhs < rhs));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_le(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(bool_to_f64(lhs <= rhs));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_gt(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(bool_to_f64(lhs > rhs));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_ge(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack.push(bool_to_f64(lhs >= rhs));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_and(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack
+        .push(bool_to_f64(f64_to_bool(lhs) && f64_to_bool(rhs)));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_or(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let rhs = vm.stack.pop();
+    let lhs = vm.stack.pop();
+    vm.stack
+        .push(bool_to_f64(f64_to_bool(lhs) || f64_to_bool(rhs)));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_not(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    vm.stack.push(bool_to_f64(!f64_to_bool(v)));
+    Ok(StepResult::Next)
+}
+
+// Domain-specific
+
+#[inline]
+fn op_pay(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    *vm.pv += v * vm.ctx.discount_factor;
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_redeem(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let v = vm.stack.pop();
+    *vm.pv += v * vm.ctx.discount_factor;
+    Ok(StepResult::Redeemed)
+}
+
+#[inline]
+fn op_price(_inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let idx = vm.stack.pop() as usize;
+    if idx >= vm.ctx.spots.len() {
+        return Err(DslError::EvalError(format!(
+            "asset index {idx} out of range (have {} assets)",
+            vm.ctx.spots.len()
+        )));
+    }
+    vm.stack.push(vm.ctx.spots[idx]);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_worst_of(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let arg_count = inst.operand as usize;
+    let mut min_val = f64::INFINITY;
+    for _ in 0..arg_count {
+        let v = vm.stack.pop();
+        if v < min_val {
+            min_val = v;
+        }
+    }
+    vm.stack.push(min_val);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_best_of(inst: Instruction, vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    let arg_count = inst.operand as usize;
+    let mut max_val = f64::NEG_INFINITY;
+    for _ in 0..arg_count {
+        let v = vm.stack.pop();
+        if v > max_val {
+            max_val = v;
+        }
+    }
+    vm.stack.push(max_val);
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_worst_of_perf(
+    _inst: Instruction,
+    vm: &mut VmState<'_, '_, '_>,
+) -> Result<StepResult, DslError> {
+    vm.stack.push(compute_worst_of_performance(vm.ctx));
+    Ok(StepResult::Next)
+}
+
+#[inline]
+fn op_best_of_perf(
+    _inst: Instruction,
+    vm: &mut VmState<'_, '_, '_>,
+) -> Result<StepResult, DslError> {
+    vm.stack.push(compute_best_of_performance(vm.ctx));
+    Ok(StepResult::Next)
+}
+
+fn op_unknown(inst: Instruction, _vm: &mut VmState<'_, '_, '_>) -> Result<StepResult, DslError> {
+    Err(DslError::EvalError(format!(
+        "unknown opcode 0x{:02x}",
+        inst.opcode
+    )))
+}
+
+// ── Static dispatch table ──────────────────────────────────────────
+
+static DISPATCH: [Handler; 256] = {
+    let mut table: [Handler; 256] = [op_unknown; 256];
+
+    // Control flow
+    table[opcode::JUMP as usize] = op_jump;
+    table[opcode::JUMP_FALSE as usize] = op_jump_false;
+    table[opcode::SKIP as usize] = op_skip;
+
+    // Load/Push
+    table[opcode::PUSH_CONST as usize] = op_push_const;
+    table[opcode::PUSH_LOCAL as usize] = op_push_local;
+    table[opcode::PUSH_STATE as usize] = op_push_state;
+    table[opcode::PUSH_NOTIONAL as usize] = op_push_notional;
+    table[opcode::PUSH_DATE as usize] = op_push_date;
+    table[opcode::PUSH_IS_FINAL as usize] = op_push_is_final;
+    table[opcode::PUSH_TRUE as usize] = op_push_true;
+    table[opcode::PUSH_FALSE as usize] = op_push_false;
+
+    // Store
+    table[opcode::STORE_LOCAL as usize] = op_store_local;
+    table[opcode::STORE_STATE as usize] = op_store_state;
+
+    // Arithmetic
+    table[opcode::ADD as usize] = op_add;
+    table[opcode::SUB as usize] = op_sub;
+    table[opcode::MUL as usize] = op_mul;
+    table[opcode::DIV as usize] = op_div;
+    table[opcode::NEG as usize] = op_neg;
+    table[opcode::ABS as usize] = op_abs;
+    table[opcode::EXP as usize] = op_exp;
+    table[opcode::LOG as usize] = op_log;
+    table[opcode::MIN as usize] = op_min;
+    table[opcode::MAX as usize] = op_max;
+
+    // Comparison / Logic
+    table[opcode::EQ as usize] = op_eq;
+    table[opcode::NE as usize] = op_ne;
+    table[opcode::LT as usize] = op_lt;
+    table[opcode::LE as usize] = op_le;
+    table[opcode::GT as usize] = op_gt;
+    table[opcode::GE as usize] = op_ge;
+    table[opcode::AND as usize] = op_and;
+    table[opcode::OR as usize] = op_or;
+    table[opcode::NOT as usize] = op_not;
+
+    // Domain
+    table[opcode::PAY as usize] = op_pay;
+    table[opcode::REDEEM as usize] = op_redeem;
+    table[opcode::PRICE as usize] = op_price;
+    table[opcode::WORST_OF as usize] = op_worst_of;
+    table[opcode::BEST_OF as usize] = op_best_of;
+    table[opcode::WORST_OF_PERF as usize] = op_worst_of_perf;
+    table[opcode::BEST_OF_PERF as usize] = op_best_of_perf;
+
+    table
+};
 
 fn execute_program(
     program: &Program,
@@ -1779,200 +2190,25 @@ fn execute_program(
 ) -> Result<ObservationResult, DslError> {
     stack.clear();
     let code = &program.code;
-    let constants = &program.constants;
+    let mut vm = VmState {
+        stack,
+        ctx,
+        constants: &program.constants,
+        pv,
+    };
     let mut pc = 0usize;
 
     while pc < code.len() {
         let inst = code[pc];
-        match inst.opcode {
-            // ── Load ───────────────────────────────────────────
-            opcode::PUSH_CONST => stack.push(constants[inst.operand as usize]),
-            opcode::PUSH_TRUE => stack.push(TRUE_F64),
-            opcode::PUSH_FALSE => stack.push(FALSE_F64),
-            opcode::PUSH_LOCAL => stack.push(ctx.locals[inst.operand as usize]),
-            opcode::PUSH_STATE => stack.push(ctx.state[inst.operand as usize]),
-            opcode::PUSH_NOTIONAL => stack.push(ctx.notional),
-            opcode::PUSH_DATE => stack.push(ctx.observation_date),
-            opcode::PUSH_IS_FINAL => stack.push(bool_to_f64(ctx.is_final)),
-
-            // ── Arithmetic ─────────────────────────────────────
-            opcode::ADD => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(lhs + rhs);
-            }
-            opcode::SUB => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(lhs - rhs);
-            }
-            opcode::MUL => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(lhs * rhs);
-            }
-            opcode::DIV => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(if rhs == 0.0 { f64::NAN } else { lhs / rhs });
-            }
-            opcode::NEG => {
-                let v = stack.pop();
-                stack.push(-v);
-            }
-            opcode::ABS => {
-                let v = stack.pop();
-                stack.push(v.abs());
-            }
-            opcode::EXP => {
-                let v = stack.pop();
-                stack.push(v.exp());
-            }
-            opcode::LOG => {
-                let v = stack.pop();
-                stack.push(v.ln());
-            }
-            opcode::MIN => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(lhs.min(rhs));
-            }
-            opcode::MAX => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(lhs.max(rhs));
-            }
-
-            // ── Comparison / Logic ─────────────────────────────
-            opcode::EQ => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64((lhs - rhs).abs() < f64::EPSILON));
-            }
-            opcode::NE => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64((lhs - rhs).abs() >= f64::EPSILON));
-            }
-            opcode::LT => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64(lhs < rhs));
-            }
-            opcode::LE => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64(lhs <= rhs));
-            }
-            opcode::GT => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64(lhs > rhs));
-            }
-            opcode::GE => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64(lhs >= rhs));
-            }
-            opcode::AND => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64(f64_to_bool(lhs) && f64_to_bool(rhs)));
-            }
-            opcode::OR => {
-                let rhs = stack.pop();
-                let lhs = stack.pop();
-                stack.push(bool_to_f64(f64_to_bool(lhs) || f64_to_bool(rhs)));
-            }
-            opcode::NOT => {
-                let v = stack.pop();
-                stack.push(bool_to_f64(!f64_to_bool(v)));
-            }
-
-            // ── Domain ─────────────────────────────────────────
-            opcode::WORST_OF_PERF => {
-                stack.push(compute_worst_of_performance(ctx));
-            }
-            opcode::BEST_OF_PERF => {
-                stack.push(compute_best_of_performance(ctx));
-            }
-            opcode::WORST_OF => {
-                let arg_count = inst.operand as usize;
-                let mut min_val = f64::INFINITY;
-                for _ in 0..arg_count {
-                    let v = stack.pop();
-                    if v < min_val {
-                        min_val = v;
-                    }
-                }
-                stack.push(min_val);
-            }
-            opcode::BEST_OF => {
-                let arg_count = inst.operand as usize;
-                let mut max_val = f64::NEG_INFINITY;
-                for _ in 0..arg_count {
-                    let v = stack.pop();
-                    if v > max_val {
-                        max_val = v;
-                    }
-                }
-                stack.push(max_val);
-            }
-            opcode::PRICE => {
-                let idx = stack.pop() as usize;
-                if idx >= ctx.spots.len() {
-                    return Err(DslError::EvalError(format!(
-                        "asset index {idx} out of range (have {} assets)",
-                        ctx.spots.len()
-                    )));
-                }
-                stack.push(ctx.spots[idx]);
-            }
-
-            // ── Store ──────────────────────────────────────────
-            opcode::STORE_LOCAL => {
-                ctx.locals[inst.operand as usize] = stack.pop();
-            }
-            opcode::STORE_STATE => {
-                ctx.state[inst.operand as usize] = stack.pop();
-            }
-
-            // ── Side-effects ───────────────────────────────────
-            opcode::PAY => {
-                let v = stack.pop();
-                *pv += v * ctx.discount_factor;
-            }
-            opcode::REDEEM => {
-                let v = stack.pop();
-                *pv += v * ctx.discount_factor;
-                return Ok(ObservationResult::Redeemed);
-            }
-
-            // ── Control flow ───────────────────────────────────
-            opcode::JUMP_FALSE => {
-                if stack.pop() == 0.0 {
-                    pc = inst.operand as usize;
-                    continue;
-                }
-            }
-            opcode::JUMP => {
-                pc = inst.operand as usize;
-                continue;
-            }
-            opcode::SKIP => return Ok(ObservationResult::Skipped),
-
-            _ => {
-                return Err(DslError::EvalError(format!(
-                    "unknown opcode 0x{:02x}",
-                    inst.opcode
-                )));
-            }
+        match DISPATCH[inst.opcode as usize](inst, &mut vm)? {
+            StepResult::Next => pc += 1,
+            StepResult::Jump(target) => pc = target,
+            StepResult::Redeemed => return Ok(ObservationResult::Redeemed),
+            StepResult::Skipped => return Ok(ObservationResult::Skipped),
         }
-
-        pc += 1;
     }
 
-    debug_assert_eq!(stack.len, 0);
+    debug_assert_eq!(vm.stack.len, 0);
     Ok(ObservationResult::Continue)
 }
 
