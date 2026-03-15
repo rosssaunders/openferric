@@ -2,17 +2,19 @@
 
 **High-performance quantitative finance in Rust.** Derivatives pricing, risk analytics, and live market tools.
 
+[![Crates.io](https://img.shields.io/crates/v/openferric.svg)](https://crates.io/crates/openferric)
+[![docs.rs](https://docs.rs/openferric/badge.svg)](https://docs.rs/openferric)
 [![Rust](https://img.shields.io/badge/Rust-stable-blue?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-366%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen)](#testing)
 [![Coverage](https://codecov.io/gh/rosssaunders/openferric/graph/badge.svg)](https://codecov.io/gh/rosssaunders/openferric)
-[![Lines](https://img.shields.io/badge/lines-40K%2B-blue)](#)
+[![Lines](https://img.shields.io/badge/lines-72K%2B-blue)](#)
 
 ---
 
 ## Highlights
 
-- **40,300+ lines** of Rust across 160 source files
+- **72,000+ lines** of Rust across 201 source files
 - **366 tests** — validated against QuantLib, Haug, Alan Lewis, and Fabozzi reference values
 - **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
 - **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
