@@ -18,6 +18,7 @@ use crate::core::{
 };
 use crate::instruments::{AsianOption, BarrierOption, VanillaOption};
 use crate::market::{DividendSchedule, Market};
+use crate::math::approx_tier::AccuracyTier;
 use crate::math::arena::PricingArena;
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
 use crate::math::fast_rng::{FastRngKind, Xoshiro256PlusPlus, uniform_open01};
@@ -347,6 +348,9 @@ pub fn mc_european_with_arena(
 /// normal variates via vectorized Acklam approximation, then consumes the
 /// block with vectorized exp + payoff computation. This eliminates the
 /// scalar inverse-CDF bottleneck that dominated the previous implementation.
+///
+/// Uses the adaptive approximation tier to select between degree-11 (High)
+/// and degree-7 (Fast) exp() approximants.
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 #[allow(clippy::too_many_arguments)]
@@ -361,8 +365,12 @@ unsafe fn mc_exact_avx2_inner(
     strike: f64,
     i: &mut usize,
 ) {
-    use crate::math::simd_math::{fast_exp_f64x4, fill_normals_simd, splat_f64x4, store_f64x4};
+    use crate::math::approx_tier::tiered_exp_f64x4;
+    use crate::math::simd_math::{fill_normals_simd, splat_f64x4, store_f64x4};
     use std::arch::x86_64::*;
+
+    // MC always uses Fast tier — stochastic error dwarfs approximation error.
+    let tier = AccuracyTier::for_mc(n_paths, 1);
 
     let spot_v = unsafe { splat_f64x4(spot) };
     let drift_v = unsafe { splat_f64x4(total_drift) };
@@ -383,7 +391,7 @@ unsafe fn mc_exact_avx2_inner(
         while j + 4 <= BLOCK {
             let z_vec = unsafe { _mm256_loadu_pd(normals.as_ptr().add(j)) };
             let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
-            let growth = unsafe { fast_exp_f64x4(exponent) };
+            let growth = unsafe { tiered_exp_f64x4(exponent, tier) };
             let s_terminal = _mm256_mul_pd(spot_v, growth);
 
             let payoff_v = match option_type {
@@ -411,7 +419,7 @@ unsafe fn mc_exact_avx2_inner(
         while j + 4 <= batch {
             let z_vec = unsafe { _mm256_loadu_pd(normals.as_ptr().add(j)) };
             let exponent = _mm256_fmadd_pd(diff_v, z_vec, drift_v);
-            let growth = unsafe { fast_exp_f64x4(exponent) };
+            let growth = unsafe { tiered_exp_f64x4(exponent, tier) };
             let s_terminal = _mm256_mul_pd(spot_v, growth);
 
             let payoff_v = match option_type {
@@ -590,6 +598,9 @@ pub struct MonteCarloPricingEngine {
     pub reproducible: bool,
     /// Variance reduction configuration.
     pub variance_reduction: VarianceReduction,
+    /// Approximation accuracy tier for SIMD math (exp, inverse CDF).
+    /// Defaults to automatic selection based on path count.
+    pub accuracy_tier: Option<AccuracyTier>,
 }
 
 impl MonteCarloPricingEngine {
@@ -602,6 +613,7 @@ impl MonteCarloPricingEngine {
             rng_kind: FastRngKind::Xoshiro256PlusPlus,
             reproducible: true,
             variance_reduction: VarianceReduction::None,
+            accuracy_tier: None,
         }
     }
 
@@ -638,6 +650,22 @@ impl MonteCarloPricingEngine {
         self.rng_kind = FastRngKind::ThreadRng;
         self.reproducible = false;
         self
+    }
+
+    /// Override the approximation accuracy tier for SIMD math functions.
+    ///
+    /// By default the tier is selected automatically via
+    /// `AccuracyTier::for_mc(num_paths, num_steps)`. Use this to force
+    /// a specific tier (e.g., `AccuracyTier::High` for risk reports).
+    pub fn with_accuracy_tier(mut self, tier: AccuracyTier) -> Self {
+        self.accuracy_tier = Some(tier);
+        self
+    }
+
+    /// Returns the effective accuracy tier for this engine configuration.
+    pub fn effective_accuracy_tier(&self) -> AccuracyTier {
+        self.accuracy_tier
+            .unwrap_or_else(|| AccuracyTier::for_mc(self.num_paths, self.num_steps))
     }
 }
 

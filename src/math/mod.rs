@@ -10,6 +10,7 @@
 //!
 //! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
 pub mod aad;
+pub mod approx_tier;
 pub mod arena;
 pub mod correlation;
 pub mod fast_norm;
@@ -25,6 +26,7 @@ pub mod sobol;
 pub mod timeseries;
 
 pub use aad::*;
+pub use approx_tier::AccuracyTier;
 pub use arena::PricingArena;
 pub use correlation::*;
 pub use fast_norm::{
