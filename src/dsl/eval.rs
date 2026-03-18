@@ -117,7 +117,7 @@ struct EvalContext<'a> {
 
 /// Result of evaluating one observation date.
 #[derive(Debug)]
-enum ObservationResult {
+pub enum ObservationResult {
     Continue,
     Redeemed,
     Skipped,

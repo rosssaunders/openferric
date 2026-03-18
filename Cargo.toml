@@ -60,6 +60,7 @@ default = []
 parallel = ["dep:rayon"]
 simd = []
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:wasm-bindgen-futures"]
+jit = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-module", "dep:cranelift-jit"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -77,6 +78,10 @@ realfft = "3"
 statrs = "0.18"
 wgpu = { version = "28", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
+cranelift-codegen = { version = "0.116", optional = true }
+cranelift-frontend = { version = "0.116", optional = true }
+cranelift-module = { version = "0.116", optional = true }
+cranelift-jit = { version = "0.116", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.4", optional = true }
