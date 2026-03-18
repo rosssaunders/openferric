@@ -103,27 +103,6 @@ pub unsafe fn tiered_exp_f64x4(
     }
 }
 
-/// Dispatch a batch exp operation using the appropriate SIMD tier (AVX-512).
-///
-/// On x86_64 with AVX-512F:
-/// - `High`: degree-11 polynomial (11 FMA ops)
-/// - `Fast`: degree-7 minimax polynomial (7 FMA ops, ~2x faster)
-///
-/// # Safety
-/// Caller must ensure AVX-512F is available on the executing CPU.
-#[cfg(all(feature = "simd", target_arch = "x86_64"))]
-#[inline]
-#[target_feature(enable = "avx512f")]
-pub unsafe fn tiered_exp_f64x8(
-    x: std::arch::x86_64::__m512d,
-    tier: AccuracyTier,
-) -> std::arch::x86_64::__m512d {
-    match tier {
-        AccuracyTier::High => unsafe { crate::math::simd_avx512::exp_f64x8(x) },
-        AccuracyTier::Fast => unsafe { crate::math::simd_avx512::fast_exp_f64x8(x) },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

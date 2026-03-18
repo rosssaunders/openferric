@@ -19,8 +19,6 @@ pub mod functions;
 pub mod gamma;
 pub mod interpolation;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-pub mod simd_avx512;
-#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 pub mod simd_math;
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 pub mod simd_neon;
