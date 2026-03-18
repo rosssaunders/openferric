@@ -1,14 +1,13 @@
 //! Module `engines::gpu::gpu_mc`.
 //!
-//! Implements gpu mc abstractions and re-exports used by adjacent pricing/model modules.
+//! GPU Monte Carlo European option pricing with on-device hierarchical reduction.
 //!
-//! References: Hull (11th ed.) and standard quantitative-finance references aligned with the concrete algorithms implemented in this module.
+//! Each GPU thread simulates one GBM path and computes its payoff.
+//! A per-workgroup tree reduction in shared memory produces partial sums,
+//! so only a tiny summary buffer (2 floats per workgroup) is read back
+//! to the host — eliminating the main bandwidth bottleneck.
 //!
-//! Key types and purpose: `GpuMcResult` define the core data contracts for this module.
-//!
-//! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
-//!
-//! When to use: choose this module when its API directly matches your instrument/model assumptions; otherwise use a more specialized engine module.
+//! References: Hull (11th ed.) and standard quantitative-finance references.
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -16,6 +15,8 @@ use wgpu::util::DeviceExt;
 // ---------------------------------------------------------------------------
 // Shared types (both native and WASM)
 // ---------------------------------------------------------------------------
+
+const WORKGROUP_SIZE: u32 = 256;
 
 /// GPU-accelerated parameters matching the WGSL struct layout.
 #[repr(C)]
@@ -87,26 +88,20 @@ fn build_params(
     }
 }
 
-/// Compute MC statistics from raw payoff buffer (single pass, unrolled by 4).
-fn compute_mc_statistics(payoffs: &[f32], num_paths: usize, discount: f64) -> GpuMcResult {
+/// Compute MC statistics from per-workgroup partial sums.
+///
+/// The GPU shader outputs `[sum_0, sum_sq_0, sum_1, sum_sq_1, ...]`
+/// for each workgroup. This function reduces those to the final price
+/// and standard error.
+fn reduce_partial_sums(partial_sums: &[f32], num_paths: usize, discount: f64) -> GpuMcResult {
     let n = num_paths as f64;
+    let num_workgroups = partial_sums.len() / 2;
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
-    let mut i = 0;
-    while i + 4 <= num_paths {
-        let v0 = payoffs[i] as f64;
-        let v1 = payoffs[i + 1] as f64;
-        let v2 = payoffs[i + 2] as f64;
-        let v3 = payoffs[i + 3] as f64;
-        sum += v0 + v1 + v2 + v3;
-        sum_sq += v0 * v0 + v1 * v1 + v2 * v2 + v3 * v3;
-        i += 4;
-    }
-    while i < num_paths {
-        let v = payoffs[i] as f64;
-        sum += v;
-        sum_sq += v * v;
-        i += 1;
+
+    for wg in 0..num_workgroups {
+        sum += partial_sums[wg * 2] as f64;
+        sum_sq += partial_sums[wg * 2 + 1] as f64;
     }
 
     let mean = sum / n;
@@ -202,14 +197,20 @@ async fn init_gpu_context() -> Result<GpuContext, String> {
 
 /// Encode and submit the compute dispatch, returning the staging buffer
 /// and the number of bytes to read back.
+///
+/// The output buffer holds 2 floats (sum, sum_sq) per workgroup rather
+/// than one float per path, cutting readback by ~workgroup_size/2 = 128x.
 fn encode_and_submit(ctx: &GpuContext, params: GpuParams, num_paths: usize) -> (wgpu::Buffer, u64) {
     let device = &ctx.device;
     let queue = &ctx.queue;
 
-    let payoff_size = (num_paths * std::mem::size_of::<f32>()) as u64;
-    let payoff_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("payoffs"),
-        size: payoff_size,
+    let num_workgroups = (num_paths as u32 + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+    let output_count = num_workgroups as usize * 2; // (sum, sum_sq) per workgroup
+    let output_size = (output_count * std::mem::size_of::<f32>()) as u64;
+
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("partial_sums"),
+        size: output_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -222,7 +223,7 @@ fn encode_and_submit(ctx: &GpuContext, params: GpuParams, num_paths: usize) -> (
 
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("staging"),
-        size: payoff_size,
+        size: output_size,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -237,13 +238,10 @@ fn encode_and_submit(ctx: &GpuContext, params: GpuParams, num_paths: usize) -> (
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: payoff_buffer.as_entire_binding(),
+                resource: output_buffer.as_entire_binding(),
             },
         ],
     });
-
-    let workgroup_size = 256u32;
-    let num_workgroups = (num_paths as u32 + workgroup_size - 1) / workgroup_size;
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("MC encoder"),
@@ -259,10 +257,10 @@ fn encode_and_submit(ctx: &GpuContext, params: GpuParams, num_paths: usize) -> (
         pass.dispatch_workgroups(num_workgroups, 1, 1);
     }
 
-    encoder.copy_buffer_to_buffer(&payoff_buffer, 0, &staging_buffer, 0, payoff_size);
+    encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, output_size);
     queue.submit(std::iter::once(encoder.finish()));
 
-    (staging_buffer, payoff_size)
+    (staging_buffer, output_size)
 }
 
 // ===========================================================================
@@ -284,7 +282,7 @@ mod native {
             .map_err(|e| e.clone())
     }
 
-    /// Readback using blocking poll + mpsc channel (native only).
+    /// Readback partial sums using blocking poll + mpsc channel (native only).
     fn readback_blocking(
         device: &wgpu::Device,
         staging_buffer: &wgpu::Buffer,
@@ -305,8 +303,8 @@ mod native {
             .map_err(|e| format!("GPU buffer map failed: {e}"))?;
 
         let data = buffer_slice.get_mapped_range();
-        let payoffs: &[f32] = bytemuck::cast_slice(&data);
-        let result = compute_mc_statistics(payoffs, num_paths, discount);
+        let partial_sums: &[f32] = bytemuck::cast_slice(&data);
+        let result = reduce_partial_sums(partial_sums, num_paths, discount);
         drop(data);
         staging_buffer.unmap();
         Ok(result)
@@ -316,7 +314,8 @@ mod native {
     ///
     /// Uses wgpu to dispatch compute shaders that simulate GBM paths in parallel.
     /// Each GPU thread simulates one complete path and computes its payoff.
-    /// Statistics are reduced on the CPU after readback.
+    /// On-device hierarchical reduction produces per-workgroup partial sums;
+    /// only a tiny summary buffer is read back for final reduction on CPU.
     ///
     /// The GPU device, queue, and pipeline are cached globally so subsequent calls
     /// skip the expensive initialization (~50-200ms) and only pay the dispatch cost.
@@ -345,7 +344,7 @@ mod native {
         );
 
         let ctx = get_or_init_gpu()?;
-        let (staging_buffer, _payoff_size) = encode_and_submit(ctx, params, num_paths);
+        let (staging_buffer, _output_size) = encode_and_submit(ctx, params, num_paths);
         readback_blocking(&ctx.device, &staging_buffer, num_paths, discount)
     }
 }
@@ -384,7 +383,7 @@ mod wasm {
         Ok(ctx)
     }
 
-    /// Readback using callback + JsFuture yield loop (WASM only).
+    /// Readback partial sums using callback + JsFuture yield loop (WASM only).
     async fn readback_async(
         device: &wgpu::Device,
         staging_buffer: &wgpu::Buffer,
@@ -431,8 +430,8 @@ mod wasm {
         }
 
         let data = buffer_slice.get_mapped_range();
-        let payoffs: &[f32] = bytemuck::cast_slice(&data);
-        let result = compute_mc_statistics(payoffs, num_paths, discount);
+        let partial_sums: &[f32] = bytemuck::cast_slice(&data);
+        let result = reduce_partial_sums(partial_sums, num_paths, discount);
         drop(data);
         staging_buffer.unmap();
         Ok(result)
@@ -456,7 +455,7 @@ mod wasm {
         );
 
         let ctx = ensure_gpu_ctx().await?;
-        let (staging_buffer, _payoff_size) = encode_and_submit(&ctx, params, num_paths as usize);
+        let (staging_buffer, _output_size) = encode_and_submit(&ctx, params, num_paths as usize);
         readback_async(&ctx.device, &staging_buffer, num_paths as usize, discount).await
     }
 }
