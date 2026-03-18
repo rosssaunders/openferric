@@ -45,6 +45,15 @@ pub fn normal_cdf_batch_approx(xs: &[f64]) -> Vec<f64> {
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: Guarded by runtime CPU feature detection.
+            unsafe { normal_cdf_batch_avx512(xs, &mut out) };
+            return out;
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             // SAFETY: Guarded by runtime CPU feature detection.
             unsafe { normal_cdf_batch_avx2(xs, &mut out) };
@@ -86,6 +95,15 @@ pub fn bs_price_batch(
     );
 
     let mut out = vec![0.0_f64; spots.len()];
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: Guarded by runtime CPU feature detection.
+            unsafe { bs_price_batch_avx512(spots, strikes, r, q, vol, t, is_call, &mut out) };
+            return out;
+        }
+    }
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
@@ -135,6 +153,20 @@ pub fn bs_greeks_batch(
     let mut gamma = vec![0.0_f64; n];
     let mut vega = vec![0.0_f64; n];
     let mut theta = vec![0.0_f64; n];
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: Guarded by runtime CPU feature detection.
+            unsafe {
+                bs_greeks_batch_avx512(
+                    spots, strikes, r, q, vol, t, is_call, &mut delta, &mut gamma, &mut vega,
+                    &mut theta,
+                )
+            };
+            return (delta, gamma, vega, theta);
+        }
+    }
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
@@ -634,6 +666,237 @@ mod avx2_impl {
 }
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[allow(unsafe_op_in_unsafe_fn)]
+mod avx512_impl {
+    use std::arch::x86_64::*;
+
+    use crate::math::simd_avx512::{
+        ln_f64x8, load_f64x8, norm_cdf_f64x8, norm_pdf_f64x8, splat_f64x8, store_f64x8,
+    };
+
+    use super::{bs_greeks_scalar, bs_price_scalar};
+
+    #[target_feature(enable = "avx512f")]
+    pub(super) unsafe fn normal_cdf_batch_avx512(xs: &[f64], out: &mut [f64]) {
+        let n = xs.len();
+        let mut i = 0usize;
+        while i + 8 <= n {
+            // SAFETY: bounds are checked in loop condition.
+            let x = load_f64x8(xs, i);
+            // SAFETY: target feature is enabled by this function attribute.
+            let y = norm_cdf_f64x8(x);
+            // SAFETY: bounds are checked in loop condition.
+            store_f64x8(out, i, y);
+            i += 8;
+        }
+        while i < n {
+            out[i] = super::normal_cdf_approx(xs[i]);
+            i += 1;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[target_feature(enable = "avx512f")]
+    pub(super) unsafe fn bs_price_batch_avx512(
+        spots: &[f64],
+        strikes: &[f64],
+        r: f64,
+        q: f64,
+        vol: f64,
+        t: f64,
+        is_call: bool,
+        out: &mut [f64],
+    ) {
+        if t <= 0.0 || vol <= 0.0 {
+            for i in 0..spots.len() {
+                out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+            }
+            return;
+        }
+
+        let sqrt_t = t.sqrt();
+        let sig_sqrt_t = vol * sqrt_t;
+        let inv_sig_sqrt_t = 1.0 / sig_sqrt_t;
+        let drift = (0.5 * vol).mul_add(vol, r - q) * t;
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        let drift_v = splat_f64x8(drift);
+        let inv_sig_sqrt_t_v = splat_f64x8(inv_sig_sqrt_t);
+        let sig_sqrt_t_v = splat_f64x8(sig_sqrt_t);
+        let df_r_v = splat_f64x8(df_r);
+        let df_q_v = splat_f64x8(df_q);
+
+        let n = spots.len();
+        let mut i = 0usize;
+        while i + 8 <= n {
+            // SAFETY: bounds are checked in loop condition.
+            let s = load_f64x8(spots, i);
+            // SAFETY: bounds are checked in loop condition.
+            let k = load_f64x8(strikes, i);
+            let ln_sk = ln_f64x8(_mm512_div_pd(s, k));
+
+            let d1 = _mm512_mul_pd(_mm512_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
+            let d2 = _mm512_sub_pd(d1, sig_sqrt_t_v);
+
+            // Only 2 CDF evaluations regardless of call/put.
+            // Put uses put-call parity: P = C - S*df_q + K*df_r.
+            let nd1 = norm_cdf_f64x8(d1);
+            let nd2 = norm_cdf_f64x8(d2);
+
+            let s_df_q = _mm512_mul_pd(s, df_q_v);
+            let k_df_r = _mm512_mul_pd(k, df_r_v);
+
+            let call = _mm512_sub_pd(_mm512_mul_pd(s_df_q, nd1), _mm512_mul_pd(k_df_r, nd2));
+
+            let result = if is_call {
+                call
+            } else {
+                // Put-call parity: P = C - S*df_q + K*df_r
+                _mm512_add_pd(_mm512_sub_pd(call, s_df_q), k_df_r)
+            };
+
+            // SAFETY: bounds are checked in loop condition.
+            store_f64x8(out, i, result);
+            i += 8;
+        }
+
+        while i < n {
+            out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+            i += 1;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[target_feature(enable = "avx512f")]
+    pub(super) unsafe fn bs_greeks_batch_avx512(
+        spots: &[f64],
+        strikes: &[f64],
+        r: f64,
+        q: f64,
+        vol: f64,
+        t: f64,
+        is_call: bool,
+        delta: &mut [f64],
+        gamma: &mut [f64],
+        vega: &mut [f64],
+        theta: &mut [f64],
+    ) {
+        if t <= 0.0 || vol <= 0.0 {
+            for i in 0..spots.len() {
+                let (d, g, v, th) = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+                delta[i] = d;
+                gamma[i] = g;
+                vega[i] = v;
+                theta[i] = th;
+            }
+            return;
+        }
+
+        let sqrt_t = t.sqrt();
+        let sig_sqrt_t = vol * sqrt_t;
+        let inv_sig_sqrt_t = 1.0 / sig_sqrt_t;
+        let drift = (0.5 * vol).mul_add(vol, r - q) * t;
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+        let denom_gamma = vol * sqrt_t;
+
+        let drift_v = splat_f64x8(drift);
+        let inv_sig_sqrt_t_v = splat_f64x8(inv_sig_sqrt_t);
+        let sig_sqrt_t_v = splat_f64x8(sig_sqrt_t);
+        let df_r_v = splat_f64x8(df_r);
+        let df_q_v = splat_f64x8(df_q);
+        let sqrt_t_v = splat_f64x8(sqrt_t);
+        let vol_v = splat_f64x8(vol);
+        let q_v = splat_f64x8(q);
+        let r_v = splat_f64x8(r);
+        let one = splat_f64x8(1.0);
+        let denom_gamma_v = splat_f64x8(denom_gamma);
+        // Pre-compute the theta time denominator: -1/(2*sqrt_t).
+        // This replaces a negate + divide per iteration with a single multiply.
+        let neg_inv_2sqrt_t = splat_f64x8(-0.5 / sqrt_t);
+
+        let n = spots.len();
+        let mut i = 0usize;
+        while i + 8 <= n {
+            // SAFETY: bounds are checked in loop condition.
+            let s = load_f64x8(spots, i);
+            // SAFETY: bounds are checked in loop condition.
+            let k = load_f64x8(strikes, i);
+            let ln_sk = ln_f64x8(_mm512_div_pd(s, k));
+
+            let d1 = _mm512_mul_pd(_mm512_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
+            let d2 = _mm512_sub_pd(d1, sig_sqrt_t_v);
+
+            // Only 2 CDF evaluations + derive negations via 1-CDF (no extra CDF calls).
+            let nd1 = norm_cdf_f64x8(d1);
+            let nd2 = norm_cdf_f64x8(d2);
+            let pdf_d1 = norm_pdf_f64x8(d1);
+
+            let delta_call = _mm512_mul_pd(df_q_v, nd1);
+            let delta_put = _mm512_mul_pd(df_q_v, _mm512_sub_pd(nd1, one));
+            let delta_v = if is_call { delta_call } else { delta_put };
+
+            let gamma_v = _mm512_div_pd(
+                _mm512_mul_pd(df_q_v, pdf_d1),
+                _mm512_mul_pd(s, denom_gamma_v),
+            );
+
+            let vega_v = _mm512_mul_pd(_mm512_mul_pd(_mm512_mul_pd(s, df_q_v), pdf_d1), sqrt_t_v);
+
+            // theta_common = -S * df_q * pdf(d1) * vol / (2*sqrt_t)
+            //              = S * df_q * pdf(d1) * vol * (-1/(2*sqrt_t))
+            let theta_common = _mm512_mul_pd(
+                _mm512_mul_pd(_mm512_mul_pd(_mm512_mul_pd(s, df_q_v), pdf_d1), vol_v),
+                neg_inv_2sqrt_t,
+            );
+
+            let theta_v = if is_call {
+                // theta_call = common + q*S*df_q*N(d1) - r*K*df_r*N(d2)
+                _mm512_sub_pd(
+                    _mm512_add_pd(
+                        theta_common,
+                        _mm512_mul_pd(_mm512_mul_pd(q_v, s), _mm512_mul_pd(df_q_v, nd1)),
+                    ),
+                    _mm512_mul_pd(_mm512_mul_pd(r_v, k), _mm512_mul_pd(df_r_v, nd2)),
+                )
+            } else {
+                // For put, use N(-d) = 1 - N(d) without extra CDF calls.
+                let nmd1 = _mm512_sub_pd(one, nd1);
+                let nmd2 = _mm512_sub_pd(one, nd2);
+                // theta_put = common - q*S*df_q*N(-d1) + r*K*df_r*N(-d2)
+                _mm512_add_pd(
+                    _mm512_sub_pd(
+                        theta_common,
+                        _mm512_mul_pd(_mm512_mul_pd(q_v, s), _mm512_mul_pd(df_q_v, nmd1)),
+                    ),
+                    _mm512_mul_pd(_mm512_mul_pd(r_v, k), _mm512_mul_pd(df_r_v, nmd2)),
+                )
+            };
+
+            // SAFETY: bounds are checked in loop condition.
+            store_f64x8(delta, i, delta_v);
+            store_f64x8(gamma, i, gamma_v);
+            store_f64x8(vega, i, vega_v);
+            store_f64x8(theta, i, theta_v);
+
+            i += 8;
+        }
+
+        while i < n {
+            let (d, g, v, th) = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+            delta[i] = d;
+            gamma[i] = g;
+            vega[i] = v;
+            theta[i] = th;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use avx2_impl::{bs_greeks_batch_avx2, bs_price_batch_avx2, normal_cdf_batch_avx2};
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+use avx512_impl::{bs_greeks_batch_avx512, bs_price_batch_avx512, normal_cdf_batch_avx512};
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 use neon_impl::{bs_greeks_batch_neon, normal_cdf_batch_neon};
