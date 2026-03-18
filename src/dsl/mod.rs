@@ -45,6 +45,8 @@ pub mod engine;
 pub mod error;
 pub mod eval;
 pub mod ir;
+#[cfg(feature = "jit")]
+pub mod jit;
 pub mod lexer;
 pub mod market;
 pub mod parser;
