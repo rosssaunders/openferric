@@ -72,7 +72,7 @@ pub fn simulate_gbm_paths_soa_scalar(
     }
 }
 
-/// Runtime-dispatched SoA GBM simulation (AVX2+FMA when available).
+/// Runtime-dispatched SoA GBM simulation (AVX-512 > AVX2+FMA > scalar).
 pub fn simulate_gbm_paths_soa(
     s0: f64,
     r: f64,
@@ -83,6 +83,16 @@ pub fn simulate_gbm_paths_soa(
     num_steps: usize,
     seed: u64,
 ) -> SoaPaths {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: Guarded by runtime CPU feature detection.
+            return unsafe {
+                simulate_gbm_paths_soa_avx512(s0, r, q, vol, t, num_paths, num_steps, seed)
+            };
+        }
+    }
+
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
@@ -205,6 +215,77 @@ unsafe fn simulate_gbm_paths_soa_avx2(
                 store_f64x4(next, i, s_next);
             }
             i += 4;
+        }
+
+        while i < num_paths {
+            let z = normal_buf[i];
+            let growth = diffusion.mul_add(z, drift).exp();
+            next[i] = prev[i] * growth;
+            i += 1;
+        }
+    }
+
+    SoaPaths {
+        num_steps,
+        num_paths,
+        levels,
+    }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn simulate_gbm_paths_soa_avx512(
+    s0: f64,
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    num_paths: usize,
+    num_steps: usize,
+    seed: u64,
+) -> SoaPaths {
+    use crate::math::fast_rng::Xoshiro256PlusPlus;
+    use crate::math::simd_avx512::{fast_exp_f64x8, load_f64x8, splat_f64x8, store_f64x8};
+    use std::arch::x86_64::*;
+
+    assert!(num_paths > 0, "num_paths must be > 0");
+    assert!(num_steps > 0, "num_steps must be > 0");
+
+    let mut levels = vec![vec![0.0_f64; num_paths]; num_steps + 1];
+    levels[0].fill(s0);
+
+    let dt = t / num_steps as f64;
+    let drift = (r - q - 0.5 * vol * vol) * dt;
+    let diffusion = vol * dt.sqrt();
+
+    let drift_v = splat_f64x8(drift);
+    let diffusion_v = splat_f64x8(diffusion);
+
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+
+    // Pre-allocate a normal buffer for batch SIMD inverse CDF.
+    // Sized to handle one full step's worth of paths (rounded up to multiple of 8).
+    let buf_size = (num_paths + 7) & !7;
+    let mut normal_buf = vec![0.0_f64; buf_size];
+
+    for step in 0..num_steps {
+        let (prev_head, prev_tail) = levels.split_at_mut(step + 1);
+        let prev = &prev_head[step];
+        let next = &mut prev_tail[0];
+
+        // Batch-generate all normals for this step via AVX-512 inverse CDF.
+        crate::math::simd_avx512::fill_normals_simd_avx512(&mut rng, &mut normal_buf[..num_paths]);
+
+        let mut i = 0usize;
+        while i + 8 <= num_paths {
+            let s = load_f64x8(prev, i);
+            let z_vec = _mm512_loadu_pd(normal_buf.as_ptr().add(i));
+            let x = _mm512_fmadd_pd(diffusion_v, z_vec, drift_v);
+            let growth = fast_exp_f64x8(x);
+            let s_next = _mm512_mul_pd(s, growth);
+            store_f64x8(next, i, s_next);
+            i += 8;
         }
 
         while i < num_paths {
