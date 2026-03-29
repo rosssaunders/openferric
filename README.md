@@ -19,7 +19,7 @@
 - **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
 - **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
 - **FFT pricing**: Carr-Madan for entire strike grids in O(N log N)
-- **Live market tools**: Deribit vol surface snapshot tooling plus rich browser dashboard (WASM/GitHub Pages)
+- **Live market tools**: Deribit vol surface snapshot tooling plus rich browser dashboard — **[Live Demo](https://openferric.netlify.app)**
 - **Python bindings**: Optional PyO3 module for research integration
 - **SQL integration**: Designed as extension for [OpenAssay](https://github.com/rosssaunders/openassay)
 
@@ -75,7 +75,7 @@ Full coverage details in [docs/COVERAGE.md](docs/COVERAGE.md). Summary:
 
 **Numerical Engines** — Analytic (15+), binomial/trinomial trees, explicit/implicit/Crank-Nicolson/Hopscotch FD, Longstaff-Schwartz, Monte Carlo (antithetic, control variate, SIMD, parallel), FFT (Carr-Madan, FRFT), generalized & two-asset trees
 
-**Live Market** — Deribit vol surface snapshot (REST + SVI calibration + 3D Plotly) and browser dashboard
+**Live Market** — Deribit vol surface snapshot (REST + SVI calibration + 3D Plotly) and [browser dashboard](https://openferric.netlify.app)
 
 ## Architecture
 
