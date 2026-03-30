@@ -17,6 +17,7 @@ pub mod capfloor;
 pub mod cms;
 pub mod day_count;
 pub mod fra;
+pub mod funding_rate;
 pub mod futures;
 pub mod inflation;
 pub mod multi_curve;
@@ -43,6 +44,7 @@ pub use calendar::{
 pub use capfloor::CapFloor;
 pub use day_count::{DayCountConvention, year_fraction};
 pub use fra::ForwardRateAgreement;
+pub use funding_rate::FundingRateCurve;
 pub use futures::{Future, InterestRateFutureQuote};
 pub use inflation::{
     InflationCurve, InflationCurveBuilder, InflationIndexedBond, YearOnYearInflationSwap,
