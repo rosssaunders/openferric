@@ -497,28 +497,59 @@
     .dsl-market-wrap {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
       flex: 1;
       min-height: 0;
       overflow: auto;
       padding-right: 2px;
     }
-    .dsl-market-grid {
-      display: grid;
-      grid-template-columns: minmax(112px, auto) 1fr;
-      gap: 4px 8px;
-      align-items: center;
-      font-size: 10px;
+    .dsl-market-section {
       border: 1px solid rgba(142,161,184,0.18);
       border-radius: 6px;
-      padding: 6px;
-      background: rgba(0,0,0,0.2);
+      padding: 7px;
+      background: color-mix(in srgb, var(--panel) 88%, black);
     }
-    .dsl-market-grid label {
+    .dsl-market-section-title {
+      margin: 0 0 6px 0;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
       color: var(--muted);
+    }
+    .dsl-market-assets {
+      display: grid;
+      gap: 6px;
+    }
+    .dsl-market-asset-row {
+      display: grid;
+      grid-template-columns: minmax(64px, auto) repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      align-items: center;
+    }
+    .dsl-market-asset-name {
+      color: var(--fg);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dsl-market-field {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 4px;
+      align-items: center;
+      min-width: 0;
+    }
+    .dsl-market-field span {
+      color: var(--muted);
+      font-size: 10px;
       text-transform: lowercase;
     }
-    .dsl-market-grid input {
+    .dsl-market-field input,
+    .dsl-market-config-grid input,
+    .dsl-market-corr-table input {
       width: 100%;
       background: #0d141d;
       color: var(--fg);
@@ -526,12 +557,71 @@
       border-radius: 4px;
       padding: 2px 5px;
       font-size: 10px;
+      line-height: 1.2;
       font-family: var(--mono);
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .dsl-market-config-grid {
+      display: grid;
+      grid-template-columns: minmax(60px, auto) minmax(0, 1fr);
+      gap: 5px 8px;
+      align-items: center;
+      font-size: 10px;
+    }
+    .dsl-market-config-grid label {
+      color: var(--muted);
+      text-transform: lowercase;
+    }
+    .dsl-market-corr-wrap {
+      overflow: auto;
+    }
+    .dsl-market-corr-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 10px;
+    }
+    .dsl-market-corr-table th,
+    .dsl-market-corr-table td {
+      padding: 3px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      text-align: center;
+      vertical-align: middle;
+    }
+    .dsl-market-corr-table thead th {
+      color: var(--muted);
+      font-weight: 500;
+      background: rgba(255,255,255,0.02);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .dsl-market-corr-table tbody th {
+      color: var(--fg);
+      font-family: var(--mono);
+      font-weight: 600;
+      text-align: left;
+      background: rgba(255,255,255,0.02);
+      position: sticky;
+      left: 0;
+      z-index: 1;
+    }
+    .dsl-market-corr-table input[readonly] {
+      background: rgba(255,255,255,0.06);
+      color: var(--muted);
+      text-align: center;
+      cursor: default;
     }
     .dsl-market-note {
       font-size: 10px;
       color: var(--muted);
       font-family: var(--mono);
+    }
+    @media (max-width: 900px) {
+      .dsl-market-asset-row {
+        grid-template-columns: 1fr;
+      }
     }
     /* ---- Dockview theme overrides ---- */
     .dockview-theme-abyss {
@@ -4242,34 +4332,179 @@
     let dslLastPricingResult = null;
     let dslAnalyzeTimer = null;
     let dslAutoRun = true;
-    let dslPricingConfig = { spots: '100', vols: '0.2', rate: '0.05', dividendYields: '0', numPaths: 10000, numSteps: 100, seed: 42 };
+    let dslPricingConfig = {
+      marketAssets: [{ name: 'Asset 0', underlyingType: 'Equity', spot: '100', vol: '0.2', dividendYield: '0.0' }],
+      correlations: [['1.0']],
+      rate: '0.05',
+      numPaths: 10000,
+      numSteps: 100,
+      seed: 42,
+    };
     // Promise resolvers for async worker round-trips
     let dslHoverResolve = null, dslHoverRequestId = 0;
     let dslCompletionsResolve = null, dslCompletionsRequestId = 0;
     let dslGotoDefResolve = null, dslGotoDefRequestId = 0;
     let dslRequestSeq = 0;
 
+    function dslParseCompiledProductObject() {
+      try {
+        return dslCompiledProduct ? JSON.parse(dslCompiledProduct) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function dslNormalizeUnderlyingType(type) {
+      const normalized = String(type ?? '').trim();
+      return normalized || 'Equity';
+    }
+
+    function dslCarryLabelForType(type) {
+      return dslNormalizeUnderlyingType(type).toLowerCase() === 'fx' ? 'rf' : 'q';
+    }
+
+    function dslResolveCompiledUnderlyings(compiledProduct) {
+      const fallback = [{ name: 'Asset 0', asset_index: 0, underlying_type: 'Equity' }];
+      if (!compiledProduct || typeof compiledProduct !== 'object') return fallback;
+
+      let underlyings = [];
+      if (Array.isArray(compiledProduct.underlyings)) {
+        underlyings = compiledProduct.underlyings.map((u, idx) => ({
+          name: String(u && u.name ? u.name : `Asset ${idx}`),
+          asset_index: Number.isFinite(Number(u && u.asset_index)) ? Math.floor(Number(u.asset_index)) : idx,
+          underlying_type: dslNormalizeUnderlyingType(u && u.underlying_type),
+        }));
+      } else if (compiledProduct.underlyings && typeof compiledProduct.underlyings === 'object') {
+        underlyings = Object.entries(compiledProduct.underlyings).map(([name, value], idx) => ({
+          name: String(name || `Asset ${idx}`),
+          asset_index: Number.isFinite(Number(value && value.asset_index)) ? Math.floor(Number(value.asset_index)) : idx,
+          underlying_type: dslNormalizeUnderlyingType(value && value.underlying_type),
+        }));
+      } else if (Array.isArray(compiledProduct.assets)) {
+        underlyings = compiledProduct.assets.map((asset, idx) => ({
+          name: String(asset && asset.name ? asset.name : `Asset ${idx}`),
+          asset_index: idx,
+          underlying_type: dslNormalizeUnderlyingType(asset && asset.type),
+        }));
+      } else if (Number.isFinite(Number(compiledProduct.num_underlyings))) {
+        const n = Math.max(1, Math.floor(Number(compiledProduct.num_underlyings)));
+        underlyings = Array.from({ length: n }, (_, idx) => ({
+          name: `Asset ${idx}`,
+          asset_index: idx,
+          underlying_type: 'Equity',
+        }));
+      }
+
+      if (!underlyings.length) return fallback;
+      return underlyings
+        .map((u, idx) => ({
+          name: String(u.name || `Asset ${idx}`),
+          asset_index: Number.isFinite(Number(u.asset_index)) ? Math.floor(Number(u.asset_index)) : idx,
+          underlying_type: dslNormalizeUnderlyingType(u.underlying_type),
+        }))
+        .sort((a, b) => {
+          if (a.asset_index !== b.asset_index) return a.asset_index - b.asset_index;
+          return a.name.localeCompare(b.name);
+        });
+    }
+
+    function dslMakeCorrelationKey(leftName, rightName) {
+      return [String(leftName), String(rightName)].sort().join('||');
+    }
+
+    function dslSyncLegacyMarketLists() {
+      const assets = Array.isArray(dslPricingConfig.marketAssets) ? dslPricingConfig.marketAssets : [];
+      dslPricingConfig.spots = assets.map((asset) => asset.spot ?? '100').join(', ');
+      dslPricingConfig.vols = assets.map((asset) => asset.vol ?? '0.2').join(', ');
+      dslPricingConfig.dividendYields = assets.map((asset) => asset.dividendYield ?? '0.0').join(', ');
+    }
+
+    function dslNormalizeStructuredMarketState(compiledProduct = dslParseCompiledProductObject()) {
+      const underlyings = dslResolveCompiledUnderlyings(compiledProduct);
+      const prevAssets = Array.isArray(dslPricingConfig.marketAssets) ? dslPricingConfig.marketAssets : [];
+      const prevCorr = Array.isArray(dslPricingConfig.correlations) ? dslPricingConfig.correlations : [];
+      const prevByName = new Map();
+      const prevPairValues = new Map();
+
+      for (let i = 0; i < prevAssets.length; i++) {
+        const asset = prevAssets[i] || {};
+        prevByName.set(String(asset.name ?? `Asset ${i}`), { asset, index: i });
+      }
+      for (let i = 0; i < prevAssets.length; i++) {
+        for (let j = i + 1; j < prevAssets.length; j++) {
+          const left = prevAssets[i] || {};
+          const right = prevAssets[j] || {};
+          const row = Array.isArray(prevCorr[i]) ? prevCorr[i] : [];
+          const mirroredRow = Array.isArray(prevCorr[j]) ? prevCorr[j] : [];
+          const raw = row[j] ?? mirroredRow[i];
+          if (raw !== undefined && raw !== null && raw !== '') {
+            prevPairValues.set(dslMakeCorrelationKey(left.name ?? `Asset ${i}`, right.name ?? `Asset ${j}`), String(raw));
+          }
+        }
+      }
+
+      dslPricingConfig.marketAssets = underlyings.map((underlying, idx) => {
+        const byName = prevByName.get(underlying.name);
+        const byIndex = prevAssets[idx] ? { asset: prevAssets[idx], index: idx } : null;
+        const prev = byName || byIndex;
+        return {
+          name: underlying.name,
+          underlyingType: dslNormalizeUnderlyingType(underlying.underlying_type || (prev && prev.asset.underlyingType)),
+          spot: String(prev && prev.asset.spot != null ? prev.asset.spot : '100'),
+          vol: String(prev && prev.asset.vol != null ? prev.asset.vol : '0.2'),
+          dividendYield: String(prev && prev.asset.dividendYield != null ? prev.asset.dividendYield : '0.0'),
+        };
+      });
+
+      dslPricingConfig.correlations = dslPricingConfig.marketAssets.map((asset, i) =>
+        dslPricingConfig.marketAssets.map((other, j) => {
+          if (i === j) return '1.0';
+          const byName = prevPairValues.get(dslMakeCorrelationKey(asset.name, other.name));
+          if (byName !== undefined) return byName;
+          const row = Array.isArray(prevCorr[i]) ? prevCorr[i] : [];
+          const mirroredRow = Array.isArray(prevCorr[j]) ? prevCorr[j] : [];
+          const byIndex = row[j] ?? mirroredRow[i];
+          return byIndex !== undefined && byIndex !== null && byIndex !== '' ? String(byIndex) : '0.0';
+        })
+      );
+
+      if (!Number.isFinite(parseFloat(String(dslPricingConfig.rate ?? '').replace(/_/g, '')))) {
+        dslPricingConfig.rate = '0.05';
+      }
+      dslSyncLegacyMarketLists();
+    }
+
     function dslBuildMarketJson() {
-      const parsedSpots = dslParseNumberList(dslPricingConfig.spots, [100.0]);
-      const parsedVols = dslParseNumberList(dslPricingConfig.vols, [0.2]);
-      const parsedDivs = dslParseNumberList(dslPricingConfig.dividendYields, [0.0]);
-      let compiledProduct = null;
-      try { if (dslCompiledProduct) compiledProduct = JSON.parse(dslCompiledProduct); } catch(e) {}
-      const nAssets = inferDslAssetCount(compiledProduct, parsedSpots, parsedVols, parsedDivs);
-      const spots = dslExpandArray(parsedSpots, nAssets, 100.0);
-      const vols = dslExpandArray(parsedVols, nAssets, 0.2);
-      const dividendYields = dslExpandArray(parsedDivs, nAssets, 0.0);
-      const rate = Number.isFinite(parseFloat(dslPricingConfig.rate)) ? parseFloat(dslPricingConfig.rate) : 0.05;
-      const correlations = [];
-      for (let i = 0; i < nAssets; i++) {
-        const row = [];
-        for (let j = 0; j < nAssets; j++) row.push(i === j ? 1.0 : 0.0);
-        correlations.push(row);
+      if (panels.structmarket && typeof panels.structmarket.captureState === 'function') {
+        const state = panels.structmarket.captureState();
+        if (state) {
+          dslPricingConfig.marketAssets = state.assets;
+          dslPricingConfig.correlations = state.correlations;
+          dslPricingConfig.rate = state.rate;
+          dslSyncLegacyMarketLists();
+        }
       }
-      const assets = [];
-      for (let i = 0; i < nAssets; i++) {
-        assets.push({ type: "Equity", spot: spots[i], vol: vols[i], dividend_yield: dividendYields[i] });
-      }
+      dslNormalizeStructuredMarketState();
+
+      const parseValue = (raw, fallback) => {
+        const cleaned = String(raw ?? '').replace(/_/g, '');
+        const parsed = parseFloat(cleaned);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+
+      const assets = dslPricingConfig.marketAssets.map((asset) => ({
+        type: dslNormalizeUnderlyingType(asset.underlyingType),
+        spot: parseValue(asset.spot, 100.0),
+        vol: parseValue(asset.vol, 0.2),
+        dividend_yield: parseValue(asset.dividendYield, 0.0),
+      }));
+      const correlations = dslPricingConfig.correlations.map((row, i) =>
+        assets.map((_, j) => {
+          if (i === j) return 1.0;
+          return parseValue(row && row[j], 0.0);
+        })
+      );
+      const rate = parseValue(dslPricingConfig.rate, 0.05);
       return JSON.stringify({ assets, correlation: correlations, rate });
     }
 
@@ -4730,11 +4965,10 @@
         this._el.innerHTML =
           '<div class="panel-head"><div class="panel-title">Market</div></div>'
           + '<div class="dsl-market-wrap">'
-          + '<div class="dsl-market-grid">'
-          + '<label>spots</label><input type="text" class="dsl-m-spots" placeholder="100, 100">'
-          + '<label>vols</label><input type="text" class="dsl-m-vols" placeholder="0.2, 0.2">'
+          + '<div class="dsl-market-dynamic"></div>'
+          + '<div class="dsl-market-section">'
+          + '<div class="dsl-market-config-grid">'
           + '<label>rate</label><input type="text" class="dsl-m-rate" placeholder="0.05">'
-          + '<label>dividend yields</label><input type="text" class="dsl-m-divs" placeholder="0, 0">'
           + '<label>num paths</label><input type="number" class="dsl-m-paths" min="1000" max="500000" step="10000">'
           + '<label>num steps</label><input type="number" class="dsl-m-steps" min="10" max="1000" step="10">'
           + '<label>seed</label><input type="number" class="dsl-m-seed" min="0">'
@@ -4742,35 +4976,23 @@
           + '<div class="dsl-market-note"></div>'
           + '</div>';
 
-        this._spotsInput = this._el.querySelector('.dsl-m-spots');
-        this._volsInput = this._el.querySelector('.dsl-m-vols');
+        this._dynamicEl = this._el.querySelector('.dsl-market-dynamic');
         this._rateInput = this._el.querySelector('.dsl-m-rate');
-        this._divsInput = this._el.querySelector('.dsl-m-divs');
         this._pathsInput = this._el.querySelector('.dsl-m-paths');
         this._stepsInput = this._el.querySelector('.dsl-m-steps');
         this._seedInput = this._el.querySelector('.dsl-m-seed');
         this._noteEl = this._el.querySelector('.dsl-market-note');
         panels.structmarket = this;
 
-        // Set initial values
-        this._spotsInput.value = dslPricingConfig.spots;
-        this._volsInput.value = dslPricingConfig.vols;
         this._rateInput.value = dslPricingConfig.rate;
-        this._divsInput.value = dslPricingConfig.dividendYields;
         this._pathsInput.value = dslPricingConfig.numPaths;
         this._stepsInput.value = dslPricingConfig.numSteps;
         this._seedInput.value = dslPricingConfig.seed;
 
-        const wireText = (el, key) => {
-          el.addEventListener('input', () => {
-            dslPricingConfig[key] = el.value;
-            dslRunPricing();
-          });
-        };
-        wireText(this._spotsInput, 'spots');
-        wireText(this._volsInput, 'vols');
-        wireText(this._rateInput, 'rate');
-        wireText(this._divsInput, 'dividendYields');
+        this._rateInput.addEventListener('input', () => {
+          dslPricingConfig.rate = this._rateInput.value;
+          dslRunPricing();
+        });
 
         const wireNum = (el, key) => {
           el.addEventListener('change', () => {
@@ -4782,16 +5004,125 @@
         wireNum(this._stepsInput, 'numSteps');
         wireNum(this._seedInput, 'seed');
 
-        this._updateNote();
+        this.refreshFromCompiledProduct();
       }
-      _updateNote() {
-        const parsedSpots = dslParseNumberList(dslPricingConfig.spots, [100.0]);
-        const parsedVols = dslParseNumberList(dslPricingConfig.vols, [0.2]);
-        const parsedDivs = dslParseNumberList(dslPricingConfig.dividendYields, [0.0]);
-        let compiledProduct = null;
-        try { if (dslCompiledProduct) compiledProduct = JSON.parse(dslCompiledProduct); } catch(e) {}
-        const nAssets = inferDslAssetCount(compiledProduct, parsedSpots, parsedVols, parsedDivs);
-        this._noteEl.textContent = `Inferred assets: ${nAssets}`;
+      captureState() {
+        const assetInputs = Array.from(this._el.querySelectorAll('.dsl-market-asset-row'));
+        const corrInputs = Array.from(this._el.querySelectorAll('.dsl-market-corr-table input[data-corr-row]'));
+        const assets = assetInputs.map((row, idx) => ({
+          name: row.dataset.assetName || `Asset ${idx}`,
+          underlyingType: row.dataset.assetType || 'Equity',
+          spot: row.querySelector('[data-field="spot"]')?.value ?? '100',
+          vol: row.querySelector('[data-field="vol"]')?.value ?? '0.2',
+          dividendYield: row.querySelector('[data-field="dividendYield"]')?.value ?? '0.0',
+        }));
+
+        const correlations = assets.map((_, i) => assets.map((__, j) => (i === j ? '1.0' : '0.0')));
+        for (const input of corrInputs) {
+          const row = parseInt(input.dataset.corrRow, 10);
+          const col = parseInt(input.dataset.corrCol, 10);
+          if (!Number.isFinite(row) || !Number.isFinite(col)) continue;
+          if (row === col) correlations[row][col] = '1.0';
+          else correlations[row][col] = input.value;
+        }
+
+        return {
+          assets,
+          correlations,
+          rate: this._rateInput ? this._rateInput.value : dslPricingConfig.rate,
+        };
+      }
+      _syncStateFromDom() {
+        const snapshot = this.captureState();
+        if (!snapshot) return;
+        dslPricingConfig.marketAssets = snapshot.assets;
+        dslPricingConfig.correlations = snapshot.correlations;
+        dslPricingConfig.rate = snapshot.rate;
+        dslSyncLegacyMarketLists();
+      }
+      _renderDynamicContent() {
+        const assets = Array.isArray(dslPricingConfig.marketAssets) ? dslPricingConfig.marketAssets : [];
+        const correlations = Array.isArray(dslPricingConfig.correlations) ? dslPricingConfig.correlations : [];
+
+        const assetRows = assets.map((asset, idx) => `
+          <div class="dsl-market-asset-row" data-asset-name="${esc(asset.name)}" data-asset-type="${esc(asset.underlyingType)}">
+            <div class="dsl-market-asset-name" title="${esc(asset.name)}">${esc(asset.name)}</div>
+            <label class="dsl-market-field">
+              <span>spot</span>
+              <input type="text" data-asset-index="${idx}" data-field="spot" value="${esc(asset.spot)}" placeholder="100">
+            </label>
+            <label class="dsl-market-field">
+              <span>vol</span>
+              <input type="text" data-asset-index="${idx}" data-field="vol" value="${esc(asset.vol)}" placeholder="0.2">
+            </label>
+            <label class="dsl-market-field">
+              <span>${esc(dslCarryLabelForType(asset.underlyingType))}</span>
+              <input type="text" data-asset-index="${idx}" data-field="dividendYield" value="${esc(asset.dividendYield)}" placeholder="0.0">
+            </label>
+          </div>
+        `).join('');
+
+        const corrHead = assets.map((asset) => `<th>${esc(asset.name)}</th>`).join('');
+        const corrBody = assets.map((asset, i) => {
+          const cells = assets.map((_, j) => {
+            const rawValue = i === j ? '1.0' : String(correlations[i] && correlations[i][j] != null ? correlations[i][j] : '0.0');
+            const readonly = i === j ? ' readonly tabindex="-1"' : '';
+            return `<td><input type="text" data-corr-row="${i}" data-corr-col="${j}" value="${esc(rawValue)}"${readonly}></td>`;
+          }).join('');
+          return `<tr><th>${esc(asset.name)}</th>${cells}</tr>`;
+        }).join('');
+
+        this._dynamicEl.innerHTML =
+          '<div class="dsl-market-section">'
+          + '<div class="dsl-market-section-title">Assets</div>'
+          + `<div class="dsl-market-assets">${assetRows}</div>`
+          + '</div>'
+          + '<div class="dsl-market-section">'
+          + '<div class="dsl-market-section-title">Correlations</div>'
+          + '<div class="dsl-market-corr-wrap">'
+          + `<table class="dsl-market-corr-table"><thead><tr><th></th>${corrHead}</tr></thead><tbody>${corrBody}</tbody></table>`
+          + '</div>'
+          + '</div>';
+
+        for (const input of this._dynamicEl.querySelectorAll('.dsl-market-asset-row input[data-field]')) {
+          input.addEventListener('input', () => {
+            this._syncStateFromDom();
+            dslRunPricing();
+          });
+        }
+        for (const input of this._dynamicEl.querySelectorAll('.dsl-market-corr-table input[data-corr-row]')) {
+          if (input.hasAttribute('readonly')) continue;
+          input.addEventListener('input', () => {
+            const row = input.dataset.corrRow;
+            const col = input.dataset.corrCol;
+            const mirror = this._dynamicEl.querySelector(`.dsl-market-corr-table input[data-corr-row="${col}"][data-corr-col="${row}"]`);
+            if (mirror) mirror.value = input.value;
+            this._syncStateFromDom();
+            dslRunPricing();
+          });
+        }
+      }
+      _updateNote(compiledProduct = dslParseCompiledProductObject()) {
+        const underlyings = dslResolveCompiledUnderlyings(compiledProduct);
+        const hasCompiledUnderlyings = !!(
+          compiledProduct
+          && (
+            (Array.isArray(compiledProduct.underlyings) && compiledProduct.underlyings.length)
+            || (compiledProduct.underlyings && typeof compiledProduct.underlyings === 'object' && Object.keys(compiledProduct.underlyings).length)
+            || (Array.isArray(compiledProduct.assets) && compiledProduct.assets.length)
+            || (Number.isFinite(Number(compiledProduct.num_underlyings)) && Number(compiledProduct.num_underlyings) > 0)
+          )
+        );
+        this._noteEl.textContent = hasCompiledUnderlyings
+          ? `${underlyings.length} asset${underlyings.length === 1 ? '' : 's'}: ${underlyings.map((u) => u.name).join(', ')}`
+          : 'Fallback asset row shown until DSL compilation yields underlyings.';
+      }
+      refreshFromCompiledProduct() {
+        this._syncStateFromDom();
+        dslNormalizeStructuredMarketState();
+        this._renderDynamicContent();
+        this._updateNote();
+        if (this._rateInput) this._rateInput.value = dslPricingConfig.rate;
       }
       dispose() { delete panels.structmarket; }
     }
@@ -4836,6 +5167,7 @@
           dslCompiledProduct = null;
         }
         requestAnimationFrame(() => {
+          if (panels.structmarket) panels.structmarket.refreshFromCompiledProduct();
           if (panels.structeditor) panels.structeditor.applyAnalysis(dslLastAnalysis);
           if (dslAutoRun && dslCompiledProduct) dslRunPricing();
         });
