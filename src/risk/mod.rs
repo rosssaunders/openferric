@@ -2,6 +2,8 @@
 //!
 //! This module wires and re-exports:
 //! - `var`: historical/parametric VaR and ES,
+//! - `margin` + `liquidation`: isolated-margin and liquidation analytics for
+//!   Boros-style funding-rate positions,
 //! - `portfolio` + `sensitivities`: position aggregation, finite-difference Greeks, scenario
 //!   explain, and lightweight SIMM/FRTB-style charge aggregation,
 //! - `scenarios`: scenario-definition, market-diff, and stress testing engine with
@@ -13,6 +15,8 @@
 
 pub mod fva;
 pub mod kva;
+pub mod liquidation;
+pub mod margin;
 pub mod mva;
 pub mod portfolio;
 pub mod scenarios;
@@ -25,6 +29,11 @@ pub use fva::{CsaTerms, funding_exposure_profile, fva_from_profile};
 pub use kva::{
     SaCcrAssetClass, kva_from_profile, netting_set_exposure, regulatory_capital, sa_ccr_ead,
 };
+pub use liquidation::{
+    FundingRateModel, LiquidationPosition, LiquidationRisk, LiquidationSimulator, StressScenario,
+    StressTestResult,
+};
+pub use margin::{InherentLeverage, MarginCalculator, MarginParams};
 pub use mva::{SimmMargin, SimmRiskClass, mva_from_profile};
 pub use portfolio::{AggregatedGreeks, Portfolio, Position};
 pub use scenarios::*;
