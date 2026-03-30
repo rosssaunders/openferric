@@ -183,6 +183,64 @@ impl FundingRateCurve {
         (-self.cumulative_index(t)).exp()
     }
 
+    /// Builds a flat funding-rate curve from a constant annualised APR.
+    ///
+    /// This is a convenience constructor for pricing and risk calculations
+    /// that don't require a full historical snapshot series.
+    pub fn flat(apr: f64) -> Self {
+        let per_period = Self::apr_to_per_period_rate(apr);
+        let snapshot = FundingRateSnapshot {
+            venue: "synthetic".to_string(),
+            asset: "flat".to_string(),
+            rate: per_period,
+            timestamp: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+        };
+        Self::new(vec![snapshot])
+    }
+
+    /// Returns a copy with a parallel shift applied to all forward rates (in APR terms).
+    pub fn parallel_shifted(&self, bump_apr: f64) -> Self {
+        let shifted: Vec<FundingRateSnapshot> = self
+            .snapshots
+            .iter()
+            .map(|s| FundingRateSnapshot {
+                venue: s.venue.clone(),
+                asset: s.asset.clone(),
+                rate: s.rate + Self::apr_to_per_period_rate(bump_apr),
+                timestamp: s.timestamp,
+            })
+            .collect();
+        if shifted.is_empty() {
+            return self.clone();
+        }
+        Self::new(shifted)
+    }
+
+    /// Returns a copy with a volatility shift (stub — returns self since
+    /// the snapshot-based curve has no volatility parameter; provided for
+    /// API compatibility with pricing engines).
+    pub fn volatility_shifted(&self, _bump: f64) -> Self {
+        self.clone()
+    }
+
+    /// Expected funding rate for a future interval, in APR terms.
+    ///
+    /// For the snapshot-based curve this returns the interpolated forward rate
+    /// converted to APR. The `as_of` parameter is accepted for API compatibility
+    /// but does not affect the result.
+    pub fn expected_rate(
+        &self,
+        _as_of: DateTime<Utc>,
+        start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> f64 {
+        let t = self
+            .anchor_timestamp
+            .map(|anchor| (start - anchor).num_milliseconds() as f64 / MILLISECONDS_PER_YEAR)
+            .unwrap_or(0.0);
+        Self::per_period_rate_to_apr(self.forward_rate(t.max(0.0)))
+    }
+
     /// Returns rolling stats keyed by the last timestamp in each full window.
     pub fn rolling_stats(&self, window_size: usize) -> Vec<(DateTime<Utc>, FundingRateStats)> {
         if window_size == 0 || self.snapshots.len() < window_size {
