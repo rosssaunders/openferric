@@ -23,6 +23,7 @@ pub mod digital;
 pub mod double_barrier;
 pub mod employee_stock_option;
 pub mod exotic;
+pub mod funding_rate_swap;
 pub mod fx;
 pub mod mbs;
 pub mod power;
@@ -53,6 +54,7 @@ pub use exotic::{
     ChooserOption, CompoundOption, ExoticOption, LookbackFixedOption, LookbackFloatingOption,
     QuantoOption,
 };
+pub use funding_rate_swap::FundingRateSwap;
 pub use fx::FxOption;
 pub use mbs::{ConstantCpr, MbsCashflow, MbsPassThrough, PrepaymentModel, PsaModel};
 pub use power::PowerOption;
@@ -117,6 +119,7 @@ pub enum TradeInstrument {
     CompoundOption(CompoundOption),
     ExoticOption(ExoticOption),
     FxOption(FxOption),
+    FundingRateSwap(FundingRateSwap),
     PowerOption(PowerOption),
     BestOfTwoCallOption(BestOfTwoCallOption),
     WorstOfTwoCallOption(WorstOfTwoCallOption),

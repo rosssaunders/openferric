@@ -63,7 +63,7 @@ gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:wasm-bindgen-futures"]
 jit = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-module", "dep:cranelift-jit"]
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 rand = "0.10"
 rand_distr = "0.6"
 nalgebra = "0.34"
@@ -124,6 +124,9 @@ harness = false
 [[bench]]
 name = "interpolation_bench"
 harness = false
+
+[[example]]
+name = "boros_funding_swap"
 
 [profile.release]
 lto = "fat"
