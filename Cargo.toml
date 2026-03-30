@@ -125,6 +125,9 @@ harness = false
 name = "interpolation_bench"
 harness = false
 
+[[example]]
+name = "boros_funding_swap"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
