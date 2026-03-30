@@ -17,6 +17,7 @@ pub mod basket;
 pub mod bermudan;
 pub mod discrete_div;
 pub mod european;
+pub mod funding_rate_swap;
 pub mod mbs;
 pub mod payoff;
 pub mod range_accrual;
