@@ -15,3 +15,4 @@ crate-type = ["cdylib"]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 openferric_core = { path = "..", package = "openferric" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
+rand = "0.10"

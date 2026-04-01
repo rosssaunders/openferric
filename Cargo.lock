@@ -1592,6 +1592,7 @@ dependencies = [
  "chrono",
  "openferric",
  "pyo3",
+ "rand 0.10.0",
 ]
 
 [[package]]

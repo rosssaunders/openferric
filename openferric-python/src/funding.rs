@@ -3,7 +3,7 @@ use openferric_core::instruments::FundingRateSwap as CoreFundingRateSwap;
 use openferric_core::pricing::funding_rate_swap::{
     FundingRateSwapRisks as CoreFundingRateSwapRisks, funding_rate_swap_dv01 as core_dv01,
     funding_rate_swap_mtm as core_mtm, funding_rate_swap_risks as core_risks,
-    funding_rate_swap_theta as core_theta,
+    funding_rate_swap_theta as core_theta, funding_rate_swap_vega as core_vega,
 };
 use openferric_core::rates::{
     FundingRateCurve as CoreFundingRateCurve, FundingRateSnapshot as CoreFundingRateSnapshot,
@@ -451,6 +451,19 @@ pub fn funding_rate_swap_theta(
     as_of: &str,
 ) -> PyResult<f64> {
     Ok(core_theta(
+        &swap.to_core()?,
+        &curve.inner,
+        parse_datetime(as_of)?,
+    ))
+}
+
+#[pyfunction]
+pub fn funding_rate_swap_vega(
+    swap: &FundingRateSwap,
+    curve: &FundingRateCurve,
+    as_of: &str,
+) -> PyResult<f64> {
+    Ok(core_vega(
         &swap.to_core()?,
         &curve.inner,
         parse_datetime(as_of)?,

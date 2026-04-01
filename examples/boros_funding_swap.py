@@ -1,8 +1,11 @@
-"""Pendle Boros funding-rate swap walkthrough using the Python bindings."""
+"""Pendle Boros funding-rate swap walkthrough using live Binance and Bybit history."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import json
+from urllib.request import Request, urlopen
 
 from openferric import (
     FundingRateCurve,
@@ -22,12 +25,15 @@ from openferric import (
     funding_rate_swap_mtm,
     funding_rate_swap_risks,
     funding_rate_swap_theta,
+    funding_rate_swap_vega,
 )
 
 
 HOURS_PER_YEAR = 8760.0
 BINANCE_WEIGHT = 0.65
 BYBIT_WEIGHT = 0.35
+HTTP_TIMEOUT_SECONDS = 20
+FUNDING_LIMIT = 30
 
 
 @dataclass
@@ -38,52 +44,100 @@ class MarketContext:
     pricing_curve: FundingRateCurve
 
 
-def dt(day: int, hour: int) -> str:
-    return f"2026-03-{day:02d}T{hour:02d}:00:00Z"
-
-
 def hours_to_years(hours: float) -> float:
     return hours / HOURS_PER_YEAR
 
 
-def build_snapshots(venue: str, asset: str, anchor_day: int, rates: list[float]) -> list[FundingRateSnapshot]:
-    snapshots: list[FundingRateSnapshot] = []
-    day = anchor_day
-    hour = 0
-    for rate in rates:
-        snapshots.append(FundingRateSnapshot(venue, asset, rate, dt(day, hour)))
-        hour += 8
-        if hour >= 24:
-            hour -= 24
-            day += 1
-    return snapshots
+def isoformat_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def fetch_json(url: str) -> object:
+    request = Request(url, headers={"User-Agent": "openferric-python-example/0.1"})
+    with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        return json.load(response)
+
+
+def fetch_binance_snapshots(symbol: str = "BTCUSDT", limit: int = FUNDING_LIMIT) -> list[FundingRateSnapshot]:
+    payload = fetch_json(
+        f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit={limit}"
+    )
+    if not isinstance(payload, list) or not payload:
+        raise RuntimeError("Binance funding API returned no rows")
+
+    rows = sorted(payload, key=lambda row: int(row["fundingTime"]))
+    return [
+        FundingRateSnapshot(
+            "Binance",
+            symbol,
+            float(row["fundingRate"]),
+            isoformat_utc(datetime.fromtimestamp(int(row["fundingTime"]) / 1000, tz=timezone.utc)),
+        )
+        for row in rows
+    ]
+
+
+def fetch_bybit_snapshots(symbol: str = "BTCUSDT", limit: int = FUNDING_LIMIT) -> list[FundingRateSnapshot]:
+    payload = fetch_json(
+        f"https://api.bybit.com/v5/market/funding/history?category=linear&symbol={symbol}&limit={limit}"
+    )
+    if not isinstance(payload, dict) or payload.get("retCode") not in (0, "0"):
+        raise RuntimeError(f"Bybit funding API error: {payload}")
+
+    rows = payload.get("result", {}).get("list", [])
+    if not rows:
+        raise RuntimeError("Bybit funding API returned no rows")
+
+    rows = sorted(rows, key=lambda row: int(row["fundingRateTimestamp"]))
+    return [
+        FundingRateSnapshot(
+            "Bybit",
+            symbol,
+            float(row["fundingRate"]),
+            isoformat_utc(
+                datetime.fromtimestamp(int(row["fundingRateTimestamp"]) / 1000, tz=timezone.utc)
+            ),
+        )
+        for row in rows
+    ]
+
+
+def blend_snapshots(
+    binance_snapshots: list[FundingRateSnapshot], bybit_snapshots: list[FundingRateSnapshot]
+) -> list[FundingRateSnapshot]:
+    bybit_by_timestamp = {snapshot.timestamp: snapshot for snapshot in bybit_snapshots}
+    common_timestamps = [
+        snapshot.timestamp
+        for snapshot in binance_snapshots
+        if snapshot.timestamp in bybit_by_timestamp
+    ]
+    if not common_timestamps:
+        raise RuntimeError("Binance and Bybit histories have no common funding timestamps")
+
+    blended: list[FundingRateSnapshot] = []
+    for timestamp in common_timestamps:
+        binance = next(snapshot for snapshot in binance_snapshots if snapshot.timestamp == timestamp)
+        bybit = bybit_by_timestamp[timestamp]
+        blended.append(
+            FundingRateSnapshot(
+                "BorosComposite",
+                binance.asset,
+                (BINANCE_WEIGHT * binance.rate + BYBIT_WEIGHT * bybit.rate)
+                / (BINANCE_WEIGHT + BYBIT_WEIGHT),
+                timestamp,
+            )
+        )
+    return blended
 
 
 def build_reference_market_curves() -> MarketContext:
-    binance_rates = [
-        0.00010, 0.00011, 0.00010, 0.00011, 0.00012, 0.00011, 0.00012, 0.00012, 0.00013, 0.00012,
-        0.00013, 0.00012, 0.00013, 0.00014, 0.00013, 0.00014, 0.00015, 0.00014, 0.00015, 0.00015,
-        0.00016, 0.00015, 0.00016, 0.00017, 0.00016, 0.00017, 0.00018, 0.00017, 0.00016, 0.00017,
-    ]
-    bybit_rates = [
-        max(rate * 0.96 + adj, 0.000095)
-        for rate, adj in zip(
-            binance_rates,
-            [-0.000004, 0.000001, -0.000002, 0.000002, -0.000001, 0.000001] * 5,
-        )
-    ]
-
-    binance_snapshots = build_snapshots("Binance", "BTCUSDT", 18, binance_rates)
-    bybit_snapshots = build_snapshots("Bybit", "BTCUSDT", 18, bybit_rates)
-    blended_snapshots = [
-        FundingRateSnapshot(
-            "BorosComposite",
-            "BTCUSDT",
-            (BINANCE_WEIGHT * b.rate + BYBIT_WEIGHT * y.rate) / (BINANCE_WEIGHT + BYBIT_WEIGHT),
-            b.timestamp,
-        )
-        for b, y in zip(binance_snapshots, bybit_snapshots)
-    ]
+    binance_snapshots = fetch_binance_snapshots()
+    bybit_snapshots = fetch_bybit_snapshots()
+    blended_snapshots = blend_snapshots(binance_snapshots, bybit_snapshots)
 
     binance_curve = FundingRateCurve(binance_snapshots)
     bybit_curve = FundingRateCurve(bybit_snapshots)
@@ -104,16 +158,29 @@ def scenario_label(scenario: StressScenario) -> str:
 
 def main() -> None:
     market = build_reference_market_curves()
-    anchor = market.binance_curve.anchor_timestamp()
-    latest_snapshot = market.binance_curve.snapshots()[-1]
-    latest_apr = FundingRateCurve.per_period_rate_to_apr(latest_snapshot.rate)
-    rolling = market.binance_curve.rolling_stats(9)
-    overall = FundingRateStats.from_rates([snapshot.rate for snapshot in market.binance_curve.snapshots()])
+    latest_snapshot = market.pricing_curve.snapshots()[-1]
+    latest_timestamp = parse_utc(latest_snapshot.timestamp)
+    entry_timestamp = market.pricing_curve.snapshots()[-8].timestamp
+    maturity_timestamp = isoformat_utc(latest_timestamp + timedelta(hours=32))
+    as_of = latest_snapshot.timestamp
+
+    rolling_window = max(2, min(9, len(market.binance_curve.snapshots())))
+    rolling = market.binance_curve.rolling_stats(rolling_window)
+    overall = FundingRateStats.from_rates(
+        [snapshot.rate for snapshot in market.binance_curve.snapshots()]
+    )
 
     print("\nPendle Boros Funding Rate Swap Reference Example\n")
-    print(f"Anchor UTC: {anchor}")
-    print(f"Latest Binance funding: {latest_apr:.4%} APR")
-    print(f"Seven-day composite APR: {FundingRateCurve.per_period_rate_to_apr(market.composite_curve.forward_rate(7 / 365)):.4%}")
+    print(f"Anchor UTC: {market.binance_curve.anchor_timestamp()}")
+    print(
+        f"Latest composite funding: "
+        f"{FundingRateCurve.per_period_rate_to_apr(latest_snapshot.rate):.4%} APR "
+        f"at {latest_snapshot.timestamp}"
+    )
+    print(
+        "Seven-day composite APR:",
+        f"{FundingRateCurve.per_period_rate_to_apr(market.composite_curve.forward_rate(7 / 365)):.4%}",
+    )
     print(
         "Overall Binance per-8h stats:",
         f"mean={overall.mean:.6f}",
@@ -131,13 +198,12 @@ def main() -> None:
     swap = FundingRateSwap(
         5_000_000.0,
         0.10,
-        "2026-03-24T03:00:00Z",
-        "2026-03-29T00:00:00Z",
+        entry_timestamp,
+        maturity_timestamp,
         "Boros blended index",
         "BTCUSDT",
     )
     swap.validate()
-    as_of = "2026-03-27T00:00:00Z"
 
     fixing_lookup = {
         snapshot.timestamp: FundingRateCurve.per_period_rate_to_apr(snapshot.rate)
@@ -154,15 +220,18 @@ def main() -> None:
     risks = funding_rate_swap_risks(swap, market.pricing_curve, as_of)
 
     print("\nFunding-rate swap pricing")
-    print(f"Realized PnL: {realized_pnl:,.2f}")
+    print(f"Swap entry:    {entry_timestamp}")
+    print(f"As of:         {as_of}")
+    print(f"Maturity:      {maturity_timestamp}")
+    print(f"Realized PnL:  {realized_pnl:,.2f}")
     print(f"Forward MTM:   {mtm:,.2f}")
     print(f"DV01:          {funding_rate_swap_dv01(swap, market.pricing_curve, as_of):,.4f}")
+    print(f"Vega:          {funding_rate_swap_vega(swap, market.pricing_curve, as_of):,.4f}")
     print(f"Theta:         {funding_rate_swap_theta(swap, market.pricing_curve, as_of):,.4f}")
     print(f"Risk report:   {risks.to_dict()}")
 
-    current_rate = market.pricing_curve.expected_rate(
-        as_of, as_of, "2026-03-27T08:00:00Z"
-    )
+    next_settlement = isoformat_utc(latest_timestamp + timedelta(hours=8))
+    current_rate = market.pricing_curve.expected_rate(as_of, as_of, next_settlement)
     margin_params = MarginParams(0.18, 0.12, 0.20, hours_to_years(30 * 24), 0.0001)
     initial_margin = MarginCalculator.initial_margin(swap.notional, margin_params)
     maintenance_margin = MarginCalculator.maintenance_margin(swap.notional, margin_params)
@@ -193,7 +262,11 @@ def main() -> None:
         90,
         7,
     )
-    scenarios = [StressScenario.baseline(), *StressScenario.cascade_suite(), *StressScenario.mean_shift_suite(0.03)]
+    scenarios = [
+        StressScenario.baseline(),
+        *StressScenario.cascade_suite(),
+        *StressScenario.mean_shift_suite(0.03),
+    ]
 
     print("\nMonte Carlo liquidation")
     for result in simulator.run_stress_scenarios(scenarios):
