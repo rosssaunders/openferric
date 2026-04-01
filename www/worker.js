@@ -220,6 +220,209 @@ function packSliceArrays(slices) {
 }
 
 const pFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
+const BOROS_BINANCE_WEIGHT = 0.65;
+const BOROS_BYBIT_WEIGHT = 0.35;
+
+function finiteNumber(value, fallback = NaN) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function normalizeBorosSnapshots(rows, venue, asset) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => ({
+      venue,
+      asset: row.asset || asset,
+      rate: finiteNumber(row.rate),
+      timestamp_ms: finiteNumber(row.timestamp_ms),
+    }))
+    .filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
+    .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+}
+
+function blendBorosSnapshots(binanceSnapshots, bybitSnapshots) {
+  const bybitByTs = new Map(bybitSnapshots.map((snapshot) => [snapshot.timestamp_ms, snapshot]));
+  const blended = [];
+  for (const binance of binanceSnapshots) {
+    const bybit = bybitByTs.get(binance.timestamp_ms);
+    if (!bybit) continue;
+    blended.push({
+      venue: 'BorosComposite',
+      asset: binance.asset,
+      rate: (
+        BOROS_BINANCE_WEIGHT * binance.rate +
+        BOROS_BYBIT_WEIGHT * bybit.rate
+      ) / (BOROS_BINANCE_WEIGHT + BOROS_BYBIT_WEIGHT),
+      timestamp_ms: binance.timestamp_ms,
+    });
+  }
+  return blended.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+}
+
+function buildBorosChartSeries(binanceCurve, bybitCurve, compositeCurve, pricingCurve) {
+  const anchorMs = pricingCurve.anchorTimestampMs();
+  const nodes = pricingCurve.nodesFlat();
+  const x = [];
+  const binanceApr = [];
+  const bybitApr = [];
+  const compositeApr = [];
+  const labels = [];
+
+  for (let i = 0; i + 1 < nodes.length; i += 2) {
+    const t = nodes[i];
+    const ts = wasm.years_to_timestamp_ms(anchorMs, t);
+    x.push(ts);
+    labels.push(Math.max(0, (ts - anchorMs) / (24 * 60 * 60 * 1000)));
+    binanceApr.push(binanceCurve.forwardApr(t) * 100);
+    bybitApr.push(bybitCurve.forwardApr(t) * 100);
+    compositeApr.push(compositeCurve.forwardApr(t) * 100);
+  }
+
+  return { x, labels, binanceApr, bybitApr, compositeApr };
+}
+
+function computeBorosResult(payload) {
+  const market = payload?.market || {};
+  const pricer = payload?.pricer || {};
+  const margin = payload?.margin || {};
+
+  const binanceSnapshots = normalizeBorosSnapshots(market.binanceSnapshots, 'Binance', 'BTCUSDT');
+  const bybitSnapshots = normalizeBorosSnapshots(market.bybitSnapshots, 'Bybit', 'BTCUSDT');
+  if (binanceSnapshots.length < 2 || bybitSnapshots.length < 2) {
+    return { error: 'funding history unavailable' };
+  }
+
+  const blendedSnapshots = blendBorosSnapshots(binanceSnapshots, bybitSnapshots);
+  if (blendedSnapshots.length < 2) {
+    return { error: 'Binance and Bybit histories have no common funding timestamps' };
+  }
+
+  const binanceCurve = wasm.FundingRateCurve.fromJson(JSON.stringify(binanceSnapshots));
+  const bybitCurve = wasm.FundingRateCurve.fromJson(JSON.stringify(bybitSnapshots));
+  const compositeCurve = wasm.MultiVenueFundingCurve.fromJson(JSON.stringify([
+    { weight: BOROS_BINANCE_WEIGHT, snapshots: binanceSnapshots },
+    { weight: BOROS_BYBIT_WEIGHT, snapshots: bybitSnapshots },
+  ]));
+  const pricingCurve = wasm.FundingRateCurve.fromJson(JSON.stringify(blendedSnapshots));
+
+  const chart = buildBorosChartSeries(binanceCurve, bybitCurve, compositeCurve, pricingCurve);
+  const latestSnapshot = blendedSnapshots[blendedSnapshots.length - 1];
+  const asOfMs = latestSnapshot.timestamp_ms;
+  const latestT = (asOfMs - pricingCurve.anchorTimestampMs()) / (365 * 24 * 60 * 60 * 1000);
+  const currentRateApr = compositeCurve.forwardApr(latestT);
+
+  const fixedRateApr = finiteNumber(pricer.fixedRateApr, 0.12);
+  const notional = finiteNumber(pricer.notional, 5000000);
+  const entryTimeMs = finiteNumber(pricer.entryTimeMs, asOfMs);
+  const maturityTimeMs = finiteNumber(pricer.maturityTimeMs, asOfMs + 30 * 24 * 60 * 60 * 1000);
+
+  const swap = new wasm.FundingRateSwap(
+    notional,
+    fixedRateApr,
+    entryTimeMs,
+    maturityTimeMs,
+    'Boros Composite',
+    'BTCUSDT'
+  );
+  swap.settlement_interval_hours = 8;
+
+  const risks = wasm.funding_rate_swap_risks(swap, pricingCurve, asOfMs);
+
+  const timeToMaturityYears = Math.max(
+    wasm.FundingRateCurve.settlementIntervalYears(),
+    (maturityTimeMs - asOfMs) / (365 * 24 * 60 * 60 * 1000)
+  );
+  const marginParams = new wasm.MarginParams(0.18, 0.12, 0.20, timeToMaturityYears, 0.0001);
+
+  const positionSize = finiteNumber(margin.positionSize, -Math.abs(notional));
+  const entryRateApr = finiteNumber(margin.entryRateApr, currentRateApr);
+  const collateral = Math.max(1, finiteNumber(margin.collateral, Math.abs(notional) * 0.12));
+  const unrealizedPnl = positionSize * (entryRateApr - currentRateApr);
+
+  const initialMargin = wasm.MarginCalculator.initialMargin(Math.abs(positionSize), marginParams);
+  const maintenanceMargin = wasm.MarginCalculator.maintenanceMargin(Math.abs(positionSize), marginParams);
+  const healthRatio = wasm.MarginCalculator.healthRatio(
+    collateral,
+    Math.abs(positionSize),
+    unrealizedPnl,
+    marginParams
+  );
+  const liquidationRate = wasm.MarginCalculator.liquidationRate(
+    entryRateApr,
+    collateral,
+    positionSize,
+    marginParams
+  );
+  const leverage = wasm.InherentLeverage.leverage(Math.abs(positionSize), collateral);
+
+  const liquidationPosition = new wasm.LiquidationPosition(
+    positionSize,
+    entryRateApr,
+    collateral,
+    marginParams
+  );
+  const model = wasm.FundingRateModel.vasicek(8.0, currentRateApr, 0.06);
+  const simulator = new wasm.LiquidationSimulator(
+    liquidationPosition,
+    model,
+    currentRateApr,
+    256,
+    90,
+    42
+  );
+  const baselineRisk = simulator.simulate();
+  const stressRows = [
+    { label: 'Baseline', risk: baselineRisk },
+    { label: 'Cascade x2', risk: simulator.simulateStress(wasm.StressScenario.liquidationCascade(2.0)) },
+    { label: 'Cascade x3', risk: simulator.simulateStress(wasm.StressScenario.liquidationCascade(3.0)) },
+    { label: 'Mean shift +3%', risk: simulator.simulateStress(wasm.StressScenario.meanShift(0.03)) },
+    { label: 'Mean shift -3%', risk: simulator.simulateStress(wasm.StressScenario.meanShift(-0.03)) },
+  ].map((row) => ({
+    label: row.label,
+    probLiquidation: row.risk.prob_liquidation,
+    expectedTimeYears: row.risk.expected_time_to_liquidation,
+    worstCaseRate: row.risk.worst_case_funding_rate,
+  }));
+
+  return {
+    chart,
+    marketSummary: {
+      latestTimestampMs: asOfMs,
+      currentRateApr,
+      latestBinanceApr: binanceCurve.forwardApr(latestT),
+      latestBybitApr: bybitCurve.forwardApr(latestT),
+    },
+    pricer: {
+      notional,
+      fixedRateApr,
+      entryTimeMs,
+      maturityTimeMs,
+      mtm: risks.mtm,
+      dv01: risks.dv01,
+      theta: risks.theta,
+      vega: risks.vega,
+    },
+    margin: {
+      positionSize,
+      entryRateApr,
+      collateral,
+      initialMargin,
+      maintenanceMargin,
+      healthRatio,
+      liquidationRate,
+      leverage,
+      currentRateApr,
+      unrealizedPnl,
+    },
+    liquidation: {
+      probLiquidation: baselineRisk.prob_liquidation,
+      expectedTimeYears: baselineRisk.expected_time_to_liquidation,
+      worstCaseRate: baselineRisk.worst_case_funding_rate,
+      stressRows,
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 //  Unpack calibrate_slice_wasm result into JS slice object
@@ -1649,6 +1852,17 @@ self.onmessage = function(e) {
     if (!wasmReady) return;
     const result = computePricerResult(payload || {});
     self.postMessage({ type: 'pricer-result', payload: result });
+    return;
+  }
+
+  if (type === 'boros-compute') {
+    if (!wasmReady) return;
+    try {
+      const result = computeBorosResult(payload || {});
+      self.postMessage({ type: 'boros-result', payload: result });
+    } catch (e) {
+      self.postMessage({ type: 'boros-result', payload: { error: e.message || String(e) } });
+    }
     return;
   }
 

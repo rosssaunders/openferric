@@ -1599,6 +1599,7 @@ dependencies = [
 name = "openferric-wasm"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "getrandom 0.2.17",
  "getrandom 0.4.2",
  "js-sys",
