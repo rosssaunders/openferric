@@ -1589,8 +1589,10 @@ dependencies = [
 name = "openferric-python"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "openferric",
  "pyo3",
+ "rand 0.10.0",
 ]
 
 [[package]]
