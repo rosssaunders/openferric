@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 
 mod credit;
 mod fft;
+mod funding;
 mod helpers;
 mod pricing;
 mod rates;
@@ -36,6 +37,26 @@ pub fn openferric(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(risk::py_sa_ccr_ead, module)?)?;
     module.add_function(wrap_pyfunction!(risk::py_historical_var, module)?)?;
     module.add_function(wrap_pyfunction!(risk::py_historical_es, module)?)?;
+    module.add_function(wrap_pyfunction!(funding::funding_rate_swap_mtm, module)?)?;
+    module.add_function(wrap_pyfunction!(funding::funding_rate_swap_dv01, module)?)?;
+    module.add_function(wrap_pyfunction!(funding::funding_rate_swap_theta, module)?)?;
+    module.add_function(wrap_pyfunction!(funding::funding_rate_swap_risks, module)?)?;
     module.add_function(wrap_pyfunction!(vol::py_svi_vol, module)?)?;
+    module.add_class::<funding::FundingRateSnapshot>()?;
+    module.add_class::<funding::FundingRateCurve>()?;
+    module.add_class::<funding::FundingRateStats>()?;
+    module.add_class::<funding::MultiVenueFundingCurve>()?;
+    module.add_class::<funding::FundingRateSwap>()?;
+    module.add_class::<funding::FundingRateSwapRisks>()?;
+    module.add_class::<risk::MarginParams>()?;
+    module.add_class::<risk::MarginCalculator>()?;
+    module.add_class::<risk::InherentLeverage>()?;
+    module.add_class::<risk::Vasicek>()?;
+    module.add_class::<risk::FundingRateModel>()?;
+    module.add_class::<risk::LiquidationPosition>()?;
+    module.add_class::<risk::LiquidationSimulator>()?;
+    module.add_class::<risk::LiquidationRisk>()?;
+    module.add_class::<risk::StressTestResult>()?;
+    module.add_class::<risk::StressScenario>()?;
     Ok(())
 }

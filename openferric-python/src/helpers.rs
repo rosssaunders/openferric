@@ -1,5 +1,9 @@
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use openferric_core::core::{BarrierDirection, BarrierStyle, OptionType};
 use openferric_core::market::Market;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use std::panic::{self, UnwindSafe};
 
 pub(crate) fn parse_option_type(value: &str) -> Option<OptionType> {
     match value.to_ascii_lowercase().as_str() {
@@ -104,4 +108,46 @@ pub(crate) fn option_price_from_call(
             call_price - spot * (-div_yield * expiry).exp() + strike * (-rate * expiry).exp()
         }
     }
+}
+
+pub(crate) fn parse_datetime(value: &str) -> PyResult<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    for format in [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(value, format) {
+            return Ok(DateTime::from_naive_utc_and_offset(naive, Utc));
+        }
+    }
+
+    Err(PyValueError::new_err(format!(
+        "invalid UTC datetime '{value}'; use ISO 8601 like 2026-03-27T00:00:00Z"
+    )))
+}
+
+pub(crate) fn format_datetime(value: DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+pub(crate) fn panic_to_pyerr(payload: Box<dyn std::any::Any + Send>) -> PyErr {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return PyValueError::new_err((*message).to_string());
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return PyValueError::new_err(message.clone());
+    }
+    PyValueError::new_err("operation failed")
+}
+
+pub(crate) fn catch_unwind_py<T, F>(f: F) -> PyResult<T>
+where
+    F: FnOnce() -> T + UnwindSafe,
+{
+    panic::catch_unwind(f).map_err(panic_to_pyerr)
 }
