@@ -1,54 +1,50 @@
 use chrono::{DateTime, Utc};
 use openferric_core::core::{
-    AsianSpec as CoreAsianSpec, Averaging as CoreAveraging, BarrierDirection as CoreBarrierDirection,
-    BarrierSpec as CoreBarrierSpec, BarrierStyle as CoreBarrierStyle,
-    ExerciseStyle as CoreExerciseStyle, OptionType as CoreOptionType,
-    StrikeType as CoreStrikeType,
+    AsianSpec as CoreAsianSpec, Averaging as CoreAveraging,
+    BarrierDirection as CoreBarrierDirection, BarrierSpec as CoreBarrierSpec,
+    BarrierStyle as CoreBarrierStyle, ExerciseStyle as CoreExerciseStyle,
+    OptionType as CoreOptionType, StrikeType as CoreStrikeType,
 };
 use openferric_core::instruments::{
-    AbandonmentOption as CoreAbandonmentOption, AssetOrNothingOption as CoreAssetOrNothingOption,
-    AsianOption as CoreAsianOption, Autocallable as CoreAutocallable,
+    AbandonmentOption as CoreAbandonmentOption, AsianOption as CoreAsianOption,
+    AssetOrNothingOption as CoreAssetOrNothingOption, Autocallable as CoreAutocallable,
     BarrierOption as CoreBarrierOption, BarrierOptionBuilder as CoreBarrierOptionBuilder,
     BasketOption as CoreBasketOption, BasketType as CoreBasketType,
     BermudanOption as CoreBermudanOption, BestOfTwoCallOption as CoreBestOfTwoCallOption,
     CallableRangeAccrualNote as CoreCallableRangeAccrualNote,
-    CallableRateNote as CoreCallableRateNote,
-    CashOrNothingOption as CoreCashOrNothingOption,
+    CallableRateNote as CoreCallableRateNote, CashOrNothingOption as CoreCashOrNothingOption,
     CatastropheBond as CoreCatastropheBond, ChooserOption as CoreChooserOption,
     CliquetOption as CoreCliquetOption, CmsLinkedNote as CoreCmsLinkedNote,
     CommodityForward as CoreCommodityForward, CommodityFutures as CoreCommodityFutures,
-    CommodityOption as CoreCommodityOption,
-    CommoditySpreadOption as CoreCommoditySpreadOption,
+    CommodityOption as CoreCommodityOption, CommoditySpreadOption as CoreCommoditySpreadOption,
     CompoundOption as CoreCompoundOption, ConstantCpr as CoreConstantCpr,
     ConvertibleBond as CoreConvertibleBond, CouponPeriod as CoreCouponPeriod,
     CouponScheduleBuilder as CoreCouponScheduleBuilder, CouponType as CoreCouponType,
-    DegreeDayType as CoreDegreeDayType, DeferInvestmentOption as CoreDeferInvestmentOption,
-    DiscreteCashFlow as CoreDiscreteCashFlow,
-    DoubleBarrierOption as CoreDoubleBarrierOption,
-    DoubleBarrierType as CoreDoubleBarrierType,
-    DualRangeAccrual as CoreDualRangeAccrual, EmployeeStockOption as CoreEmployeeStockOption,
-    ExerciseSchedule as CoreExerciseSchedule, ExoticOption as CoreExoticOption,
-    ExpandOption as CoreExpandOption, ForwardStartOption as CoreForwardStartOption,
-    FuturesOption as CoreFuturesOption, FxOption as CoreFxOption, GapOption as CoreGapOption,
-    InverseFloaterNote as CoreInverseFloaterNote,
-    LookbackFixedOption as CoreLookbackFixedOption,
+    DeferInvestmentOption as CoreDeferInvestmentOption, DegreeDayType as CoreDegreeDayType,
+    DiscreteCashFlow as CoreDiscreteCashFlow, DoubleBarrierOption as CoreDoubleBarrierOption,
+    DoubleBarrierType as CoreDoubleBarrierType, DualRangeAccrual as CoreDualRangeAccrual,
+    EmployeeStockOption as CoreEmployeeStockOption, ExerciseSchedule as CoreExerciseSchedule,
+    ExoticOption as CoreExoticOption, ExpandOption as CoreExpandOption,
+    ForwardStartOption as CoreForwardStartOption, FuturesOption as CoreFuturesOption,
+    FxOption as CoreFxOption, GapOption as CoreGapOption,
+    InverseFloaterNote as CoreInverseFloaterNote, LookbackFixedOption as CoreLookbackFixedOption,
     LookbackFloatingOption as CoreLookbackFloatingOption, MbsCashflow as CoreMbsCashflow,
     MbsPassThrough as CoreMbsPassThrough,
     OutperformanceBasketOption as CoreOutperformanceBasketOption,
-    PhoenixAutocallable as CorePhoenixAutocallable, PowerOption as CorePowerOption,
-    PrepaymentModel as CorePrepaymentModel, PsaModel as CorePsaModel,
-    QuantoBasketOption as CoreQuantoBasketOption, QuantoOption as CoreQuantoOption,
-    RangeAccrual as CoreRangeAccrual, RealOptionBinomialSpec as CoreRealOptionBinomialSpec,
+    PhoenixAutocallable as CorePhoenixAutocallable, Portfolio as CorePortfolio,
+    PowerOption as CorePowerOption, PrepaymentModel as CorePrepaymentModel,
+    PsaModel as CorePsaModel, QuantoBasketOption as CoreQuantoBasketOption,
+    QuantoOption as CoreQuantoOption, RangeAccrual as CoreRangeAccrual,
+    RealOptionBinomialSpec as CoreRealOptionBinomialSpec,
     RealOptionInstrument as CoreRealOptionInstrument, SnowballNote as CoreSnowballNote,
     SpreadOption as CoreSpreadOption, StructuredCoupon as CoreStructuredCoupon,
     SwingOption as CoreSwingOption, Tarf as CoreTarf, TarfType as CoreTarfType,
-    TargetRedemptionNote as CoreTargetRedemptionNote,
-    Trade as CoreTrade, TradeInstrument as CoreTradeInstrument,
-    TradeMetadata as CoreTradeMetadata, VarianceOptionQuote as CoreVarianceOptionQuote,
-    VarianceSwap as CoreVarianceSwap, VanillaOption as CoreVanillaOption,
+    TargetRedemptionNote as CoreTargetRedemptionNote, Trade as CoreTrade,
+    TradeInstrument as CoreTradeInstrument, TradeMetadata as CoreTradeMetadata,
+    TwoAssetCorrelationOption as CoreTwoAssetCorrelationOption, VanillaOption as CoreVanillaOption,
+    VarianceOptionQuote as CoreVarianceOptionQuote, VarianceSwap as CoreVarianceSwap,
     VolatilitySwap as CoreVolatilitySwap, WeatherOption as CoreWeatherOption,
     WeatherSwap as CoreWeatherSwap, WorstOfTwoCallOption as CoreWorstOfTwoCallOption,
-    TwoAssetCorrelationOption as CoreTwoAssetCorrelationOption, Portfolio as CorePortfolio,
 };
 use openferric_core::models::{
     HullWhite as CoreHullWhite, TwoFactorCommodityProcess as CoreTwoFactorCommodityProcess,
@@ -89,7 +85,9 @@ fn parse_averaging(value: &str) -> PyResult<CoreAveraging> {
     match value.to_ascii_lowercase().as_str() {
         "arithmetic" => Ok(CoreAveraging::Arithmetic),
         "geometric" => Ok(CoreAveraging::Geometric),
-        _ => Err(invalid_input("averaging must be 'arithmetic' or 'geometric'")),
+        _ => Err(invalid_input(
+            "averaging must be 'arithmetic' or 'geometric'",
+        )),
     }
 }
 
@@ -171,7 +169,9 @@ fn parse_basket_type(value: &str) -> PyResult<CoreBasketType> {
         "average" => Ok(CoreBasketType::Average),
         "bestof" | "best_of" | "best-of" => Ok(CoreBasketType::BestOf),
         "worstof" | "worst_of" | "worst-of" => Ok(CoreBasketType::WorstOf),
-        _ => Err(invalid_input("basket_type must be 'average', 'best_of', or 'worst_of'")),
+        _ => Err(invalid_input(
+            "basket_type must be 'average', 'best_of', or 'worst_of'",
+        )),
     }
 }
 
@@ -187,7 +187,9 @@ fn parse_double_barrier_type(value: &str) -> PyResult<CoreDoubleBarrierType> {
     match value.to_ascii_lowercase().as_str() {
         "knockout" | "knock_out" | "knock-out" => Ok(CoreDoubleBarrierType::KnockOut),
         "knockin" | "knock_in" | "knock-in" => Ok(CoreDoubleBarrierType::KnockIn),
-        _ => Err(invalid_input("double barrier type must be 'knock_out' or 'knock_in'")),
+        _ => Err(invalid_input(
+            "double barrier type must be 'knock_out' or 'knock_in'",
+        )),
     }
 }
 
@@ -202,7 +204,9 @@ fn parse_tarf_type(value: &str) -> PyResult<CoreTarfType> {
     match value.to_ascii_lowercase().as_str() {
         "standard" => Ok(CoreTarfType::Standard),
         "decumulator" => Ok(CoreTarfType::Decumulator),
-        _ => Err(invalid_input("tarf_type must be 'standard' or 'decumulator'")),
+        _ => Err(invalid_input(
+            "tarf_type must be 'standard' or 'decumulator'",
+        )),
     }
 }
 
@@ -263,7 +267,12 @@ macro_rules! simple_enum_wrapper {
     };
 }
 
-simple_enum_wrapper!(BasketType, CoreBasketType, parse_basket_type, format_basket_type);
+simple_enum_wrapper!(
+    BasketType,
+    CoreBasketType,
+    parse_basket_type,
+    format_basket_type
+);
 simple_enum_wrapper!(
     DoubleBarrierType,
     CoreDoubleBarrierType,
@@ -536,7 +545,8 @@ impl HullWhite {
     }
 
     fn bond_price(&self, t: f64, maturity: f64, short_rate: f64, curve: &YieldCurve) -> f64 {
-        self.to_core().bond_price(t, maturity, short_rate, &curve.inner)
+        self.to_core()
+            .bond_price(t, maturity, short_rate, &curve.inner)
     }
 
     fn __repr__(&self) -> String {
@@ -653,7 +663,12 @@ impl VanillaOption {
 #[pymethods]
 impl VanillaOption {
     #[new]
-    fn new(option_type: String, strike: f64, expiry: f64, exercise: ExerciseStyle) -> PyResult<Self> {
+    fn new(
+        option_type: String,
+        strike: f64,
+        expiry: f64,
+        exercise: ExerciseStyle,
+    ) -> PyResult<Self> {
         let out = Self {
             option_type,
             strike,
@@ -1322,7 +1337,14 @@ impl FuturesOption {
 #[pymethods]
 impl FuturesOption {
     #[new]
-    fn new(forward: f64, strike: f64, vol: f64, r: f64, t: f64, option_type: String) -> PyResult<Self> {
+    fn new(
+        forward: f64,
+        strike: f64,
+        vol: f64,
+        r: f64,
+        t: f64,
+        option_type: String,
+    ) -> PyResult<Self> {
         let out = Self {
             forward,
             strike,
@@ -1451,7 +1473,10 @@ impl ForwardStartOption {
     }
 
     fn price_rubinstein(&self) -> PyResult<f64> {
-        self.clone().to_core()?.price_rubinstein().map_err(map_err_string)
+        self.clone()
+            .to_core()?
+            .price_rubinstein()
+            .map_err(map_err_string)
     }
 }
 
@@ -1625,7 +1650,10 @@ impl CommodityForward {
     }
 
     fn present_value(&self) -> PyResult<f64> {
-        self.clone().to_core().present_value().map_err(map_err_string)
+        self.clone()
+            .to_core()
+            .present_value()
+            .map_err(map_err_string)
     }
 
     fn mark_to_market(&self, market_forward: f64) -> PyResult<f64> {
@@ -1675,7 +1703,10 @@ impl CommodityFutures {
     }
 
     fn value(&self, mark_price: f64) -> PyResult<f64> {
-        self.clone().to_core().value(mark_price).map_err(map_err_string)
+        self.clone()
+            .to_core()
+            .value(mark_price)
+            .map_err(map_err_string)
     }
 }
 
@@ -3297,7 +3328,10 @@ impl WeatherOption {
     }
 
     fn payoff(&self, realized_index: f64) -> PyResult<f64> {
-        self.clone().to_core()?.payoff(realized_index).map_err(map_err_string)
+        self.clone()
+            .to_core()?
+            .payoff(realized_index)
+            .map_err(map_err_string)
     }
 }
 
@@ -3711,7 +3745,10 @@ impl Portfolio {
 
     #[getter]
     fn trades(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
-        self.trades.iter().map(|trade| trade.clone_ref(py)).collect()
+        self.trades
+            .iter()
+            .map(|trade| trade.clone_ref(py))
+            .collect()
     }
 
     #[setter]
@@ -3829,7 +3866,10 @@ impl WeatherSwap {
     }
 
     fn payoff(&self, realized_index: f64) -> PyResult<f64> {
-        self.clone().to_core()?.payoff(realized_index).map_err(map_err_string)
+        self.clone()
+            .to_core()?
+            .payoff(realized_index)
+            .map_err(map_err_string)
     }
 
     fn price_from_expected_index(&self, expected_index: f64) -> PyResult<f64> {
@@ -3931,11 +3971,16 @@ impl CommodityOption {
     }
 
     fn as_futures_option(&self) -> PyResult<FuturesOption> {
-        Ok(FuturesOption::from_core(self.clone().to_core()?.as_futures_option()))
+        Ok(FuturesOption::from_core(
+            self.clone().to_core()?.as_futures_option(),
+        ))
     }
 
     fn price_black76(&self) -> PyResult<f64> {
-        self.clone().to_core()?.price_black76().map_err(map_err_string)
+        self.clone()
+            .to_core()?
+            .price_black76()
+            .map_err(map_err_string)
     }
 }
 

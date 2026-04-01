@@ -482,3 +482,18 @@ pub fn funding_rate_swap_risks(
         parse_datetime(as_of)?,
     )))
 }
+
+pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_mtm, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_dv01, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_theta, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_vega, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_risks, module)?)?;
+    module.add_class::<FundingRateSnapshot>()?;
+    module.add_class::<FundingRateStats>()?;
+    module.add_class::<FundingRateCurve>()?;
+    module.add_class::<MultiVenueFundingCurve>()?;
+    module.add_class::<FundingRateSwap>()?;
+    module.add_class::<FundingRateSwapRisks>()?;
+    Ok(())
+}

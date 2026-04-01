@@ -3,8 +3,8 @@ use openferric_core::instruments::VanillaOption;
 use openferric_core::models::commodity::{
     CommodityForwardCurve as CoreCommodityForwardCurve,
     CommoditySeasonalityModel as CoreCommoditySeasonalityModel,
-    CommodityStorageContract as CoreCommodityStorageContract, CurveStructure,
-    ForwardInterpolation, FuturesQuote as CoreFuturesQuote, SchwartzOneFactor as CoreSchwartzOneFactor,
+    CommodityStorageContract as CoreCommodityStorageContract, CurveStructure, ForwardInterpolation,
+    FuturesQuote as CoreFuturesQuote, SchwartzOneFactor as CoreSchwartzOneFactor,
     SchwartzSmithTwoFactor as CoreSchwartzSmithTwoFactor, SeasonalityMode,
     StorageLsmConfig as CoreStorageLsmConfig, StorageValuation as CoreStorageValuation,
     TwoFactorCommodityProcess as CoreTwoFactorCommodityProcess,
@@ -745,7 +745,9 @@ impl SchwartzOneFactor {
     }
 
     fn step_log_exact(&self, log_spot: f64, dt: f64, z: f64) -> PyResult<f64> {
-        self.to_core().step_log_exact(log_spot, dt, z).map_err(string_err)
+        self.to_core()
+            .step_log_exact(log_spot, dt, z)
+            .map_err(string_err)
     }
 
     fn step_exact(&self, spot: f64, dt: f64, z: f64) -> PyResult<f64> {
@@ -823,7 +825,9 @@ impl SchwartzSmithTwoFactor {
     }
 
     fn step_exact(&self, chi: f64, xi: f64, dt: f64, z1: f64, z2: f64) -> PyResult<(f64, f64)> {
-        self.to_core().step_exact(chi, xi, dt, z1, z2).map_err(string_err)
+        self.to_core()
+            .step_exact(chi, xi, dt, z1, z2)
+            .map_err(string_err)
     }
 
     #[staticmethod]
@@ -1393,10 +1397,11 @@ pub fn hw_atm_swaption_vol_approx_py(a: f64, sigma: f64, expiry: f64, tenor: f64
 }
 
 #[pyfunction]
-pub fn calibrate_hull_white_params_py(
-    quotes: Vec<AtmSwaptionVolQuote>,
-) -> Option<(f64, f64)> {
-    let quotes: Vec<_> = quotes.into_iter().map(AtmSwaptionVolQuote::to_tuple).collect();
+pub fn calibrate_hull_white_params_py(quotes: Vec<AtmSwaptionVolQuote>) -> Option<(f64, f64)> {
+    let quotes: Vec<_> = quotes
+        .into_iter()
+        .map(AtmSwaptionVolQuote::to_tuple)
+        .collect();
     calibrate_hull_white_params(&quotes)
 }
 
@@ -1518,8 +1523,14 @@ pub fn calibrate_leverage_surface_py(
     let market = build_market(spot, rate, dividend_yield, vol)
         .ok_or_else(|| PyValueError::new_err("failed to build market"))?;
     Ok(LeverageSurface {
-        inner: calibrate_leverage_surface(&market, params.to_core(), maturity, n_particles, n_steps)
-            .map_err(string_err)?,
+        inner: calibrate_leverage_surface(
+            &market,
+            params.to_core(),
+            maturity,
+            n_particles,
+            n_steps,
+        )
+        .map_err(string_err)?,
     })
 }
 
@@ -1619,8 +1630,13 @@ pub fn intrinsic_storage_value_py(
     risk_free_rate: f64,
     inventory_grid: usize,
 ) -> PyResult<f64> {
-    intrinsic_storage_value(&contract.to_core(), &curve.inner, risk_free_rate, inventory_grid)
-        .map_err(string_err)
+    intrinsic_storage_value(
+        &contract.to_core(),
+        &curve.inner,
+        risk_free_rate,
+        inventory_grid,
+    )
+    .map_err(string_err)
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1633,13 +1649,22 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fbm_path_hybrid_py, module)?)?;
     module.add_function(wrap_pyfunction!(rbergomi_european_mc_py, module)?)?;
     module.add_function(wrap_pyfunction!(rbergomi_implied_vol_surface_py, module)?)?;
-    module.add_function(wrap_pyfunction!(nadaraya_watson_conditional_mean_py, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        nadaraya_watson_conditional_mean_py,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(calibrate_leverage_surface_py, module)?)?;
     module.add_function(wrap_pyfunction!(slv_mc_price_py, module)?)?;
     module.add_function(wrap_pyfunction!(slv_mc_price_checked_py, module)?)?;
     module.add_function(wrap_pyfunction!(implied_convenience_yield_py, module)?)?;
-    module.add_function(wrap_pyfunction!(convenience_yield_from_term_structure_py, module)?)?;
-    module.add_function(wrap_pyfunction!(value_storage_intrinsic_extrinsic_py, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        convenience_yield_from_term_structure_py,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        value_storage_intrinsic_extrinsic_py,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(intrinsic_storage_value_py, module)?)?;
 
     module.add_class::<Gbm>()?;

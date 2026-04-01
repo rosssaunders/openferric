@@ -3294,3 +3294,151 @@ pub fn py_strategy_intrinsic_pnl(
         total_cost,
     ))
 }
+
+pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(pyo3::wrap_pyfunction!(py_bs_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_black76_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_bs_greeks, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_barrier_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_barrier_price_closed_form,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_barrier_price_mc, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_american_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_longstaff_schwartz_american_put,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_heston_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_fx_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_digital_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_spread_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_lookback_floating, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_lookback_fixed, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_geometric_asian_fixed_closed_form,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_geometric_asian_discrete_fixed_closed_form,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_arithmetic_asian_price_mc,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_geometric_asian_price_mc, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_price_autocallable, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_autocallable_sensitivities,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_price_phoenix_autocallable,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_phoenix_autocallable_sensitivities,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_price_basket_mc, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_price_basket_mc_with_copula,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_price_basket_mc_with_factor_model,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_price_basket_moment_matching,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_price_outperformance_basket_mc,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_price_quanto_basket_mc, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_stressed_correlation_matrix,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_basket_sensitivities, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_bermudan_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_range_accrual_mc_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_dual_range_accrual_mc_price,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_range_accrual_rate_delta, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_price_option_to_defer, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_price_option_to_expand, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_price_option_to_abandon, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_european_abandonment_put, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_tarf_mc_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_tarf_delta, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_tarf_vega, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_escrowed_dividend_adjusted_spot,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_escrowed_dividend_adjusted_spot_mixed,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_forward_price_discrete_div,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_effective_dividend_yield_discrete,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_european_price_discrete_div,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_european_price_discrete_div_mixed,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_bootstrap_dividend_curve, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_strategy_intrinsic_pnl, module)?)?;
+    module.add_class::<PricingGreeks>()?;
+    module.add_class::<PricingResult>()?;
+    module.add_class::<AsianStrike>()?;
+    module.add_class::<Autocallable>()?;
+    module.add_class::<PhoenixAutocallable>()?;
+    module.add_class::<AutocallableSensitivities>()?;
+    module.add_class::<BasketType>()?;
+    module.add_class::<BasketOption>()?;
+    module.add_class::<OutperformanceBasketOption>()?;
+    module.add_class::<QuantoBasketOption>()?;
+    module.add_class::<BasketCopula>()?;
+    module.add_class::<BasketMomentMatchingMethod>()?;
+    module.add_class::<BasketSensitivities>()?;
+    module.add_class::<FactorCorrelationModel>()?;
+    module.add_class::<CorrelationStressScenario>()?;
+    module.add_class::<RangeAccrual>()?;
+    module.add_class::<DualRangeAccrual>()?;
+    module.add_class::<RangeAccrualResult>()?;
+    module.add_class::<TarfType>()?;
+    module.add_class::<Tarf>()?;
+    module.add_class::<TarfPricingResult>()?;
+    module.add_class::<DiscreteCashFlow>()?;
+    module.add_class::<RealOptionBinomialSpec>()?;
+    module.add_class::<DeferInvestmentOption>()?;
+    module.add_class::<ExpandOption>()?;
+    module.add_class::<AbandonmentOption>()?;
+    module.add_class::<RealOptionDecision>()?;
+    module.add_class::<DecisionTreeNode>()?;
+    module.add_class::<RealOptionValuation>()?;
+    module.add_class::<DividendKind>()?;
+    module.add_class::<DividendEvent>()?;
+    module.add_class::<DividendSchedule>()?;
+    module.add_class::<PutCallParityQuote>()?;
+    module.add_class::<BootstrappedDividendPoint>()?;
+    module.add_class::<DividendCurveBootstrap>()?;
+    Ok(())
+}

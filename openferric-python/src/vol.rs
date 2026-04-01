@@ -1767,3 +1767,84 @@ pub fn py_vix_style_index_from_surface(
 
     Ok(VixStyleIndex::from_core(index))
 }
+
+pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(pyo3::wrap_pyfunction!(py_implied_vol, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_implied_vol_newton, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_lets_be_rational_initial_guess,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_sabr_vol, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_fit_sabr, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_svi_vol, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_svi_jacobian_row, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_calibrate_svi, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_calibrate_svi_weighted, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_eval_iv_pct, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_parse_slice, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_solve_delta_k, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_iv_grid, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_iv_grid_clamped, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_batch_slice_iv, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_slice_fit_diagnostics, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_find_25d_strikes_batch, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_term_structure_batch, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_forward_vol_grid, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_realized_vol, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_log_moneyness_batch, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_log_returns_batch, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_normalized_black, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_implied_vol_jaeckel_normalized,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_implied_vol_jaeckel, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_calibrate_lognormal_mixture,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_sabr_alpha_from_atm_vol, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_sabr_smile_from_atm, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_vanna_volga_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_shift_smile_for_spot_move,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_strike_from_delta_analytic,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_dupire_local_vol, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_vix_style_index_from_surface,
+        module
+    )?)?;
+    module.add_class::<SabrParams>()?;
+    module.add_class::<SviParams>()?;
+    module.add_class::<MarketOptionQuote>()?;
+    module.add_class::<ForwardVariancePoint>()?;
+    module.add_class::<ForwardVarianceCurve>()?;
+    module.add_class::<AtmSkewPoint>()?;
+    module.add_class::<AtmSkewTermStructure>()?;
+    module.add_class::<HestonVolOfVolPoint>()?;
+    module.add_class::<HestonVolOfVolTermStructure>()?;
+    module.add_class::<SabrVolOfVolPoint>()?;
+    module.add_class::<SabrVolOfVolTermStructure>()?;
+    module.add_class::<VixSettings>()?;
+    module.add_class::<VixStyleIndex>()?;
+    module.add_class::<ArbitrageViolation>()?;
+    module.add_class::<LognormalMixture>()?;
+    module.add_class::<SmileDynamics>()?;
+    module.add_class::<SmileSlice>()?;
+    module.add_class::<StickyStrikeSmile>()?;
+    module.add_class::<StickyDeltaSmile>()?;
+    module.add_class::<VannaVolgaQuote>()?;
+    module.add_class::<BuiltVolSurface>()?;
+    module.add_class::<VolSurfaceBuilder>()?;
+    module.add_class::<FenglerSurface>()?;
+    module.add_class::<AndreasenHugeInterpolation>()?;
+    module.add_class::<VolSurface>()?;
+    module.add_class::<DupireLocalVol>()?;
+    Ok(())
+}

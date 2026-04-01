@@ -5328,3 +5328,167 @@ impl HullWhiteWWR {
         })
     }
 }
+
+pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(pyo3::wrap_pyfunction!(py_cva, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_sa_ccr_ead, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_historical_var, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_historical_es, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_delta_normal_var, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_delta_gamma_normal_var, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_normal_expected_shortfall,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_cornish_fisher_var, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_cornish_fisher_var_from_pnl,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_historical_var_from_prices,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_historical_expected_shortfall_from_prices,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_rolling_historical_var_from_prices,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_backtest_historical_var_from_prices,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_funding_exposure_profile, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_fva_from_profile, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_mva_from_profile, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_regulatory_capital, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_kva_from_profile, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_netting_set_exposure, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_parallel_dv01, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_bucket_dv01, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_key_rate_duration, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_gamma_ladder, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_cross_gamma, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_vega_by_expiry_bucket, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_vega_by_strike_expiry_bucket,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_fx_delta, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_commodity_delta, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_jacobian_via_bootstrap, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_map_risk_class, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_to_crif_csv, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_compute_risk_charges, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_pnl_explain, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_scenario_pnl_report, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_risk_contribution_per_trade,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_explained_pnl_components, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_apply_market_shock, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_diff_market_snapshots, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_historical_replay_from_diff,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_run_scenario_batch, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_run_scenario_batch_with_pricer,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_day_over_day_attribution, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        py_day_over_day_attribution_with_pricer,
+        module
+    )?)?;
+    module.add_class::<Greeks>()?;
+    module.add_class::<YieldCurve>()?;
+    module.add_class::<SurvivalCurve>()?;
+    module.add_class::<KupiecBacktestResult>()?;
+    module.add_class::<ChristoffersenBacktestResult>()?;
+    module.add_class::<VarBacktestResult>()?;
+    module.add_class::<SampledVolSurface>()?;
+    module.add_class::<VolSource>()?;
+    module.add_class::<Market>()?;
+    module.add_class::<ForwardCurveSnapshot>()?;
+    module.add_class::<CreditCurveSnapshot>()?;
+    module.add_class::<MarketSnapshot>()?;
+    module.add_class::<MarginParams>()?;
+    module.add_class::<MarginCalculator>()?;
+    module.add_class::<InherentLeverage>()?;
+    module.add_class::<Vasicek>()?;
+    module.add_class::<FundingRateModel>()?;
+    module.add_class::<LiquidationPosition>()?;
+    module.add_class::<StressScenario>()?;
+    module.add_class::<LiquidationRisk>()?;
+    module.add_class::<StressTestResult>()?;
+    module.add_class::<LiquidationSimulator>()?;
+    module.add_class::<XvaCalculator>()?;
+    module.add_class::<CsaTerms>()?;
+    module.add_class::<SimmRiskClass>()?;
+    module.add_class::<SimmMargin>()?;
+    module.add_class::<SaCcrAssetClass>()?;
+    module.add_class::<AggregatedGreeks>()?;
+    module.add_class::<Position>()?;
+    module.add_class::<Portfolio>()?;
+    module.add_class::<WwrResult>()?;
+    module.add_class::<AlphaWWR>()?;
+    module.add_class::<CopulaWWR>()?;
+    module.add_class::<HullWhiteWWR>()?;
+    module.add_class::<BumpSize>()?;
+    module.add_class::<DifferencingScheme>()?;
+    module.add_class::<CurveBumpMode>()?;
+    module.add_class::<CurveBumpConfig>()?;
+    module.add_class::<SurfaceBumpMode>()?;
+    module.add_class::<SurfaceBumpConfig>()?;
+    module.add_class::<SpotBumpConfig>()?;
+    module.add_class::<BucketSensitivity>()?;
+    module.add_class::<KeyRateDurationPoint>()?;
+    module.add_class::<GammaLadderPoint>()?;
+    module.add_class::<VegaExpiryPoint>()?;
+    module.add_class::<VegaStrikeExpiryPoint>()?;
+    module.add_class::<QuoteVolSurface>()?;
+    module.add_class::<ChainRuleJacobian>()?;
+    module.add_class::<RegulatoryRiskClass>()?;
+    module.add_class::<SensitivityMeasure>()?;
+    module.add_class::<SensitivityRecord>()?;
+    module.add_class::<CrifRecord>()?;
+    module.add_class::<RiskClassChargeConfig>()?;
+    module.add_class::<RiskChargeConfig>()?;
+    module.add_class::<ClassRiskCharge>()?;
+    module.add_class::<RiskChargeSummary>()?;
+    module.add_class::<ScenarioShock>()?;
+    module.add_class::<PnlExplain>()?;
+    module.add_class::<ScenarioPnlRow>()?;
+    module.add_class::<TradeRiskContribution>()?;
+    module.add_class::<ScenarioKind>()?;
+    module.add_class::<ShockFactor>()?;
+    module.add_class::<MarketShock>()?;
+    module.add_class::<HistoricalReplayDefinition>()?;
+    module.add_class::<HypotheticalScenarioDefinition>()?;
+    module.add_class::<StressAxis>()?;
+    module.add_class::<ParametricStress2dDefinition>()?;
+    module.add_class::<ReverseStressDefinition>()?;
+    module.add_class::<ScenarioDefinition>()?;
+    module.add_class::<StressGridPoint>()?;
+    module.add_class::<ResolvedScenario>()?;
+    module.add_class::<ScenarioTrade>()?;
+    module.add_class::<ExplainedPnlComponents>()?;
+    module.add_class::<ScenarioTradePnlRow>()?;
+    module.add_class::<ScenarioPortfolioPnlRow>()?;
+    module.add_class::<ScenarioResultTable>()?;
+    module.add_class::<StressHeatmap2d>()?;
+    module.add_class::<ScenarioRunResult>()?;
+    module.add_class::<MarketLevelDiff>()?;
+    module.add_class::<SpotPriceDiff>()?;
+    module.add_class::<YieldCurveDiff>()?;
+    module.add_class::<CreditCurveDiff>()?;
+    module.add_class::<MarketSnapshotDiff>()?;
+    module.add_class::<DayOverDayAttribution>()?;
+    Ok(())
+}

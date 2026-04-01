@@ -226,3 +226,12 @@ pub fn py_nig_fft_price(
     .and_then(|v| v.first().map(|(_, p)| *p))
     .unwrap_or(f64::NAN)
 }
+
+pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(pyo3::wrap_pyfunction!(py_heston_fft_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_heston_fft_prices, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_vg_fft_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_cgmy_fft_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_nig_fft_price, module)?)?;
+    Ok(())
+}

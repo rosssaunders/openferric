@@ -3,7 +3,8 @@ use openferric_core::calibration::{
     CalibrationResult as CoreCalibrationResult, CalibrationWarningFlag, Calibrator,
     ConvergenceInfo as CoreConvergenceInfo, FitQuality as CoreFitQuality,
     HestonCalibrationParams as CoreHestonCalibrationParams,
-    HestonCalibrator as CoreHestonCalibrator, HullWhiteCalibrationParams as CoreHullWhiteCalibrationParams,
+    HestonCalibrator as CoreHestonCalibrator,
+    HullWhiteCalibrationParams as CoreHullWhiteCalibrationParams,
     HullWhiteCalibrator as CoreHullWhiteCalibrator, InstrumentError as CoreInstrumentError,
     OptionVolQuote as CoreOptionVolQuote, ParameterStability as CoreParameterStability,
     SwaptionVolQuote as CoreSwaptionVolQuote, TerminationReason,
@@ -605,7 +606,9 @@ impl CalibrationResult {
     fn hull_white_params(&self) -> Option<HullWhiteCalibrationParams> {
         match self.params {
             CalibrationParamsKind::Heston(_) => None,
-            CalibrationParamsKind::HullWhite(value) => Some(HullWhiteCalibrationParams::from_core(value)),
+            CalibrationParamsKind::HullWhite(value) => {
+                Some(HullWhiteCalibrationParams::from_core(value))
+            }
         }
     }
 }
