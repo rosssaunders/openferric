@@ -279,6 +279,14 @@
       gap: 8px;
       margin-bottom: 8px;
     }
+    .boros-toolbar {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .boros-toggle {
+      display: inline-flex;
+      gap: 4px;
+    }
     .boros-note {
       color: var(--muted);
       font-size: 10px;
@@ -286,7 +294,7 @@
     }
     .boros-summary {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       gap: 6px;
       margin-bottom: 8px;
     }
@@ -309,13 +317,39 @@
       font-size: 13px;
       color: var(--fg);
     }
+    .boros-summary-card .v.spot {
+      color: var(--accent2);
+      font-size: 15px;
+    }
     .boros-table td,
     .boros-table th {
       padding: 4px 0;
+      white-space: nowrap;
     }
     .boros-table td:last-child,
     .boros-table th:last-child {
       text-align: right;
+    }
+    .boros-table-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid rgba(142,161,184,0.15);
+      border-radius: 6px;
+      background: rgba(7,10,15,0.55);
+      padding: 0 4px;
+    }
+    .boros-table-wrap th {
+      position: sticky;
+      top: 0;
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      z-index: 1;
+    }
+    .boros-market-row { cursor: pointer; }
+    .boros-market-row:hover { background: rgba(47,178,255,0.08); }
+    .boros-market-row.selected { background: rgba(47,178,255,0.16); }
+    .boros-chart-note {
+      margin-bottom: 6px;
     }
 
     /* ---- Toolbar ---- */
@@ -1553,27 +1587,44 @@
     // Boros funding dashboard state
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
     const MS_PER_YEAR = 365 * MS_PER_DAY;
+    const BOROS_API_URL = 'https://api.boros.finance/open-api/v1/markets';
+    const BOROS_CACHE_TTL_MS = 60000;
+    const BOROS_HISTORY_LIMIT = 60;
+    const BOROS_QUOTE_SUFFIXES = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'USD'];
+    const BOROS_VENUE_LABELS = {
+      BINANCE: 'Binance',
+      BYBIT: 'Bybit',
+      OKX: 'OKX',
+      HYPERLIQUID: 'Hyperliquid',
+    };
     let lastBorosResult = null;
     let borosPollTimer = null;
     let borosFetchInFlight = false;
     let activeFunction = 'VOLSURF';
+    const borosHistoricalFetches = new Set();
     const borosState = {
       market: {
-        binanceSnapshots: [],
-        bybitSnapshots: [],
-        lastUpdated: 0,
-        error: '',
+        viewMode: 'market-implied',
+        selectedAsset: '',
+        selectedMarketKey: '',
+        liveMarkets: [],
+        assets: [],
+        liveLastUpdated: 0,
+        liveError: '',
+        historicalByAsset: {},
       },
       pricer: {
         notional: 5000000,
-        fixedRatePct: 12.0,
+        fixedRatePct: NaN,
         entryDate: '',
         maturityDate: '',
+        lastSyncedMarketKey: '',
       },
       margin: {
         positionSize: -5000000,
-        entryRatePct: 12.0,
+        entryRatePct: NaN,
         collateral: 700000,
+        lastSyncedMarketKey: '',
       },
     };
 
@@ -1588,18 +1639,222 @@
       return Number.isFinite(ts) ? ts : fallback;
     }
 
+    function titleCaseToken(value) {
+      return value ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() : '';
+    }
+
+    function formatBorosVenue(value) {
+      const upper = String(value || '').trim().toUpperCase();
+      if (!upper) return 'Unknown';
+      if (BOROS_VENUE_LABELS[upper]) return BOROS_VENUE_LABELS[upper];
+      return upper.split(/[^A-Z0-9]+/).filter(Boolean).map(titleCaseToken).join(' ');
+    }
+
+    function pickNumericField(obj, keys) {
+      for (const key of keys) {
+        const value = Number(obj?.[key]);
+        if (Number.isFinite(value)) return value;
+      }
+      return NaN;
+    }
+
+    function inferBorosPair(imData) {
+      const symbol = String(imData?.symbol || '').trim();
+      const symbolParts = symbol.split('-').filter(Boolean);
+      if (symbolParts.length >= 2) return symbolParts[1].toUpperCase();
+      const nameTokens = String(imData?.name || '').trim().split(/\s+/).filter(Boolean);
+      if (nameTokens.length >= 2) return nameTokens[1].toUpperCase();
+      return '';
+    }
+
+    function inferBorosAsset(pair) {
+      const upper = String(pair || '').toUpperCase();
+      for (const suffix of BOROS_QUOTE_SUFFIXES) {
+        if (upper.endsWith(suffix) && upper.length > suffix.length) {
+          return upper.slice(0, -suffix.length);
+        }
+      }
+      return upper.replace(/[^A-Z0-9]/g, '');
+    }
+
+    function formatBorosExpiry(timestampMs) {
+      if (!Number.isFinite(timestampMs)) return '--';
+      return new Date(timestampMs).toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      });
+    }
+
+    function uniqueBorosAssets(rows) {
+      return [...new Set((rows || []).map((row) => row.asset).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    }
+
+    function borosHistoricalState(asset) {
+      const key = String(asset || '').toUpperCase();
+      if (!borosState.market.historicalByAsset[key]) {
+        borosState.market.historicalByAsset[key] = {
+          binanceSnapshots: [],
+          bybitSnapshots: [],
+          lastUpdated: 0,
+          error: '',
+        };
+      }
+      return borosState.market.historicalByAsset[key];
+    }
+
+    function normalizeBorosApiMarket(row) {
+      const imData = row?.imData || {};
+      const data = row?.data || {};
+      const pair = inferBorosPair(imData);
+      const asset = inferBorosAsset(pair);
+      const venueKey = String(imData.symbol || '').split('-')[0] || String(imData.name || '').split(/\s+/)[0];
+      const expiryTimestampMs = Number(imData.maturity) * 1000;
+      const markApr = Number(data.markApr);
+      const midApr = Number.isFinite(Number(data.midApr)) ? Number(data.midApr) : markApr;
+      if (!asset || !Number.isFinite(expiryTimestampMs) || !Number.isFinite(markApr) && !Number.isFinite(midApr)) return null;
+      const marketLabel = String(imData.name || imData.symbol || '').trim();
+      const symbol = String(imData.symbol || '').trim();
+      return {
+        marketKey: symbol || marketLabel,
+        marketLabel: marketLabel || symbol,
+        symbol,
+        venue: formatBorosVenue(venueKey),
+        asset,
+        pair,
+        expiryTimestampMs,
+        expiryLabel: formatBorosExpiry(expiryTimestampMs),
+        markApr,
+        floatingApr: Number(data.floatingApr),
+        midApr,
+        bestBid: Number(data.bestBid),
+        bestAsk: Number(data.bestAsk),
+        oi: pickNumericField(data, ['oi', 'openInterest', 'openInterestUsd', 'oiUsd', 'openInterestNotional']),
+        volume24h: pickNumericField(data, ['volume24h', 'turnover24h', 'volumeUsd24h', 'tradedVolume24h']),
+      };
+    }
+
+    function extractBorosMarketRows(payload) {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.results)) return payload.results;
+      if (Array.isArray(payload?.result)) return payload.result;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload?.markets)) return payload.markets;
+      if (Array.isArray(payload?.result?.markets)) return payload.result.markets;
+      return [];
+    }
+
+    function borosLiveMarketSort(a, b) {
+      return a.asset.localeCompare(b.asset)
+        || a.venue.localeCompare(b.venue)
+        || a.expiryTimestampMs - b.expiryTimestampMs
+        || a.marketLabel.localeCompare(b.marketLabel);
+    }
+
+    function pickDefaultBorosMarket(asset) {
+      return borosState.market.liveMarkets
+        .filter((row) => row.asset === asset)
+        .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue))[0] || null;
+    }
+
+    function getSelectedBorosMarket() {
+      const selected = borosState.market.liveMarkets.find((row) => row.marketKey === borosState.market.selectedMarketKey);
+      if (selected) return selected;
+      return pickDefaultBorosMarket(borosState.market.selectedAsset);
+    }
+
     function updateBorosDefaults() {
       const today = Date.now();
       if (!borosState.pricer.entryDate) borosState.pricer.entryDate = isoDateValue(today);
       if (!borosState.pricer.maturityDate) borosState.pricer.maturityDate = isoDateValue(today + 30 * MS_PER_DAY);
     }
 
+    function syncBorosInputsFromMarket(market, force = false) {
+      if (!market) return;
+      updateBorosDefaults();
+      if (force || borosState.pricer.lastSyncedMarketKey !== market.marketKey) {
+        const fixedApr = Number.isFinite(market.markApr) ? market.markApr : market.midApr;
+        if (Number.isFinite(fixedApr)) borosState.pricer.fixedRatePct = fixedApr * 100;
+        borosState.pricer.maturityDate = isoDateValue(market.expiryTimestampMs);
+        borosState.pricer.lastSyncedMarketKey = market.marketKey;
+      }
+      if (force || borosState.margin.lastSyncedMarketKey !== market.marketKey) {
+        if (Number.isFinite(market.floatingApr)) borosState.margin.entryRatePct = market.floatingApr * 100;
+        borosState.margin.lastSyncedMarketKey = market.marketKey;
+      }
+    }
+
+    function ensureBorosSelections(forceSync = false) {
+      const assets = uniqueBorosAssets(borosState.market.liveMarkets);
+      borosState.market.assets = assets;
+      if (assets.length === 0) {
+        borosState.market.selectedAsset = '';
+        borosState.market.selectedMarketKey = '';
+        return null;
+      }
+      if (!assets.includes(borosState.market.selectedAsset)) {
+        borosState.market.selectedAsset = assets[0];
+        forceSync = true;
+      }
+      let selected = borosState.market.liveMarkets.find((row) => row.marketKey === borosState.market.selectedMarketKey);
+      if (!selected || selected.asset !== borosState.market.selectedAsset) {
+        selected = pickDefaultBorosMarket(borosState.market.selectedAsset);
+        borosState.market.selectedMarketKey = selected?.marketKey || '';
+        forceSync = true;
+      }
+      syncBorosInputsFromMarket(selected, forceSync);
+      return selected;
+    }
+
+    function setBorosSelectedAsset(asset) {
+      const nextAsset = String(asset || '').toUpperCase();
+      if (!nextAsset) return;
+      borosState.market.selectedAsset = nextAsset;
+      borosState.market.selectedMarketKey = '';
+      ensureBorosSelections(true);
+      renderBorosPanels();
+      triggerBorosCompute('asset');
+      if (borosState.market.viewMode === 'historical') fetchBorosHistoricalData(nextAsset, false);
+    }
+
+    function selectBorosMarketByKey(marketKey) {
+      const market = borosState.market.liveMarkets.find((row) => row.marketKey === marketKey);
+      if (!market) return;
+      borosState.market.selectedAsset = market.asset;
+      borosState.market.selectedMarketKey = market.marketKey;
+      syncBorosInputsFromMarket(market, true);
+      renderBorosPanels();
+      triggerBorosCompute('market-select');
+      if (borosState.market.viewMode === 'historical') fetchBorosHistoricalData(market.asset, false);
+    }
+
+    function setBorosViewMode(mode) {
+      const nextMode = mode === 'historical' ? 'historical' : 'market-implied';
+      if (borosState.market.viewMode === nextMode) return;
+      borosState.market.viewMode = nextMode;
+      renderBorosPanels();
+      triggerBorosCompute('view-mode');
+      if (nextMode === 'historical' && borosState.market.selectedAsset) {
+        fetchBorosHistoricalData(borosState.market.selectedAsset, false);
+      }
+    }
+
     function borosPayload() {
       updateBorosDefaults();
+      const historical = borosHistoricalState(borosState.market.selectedAsset);
       return {
+        nowMs: Date.now(),
         market: {
-          binanceSnapshots: borosState.market.binanceSnapshots,
-          bybitSnapshots: borosState.market.bybitSnapshots,
+          viewMode: borosState.market.viewMode,
+          selectedAsset: borosState.market.selectedAsset,
+          selectedMarketKey: borosState.market.selectedMarketKey,
+          liveMarkets: borosState.market.liveMarkets,
+          lastUpdatedMs: borosState.market.liveLastUpdated,
+          historical: {
+            binanceSnapshots: historical.binanceSnapshots,
+            bybitSnapshots: historical.bybitSnapshots,
+          },
         },
         pricer: {
           notional: Number(borosState.pricer.notional) || 0,
@@ -1617,7 +1872,6 @@
 
     function triggerBorosCompute(reason = 'ui') {
       if (!workerReady) return;
-      if (borosState.market.binanceSnapshots.length === 0 || borosState.market.bybitSnapshots.length === 0) return;
       computeWorker.postMessage({
         type: 'boros-compute',
         payload: {
@@ -1627,48 +1881,91 @@
       });
     }
 
+    async function fetchBorosHistoricalData(asset, force = false) {
+      const assetKey = String(asset || borosState.market.selectedAsset || '').toUpperCase();
+      if (!assetKey) return;
+      const state = borosHistoricalState(assetKey);
+      const ageMs = Date.now() - state.lastUpdated;
+      if (!force && state.lastUpdated && ageMs < BOROS_CACHE_TTL_MS) {
+        if (assetKey === borosState.market.selectedAsset && borosState.market.viewMode === 'historical') {
+          triggerBorosCompute('history-cache');
+        }
+        return;
+      }
+      if (borosHistoricalFetches.has(assetKey)) return;
+      borosHistoricalFetches.add(assetKey);
+      try {
+        const symbol = `${assetKey}USDT`;
+        const [binanceResp, bybitResp] = await Promise.all([
+          fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${symbol}&limit=${BOROS_HISTORY_LIMIT}`, { cache: 'no-store' }),
+          fetch(`https://api.bybit.com/v5/market/funding/history?category=linear&symbol=${symbol}&limit=${BOROS_HISTORY_LIMIT}`, { cache: 'no-store' }),
+        ]);
+        if (!binanceResp.ok) throw new Error(`Binance funding fetch failed (${binanceResp.status})`);
+        if (!bybitResp.ok) throw new Error(`Bybit funding fetch failed (${bybitResp.status})`);
+        const [binanceJson, bybitJson] = await Promise.all([binanceResp.json(), bybitResp.json()]);
+        const binanceRows = Array.isArray(binanceJson) ? binanceJson : [];
+        const bybitRows = Array.isArray(bybitJson?.result?.list) ? bybitJson.result.list : [];
+        state.binanceSnapshots = binanceRows.map((row) => ({
+          venue: 'Binance',
+          asset: symbol,
+          rate: Number(row.fundingRate),
+          timestamp_ms: Number(row.fundingTime),
+        })).filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
+          .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+        state.bybitSnapshots = bybitRows.map((row) => ({
+          venue: 'Bybit',
+          asset: symbol,
+          rate: Number(row.fundingRate),
+          timestamp_ms: Number(row.fundingRateTimestamp),
+        })).filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
+          .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+        state.error = '';
+        state.lastUpdated = Date.now();
+      } catch (e) {
+        state.error = e?.message || String(e);
+      } finally {
+        borosHistoricalFetches.delete(assetKey);
+        if (assetKey === borosState.market.selectedAsset) {
+          renderBorosPanels();
+          if (borosState.market.viewMode === 'historical') triggerBorosCompute('history');
+        }
+      }
+    }
+
     async function fetchBorosFundingData(force = false) {
-      const ageMs = Date.now() - borosState.market.lastUpdated;
-      if (!force && borosState.market.lastUpdated && ageMs < 60000) {
+      const ageMs = Date.now() - borosState.market.liveLastUpdated;
+      if (!force && borosState.market.liveLastUpdated && ageMs < BOROS_CACHE_TTL_MS) {
+        ensureBorosSelections(false);
+        renderBorosPanels();
         triggerBorosCompute('cache');
+        if (borosState.market.viewMode === 'historical' && borosState.market.selectedAsset) {
+          fetchBorosHistoricalData(borosState.market.selectedAsset, false);
+        }
         return;
       }
       if (borosFetchInFlight) return;
       borosFetchInFlight = true;
       try {
-        const [binanceResp, bybitResp] = await Promise.all([
-          fetch('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=30'),
-          fetch('https://api.bybit.com/v5/market/funding/history?category=linear&symbol=BTCUSDT&limit=30'),
-        ]);
-        if (!binanceResp.ok) throw new Error('Binance funding fetch failed');
-        if (!bybitResp.ok) throw new Error('Bybit funding fetch failed');
-
-        const [binanceJson, bybitJson] = await Promise.all([binanceResp.json(), bybitResp.json()]);
-        const binanceRows = Array.isArray(binanceJson) ? binanceJson : [];
-        const bybitRows = Array.isArray(bybitJson?.result?.list) ? bybitJson.result.list : [];
-
-        borosState.market.binanceSnapshots = binanceRows.map((row) => ({
-          venue: 'Binance',
-          asset: 'BTCUSDT',
-          rate: Number(row.fundingRate),
-          timestamp_ms: Number(row.fundingTime),
-        })).filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
-          .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
-
-        borosState.market.bybitSnapshots = bybitRows.map((row) => ({
-          venue: 'Bybit',
-          asset: 'BTCUSDT',
-          rate: Number(row.fundingRate),
-          timestamp_ms: Number(row.fundingRateTimestamp),
-        })).filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
-          .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
-
-        borosState.market.error = '';
-        borosState.market.lastUpdated = Date.now();
+        const resp = await fetch(BOROS_API_URL, { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`Boros markets fetch failed (${resp.status})`);
+        const json = await resp.json();
+        const liveMarkets = extractBorosMarketRows(json)
+          .map(normalizeBorosApiMarket)
+          .filter(Boolean)
+          .sort(borosLiveMarketSort);
+        if (liveMarkets.length === 0) throw new Error('No active Boros markets returned');
+        borosState.market.liveMarkets = liveMarkets;
+        borosState.market.liveLastUpdated = Date.now();
+        borosState.market.liveError = '';
+        ensureBorosSelections(false);
+        renderBorosPanels();
         triggerBorosCompute('market');
+        if (borosState.market.viewMode === 'historical' && borosState.market.selectedAsset) {
+          fetchBorosHistoricalData(borosState.market.selectedAsset, force);
+        }
       } catch (e) {
-        borosState.market.error = e?.message || String(e);
-        lastBorosResult = { error: borosState.market.error };
+        borosState.market.liveError = e?.message || String(e);
+        lastBorosResult = { error: borosState.market.liveError };
         renderBorosPanels();
       } finally {
         borosFetchInFlight = false;
@@ -1681,7 +1978,12 @@
         borosPollTimer = null;
       }
       if (!enabled) return;
-      borosPollTimer = setInterval(() => { fetchBorosFundingData(false); }, 60000);
+      borosPollTimer = setInterval(() => {
+        fetchBorosFundingData(false);
+        if (borosState.market.viewMode === 'historical' && borosState.market.selectedAsset) {
+          fetchBorosHistoricalData(borosState.market.selectedAsset, false);
+        }
+      }, BOROS_CACHE_TTL_MS);
     }
 
 
@@ -2011,17 +2313,19 @@
         },
       },
       boros: {
-        panels: ['boroscurve', 'borosswap', 'borosmargin', 'borosrisk'],
+        panels: ['boroscurve', 'borosswap', 'borosmarkets', 'borosmargin', 'borosrisk'],
         build(dv) {
           const W = window.innerWidth;
           const H = window.innerHeight - 44;
           dv.addPanel({ id: 'boroscurve', component: 'boroscurve', title: 'Funding Term Structure' });
           dv.addPanel({ id: 'borosswap', component: 'borosswap', title: 'Swap Pricer',
             position: { referencePanel: 'boroscurve', direction: 'right' }, initialWidth: Math.round(W * 0.42) });
+          dv.addPanel({ id: 'borosmarkets', component: 'borosmarkets', title: 'Market Overview',
+            position: { referencePanel: 'boroscurve', direction: 'below' }, initialHeight: Math.round(H * 0.38) });
           dv.addPanel({ id: 'borosmargin', component: 'borosmargin', title: 'Margin & Leverage',
-            position: { referencePanel: 'boroscurve', direction: 'below' }, initialHeight: Math.round(H * 0.42) });
+            position: { referencePanel: 'borosswap', direction: 'below' }, initialHeight: Math.round(H * 0.28) });
           dv.addPanel({ id: 'borosrisk', component: 'borosrisk', title: 'Liquidation Risk',
-            position: { referencePanel: 'borosswap', direction: 'below' }, initialHeight: Math.round(H * 0.42) });
+            position: { referencePanel: 'borosmargin', direction: 'below' }, initialHeight: Math.round(H * 0.38) });
         },
       },
       all: {
@@ -3544,19 +3848,39 @@
         this._el.innerHTML =
           '<div class="panel-head">'
           + '<div class="panel-title">Funding Term Structure</div>'
-          + '<div class="toolbar"><button class="tab-btn boros-refresh">Refresh</button></div>'
+          + '<div class="toolbar boros-toolbar">'
+          + '<select class="boros-asset-select"></select>'
+          + '<div class="boros-toggle">'
+          + '<button class="tab-btn active" data-mode="market-implied">Market Implied</button>'
+          + '<button class="tab-btn" data-mode="historical">Historical</button>'
+          + '</div>'
+          + '<button class="tab-btn boros-refresh">Refresh</button>'
+          + '</div>'
           + '</div>'
           + '<div class="boros-summary">'
-          + '<div class="boros-summary-card"><span class="k">Binance</span><span class="v b-binance">--</span></div>'
-          + '<div class="boros-summary-card"><span class="k">Bybit</span><span class="v b-bybit">--</span></div>'
-          + '<div class="boros-summary-card"><span class="k">Composite</span><span class="v b-composite">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Spot</span><span class="v b-spot spot">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Selected Market</span><span class="v b-selected">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">View</span><span class="v b-view">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Updated</span><span class="v b-updated">--</span></div>'
           + '</div>'
+          + '<div class="boros-note boros-chart-note">Loading Boros market data</div>'
           + '<div class="chart-area"></div>';
         this.chartDiv = this._el.querySelector('.chart-area');
-        this.binanceEl = this._el.querySelector('.b-binance');
-        this.bybitEl = this._el.querySelector('.b-bybit');
-        this.compositeEl = this._el.querySelector('.b-composite');
-        this._el.querySelector('.boros-refresh').addEventListener('click', () => fetchBorosFundingData(true));
+        this.assetSelect = this._el.querySelector('.boros-asset-select');
+        this.modeButtons = [...this._el.querySelectorAll('[data-mode]')];
+        this.spotEl = this._el.querySelector('.b-spot');
+        this.selectedEl = this._el.querySelector('.b-selected');
+        this.viewEl = this._el.querySelector('.b-view');
+        this.updatedEl = this._el.querySelector('.b-updated');
+        this.noteEl = this._el.querySelector('.boros-chart-note');
+        this.assetSelect.addEventListener('change', () => setBorosSelectedAsset(this.assetSelect.value));
+        this.modeButtons.forEach((btn) => btn.addEventListener('click', () => setBorosViewMode(btn.dataset.mode)));
+        this._el.querySelector('.boros-refresh').addEventListener('click', () => {
+          fetchBorosFundingData(true);
+          if (borosState.market.viewMode === 'historical' && borosState.market.selectedAsset) {
+            fetchBorosHistoricalData(borosState.market.selectedAsset, true);
+          }
+        });
         panels.boroscurve = this;
         this._resizeObs = new ResizeObserver(() => {
           if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
@@ -3572,6 +3896,12 @@
       init() {
         this._el.innerHTML =
           '<div class="panel-head"><div class="panel-title">Swap Pricer</div></div>'
+          + '<div class="boros-summary">'
+          + '<div class="boros-summary-card"><span class="k">Market</span><span class="v boros-pricer-market">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Mid</span><span class="v boros-pricer-mid">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Bid / Ask</span><span class="v boros-pricer-bidask">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Spread</span><span class="v boros-pricer-spread">--</span></div>'
+          + '</div>'
           + '<div class="boros-grid">'
           + '<div class="boros-field"><label>Notional</label><input class="boros-notional" type="number" step="1000"></div>'
           + '<div class="boros-field"><label>Fixed Rate APR (%)</label><input class="boros-fixed-rate" type="number" step="0.01"></div>'
@@ -3584,11 +3914,15 @@
         this.fixedRateInput = this._el.querySelector('.boros-fixed-rate');
         this.entryDateInput = this._el.querySelector('.boros-entry-date');
         this.maturityDateInput = this._el.querySelector('.boros-maturity-date');
+        this.marketEl = this._el.querySelector('.boros-pricer-market');
+        this.midEl = this._el.querySelector('.boros-pricer-mid');
+        this.bidAskEl = this._el.querySelector('.boros-pricer-bidask');
+        this.spreadEl = this._el.querySelector('.boros-pricer-spread');
         this.noteEl = this._el.querySelector('.boros-price-note');
         this.tbody = this._el.querySelector('tbody');
         this._el.querySelector('.boros-price-btn').addEventListener('click', () => {
           borosState.pricer.notional = Number(this.notionalInput.value) || borosState.pricer.notional;
-          borosState.pricer.fixedRatePct = Number(this.fixedRateInput.value) || borosState.pricer.fixedRatePct;
+          borosState.pricer.fixedRatePct = Number(this.fixedRateInput.value) || 0;
           borosState.pricer.entryDate = this.entryDateInput.value || borosState.pricer.entryDate;
           borosState.pricer.maturityDate = this.maturityDateInput.value || borosState.pricer.maturityDate;
           borosState.margin.positionSize = -Math.abs(borosState.pricer.notional);
@@ -3598,6 +3932,27 @@
         panels.borosswap = this;
       }
       dispose() { delete panels.borosswap; }
+    }
+
+    class BorosMarketsPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Market Overview</div><div class="boros-note boros-overview-note">Click a row to drive the pricer</div></div>'
+          + '<div class="boros-table-wrap">'
+          + '<table class="boros-table"><thead><tr><th>Market</th><th>Expiry</th><th>Mark APR</th><th>Float APR</th><th>Bid</th><th>Ask</th><th>OI</th><th>Volume 24h</th></tr></thead><tbody></tbody></table>'
+          + '</div>';
+        this.noteEl = this._el.querySelector('.boros-overview-note');
+        this.tbody = this._el.querySelector('tbody');
+        this.tbody.addEventListener('click', (event) => {
+          const row = event.target.closest('tr[data-market-key]');
+          if (!row) return;
+          selectBorosMarketByKey(row.dataset.marketKey);
+        });
+        panels.borosmarkets = this;
+      }
+      dispose() { delete panels.borosmarkets; }
     }
 
     class BorosMarginPanel {
@@ -6486,8 +6841,50 @@
       return Number.isFinite(value) ? (value * 365).toFixed(1) + 'd' : '--';
     }
 
+    function fmtCompactNumber(value) {
+      return Number.isFinite(value)
+        ? new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+        : '--';
+    }
+
+    function fmtBorosSpread(apr) {
+      return Number.isFinite(apr) ? (apr * 10000).toFixed(1) + ' bp' : '--';
+    }
+
+    function fmtBorosDateTime(timestampMs) {
+      return Number.isFinite(timestampMs)
+        ? new Date(timestampMs).toLocaleString('en-GB', { hour12: false, timeZone: 'UTC' }) + ' UTC'
+        : '--';
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function currentBorosStatus() {
+      const historical = borosHistoricalState(borosState.market.selectedAsset);
+      if (borosState.market.viewMode === 'historical' && historical.error) return historical.error;
+      return borosState.market.liveError || lastBorosResult?.error || 'Awaiting market data';
+    }
+
+    function borosVenueColor(name) {
+      const palette = {
+        Binance: '#2fb2ff',
+        Bybit: '#ffb347',
+        Hyperliquid: '#19d8a8',
+        OKX: '#ff7a7a',
+      };
+      return palette[name] || '#8ea1b8';
+    }
+
     function renderBorosPanels() {
       renderBorosCurve();
+      renderBorosMarkets();
       renderBorosSwap();
       renderBorosMargin();
       renderBorosRisk();
@@ -6496,39 +6893,123 @@
     function renderBorosCurve() {
       const p = panels.boroscurve;
       if (!p) return;
-      if (p.binanceEl) p.binanceEl.textContent = '--';
-      if (p.bybitEl) p.bybitEl.textContent = '--';
-      if (p.compositeEl) p.compositeEl.textContent = '--';
-      if (!lastBorosResult || lastBorosResult.error) {
+      const assets = borosState.market.assets;
+      p.assetSelect.innerHTML = assets.length > 0
+        ? assets.map((asset) => `<option value="${asset}">${asset}</option>`).join('')
+        : '<option value="">--</option>';
+      if (borosState.market.selectedAsset) p.assetSelect.value = borosState.market.selectedAsset;
+      p.modeButtons.forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.mode === borosState.market.viewMode);
+      });
+
+      const selectedMarket = lastBorosResult?.marketSummary?.selectedMarket || getSelectedBorosMarket();
+      const chart = lastBorosResult?.chart || null;
+      p.spotEl.textContent = fmtPct(selectedMarket?.floatingApr ?? lastBorosResult?.marketSummary?.currentRateApr, 3);
+      p.selectedEl.textContent = selectedMarket ? `${selectedMarket.venue} ${selectedMarket.expiryLabel}` : '--';
+      p.viewEl.textContent = borosState.market.viewMode === 'historical' ? 'Historical' : 'Forward Implied';
+      p.updatedEl.textContent = Number.isFinite(borosState.market.liveLastUpdated)
+        ? new Date(borosState.market.liveLastUpdated).toLocaleTimeString('en-GB', { hour12: false })
+        : '--';
+
+      if (!chart || chart.error || !Array.isArray(chart.series) || chart.series.length === 0) {
+        p.noteEl.textContent = chart?.error || currentBorosStatus();
         if (p.chartDiv) Plotly.react(p.chartDiv, [], {
           ...darkLayout,
           margin: { l: 44, r: 8, b: 32, t: 6 },
           xaxis: { ...axisStyle, type: 'date' },
-          yaxis: { ...axisStyle, title: 'APR (%)' },
+          yaxis: { ...axisStyle, title: 'Funding APR (%)' },
           annotations: [{
-            text: borosState.market.error || lastBorosResult?.error || 'Loading funding data',
+            text: chart?.error || currentBorosStatus(),
             showarrow: false,
             font: { color: '#8ea1b8', size: 11 },
           }],
         }, { responsive: true, displayModeBar: false });
         return;
       }
-      const d = lastBorosResult.chart;
-      if (!d || !p.chartDiv) return;
-      p.binanceEl.textContent = fmtPct(lastBorosResult.marketSummary?.latestBinanceApr, 3);
-      p.bybitEl.textContent = fmtPct(lastBorosResult.marketSummary?.latestBybitApr, 3);
-      p.compositeEl.textContent = fmtPct(lastBorosResult.marketSummary?.currentRateApr, 3);
-      Plotly.react(p.chartDiv, [
-        { type: 'scatter', mode: 'lines+markers', name: 'Binance', x: d.x.map((ts) => new Date(ts)), y: d.binanceApr, line: { color: '#2fb2ff', width: 2 }, marker: { size: 4 } },
-        { type: 'scatter', mode: 'lines+markers', name: 'Bybit', x: d.x.map((ts) => new Date(ts)), y: d.bybitApr, line: { color: '#ffb347', width: 2 }, marker: { size: 4 } },
-        { type: 'scatter', mode: 'lines+markers', name: 'Composite', x: d.x.map((ts) => new Date(ts)), y: d.compositeApr, line: { color: '#19d8a8', width: 2.4 }, marker: { size: 4 } },
-      ], {
+      p.noteEl.textContent = borosState.market.viewMode === 'historical'
+        ? `Historical Binance/Bybit funding APR for ${borosState.market.selectedAsset} with Boros spot reference`
+        : `Forward implied term structure for ${borosState.market.selectedAsset} across ${lastBorosResult?.marketSummary?.venueCount || chart.series.length} venue(s)`;
+      const traces = chart.series.map((series) => ({
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: series.name,
+        x: (series.x || []).map((value) => new Date(value)),
+        y: series.y || [],
+        text: series.text || [],
+        line: { color: borosVenueColor(series.name), width: chart.mode === 'historical' ? 1.8 : 2.4 },
+        marker: { size: chart.mode === 'historical' ? 3 : 5 },
+        hovertemplate: chart.mode === 'historical'
+          ? '%{fullData.name}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra></extra>'
+          : '%{text}<br>%{x|%d %b %Y}<br>%{y:.3f}%<extra>%{fullData.name}</extra>',
+      }));
+      const spotPct = Number.isFinite(chart.spotApr) ? chart.spotApr * 100 : NaN;
+      const annotations = [{
+        xref: 'paper',
+        yref: 'paper',
+        x: 0.01,
+        y: 1.13,
+        text: chart.label.toUpperCase(),
+        showarrow: false,
+        font: { color: '#8ea1b8', size: 10, family: 'JetBrains Mono' },
+      }];
+      const shapes = [];
+      if (Number.isFinite(spotPct)) {
+        shapes.push({
+          type: 'line',
+          xref: 'paper',
+          x0: 0,
+          x1: 1,
+          y0: spotPct,
+          y1: spotPct,
+          line: { color: '#19d8a8', width: 1.4, dash: 'dot' },
+        });
+        annotations.push({
+          xref: 'paper',
+          yref: 'y',
+          x: 0.995,
+          y: spotPct,
+          xanchor: 'right',
+          yanchor: 'bottom',
+          text: `${chart.spotLabel}: ${fmtPct(chart.spotApr, 3)}`,
+          showarrow: false,
+          font: { color: '#19d8a8', size: 10, family: 'JetBrains Mono' },
+          bgcolor: 'rgba(7,10,15,0.82)',
+        });
+      }
+      Plotly.react(p.chartDiv, traces, {
         ...darkLayout,
         margin: { l: 48, r: 12, b: 34, t: 6 },
-        xaxis: { ...axisStyle, type: 'date' },
-        yaxis: { ...axisStyle, title: 'APR (%)' },
+        xaxis: { ...axisStyle, type: 'date', title: borosState.market.viewMode === 'historical' ? 'Timestamp' : 'Maturity' },
+        yaxis: { ...axisStyle, title: 'Funding APR (%)' },
         legend: { orientation: 'h', y: 1.06, x: 0.01, font: { size: 9 } },
+        shapes,
+        annotations,
       }, { responsive: true, displayModeBar: false });
+    }
+
+    function renderBorosMarkets() {
+      const p = panels.borosmarkets;
+      if (!p) return;
+      const rows = borosState.market.liveMarkets;
+      if (rows.length === 0) {
+        p.noteEl.textContent = borosState.market.liveError || 'Loading Boros markets';
+        p.tbody.innerHTML = `<tr><td>Status</td><td colspan="7">${escapeHtml(p.noteEl.textContent)}</td></tr>`;
+        return;
+      }
+      p.noteEl.textContent = `${rows.length} active Boros markets. Click a row to select its forward curve.`;
+      p.tbody.innerHTML = rows.map((row) => {
+        const selected = row.marketKey === borosState.market.selectedMarketKey;
+        return `<tr class="boros-market-row${selected ? ' selected' : ''}" data-market-key="${escapeHtml(row.marketKey)}">`
+          + `<td>${escapeHtml(row.marketLabel)}</td>`
+          + `<td>${escapeHtml(row.expiryLabel)}</td>`
+          + `<td>${fmtPct(row.markApr, 3)}</td>`
+          + `<td>${fmtPct(row.floatingApr, 3)}</td>`
+          + `<td>${fmtPct(row.bestBid, 3)}</td>`
+          + `<td>${fmtPct(row.bestAsk, 3)}</td>`
+          + `<td>${fmtCompactNumber(row.oi)}</td>`
+          + `<td>${fmtCompactNumber(row.volume24h)}</td>`
+          + '</tr>';
+      }).join('');
     }
 
     function renderBorosSwap() {
@@ -6536,23 +7017,33 @@
       if (!p) return;
       updateBorosDefaults();
       p.notionalInput.value = String(borosState.pricer.notional);
-      p.fixedRateInput.value = String(borosState.pricer.fixedRatePct);
+      p.fixedRateInput.value = Number.isFinite(borosState.pricer.fixedRatePct) ? String(borosState.pricer.fixedRatePct) : '';
       p.entryDateInput.value = borosState.pricer.entryDate;
       p.maturityDateInput.value = borosState.pricer.maturityDate;
+      const selectedMarket = lastBorosResult?.marketSummary?.selectedMarket || getSelectedBorosMarket();
+      const pricer = lastBorosResult?.pricer || null;
+      p.marketEl.textContent = selectedMarket ? selectedMarket.marketLabel : '--';
+      p.midEl.textContent = fmtPct(pricer?.midApr ?? selectedMarket?.midApr, 3);
+      p.bidAskEl.textContent = Number.isFinite(pricer?.bidApr ?? selectedMarket?.bestBid) && Number.isFinite(pricer?.askApr ?? selectedMarket?.bestAsk)
+        ? `${fmtPct(pricer?.bidApr ?? selectedMarket?.bestBid, 3)} / ${fmtPct(pricer?.askApr ?? selectedMarket?.bestAsk, 3)}`
+        : '--';
+      p.spreadEl.textContent = fmtBorosSpread(pricer?.spreadApr ?? ((selectedMarket?.bestAsk ?? NaN) - (selectedMarket?.bestBid ?? NaN)));
       const rows = [];
-      if (lastBorosResult && !lastBorosResult.error && lastBorosResult.pricer) {
-        const r = lastBorosResult.pricer;
+      if (pricer && !lastBorosResult?.pricerError) {
+        const r = pricer;
         rows.push(
+          ['Mark APR', fmtPct(r.markApr, 3)],
+          ['Spot Floating', fmtPct(r.floatingApr, 3)],
           ['MTM', fmtSignedMoney(r.mtm)],
           ['DV01', fmtSignedMoney(r.dv01)],
           ['Theta', fmtSignedMoney(r.theta)],
           ['Vega', fmtSignedMoney(r.vega)],
-          ['As Of', Number.isFinite(lastBorosResult.marketSummary?.latestTimestampMs) ? new Date(lastBorosResult.marketSummary.latestTimestampMs).toLocaleString() : '--']
+          ['As Of', fmtBorosDateTime(lastBorosResult.marketSummary?.latestTimestampMs)]
         );
-        p.noteEl.textContent = 'Funding swap priced from composite BTCUSDT curve';
+        p.noteEl.textContent = `Fixed rate seeded from ${r.venue} ${r.asset} Boros mark APR; dates remain editable`;
       } else {
-        rows.push(['Status', borosState.market.error || lastBorosResult?.error || 'Awaiting market data']);
-        p.noteEl.textContent = 'Awaiting market data';
+        rows.push(['Status', lastBorosResult?.pricerError || currentBorosStatus()]);
+        p.noteEl.textContent = 'Awaiting selected Boros market';
       }
       p.tbody.innerHTML = rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td></tr>`).join('');
     }
@@ -6561,10 +7052,10 @@
       const p = panels.borosmargin;
       if (!p) return;
       p.sizeInput.value = String(borosState.margin.positionSize);
-      p.entryRateInput.value = String(borosState.margin.entryRatePct);
+      p.entryRateInput.value = Number.isFinite(borosState.margin.entryRatePct) ? String(borosState.margin.entryRatePct) : '';
       p.collateralInput.value = String(borosState.margin.collateral);
       const rows = [];
-      if (lastBorosResult && !lastBorosResult.error && lastBorosResult.margin) {
+      if (lastBorosResult && !lastBorosResult.marginError && lastBorosResult.margin) {
         const m = lastBorosResult.margin;
         rows.push(
           ['Initial Margin', '$' + pFmt.format(m.initialMargin)],
@@ -6574,9 +7065,12 @@
           ['Leverage', Number.isFinite(m.leverage) ? m.leverage.toFixed(2) + 'x' : '--'],
           ['Current APR', fmtPct(m.currentRateApr, 3)]
         );
-        p.noteEl.textContent = 'Isolated margin model via Boros risk primitives';
+        const selectedMarket = lastBorosResult?.marketSummary?.selectedMarket;
+        p.noteEl.textContent = selectedMarket
+          ? `Isolated margin model on ${selectedMarket.venue} ${selectedMarket.asset} spot funding`
+          : 'Isolated margin model via Boros risk primitives';
       } else {
-        rows.push(['Status', borosState.market.error || lastBorosResult?.error || 'Awaiting market data']);
+        rows.push(['Status', lastBorosResult?.marginError || currentBorosStatus()]);
       }
       p.tbody.innerHTML = rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td></tr>`).join('');
     }
@@ -6584,11 +7078,11 @@
     function renderBorosRisk() {
       const p = panels.borosrisk;
       if (!p) return;
-      if (!lastBorosResult || lastBorosResult.error || !lastBorosResult.liquidation) {
+      if (!lastBorosResult || lastBorosResult.liquidationError || !lastBorosResult.liquidation) {
         p.probEl.textContent = '--';
         p.timeEl.textContent = '--';
         p.worstEl.textContent = '--';
-        p.tbody.innerHTML = `<tr><td>Status</td><td colspan="3">${borosState.market.error || lastBorosResult?.error || 'Awaiting market data'}</td></tr>`;
+        p.tbody.innerHTML = `<tr><td>Status</td><td colspan="3">${lastBorosResult?.liquidationError || currentBorosStatus()}</td></tr>`;
         return;
       }
       const l = lastBorosResult.liquidation;
@@ -7143,7 +7637,7 @@
         if (lastStrategyResult && panels.strategy) renderStrategyPayoff(lastStrategyResult);
         if (panels.pricer) renderPricerPanelData(lastPricerResult);
         if (panels.surfacecfg) renderSurfaceConfigPanel();
-        if (panels.boroscurve || panels.borosswap || panels.borosmargin || panels.borosrisk) renderBorosPanels();
+        if (panels.boroscurve || panels.borosswap || panels.borosmarkets || panels.borosmargin || panels.borosrisk) renderBorosPanels();
         // DSL panels re-render from cached state
         if (dslLastPricingResult && panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
         if (dslLastPricingResult && panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
@@ -7428,6 +7922,7 @@
           case 'funding': return activeView === 'history' ? new FundingPanel() : new FundingBasisPanel();
           case 'boroscurve': return new BorosCurvePanel();
           case 'borosswap': return new BorosSwapPanel();
+          case 'borosmarkets': return new BorosMarketsPanel();
           case 'borosmargin': return new BorosMarginPanel();
           case 'borosrisk': return new BorosRiskPanel();
           case 'tradeflow': return activeView === 'history' ? new TradeFlowPanel() : new LiveTradeFlowPanel();
