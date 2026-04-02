@@ -219,9 +219,8 @@ function packSliceArrays(slices) {
   };
 }
 
-const pFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
-const BOROS_BINANCE_WEIGHT = 0.65;
-const BOROS_BYBIT_WEIGHT = 0.35;
+const BOROS_MS_PER_DAY = 24 * 60 * 60 * 1000;
+const BOROS_MS_PER_YEAR = 365 * BOROS_MS_PER_DAY;
 
 function finiteNumber(value, fallback = NaN) {
   const num = Number(value);
@@ -241,102 +240,250 @@ function normalizeBorosSnapshots(rows, venue, asset) {
     .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
 }
 
-function blendBorosSnapshots(binanceSnapshots, bybitSnapshots) {
-  const bybitByTs = new Map(bybitSnapshots.map((snapshot) => [snapshot.timestamp_ms, snapshot]));
-  const blended = [];
-  for (const binance of binanceSnapshots) {
-    const bybit = bybitByTs.get(binance.timestamp_ms);
-    if (!bybit) continue;
-    blended.push({
-      venue: 'BorosComposite',
-      asset: binance.asset,
-      rate: (
-        BOROS_BINANCE_WEIGHT * binance.rate +
-        BOROS_BYBIT_WEIGHT * bybit.rate
-      ) / (BOROS_BINANCE_WEIGHT + BOROS_BYBIT_WEIGHT),
-      timestamp_ms: binance.timestamp_ms,
-    });
-  }
-  return blended.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+function normalizeBorosMarkets(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => {
+      const markApr = finiteNumber(row.markApr);
+      const midApr = finiteNumber(row.midApr, markApr);
+      const bestBid = finiteNumber(row.bestBid);
+      const bestAsk = finiteNumber(row.bestAsk);
+      return {
+        marketKey: String(row.marketKey || row.symbol || row.marketLabel || ''),
+        marketLabel: String(row.marketLabel || row.symbol || row.marketKey || ''),
+        symbol: String(row.symbol || row.marketKey || ''),
+        venue: String(row.venue || 'Unknown'),
+        asset: String(row.asset || '').toUpperCase(),
+        pair: String(row.pair || row.asset || '').toUpperCase(),
+        expiryTimestampMs: finiteNumber(row.expiryTimestampMs),
+        expiryLabel: String(row.expiryLabel || ''),
+        markApr,
+        floatingApr: finiteNumber(row.floatingApr),
+        midApr,
+        bestBid,
+        bestAsk,
+        oi: finiteNumber(row.oi),
+        volume24h: finiteNumber(row.volume24h),
+      };
+    })
+    .filter((row) =>
+      row.marketKey &&
+      row.marketLabel &&
+      row.venue &&
+      row.asset &&
+      Number.isFinite(row.expiryTimestampMs) &&
+      (Number.isFinite(row.markApr) || Number.isFinite(row.midApr))
+    )
+    .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue));
 }
 
-function buildBorosChartSeries(binanceCurve, bybitCurve, compositeCurve, pricingCurve) {
-  const anchorMs = pricingCurve.anchorTimestampMs();
-  const nodes = pricingCurve.nodesFlat();
-  const x = [];
-  const binanceApr = [];
-  const bybitApr = [];
-  const compositeApr = [];
-  const labels = [];
+function borosAssets(rows) {
+  return [...new Set(rows.map((row) => row.asset))].sort((a, b) => a.localeCompare(b));
+}
 
-  for (let i = 0; i + 1 < nodes.length; i += 2) {
-    const t = nodes[i];
-    const ts = wasm.years_to_timestamp_ms(anchorMs, t);
-    x.push(ts);
-    labels.push(Math.max(0, (ts - anchorMs) / (24 * 60 * 60 * 1000)));
-    binanceApr.push(binanceCurve.forwardApr(t) * 100);
-    bybitApr.push(bybitCurve.forwardApr(t) * 100);
-    compositeApr.push(compositeCurve.forwardApr(t) * 100);
+function selectBorosAsset(rows, requestedAsset) {
+  if (requestedAsset && rows.some((row) => row.asset === requestedAsset)) return requestedAsset;
+  const assets = borosAssets(rows);
+  return assets[0] || '';
+}
+
+function selectBorosMarket(rows, asset, marketKey) {
+  const assetRows = rows.filter((row) => row.asset === asset);
+  if (assetRows.length === 0) return null;
+  if (marketKey) {
+    const exact = assetRows.find((row) => row.marketKey === marketKey);
+    if (exact) return exact;
   }
+  return [...assetRows].sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue))[0];
+}
 
-  return { x, labels, binanceApr, bybitApr, compositeApr };
+function buildForwardChart(rows, asset, selectedMarket) {
+  const assetRows = rows
+    .filter((row) => row.asset === asset)
+    .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue));
+  const groups = new Map();
+  for (const row of assetRows) {
+    if (!groups.has(row.venue)) {
+      groups.set(row.venue, { name: row.venue, x: [], y: [], text: [], customdata: [] });
+    }
+    const group = groups.get(row.venue);
+    group.x.push(row.expiryTimestampMs);
+    group.y.push((finiteNumber(row.markApr, row.midApr)) * 100);
+    group.text.push(row.marketLabel);
+    group.customdata.push(row.marketKey);
+  }
+  return {
+    mode: 'market-implied',
+    label: 'Forward Implied',
+    xType: 'date',
+    series: [...groups.values()],
+    spotApr: finiteNumber(selectedMarket?.floatingApr),
+    spotLabel: selectedMarket ? `${selectedMarket.venue} spot` : 'Spot floating',
+    selectedMarketKey: selectedMarket?.marketKey || '',
+    selectedMarketLabel: selectedMarket?.marketLabel || '',
+  };
+}
+
+function buildHistoricalChart(rows, asset, selectedMarket) {
+  const pair = `${asset}USDT`;
+  const binanceSnapshots = normalizeBorosSnapshots(rows?.binanceSnapshots, 'Binance', pair);
+  const bybitSnapshots = normalizeBorosSnapshots(rows?.bybitSnapshots, 'Bybit', pair);
+  const series = [];
+  if (binanceSnapshots.length > 0) {
+    series.push({
+      name: 'Binance',
+      x: binanceSnapshots.map((row) => row.timestamp_ms),
+      y: binanceSnapshots.map((row) => wasm.FundingRateCurve.perPeriodRateToApr(row.rate) * 100),
+    });
+  }
+  if (bybitSnapshots.length > 0) {
+    series.push({
+      name: 'Bybit',
+      x: bybitSnapshots.map((row) => row.timestamp_ms),
+      y: bybitSnapshots.map((row) => wasm.FundingRateCurve.perPeriodRateToApr(row.rate) * 100),
+    });
+  }
+  return {
+    mode: 'historical',
+    label: 'Historical',
+    xType: 'date',
+    series,
+    spotApr: finiteNumber(selectedMarket?.floatingApr),
+    spotLabel: selectedMarket ? `${selectedMarket.venue} spot` : 'Spot floating',
+    error: series.length > 0 ? '' : 'historical funding unavailable',
+  };
+}
+
+function buildSelectedVenueCurve(rows, selectedMarket, asOfMs) {
+  const venueRows = rows
+    .filter((row) => row.asset === selectedMarket.asset && row.venue === selectedMarket.venue)
+    .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs);
+  const floatingApr = finiteNumber(
+    selectedMarket.floatingApr,
+    finiteNumber(venueRows[0]?.floatingApr, finiteNumber(selectedMarket.markApr, selectedMarket.midApr))
+  );
+  const firstTimestampMs = asOfMs;
+  const snapshots = [{
+    venue: selectedMarket.venue,
+    asset: selectedMarket.pair || selectedMarket.asset,
+    rate: wasm.FundingRateCurve.aprToPerPeriodRate(floatingApr),
+    timestamp_ms: firstTimestampMs,
+  }];
+  for (const row of venueRows) {
+    const apr = finiteNumber(row.markApr, row.midApr);
+    if (!Number.isFinite(apr)) continue;
+    const ts = Math.max(asOfMs + 60 * 60 * 1000, finiteNumber(row.expiryTimestampMs));
+    if (ts <= snapshots[snapshots.length - 1].timestamp_ms) continue;
+    snapshots.push({
+      venue: row.venue,
+      asset: row.pair || row.asset,
+      rate: wasm.FundingRateCurve.aprToPerPeriodRate(apr),
+      timestamp_ms: ts,
+    });
+  }
+  if (snapshots.length === 1) {
+    snapshots.push({
+      venue: selectedMarket.venue,
+      asset: selectedMarket.pair || selectedMarket.asset,
+      rate: wasm.FundingRateCurve.aprToPerPeriodRate(finiteNumber(selectedMarket.markApr, floatingApr)),
+      timestamp_ms: asOfMs + 30 * BOROS_MS_PER_DAY,
+    });
+  }
+  return wasm.FundingRateCurve.fromJson(JSON.stringify(snapshots));
 }
 
 function computeBorosResult(payload) {
   const market = payload?.market || {};
   const pricer = payload?.pricer || {};
   const margin = payload?.margin || {};
+  const nowMs = finiteNumber(payload?.nowMs, Date.now());
+  const liveMarkets = normalizeBorosMarkets(market.liveMarkets);
+  const selectedAsset = selectBorosAsset(liveMarkets, String(market.selectedAsset || '').toUpperCase());
+  const selectedMarket = selectBorosMarket(liveMarkets, selectedAsset, market.selectedMarketKey);
 
-  const binanceSnapshots = normalizeBorosSnapshots(market.binanceSnapshots, 'Binance', 'BTCUSDT');
-  const bybitSnapshots = normalizeBorosSnapshots(market.bybitSnapshots, 'Bybit', 'BTCUSDT');
-  if (binanceSnapshots.length < 2 || bybitSnapshots.length < 2) {
-    return { error: 'funding history unavailable' };
+  const chartMode = market.viewMode === 'historical' ? 'historical' : 'market-implied';
+  let chart = null;
+  if (chartMode === 'historical') {
+    chart = buildHistoricalChart(market.historical || {}, selectedAsset, selectedMarket);
+  } else if (liveMarkets.length > 0) {
+    chart = buildForwardChart(liveMarkets, selectedAsset, selectedMarket);
+  } else {
+    chart = {
+      mode: 'market-implied',
+      label: 'Forward Implied',
+      xType: 'date',
+      series: [],
+      spotApr: NaN,
+      spotLabel: 'Spot floating',
+      error: 'Boros market data unavailable',
+    };
   }
 
-  const blendedSnapshots = blendBorosSnapshots(binanceSnapshots, bybitSnapshots);
-  if (blendedSnapshots.length < 2) {
-    return { error: 'Binance and Bybit histories have no common funding timestamps' };
+  const marketSummary = {
+    chartMode,
+    asset: selectedAsset,
+    marketCount: liveMarkets.length,
+    venueCount: new Set(liveMarkets.filter((row) => row.asset === selectedAsset).map((row) => row.venue)).size,
+    lastUpdatedMs: finiteNumber(market.lastUpdatedMs),
+    selectedMarket: selectedMarket ? {
+      marketKey: selectedMarket.marketKey,
+      marketLabel: selectedMarket.marketLabel,
+      symbol: selectedMarket.symbol,
+      venue: selectedMarket.venue,
+      asset: selectedMarket.asset,
+      pair: selectedMarket.pair,
+      expiryTimestampMs: selectedMarket.expiryTimestampMs,
+      expiryLabel: selectedMarket.expiryLabel,
+      markApr: finiteNumber(selectedMarket.markApr, selectedMarket.midApr),
+      floatingApr: finiteNumber(selectedMarket.floatingApr),
+      midApr: finiteNumber(selectedMarket.midApr, selectedMarket.markApr),
+      bestBid: finiteNumber(selectedMarket.bestBid),
+      bestAsk: finiteNumber(selectedMarket.bestAsk),
+      oi: finiteNumber(selectedMarket.oi),
+      volume24h: finiteNumber(selectedMarket.volume24h),
+    } : null,
+  };
+
+  if (!selectedMarket) {
+    return {
+      chart,
+      marketSummary,
+      pricerError: liveMarkets.length === 0 ? 'Boros market data unavailable' : 'no Boros market selected',
+      marginError: liveMarkets.length === 0 ? 'Boros market data unavailable' : 'no Boros market selected',
+      liquidationError: liveMarkets.length === 0 ? 'Boros market data unavailable' : 'no Boros market selected',
+    };
   }
 
-  const binanceCurve = wasm.FundingRateCurve.fromJson(JSON.stringify(binanceSnapshots));
-  const bybitCurve = wasm.FundingRateCurve.fromJson(JSON.stringify(bybitSnapshots));
-  const compositeCurve = wasm.MultiVenueFundingCurve.fromJson(JSON.stringify([
-    { weight: BOROS_BINANCE_WEIGHT, snapshots: binanceSnapshots },
-    { weight: BOROS_BYBIT_WEIGHT, snapshots: bybitSnapshots },
-  ]));
-  const pricingCurve = wasm.FundingRateCurve.fromJson(JSON.stringify(blendedSnapshots));
-
-  const chart = buildBorosChartSeries(binanceCurve, bybitCurve, compositeCurve, pricingCurve);
-  const latestSnapshot = blendedSnapshots[blendedSnapshots.length - 1];
-  const asOfMs = latestSnapshot.timestamp_ms;
-  const latestT = (asOfMs - pricingCurve.anchorTimestampMs()) / (365 * 24 * 60 * 60 * 1000);
-  const currentRateApr = compositeCurve.forwardApr(latestT);
-
+  const pricingCurve = buildSelectedVenueCurve(liveMarkets, selectedMarket, nowMs);
+  const currentRateApr = pricingCurve.forwardApr(0);
   const fixedRateApr = finiteNumber(pricer.fixedRateApr, 0.12);
   const notional = finiteNumber(pricer.notional, 5000000);
-  const entryTimeMs = finiteNumber(pricer.entryTimeMs, asOfMs);
-  const maturityTimeMs = finiteNumber(pricer.maturityTimeMs, asOfMs + 30 * 24 * 60 * 60 * 1000);
+  const entryTimeMs = finiteNumber(pricer.entryTimeMs, nowMs);
+  const maturityTimeMs = Math.max(
+    entryTimeMs + BOROS_MS_PER_DAY,
+    finiteNumber(pricer.maturityTimeMs, selectedMarket.expiryTimestampMs)
+  );
 
   const swap = new wasm.FundingRateSwap(
     notional,
     fixedRateApr,
     entryTimeMs,
     maturityTimeMs,
-    'Boros Composite',
-    'BTCUSDT'
+    selectedMarket.venue,
+    selectedMarket.pair || selectedMarket.asset
   );
   swap.settlement_interval_hours = 8;
 
-  const risks = wasm.funding_rate_swap_risks(swap, pricingCurve, asOfMs);
+  const risks = wasm.funding_rate_swap_risks(swap, pricingCurve, nowMs);
 
   const timeToMaturityYears = Math.max(
     wasm.FundingRateCurve.settlementIntervalYears(),
-    (maturityTimeMs - asOfMs) / (365 * 24 * 60 * 60 * 1000)
+    (maturityTimeMs - nowMs) / BOROS_MS_PER_YEAR
   );
   const marginParams = new wasm.MarginParams(0.18, 0.12, 0.20, timeToMaturityYears, 0.0001);
 
   const positionSize = finiteNumber(margin.positionSize, -Math.abs(notional));
-  const entryRateApr = finiteNumber(margin.entryRateApr, currentRateApr);
+  const entryRateApr = finiteNumber(margin.entryRateApr, finiteNumber(selectedMarket.floatingApr, currentRateApr));
   const collateral = Math.max(1, finiteNumber(margin.collateral, Math.abs(notional) * 0.12));
   const unrealizedPnl = positionSize * (entryRateApr - currentRateApr);
 
@@ -388,16 +535,24 @@ function computeBorosResult(payload) {
   return {
     chart,
     marketSummary: {
-      latestTimestampMs: asOfMs,
+      ...marketSummary,
+      latestTimestampMs: nowMs,
       currentRateApr,
-      latestBinanceApr: binanceCurve.forwardApr(latestT),
-      latestBybitApr: bybitCurve.forwardApr(latestT),
     },
     pricer: {
       notional,
       fixedRateApr,
       entryTimeMs,
       maturityTimeMs,
+      marketLabel: selectedMarket.marketLabel,
+      venue: selectedMarket.venue,
+      asset: selectedMarket.asset,
+      midApr: finiteNumber(selectedMarket.midApr, selectedMarket.markApr),
+      markApr: finiteNumber(selectedMarket.markApr, selectedMarket.midApr),
+      bidApr: finiteNumber(selectedMarket.bestBid),
+      askApr: finiteNumber(selectedMarket.bestAsk),
+      spreadApr: finiteNumber(selectedMarket.bestAsk) - finiteNumber(selectedMarket.bestBid),
+      floatingApr: finiteNumber(selectedMarket.floatingApr),
       mtm: risks.mtm,
       dv01: risks.dv01,
       theta: risks.theta,
