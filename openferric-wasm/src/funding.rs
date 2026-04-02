@@ -311,7 +311,7 @@ pub struct FundingRateSwap {
     pub fixed_rate: f64,
     pub entry_time_ms: f64,
     pub maturity_time_ms: f64,
-    pub settlement_interval_hours: u32,
+    pub settlement_interval_hours: f64,
     pub venue: String,
     pub asset: String,
 }
@@ -326,7 +326,7 @@ impl FundingRateSwap {
             self.venue.clone(),
             self.asset.clone(),
         );
-        swap.settlement_interval_hours = self.settlement_interval_hours;
+        swap.settlement_interval_hours = self.settlement_interval_hours as u32;
         Ok(swap)
     }
 }
@@ -347,7 +347,7 @@ impl FundingRateSwap {
             fixed_rate,
             entry_time_ms,
             maturity_time_ms,
-            settlement_interval_hours: 8,
+            settlement_interval_hours: 8.0,
             venue,
             asset,
         };
@@ -711,18 +711,18 @@ impl LiquidationSimulator {
         position: &LiquidationPosition,
         model: &FundingRateModel,
         initial_funding_rate: f64,
-        num_paths: usize,
-        steps: usize,
-        seed: u64,
+        num_paths: f64,
+        steps: f64,
+        seed: f64,
     ) -> Result<Self, JsValue> {
         catch_unwind_js(|| Self {
             inner: CoreLiquidationSimulator::new(
                 position.inner,
                 model.inner,
                 initial_funding_rate,
-                num_paths,
-                steps,
-                seed,
+                num_paths as usize,
+                steps as usize,
+                seed as u64,
             ),
         })
     }
