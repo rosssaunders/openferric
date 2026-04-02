@@ -19,6 +19,8 @@
       --warn: #ffb347;
       --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
       --sans: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+      --function-bar-h: 40px;
+      --header-h: 44px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -32,6 +34,107 @@
       overflow-x: hidden;
     }
 
+    .function-bar {
+      position: sticky;
+      top: 0;
+      z-index: 140;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: var(--function-bar-h);
+      padding: 6px 14px;
+      border-bottom: 1px solid rgba(47,178,255,0.2);
+      background:
+        linear-gradient(90deg, rgba(9,14,22,0.98) 0%, rgba(11,18,29,0.96) 45%, rgba(8,13,21,0.98) 100%);
+      font-family: var(--mono);
+      backdrop-filter: blur(10px);
+    }
+    .function-label {
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .function-input-wrap {
+      position: relative;
+      flex: 1;
+      max-width: 540px;
+    }
+    .function-input {
+      width: 100%;
+      height: 28px;
+      padding: 0 12px;
+      border: 1px solid rgba(47,178,255,0.22);
+      border-radius: 4px;
+      background: rgba(7,11,18,0.96);
+      color: var(--fg);
+      font-family: var(--mono);
+      font-size: 12px;
+      outline: none;
+    }
+    .function-input::placeholder { color: rgba(142,161,184,0.72); }
+    .function-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(47,178,255,0.18);
+    }
+    .function-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      display: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(11,17,27,0.98);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      overflow: hidden;
+    }
+    .function-dropdown.open { display: block; }
+    .function-option {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 0;
+      border-top: 1px solid rgba(142,161,184,0.08);
+      background: transparent;
+      color: var(--fg);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .function-option:first-child { border-top: 0; }
+    .function-option:hover,
+    .function-option.active {
+      background: rgba(47,178,255,0.12);
+    }
+    .function-option-code {
+      color: var(--accent);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+    .function-option-name {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .function-current {
+      margin-left: auto;
+      padding: 5px 10px;
+      border: 1px solid rgba(25,216,168,0.25);
+      border-radius: 999px;
+      color: var(--accent2);
+      background: rgba(25,216,168,0.08);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
     /* ---- Header ---- */
     .header {
       display: flex;
@@ -42,7 +145,7 @@
       background: rgba(17,22,31,0.85);
       backdrop-filter: blur(8px);
       position: sticky;
-      top: 0;
+      top: var(--function-bar-h);
       z-index: 100;
     }
     .header-title {
@@ -137,6 +240,82 @@
     .chart-area {
       flex: 1;
       min-height: 0;
+    }
+
+    .boros-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 10px;
+      margin-bottom: 8px;
+      font-size: 11px;
+    }
+    .boros-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .boros-field label {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .boros-field input {
+      width: 100%;
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid rgba(142,161,184,0.18);
+      border-radius: 4px;
+      background: #0d141d;
+      color: var(--fg);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .boros-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .boros-note {
+      color: var(--muted);
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+    .boros-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .boros-summary-card {
+      padding: 8px;
+      border: 1px solid rgba(142,161,184,0.14);
+      border-radius: 6px;
+      background: rgba(9,14,22,0.72);
+    }
+    .boros-summary-card .k {
+      display: block;
+      color: var(--muted);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .boros-summary-card .v {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--fg);
+    }
+    .boros-table td,
+    .boros-table th {
+      padding: 4px 0;
+    }
+    .boros-table td:last-child,
+    .boros-table th:last-child {
+      text-align: right;
     }
 
     /* ---- Toolbar ---- */
@@ -893,6 +1072,21 @@
     }
     .powered-by a:hover { color: #2fb2ff; text-decoration: underline; }
     .powered-by .version { color: rgba(255,255,255,0.2); font-size: 10px; }
+
+    @media (max-width: 1100px) {
+      .function-bar {
+        flex-wrap: wrap;
+        height: auto;
+        min-height: var(--function-bar-h);
+      }
+      .function-current {
+        margin-left: 0;
+      }
+      .boros-grid,
+      .boros-summary {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
   <script type="importmap">
   {
@@ -905,6 +1099,22 @@
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
 </head>
 <body>
+  <div class="function-bar">
+    <div class="function-label">Functions</div>
+    <div class="function-input-wrap">
+      <input
+        id="function-input"
+        class="function-input"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Enter function... (e.g. BOROS, VOLSURF, PRICER)"
+      />
+      <div id="function-dropdown" class="function-dropdown"></div>
+    </div>
+    <div id="function-current" class="function-current">VOLSURF</div>
+  </div>
+
   <!-- ===== Header ===== -->
   <div class="header">
     <div class="header-title">Ferric Terminal</div>
@@ -955,7 +1165,7 @@
   </div>
 
   <!-- ===== Dockview Container ===== -->
-  <div id="dockview" class="dockview-theme-abyss" style="height: calc(100vh - 44px);"></div>
+  <div id="dockview" class="dockview-theme-abyss" style="height: calc(100vh - var(--function-bar-h) - var(--header-h));"></div>
 
   <script type="module">
     import { DockviewComponent } from 'dockview-core';
@@ -973,6 +1183,100 @@
         if (e.data.type === 'ready') { workerReady = true; resolve(); }
         orig(e);
       };
+    });
+    const functionInput = document.getElementById('function-input');
+    const functionDropdown = document.getElementById('function-dropdown');
+    const functionCurrent = document.getElementById('function-current');
+    let functionHoverIndex = 0;
+
+    function functionEntries(query = '') {
+      const needle = String(query || '').trim().toUpperCase();
+      const entries = Object.entries(FUNCTION_DEFS).map(([code, meta]) => ({ code, ...meta }));
+      if (!needle) return entries;
+      return entries.filter((entry) =>
+        entry.code.includes(needle) || entry.title.toUpperCase().includes(needle)
+      );
+    }
+
+    function renderFunctionDropdown(query = '') {
+      const entries = functionEntries(query);
+      functionDropdown.innerHTML = '';
+      if (entries.length === 0) {
+        functionDropdown.classList.remove('open');
+        return entries;
+      }
+      functionHoverIndex = Math.max(0, Math.min(functionHoverIndex, entries.length - 1));
+      entries.forEach((entry, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'function-option' + (idx === functionHoverIndex ? ' active' : '');
+        btn.innerHTML = `<span class="function-option-code">${entry.code}</span><span class="function-option-name">${entry.title}</span>`;
+        btn.addEventListener('mousedown', (evt) => {
+          evt.preventDefault();
+          loadFunction(entry.code);
+        });
+        functionDropdown.appendChild(btn);
+      });
+      functionDropdown.classList.add('open');
+      return entries;
+    }
+
+    function syncFunctionBarFromView(viewName) {
+      const code = VIEW_TO_FUNCTION[viewName] || activeFunction;
+      activeFunction = code;
+      functionInput.value = code;
+      functionCurrent.textContent = code;
+    }
+
+    function loadFunction(code) {
+      const key = String(code || '').trim().toUpperCase();
+      const def = FUNCTION_DEFS[key];
+      if (!def) return;
+      functionDropdown.classList.remove('open');
+      syncFunctionBarFromView(def.view);
+      switchView(def.view);
+      if (key === 'BOROS') {
+        fetchBorosFundingData(false);
+        scheduleBorosPolling(true);
+      } else {
+        scheduleBorosPolling(false);
+      }
+    }
+
+    functionInput.addEventListener('focus', () => {
+      functionHoverIndex = 0;
+      renderFunctionDropdown(functionInput.value);
+    });
+    functionInput.addEventListener('input', () => {
+      functionHoverIndex = 0;
+      renderFunctionDropdown(functionInput.value);
+    });
+    functionInput.addEventListener('keydown', (e) => {
+      const entries = functionEntries(functionInput.value);
+      if (e.key === 'ArrowDown' && entries.length > 0) {
+        e.preventDefault();
+        functionHoverIndex = (functionHoverIndex + 1) % entries.length;
+        renderFunctionDropdown(functionInput.value);
+        return;
+      }
+      if (e.key === 'ArrowUp' && entries.length > 0) {
+        e.preventDefault();
+        functionHoverIndex = (functionHoverIndex - 1 + entries.length) % entries.length;
+        renderFunctionDropdown(functionInput.value);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const choice = entries[functionHoverIndex] || entries[0];
+        if (choice) loadFunction(choice.code);
+        return;
+      }
+      if (e.key === 'Escape') {
+        functionDropdown.classList.remove('open');
+      }
+    });
+    functionInput.addEventListener('blur', () => {
+      setTimeout(() => functionDropdown.classList.remove('open'), 120);
     });
 
     // =====================================================================
@@ -1246,6 +1550,140 @@
       productType: 'barrier-ko',
     };
 
+    // Boros funding dashboard state
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const MS_PER_YEAR = 365 * MS_PER_DAY;
+    let lastBorosResult = null;
+    let borosPollTimer = null;
+    let borosFetchInFlight = false;
+    let activeFunction = 'VOLSURF';
+    const borosState = {
+      market: {
+        binanceSnapshots: [],
+        bybitSnapshots: [],
+        lastUpdated: 0,
+        error: '',
+      },
+      pricer: {
+        notional: 5000000,
+        fixedRatePct: 12.0,
+        entryDate: '',
+        maturityDate: '',
+      },
+      margin: {
+        positionSize: -5000000,
+        entryRatePct: 12.0,
+        collateral: 700000,
+      },
+    };
+
+    function isoDateValue(timestampMs) {
+      if (!Number.isFinite(timestampMs)) return '';
+      return new Date(timestampMs).toISOString().slice(0, 10);
+    }
+
+    function dateInputToMs(value, fallback = Date.now()) {
+      if (!value) return fallback;
+      const ts = Date.parse(value + 'T00:00:00Z');
+      return Number.isFinite(ts) ? ts : fallback;
+    }
+
+    function updateBorosDefaults() {
+      const today = Date.now();
+      if (!borosState.pricer.entryDate) borosState.pricer.entryDate = isoDateValue(today);
+      if (!borosState.pricer.maturityDate) borosState.pricer.maturityDate = isoDateValue(today + 30 * MS_PER_DAY);
+    }
+
+    function borosPayload() {
+      updateBorosDefaults();
+      return {
+        market: {
+          binanceSnapshots: borosState.market.binanceSnapshots,
+          bybitSnapshots: borosState.market.bybitSnapshots,
+        },
+        pricer: {
+          notional: Number(borosState.pricer.notional) || 0,
+          fixedRateApr: (Number(borosState.pricer.fixedRatePct) || 0) / 100,
+          entryTimeMs: dateInputToMs(borosState.pricer.entryDate),
+          maturityTimeMs: dateInputToMs(borosState.pricer.maturityDate),
+        },
+        margin: {
+          positionSize: Number(borosState.margin.positionSize) || 0,
+          entryRateApr: (Number(borosState.margin.entryRatePct) || 0) / 100,
+          collateral: Number(borosState.margin.collateral) || 0,
+        },
+      };
+    }
+
+    function triggerBorosCompute(reason = 'ui') {
+      if (!workerReady) return;
+      if (borosState.market.binanceSnapshots.length === 0 || borosState.market.bybitSnapshots.length === 0) return;
+      computeWorker.postMessage({
+        type: 'boros-compute',
+        payload: {
+          reason,
+          ...borosPayload(),
+        },
+      });
+    }
+
+    async function fetchBorosFundingData(force = false) {
+      const ageMs = Date.now() - borosState.market.lastUpdated;
+      if (!force && borosState.market.lastUpdated && ageMs < 60000) {
+        triggerBorosCompute('cache');
+        return;
+      }
+      if (borosFetchInFlight) return;
+      borosFetchInFlight = true;
+      try {
+        const [binanceResp, bybitResp] = await Promise.all([
+          fetch('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=30'),
+          fetch('https://api.bybit.com/v5/market/funding/history?category=linear&symbol=BTCUSDT&limit=30'),
+        ]);
+        if (!binanceResp.ok) throw new Error('Binance funding fetch failed');
+        if (!bybitResp.ok) throw new Error('Bybit funding fetch failed');
+
+        const [binanceJson, bybitJson] = await Promise.all([binanceResp.json(), bybitResp.json()]);
+        const binanceRows = Array.isArray(binanceJson) ? binanceJson : [];
+        const bybitRows = Array.isArray(bybitJson?.result?.list) ? bybitJson.result.list : [];
+
+        borosState.market.binanceSnapshots = binanceRows.map((row) => ({
+          venue: 'Binance',
+          asset: 'BTCUSDT',
+          rate: Number(row.fundingRate),
+          timestamp_ms: Number(row.fundingTime),
+        })).filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
+          .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+
+        borosState.market.bybitSnapshots = bybitRows.map((row) => ({
+          venue: 'Bybit',
+          asset: 'BTCUSDT',
+          rate: Number(row.fundingRate),
+          timestamp_ms: Number(row.fundingRateTimestamp),
+        })).filter((row) => Number.isFinite(row.rate) && Number.isFinite(row.timestamp_ms))
+          .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+
+        borosState.market.error = '';
+        borosState.market.lastUpdated = Date.now();
+        triggerBorosCompute('market');
+      } catch (e) {
+        borosState.market.error = e?.message || String(e);
+        lastBorosResult = { error: borosState.market.error };
+        renderBorosPanels();
+      } finally {
+        borosFetchInFlight = false;
+      }
+    }
+
+    function scheduleBorosPolling(enabled) {
+      if (borosPollTimer) {
+        clearInterval(borosPollTimer);
+        borosPollTimer = null;
+      }
+      if (!enabled) return;
+      borosPollTimer = setInterval(() => { fetchBorosFundingData(false); }, 60000);
+    }
+
 
     // =====================================================================
     //  Surface Config State
@@ -1453,6 +1891,24 @@
     // =====================================================================
     //  View Mode System
     // =====================================================================
+    const FUNCTION_DEFS = {
+      VOLSURF: { title: 'Vol Surface Workspace', view: 'overview' },
+      BOROS: { title: 'Boros Funding Dashboard', view: 'boros' },
+      PRICER: { title: 'OTC Exotic Pricer', view: 'pricer' },
+      FLOW: { title: 'Trade Flow Workspace', view: 'trading' },
+      DSL: { title: 'DSL Structuring Editor', view: 'structuring' },
+    };
+    const VIEW_TO_FUNCTION = {
+      overview: 'VOLSURF',
+      analysis: 'VOLSURF',
+      scanner: 'VOLSURF',
+      history: 'VOLSURF',
+      all: 'VOLSURF',
+      boros: 'BOROS',
+      pricer: 'PRICER',
+      trading: 'FLOW',
+      structuring: 'DSL',
+    };
     const VIEW_DEFS = {
       overview: {
         panels: ['surface', 'term', 'smile', 'scanner', 'surfacecfg'],
@@ -1552,6 +2008,20 @@
             position: { referencePanel: 'structeditor', direction: 'below' }, initialHeight: Math.round(H * 0.28) });
           dv.addPanel({ id: 'dslpayoff', component: 'dslpayoff', title: 'Payoff Profile',
             position: { referencePanel: 'dslresult', direction: 'below' }, initialHeight: Math.round(H * 0.45) });
+        },
+      },
+      boros: {
+        panels: ['boroscurve', 'borosswap', 'borosmargin', 'borosrisk'],
+        build(dv) {
+          const W = window.innerWidth;
+          const H = window.innerHeight - 44;
+          dv.addPanel({ id: 'boroscurve', component: 'boroscurve', title: 'Funding Term Structure' });
+          dv.addPanel({ id: 'borosswap', component: 'borosswap', title: 'Swap Pricer',
+            position: { referencePanel: 'boroscurve', direction: 'right' }, initialWidth: Math.round(W * 0.42) });
+          dv.addPanel({ id: 'borosmargin', component: 'borosmargin', title: 'Margin & Leverage',
+            position: { referencePanel: 'boroscurve', direction: 'below' }, initialHeight: Math.round(H * 0.42) });
+          dv.addPanel({ id: 'borosrisk', component: 'borosrisk', title: 'Liquidation Risk',
+            position: { referencePanel: 'borosswap', direction: 'below' }, initialHeight: Math.round(H * 0.42) });
         },
       },
       all: {
@@ -3065,6 +3535,119 @@
         this._resizeObs.observe(this._el);
       }
       dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.funding; }
+    }
+
+    class BorosCurvePanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head">'
+          + '<div class="panel-title">Funding Term Structure</div>'
+          + '<div class="toolbar"><button class="tab-btn boros-refresh">Refresh</button></div>'
+          + '</div>'
+          + '<div class="boros-summary">'
+          + '<div class="boros-summary-card"><span class="k">Binance</span><span class="v b-binance">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Bybit</span><span class="v b-bybit">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Composite</span><span class="v b-composite">--</span></div>'
+          + '</div>'
+          + '<div class="chart-area"></div>';
+        this.chartDiv = this._el.querySelector('.chart-area');
+        this.binanceEl = this._el.querySelector('.b-binance');
+        this.bybitEl = this._el.querySelector('.b-bybit');
+        this.compositeEl = this._el.querySelector('.b-composite');
+        this._el.querySelector('.boros-refresh').addEventListener('click', () => fetchBorosFundingData(true));
+        panels.boroscurve = this;
+        this._resizeObs = new ResizeObserver(() => {
+          if (this.chartDiv && this.chartDiv.data) Plotly.Plots.resize(this.chartDiv);
+        });
+        this._resizeObs.observe(this._el);
+      }
+      dispose() { if (this._resizeObs) this._resizeObs.disconnect(); delete panels.boroscurve; }
+    }
+
+    class BorosSwapPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Swap Pricer</div></div>'
+          + '<div class="boros-grid">'
+          + '<div class="boros-field"><label>Notional</label><input class="boros-notional" type="number" step="1000"></div>'
+          + '<div class="boros-field"><label>Fixed Rate APR (%)</label><input class="boros-fixed-rate" type="number" step="0.01"></div>'
+          + '<div class="boros-field"><label>Entry Date</label><input class="boros-entry-date" type="date"></div>'
+          + '<div class="boros-field"><label>Maturity Date</label><input class="boros-maturity-date" type="date"></div>'
+          + '</div>'
+          + '<div class="boros-actions"><button class="tab-btn boros-price-btn">Price</button><span class="boros-note boros-price-note">Awaiting market data</span></div>'
+          + '<div class="tbl-wrap"><table class="boros-table"><tbody></tbody></table></div>';
+        this.notionalInput = this._el.querySelector('.boros-notional');
+        this.fixedRateInput = this._el.querySelector('.boros-fixed-rate');
+        this.entryDateInput = this._el.querySelector('.boros-entry-date');
+        this.maturityDateInput = this._el.querySelector('.boros-maturity-date');
+        this.noteEl = this._el.querySelector('.boros-price-note');
+        this.tbody = this._el.querySelector('tbody');
+        this._el.querySelector('.boros-price-btn').addEventListener('click', () => {
+          borosState.pricer.notional = Number(this.notionalInput.value) || borosState.pricer.notional;
+          borosState.pricer.fixedRatePct = Number(this.fixedRateInput.value) || borosState.pricer.fixedRatePct;
+          borosState.pricer.entryDate = this.entryDateInput.value || borosState.pricer.entryDate;
+          borosState.pricer.maturityDate = this.maturityDateInput.value || borosState.pricer.maturityDate;
+          borosState.margin.positionSize = -Math.abs(borosState.pricer.notional);
+          if (panels.borosmargin) renderBorosPanels();
+          triggerBorosCompute('swap');
+        });
+        panels.borosswap = this;
+      }
+      dispose() { delete panels.borosswap; }
+    }
+
+    class BorosMarginPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Margin &amp; Leverage</div></div>'
+          + '<div class="boros-grid">'
+          + '<div class="boros-field"><label>Position Size</label><input class="boros-size" type="number" step="1000"></div>'
+          + '<div class="boros-field"><label>Entry Rate APR (%)</label><input class="boros-entry-rate" type="number" step="0.01"></div>'
+          + '<div class="boros-field"><label>Collateral</label><input class="boros-collateral" type="number" step="1000"></div>'
+          + '</div>'
+          + '<div class="boros-actions"><button class="tab-btn boros-margin-btn">Update Risk</button><span class="boros-note boros-margin-note">Inputs feed margin and liquidation models</span></div>'
+          + '<div class="tbl-wrap"><table class="boros-table"><tbody></tbody></table></div>';
+        this.sizeInput = this._el.querySelector('.boros-size');
+        this.entryRateInput = this._el.querySelector('.boros-entry-rate');
+        this.collateralInput = this._el.querySelector('.boros-collateral');
+        this.noteEl = this._el.querySelector('.boros-margin-note');
+        this.tbody = this._el.querySelector('tbody');
+        this._el.querySelector('.boros-margin-btn').addEventListener('click', () => {
+          borosState.margin.positionSize = Number(this.sizeInput.value) || borosState.margin.positionSize;
+          borosState.margin.entryRatePct = Number(this.entryRateInput.value) || borosState.margin.entryRatePct;
+          borosState.margin.collateral = Number(this.collateralInput.value) || borosState.margin.collateral;
+          triggerBorosCompute('margin');
+        });
+        panels.borosmargin = this;
+      }
+      dispose() { delete panels.borosmargin; }
+    }
+
+    class BorosRiskPanel {
+      constructor() { this._el = document.createElement('div'); this._el.className = 'dock-content'; }
+      get element() { return this._el; }
+      init() {
+        this._el.innerHTML =
+          '<div class="panel-head"><div class="panel-title">Liquidation Risk</div></div>'
+          + '<div class="boros-summary">'
+          + '<div class="boros-summary-card"><span class="k">Probability</span><span class="v boros-risk-prob">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Expected Time</span><span class="v boros-risk-time">--</span></div>'
+          + '<div class="boros-summary-card"><span class="k">Worst Rate</span><span class="v boros-risk-worst">--</span></div>'
+          + '</div>'
+          + '<div class="tbl-wrap"><table class="boros-table"><thead><tr><th>Scenario</th><th>Prob.</th><th>Exp. Time</th><th>Worst Rate</th></tr></thead><tbody></tbody></table></div>';
+        this.probEl = this._el.querySelector('.boros-risk-prob');
+        this.timeEl = this._el.querySelector('.boros-risk-time');
+        this.worstEl = this._el.querySelector('.boros-risk-worst');
+        this.tbody = this._el.querySelector('tbody');
+        panels.borosrisk = this;
+      }
+      dispose() { delete panels.borosrisk; }
     }
 
     class LiveTradeFlowPanel {
@@ -5158,6 +5741,11 @@
         requestAnimationFrame(() => renderPricerPanelData(payload));
         return;
       }
+      if (e.data.type === 'boros-result') {
+        lastBorosResult = e.data.payload || null;
+        requestAnimationFrame(() => renderBorosPanels());
+        return;
+      }
       // DSL analysis results
       if (e.data.type === 'dsl-analyze-result') {
         dslLastAnalysis = e.data.payload;
@@ -5886,6 +6474,132 @@
       }
     }
 
+    function fmtPct(value, digits = 2) {
+      return Number.isFinite(value) ? (value * 100).toFixed(digits) + '%' : '--';
+    }
+
+    function fmtSignedMoney(value) {
+      return Number.isFinite(value) ? (value >= 0 ? '+' : '') + '$' + pFmt.format(value) : '--';
+    }
+
+    function fmtYears(value) {
+      return Number.isFinite(value) ? (value * 365).toFixed(1) + 'd' : '--';
+    }
+
+    function renderBorosPanels() {
+      renderBorosCurve();
+      renderBorosSwap();
+      renderBorosMargin();
+      renderBorosRisk();
+    }
+
+    function renderBorosCurve() {
+      const p = panels.boroscurve;
+      if (!p) return;
+      if (p.binanceEl) p.binanceEl.textContent = '--';
+      if (p.bybitEl) p.bybitEl.textContent = '--';
+      if (p.compositeEl) p.compositeEl.textContent = '--';
+      if (!lastBorosResult || lastBorosResult.error) {
+        if (p.chartDiv) Plotly.react(p.chartDiv, [], {
+          ...darkLayout,
+          margin: { l: 44, r: 8, b: 32, t: 6 },
+          xaxis: { ...axisStyle, type: 'date' },
+          yaxis: { ...axisStyle, title: 'APR (%)' },
+          annotations: [{
+            text: borosState.market.error || lastBorosResult?.error || 'Loading funding data',
+            showarrow: false,
+            font: { color: '#8ea1b8', size: 11 },
+          }],
+        }, { responsive: true, displayModeBar: false });
+        return;
+      }
+      const d = lastBorosResult.chart;
+      if (!d || !p.chartDiv) return;
+      p.binanceEl.textContent = fmtPct(lastBorosResult.marketSummary?.latestBinanceApr, 3);
+      p.bybitEl.textContent = fmtPct(lastBorosResult.marketSummary?.latestBybitApr, 3);
+      p.compositeEl.textContent = fmtPct(lastBorosResult.marketSummary?.currentRateApr, 3);
+      Plotly.react(p.chartDiv, [
+        { type: 'scatter', mode: 'lines+markers', name: 'Binance', x: d.x.map((ts) => new Date(ts)), y: d.binanceApr, line: { color: '#2fb2ff', width: 2 }, marker: { size: 4 } },
+        { type: 'scatter', mode: 'lines+markers', name: 'Bybit', x: d.x.map((ts) => new Date(ts)), y: d.bybitApr, line: { color: '#ffb347', width: 2 }, marker: { size: 4 } },
+        { type: 'scatter', mode: 'lines+markers', name: 'Composite', x: d.x.map((ts) => new Date(ts)), y: d.compositeApr, line: { color: '#19d8a8', width: 2.4 }, marker: { size: 4 } },
+      ], {
+        ...darkLayout,
+        margin: { l: 48, r: 12, b: 34, t: 6 },
+        xaxis: { ...axisStyle, type: 'date' },
+        yaxis: { ...axisStyle, title: 'APR (%)' },
+        legend: { orientation: 'h', y: 1.06, x: 0.01, font: { size: 9 } },
+      }, { responsive: true, displayModeBar: false });
+    }
+
+    function renderBorosSwap() {
+      const p = panels.borosswap;
+      if (!p) return;
+      updateBorosDefaults();
+      p.notionalInput.value = String(borosState.pricer.notional);
+      p.fixedRateInput.value = String(borosState.pricer.fixedRatePct);
+      p.entryDateInput.value = borosState.pricer.entryDate;
+      p.maturityDateInput.value = borosState.pricer.maturityDate;
+      const rows = [];
+      if (lastBorosResult && !lastBorosResult.error && lastBorosResult.pricer) {
+        const r = lastBorosResult.pricer;
+        rows.push(
+          ['MTM', fmtSignedMoney(r.mtm)],
+          ['DV01', fmtSignedMoney(r.dv01)],
+          ['Theta', fmtSignedMoney(r.theta)],
+          ['Vega', fmtSignedMoney(r.vega)],
+          ['As Of', Number.isFinite(lastBorosResult.marketSummary?.latestTimestampMs) ? new Date(lastBorosResult.marketSummary.latestTimestampMs).toLocaleString() : '--']
+        );
+        p.noteEl.textContent = 'Funding swap priced from composite BTCUSDT curve';
+      } else {
+        rows.push(['Status', borosState.market.error || lastBorosResult?.error || 'Awaiting market data']);
+        p.noteEl.textContent = 'Awaiting market data';
+      }
+      p.tbody.innerHTML = rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td></tr>`).join('');
+    }
+
+    function renderBorosMargin() {
+      const p = panels.borosmargin;
+      if (!p) return;
+      p.sizeInput.value = String(borosState.margin.positionSize);
+      p.entryRateInput.value = String(borosState.margin.entryRatePct);
+      p.collateralInput.value = String(borosState.margin.collateral);
+      const rows = [];
+      if (lastBorosResult && !lastBorosResult.error && lastBorosResult.margin) {
+        const m = lastBorosResult.margin;
+        rows.push(
+          ['Initial Margin', '$' + pFmt.format(m.initialMargin)],
+          ['Maintenance Margin', '$' + pFmt.format(m.maintenanceMargin)],
+          ['Health Ratio', Number.isFinite(m.healthRatio) ? m.healthRatio.toFixed(2) + 'x' : '--'],
+          ['Liquidation Rate', fmtPct(m.liquidationRate, 3)],
+          ['Leverage', Number.isFinite(m.leverage) ? m.leverage.toFixed(2) + 'x' : '--'],
+          ['Current APR', fmtPct(m.currentRateApr, 3)]
+        );
+        p.noteEl.textContent = 'Isolated margin model via Boros risk primitives';
+      } else {
+        rows.push(['Status', borosState.market.error || lastBorosResult?.error || 'Awaiting market data']);
+      }
+      p.tbody.innerHTML = rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td></tr>`).join('');
+    }
+
+    function renderBorosRisk() {
+      const p = panels.borosrisk;
+      if (!p) return;
+      if (!lastBorosResult || lastBorosResult.error || !lastBorosResult.liquidation) {
+        p.probEl.textContent = '--';
+        p.timeEl.textContent = '--';
+        p.worstEl.textContent = '--';
+        p.tbody.innerHTML = `<tr><td>Status</td><td colspan="3">${borosState.market.error || lastBorosResult?.error || 'Awaiting market data'}</td></tr>`;
+        return;
+      }
+      const l = lastBorosResult.liquidation;
+      p.probEl.textContent = fmtPct(l.probLiquidation, 2);
+      p.timeEl.textContent = fmtYears(l.expectedTimeYears);
+      p.worstEl.textContent = fmtPct(l.worstCaseRate, 3);
+      p.tbody.innerHTML = (l.stressRows || []).map((row) =>
+        `<tr><td>${row.label}</td><td>${fmtPct(row.probLiquidation, 2)}</td><td>${fmtYears(row.expectedTimeYears)}</td><td>${fmtPct(row.worstCaseRate, 3)}</td></tr>`
+      ).join('');
+    }
+
     // =====================================================================
     //  Trade Flow Panel
     // =====================================================================
@@ -6402,6 +7116,8 @@
       dockview.clear();
 
       activeView = viewName;
+      syncFunctionBarFromView(viewName);
+      scheduleBorosPolling(activeFunction === 'BOROS');
 
       // Restore saved layout (validated) or fall back to default
       restoreOrDefault(viewName);
@@ -6427,10 +7143,12 @@
         if (lastStrategyResult && panels.strategy) renderStrategyPayoff(lastStrategyResult);
         if (panels.pricer) renderPricerPanelData(lastPricerResult);
         if (panels.surfacecfg) renderSurfaceConfigPanel();
+        if (panels.boroscurve || panels.borosswap || panels.borosmargin || panels.borosrisk) renderBorosPanels();
         // DSL panels re-render from cached state
         if (dslLastPricingResult && panels.dslresult) panels.dslresult.renderResult(dslLastPricingResult);
         if (dslLastPricingResult && panels.dslpayoff) panels.dslpayoff.renderPayoff(dslLastPricingResult);
       });
+      if (viewName === 'boros') fetchBorosFundingData(false);
     }
 
     function applyViewDef(viewName) {
@@ -6708,6 +7426,10 @@
           case 'scanner': return new ScannerPanel();
           case 'forwardvol': return new ForwardVolPanel();
           case 'funding': return activeView === 'history' ? new FundingPanel() : new FundingBasisPanel();
+          case 'boroscurve': return new BorosCurvePanel();
+          case 'borosswap': return new BorosSwapPanel();
+          case 'borosmargin': return new BorosMarginPanel();
+          case 'borosrisk': return new BorosRiskPanel();
           case 'tradeflow': return activeView === 'history' ? new TradeFlowPanel() : new LiveTradeFlowPanel();
           case 'volcone': return new VolConePanel();
           case 'histvol': return new HistVolPanel();
@@ -6765,6 +7487,8 @@
     //  Bootstrap
     // =====================================================================
     (async () => {
+      updateBorosDefaults();
+      syncFunctionBarFromView(activeView);
       await workerReadyPromise;
       console.log('[boot] worker ready');
       pushWorkerConfig();
