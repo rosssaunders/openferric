@@ -351,6 +351,39 @@
     .boros-chart-note {
       margin-bottom: 6px;
     }
+    .boros-tenor-table-wrap {
+      max-height: 120px;
+      overflow: auto;
+      margin: 4px 6px 0;
+      font-size: 10px;
+    }
+    .boros-tenor-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+    }
+    .boros-tenor-table th {
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      color: var(--muted);
+      text-align: right;
+      padding: 2px 6px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .boros-tenor-table th:first-child { text-align: left; }
+    .boros-tenor-table td {
+      text-align: right;
+      padding: 2px 6px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+      white-space: nowrap;
+    }
+    .boros-tenor-table td:first-child {
+      text-align: left;
+      color: var(--muted);
+    }
 
     /* ---- Toolbar ---- */
     .toolbar {
@@ -3939,8 +3972,11 @@
           + '<div class="boros-summary-card"><span class="k">Updated</span><span class="v b-updated">--</span></div>'
           + '</div>'
           + '<div class="boros-note boros-chart-note">Loading Boros market data</div>'
-          + '<div class="chart-area"></div>';
+          + '<div class="chart-area"></div>'
+          + '<div class="boros-tenor-table-wrap"><table class="boros-tenor-table"><thead></thead><tbody></tbody></table></div>';
         this.chartDiv = this._el.querySelector('.chart-area');
+        this.tenorThead = this._el.querySelector('.boros-tenor-table thead');
+        this.tenorTbody = this._el.querySelector('.boros-tenor-table tbody');
         this.assetSelect = this._el.querySelector('.boros-asset-select');
         this.modeButtons = [...this._el.querySelectorAll('[data-mode]')];
         this.spotEl = this._el.querySelector('.b-spot');
@@ -7101,6 +7137,44 @@
         shapes,
         annotations,
       }, { responsive: true, displayModeBar: false });
+
+      // Tenor table below chart
+      if (p.tenorThead && p.tenorTbody && chart.mode !== 'historical' && Array.isArray(chart.series) && chart.series.length > 0) {
+        const allDates = new Set();
+        const allTypes = new Map();
+        for (const series of chart.series) {
+          const pts = series.pointTypes || [];
+          const xs = series.x || [];
+          for (let i = 0; i < xs.length; i++) {
+            const key = String(xs[i]);
+            allDates.add(key);
+            if (!allTypes.has(key)) allTypes.set(key, pts[i] || 'forward');
+          }
+        }
+        const sortedDates = [...allDates].sort((a, b) => Number(a) - Number(b));
+        const tenorLabels = sortedDates.map((ms) => {
+          const type = allTypes.get(ms) || 'forward';
+          if (type === 'spot') return 'Spot';
+          if (type === 'predicted') return 'Next 8h';
+          const d = new Date(Number(ms));
+          return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+        });
+        p.tenorThead.innerHTML = '<tr><th>Venue</th>' + tenorLabels.map((l) => `<th>${l}</th>`).join('') + '</tr>';
+        p.tenorTbody.innerHTML = chart.series.map((series) => {
+          const lookup = new Map();
+          const xs = series.x || [];
+          const ys = series.y || [];
+          for (let i = 0; i < xs.length; i++) lookup.set(String(xs[i]), ys[i]);
+          return '<tr><td>' + escapeHtml(series.name) + '</td>'
+            + sortedDates.map((ms) => {
+              const val = lookup.get(ms);
+              return `<td>${Number.isFinite(val) ? val.toFixed(3) + '%' : '—'}</td>`;
+            }).join('') + '</tr>';
+        }).join('');
+      } else if (p.tenorThead && p.tenorTbody) {
+        p.tenorThead.innerHTML = '';
+        p.tenorTbody.innerHTML = '';
+      }
     }
 
     function renderBorosMarkets() {
