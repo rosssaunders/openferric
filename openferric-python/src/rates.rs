@@ -681,7 +681,7 @@ impl YieldCurveInterpolationSettings {
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct YieldCurve {
-    inner: CoreYieldCurve,
+    pub(crate) inner: CoreYieldCurve,
 }
 
 impl YieldCurve {

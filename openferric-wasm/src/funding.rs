@@ -7,13 +7,14 @@ use wasm_bindgen::prelude::*;
 use openferric::instruments::FundingRateSwap as CoreFundingRateSwap;
 use openferric::models::{CIR, Vasicek};
 use openferric::pricing::funding_rate_swap::{
-    FundingRateSwapRisks as CoreFundingRateSwapRisks, funding_rate_swap_dv01 as core_dv01,
+    FundingRateSwapRisks as CoreFundingRateSwapRisks,
+    funding_rate_swap_discount_dv01 as core_discount_dv01, funding_rate_swap_dv01 as core_dv01,
     funding_rate_swap_mtm as core_mtm, funding_rate_swap_risks as core_risks,
     funding_rate_swap_theta as core_theta, funding_rate_swap_vega as core_vega,
 };
 use openferric::rates::{
     FundingRateCurve as CoreFundingRateCurve, FundingRateSnapshot as CoreFundingRateSnapshot,
-    MultiVenueFundingCurve as CoreMultiVenueFundingCurve,
+    MultiVenueFundingCurve as CoreMultiVenueFundingCurve, YieldCurve as CoreYieldCurve,
 };
 use openferric::risk::{
     FundingRateModel as CoreFundingRateModel, InherentLeverage as CoreInherentLeverage,
@@ -260,6 +261,47 @@ impl FundingRateCurve {
 
 #[wasm_bindgen]
 #[derive(Clone)]
+pub struct YieldCurve {
+    inner: CoreYieldCurve,
+}
+
+#[wasm_bindgen]
+impl YieldCurve {
+    #[wasm_bindgen(constructor)]
+    pub fn new(tenors: Vec<f64>, discount_factors: Vec<f64>) -> Result<Self, JsValue> {
+        if tenors.len() != discount_factors.len() {
+            return Err(js_error(
+                "tenors and discount_factors must have the same length",
+            ));
+        }
+
+        let nodes = tenors.into_iter().zip(discount_factors).collect::<Vec<_>>();
+        Ok(Self {
+            inner: CoreYieldCurve::new(nodes),
+        })
+    }
+
+    pub fn discount_factor(&self, t: f64) -> f64 {
+        self.inner.discount_factor(t)
+    }
+
+    pub fn zero_rate(&self, t: f64) -> f64 {
+        self.inner.zero_rate(t)
+    }
+
+    #[wasm_bindgen(js_name = nodesFlat)]
+    pub fn nodes_flat(&self) -> Vec<f64> {
+        let mut flat = Vec::with_capacity(self.inner.tenors.len() * 2);
+        for (time, discount_factor) in &self.inner.tenors {
+            flat.push(*time);
+            flat.push(*discount_factor);
+        }
+        flat
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Clone)]
 pub struct MultiVenueFundingCurve {
     inner: CoreMultiVenueFundingCurve,
 }
@@ -415,10 +457,12 @@ pub fn funding_rate_swap_mtm(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of_timestamp_ms: f64,
+    discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_mtm(
         &swap.to_core()?,
         &curve.inner,
+        discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
     ))
 }
@@ -428,10 +472,27 @@ pub fn funding_rate_swap_dv01(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of_timestamp_ms: f64,
+    discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_dv01(
         &swap.to_core()?,
         &curve.inner,
+        discount_curve.as_ref().map(|curve| &curve.inner),
+        parse_timestamp_ms(as_of_timestamp_ms)?,
+    ))
+}
+
+#[wasm_bindgen]
+pub fn funding_rate_swap_discount_dv01(
+    swap: &FundingRateSwap,
+    curve: &FundingRateCurve,
+    as_of_timestamp_ms: f64,
+    discount_curve: Option<YieldCurve>,
+) -> Result<f64, JsValue> {
+    Ok(core_discount_dv01(
+        &swap.to_core()?,
+        &curve.inner,
+        discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
     ))
 }
@@ -441,10 +502,12 @@ pub fn funding_rate_swap_theta(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of_timestamp_ms: f64,
+    discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_theta(
         &swap.to_core()?,
         &curve.inner,
+        discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
     ))
 }
@@ -454,10 +517,12 @@ pub fn funding_rate_swap_vega(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of_timestamp_ms: f64,
+    discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_vega(
         &swap.to_core()?,
         &curve.inner,
+        discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
     ))
 }
@@ -467,10 +532,12 @@ pub fn funding_rate_swap_risks(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of_timestamp_ms: f64,
+    discount_curve: Option<YieldCurve>,
 ) -> Result<FundingRateSwapRisks, JsValue> {
     Ok(FundingRateSwapRisks::from_core(core_risks(
         &swap.to_core()?,
         &curve.inner,
+        discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
     )))
 }

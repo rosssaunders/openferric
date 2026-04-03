@@ -19,6 +19,7 @@ from openferric import (
     MultiVenueFundingCurve,
     StressScenario,
     Vasicek,
+    funding_rate_swap_discount_dv01,
     funding_rate_swap_dv01,
     funding_rate_swap_mtm,
     funding_rate_swap_risks,
@@ -112,6 +113,19 @@ class TestFundingRateSwap:
         mtm = funding_rate_swap_mtm(swap, curve, "2026-01-01T08:00:00Z")
         assert mtm == pytest.approx(2.0 * (0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0), abs=1e-12)
 
+        discount_curve = [
+            (8.0 / 8760.0, 0.99),
+            (16.0 / 8760.0, 0.97),
+        ]
+        discounted_mtm = funding_rate_swap_mtm(
+            swap,
+            curve,
+            "2026-01-01T08:00:00Z",
+            discount_curve=discount_curve,
+        )
+        expected_interval = (0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0)
+        assert discounted_mtm == pytest.approx(expected_interval * 0.99 + expected_interval * 0.97, abs=1e-12)
+
         dv01 = funding_rate_swap_dv01(
             FundingRateSwap(
                 5_000.0,
@@ -126,11 +140,24 @@ class TestFundingRateSwap:
         )
         assert dv01 == pytest.approx(3.0 * 5_000.0 * (8.0 / 8760.0) * 1.0e-4, abs=1e-12)
 
+        discount_dv01 = funding_rate_swap_discount_dv01(
+            swap,
+            curve,
+            "2026-01-01T08:00:00Z",
+            discount_curve=discount_curve,
+        )
+        assert discount_dv01 < 0.0
+
         theta = funding_rate_swap_theta(swap, curve, "2026-01-01T00:00:00Z")
         assert theta == pytest.approx(-(0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0), abs=1e-12)
 
-        risks = funding_rate_swap_risks(swap, curve, "2026-01-01T08:00:00Z")
-        assert risks.mtm == pytest.approx(mtm, abs=1e-12)
+        risks = funding_rate_swap_risks(
+            swap,
+            curve,
+            "2026-01-01T08:00:00Z",
+            discount_curve=discount_curve,
+        )
+        assert risks.mtm == pytest.approx(discounted_mtm, abs=1e-12)
         assert set(risks.to_dict()) == {"mtm", "dv01", "vega", "theta"}
 
 
