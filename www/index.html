@@ -1591,7 +1591,7 @@
     const BOROS_CACHE_TTL_MS = 60000;
     const BOROS_HISTORY_LIMIT = 60;
     const BOROS_QUOTE_SUFFIXES = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'USD'];
-    const BOROS_PREDICTED_SUPPORTED_VENUES = new Set(['Binance', 'Bybit']);
+    const BOROS_PREDICTED_SUPPORTED_VENUES = new Set(['Binance', 'Bybit', 'OKX']);
     const BOROS_VENUE_LABELS = {
       BINANCE: 'Binance',
       BYBIT: 'Bybit',
@@ -1776,6 +1776,17 @@
           const nextFundingTimeMs = Number(json?.nextFundingTime);
           if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
           return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'Binance' };
+        }
+        if (upperVenue === 'OKX') {
+          const okxSymbol = marketSymbol.replace('USDT', '-USDT-SWAP').replace('USDC', '-USDC-SWAP');
+          const resp = await fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${okxSymbol}`, { cache: 'no-store' });
+          if (!resp.ok) throw new Error(`OKX predicted funding fetch failed (${resp.status})`);
+          const json = await resp.json();
+          const entry = Array.isArray(json?.data) ? json.data[0] : null;
+          const predictedFundingRate = Number(entry?.fundingRate);
+          const nextFundingTimeMs = Number(entry?.fundingTime);
+          if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
+          return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'OKX' };
         }
       } catch (_) {
         return null;
