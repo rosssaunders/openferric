@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::helpers::{format_datetime, parse_datetime};
-use openferric_core::rates::YieldCurve as CoreYieldCurve;
+use crate::rates::YieldCurve;
 
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
@@ -426,13 +426,13 @@ pub fn funding_rate_swap_mtm(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
-    discount_curve: Option<Vec<(f64, f64)>>,
+    discount_curve: Option<&YieldCurve>,
 ) -> PyResult<f64> {
-    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    let discount_curve = discount_curve.map(YieldCurve::to_core);
     Ok(core_mtm(
         &swap.to_core()?,
         &curve.inner,
-        dc_ref.as_ref(),
+        discount_curve.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
@@ -443,13 +443,13 @@ pub fn funding_rate_swap_dv01(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
-    discount_curve: Option<Vec<(f64, f64)>>,
+    discount_curve: Option<&YieldCurve>,
 ) -> PyResult<f64> {
-    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    let discount_curve = discount_curve.map(YieldCurve::to_core);
     Ok(core_dv01(
         &swap.to_core()?,
         &curve.inner,
-        dc_ref.as_ref(),
+        discount_curve.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
@@ -460,13 +460,13 @@ pub fn funding_rate_swap_discount_dv01(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
-    discount_curve: Option<Vec<(f64, f64)>>,
+    discount_curve: Option<&YieldCurve>,
 ) -> PyResult<f64> {
-    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    let discount_curve = discount_curve.map(YieldCurve::to_core);
     Ok(core_discount_dv01(
         &swap.to_core()?,
         &curve.inner,
-        dc_ref.as_ref(),
+        discount_curve.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
@@ -477,13 +477,13 @@ pub fn funding_rate_swap_theta(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
-    discount_curve: Option<Vec<(f64, f64)>>,
+    discount_curve: Option<&YieldCurve>,
 ) -> PyResult<f64> {
-    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    let discount_curve = discount_curve.map(YieldCurve::to_core);
     Ok(core_theta(
         &swap.to_core()?,
         &curve.inner,
-        dc_ref.as_ref(),
+        discount_curve.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
@@ -494,13 +494,13 @@ pub fn funding_rate_swap_vega(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
-    discount_curve: Option<Vec<(f64, f64)>>,
+    discount_curve: Option<&YieldCurve>,
 ) -> PyResult<f64> {
-    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    let discount_curve = discount_curve.map(YieldCurve::to_core);
     Ok(core_vega(
         &swap.to_core()?,
         &curve.inner,
-        dc_ref.as_ref(),
+        discount_curve.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
@@ -511,13 +511,13 @@ pub fn funding_rate_swap_risks(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
-    discount_curve: Option<Vec<(f64, f64)>>,
+    discount_curve: Option<&YieldCurve>,
 ) -> PyResult<FundingRateSwapRisks> {
-    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    let discount_curve = discount_curve.map(YieldCurve::to_core);
     Ok(FundingRateSwapRisks::from_core(core_risks(
         &swap.to_core()?,
         &curve.inner,
-        dc_ref.as_ref(),
+        discount_curve.as_ref(),
         parse_datetime(as_of)?,
     )))
 }

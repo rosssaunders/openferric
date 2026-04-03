@@ -6,6 +6,7 @@ import pytest
 
 from conftest import ABS_TOL
 from openferric import (
+    YieldCurve,
     FundingRateCurve,
     FundingRateModel,
     FundingRateSnapshot,
@@ -113,10 +114,10 @@ class TestFundingRateSwap:
         mtm = funding_rate_swap_mtm(swap, curve, "2026-01-01T08:00:00Z")
         assert mtm == pytest.approx(2.0 * (0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0), abs=1e-12)
 
-        discount_curve = [
+        discount_curve = YieldCurve([
             (8.0 / 8760.0, 0.99),
             (16.0 / 8760.0, 0.97),
-        ]
+        ])
         discounted_mtm = funding_rate_swap_mtm(
             swap,
             curve,

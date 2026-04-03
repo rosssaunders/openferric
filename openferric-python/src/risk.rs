@@ -31,7 +31,13 @@ use openferric_core::risk::{
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::core::Greeks;
+use crate::credit::SurvivalCurve;
 use crate::helpers::{catch_unwind_py, panic_to_pyerr};
+use crate::market::{
+    CreditCurveSnapshot, ForwardCurveSnapshot, Market, MarketSnapshot, SampledVolSurface, VolSource,
+};
+use crate::rates::YieldCurve;
 
 fn pricing_error_to_pyerr(err: CorePricingError) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(err.to_string())
@@ -47,157 +53,6 @@ fn store_callback_error(slot: &Arc<Mutex<Option<PyErr>>>, err: PyErr) {
 
 fn take_callback_error(slot: &Arc<Mutex<Option<PyErr>>>) -> Option<PyErr> {
     slot.lock().ok().and_then(|mut guard| guard.take())
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone, Copy, Default)]
-pub struct Greeks {
-    #[pyo3(get, set)]
-    pub delta: f64,
-    #[pyo3(get, set)]
-    pub gamma: f64,
-    #[pyo3(get, set)]
-    pub vega: f64,
-    #[pyo3(get, set)]
-    pub theta: f64,
-    #[pyo3(get, set)]
-    pub rho: f64,
-}
-
-impl Greeks {
-    fn to_core(self) -> CoreGreeks {
-        CoreGreeks {
-            delta: self.delta,
-            gamma: self.gamma,
-            vega: self.vega,
-            theta: self.theta,
-            rho: self.rho,
-        }
-    }
-
-    fn from_core(greeks: CoreGreeks) -> Self {
-        Self {
-            delta: greeks.delta,
-            gamma: greeks.gamma,
-            vega: greeks.vega,
-            theta: greeks.theta,
-            rho: greeks.rho,
-        }
-    }
-}
-
-#[pymethods]
-impl Greeks {
-    #[new]
-    fn new(delta: f64, gamma: f64, vega: f64, theta: f64, rho: f64) -> Self {
-        Self {
-            delta,
-            gamma,
-            vega,
-            theta,
-            rho,
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "Greeks(delta={}, gamma={}, vega={}, theta={}, rho={})",
-            self.delta, self.gamma, self.vega, self.theta, self.rho
-        )
-    }
-}
-
-#[pyclass(module = "openferric", name = "YieldCurve", from_py_object)]
-#[derive(Clone)]
-pub struct YieldCurve {
-    #[pyo3(get, set)]
-    pub tenors: Vec<(f64, f64)>,
-}
-
-impl YieldCurve {
-    fn to_core(&self) -> CoreYieldCurve {
-        CoreYieldCurve::new(self.tenors.clone())
-    }
-
-    fn from_core(curve: CoreYieldCurve) -> Self {
-        Self {
-            tenors: curve.tenors,
-        }
-    }
-}
-
-#[pymethods]
-impl YieldCurve {
-    #[new]
-    fn new(tenors: Vec<(f64, f64)>) -> Self {
-        Self { tenors }
-    }
-
-    fn discount_factor(&self, t: f64) -> f64 {
-        self.to_core().discount_factor(t)
-    }
-
-    fn zero_rate(&self, t: f64) -> f64 {
-        self.to_core().zero_rate(t)
-    }
-
-    fn __repr__(&self) -> String {
-        format!("YieldCurve(tenors={:?})", self.tenors)
-    }
-}
-
-#[pyclass(module = "openferric", name = "SurvivalCurve", from_py_object)]
-#[derive(Clone)]
-pub struct SurvivalCurve {
-    #[pyo3(get, set)]
-    pub tenors: Vec<(f64, f64)>,
-}
-
-impl SurvivalCurve {
-    fn to_core(&self) -> CoreSurvivalCurve {
-        CoreSurvivalCurve::new(self.tenors.clone())
-    }
-
-    fn from_core(curve: CoreSurvivalCurve) -> Self {
-        Self {
-            tenors: curve.tenors,
-        }
-    }
-}
-
-#[pymethods]
-impl SurvivalCurve {
-    #[new]
-    fn new(tenors: Vec<(f64, f64)>) -> Self {
-        Self { tenors }
-    }
-
-    #[staticmethod]
-    fn from_piecewise_hazard(tenors: Vec<f64>, hazards: Vec<f64>) -> PyResult<Self> {
-        catch_unwind_py(|| {
-            Self::from_core(CoreSurvivalCurve::from_piecewise_hazard(&tenors, &hazards))
-        })
-    }
-
-    fn survival_prob(&self, t: f64) -> f64 {
-        self.to_core().survival_prob(t)
-    }
-
-    fn hazard_rate(&self, t: f64) -> f64 {
-        self.to_core().hazard_rate(t)
-    }
-
-    fn default_prob(&self, t1: f64, t2: f64) -> f64 {
-        self.to_core().default_prob(t1, t2)
-    }
-
-    fn inverse_survival_prob(&self, p: f64) -> f64 {
-        self.to_core().inverse_survival_prob(p)
-    }
-
-    fn __repr__(&self) -> String {
-        format!("SurvivalCurve(tenors={:?})", self.tenors)
-    }
 }
 
 #[pyclass(module = "openferric", from_py_object)]
@@ -341,377 +196,6 @@ impl VarBacktestResult {
     #[getter]
     fn christoffersen(&self) -> ChristoffersenBacktestResult {
         self.christoffersen
-    }
-}
-
-#[pyclass(module = "openferric", name = "SampledVolSurface", from_py_object)]
-#[derive(Clone)]
-pub struct SampledVolSurface {
-    inner: CoreSampledVolSurface,
-}
-
-impl SampledVolSurface {
-    fn to_core(&self) -> CoreSampledVolSurface {
-        self.inner.clone()
-    }
-
-    fn from_core(surface: CoreSampledVolSurface) -> Self {
-        Self { inner: surface }
-    }
-}
-
-#[pymethods]
-impl SampledVolSurface {
-    #[new]
-    fn new(strikes: Vec<f64>, expiries: Vec<f64>, vols: Vec<Vec<f64>>) -> PyResult<Self> {
-        CoreSampledVolSurface::new(strikes, expiries, vols)
-            .map(Self::from_core)
-            .map_err(pyo3::exceptions::PyValueError::new_err)
-    }
-
-    #[getter]
-    fn strikes(&self) -> Vec<f64> {
-        self.inner.strikes.clone()
-    }
-
-    #[getter]
-    fn expiries(&self) -> Vec<f64> {
-        self.inner.expiries.clone()
-    }
-
-    #[getter]
-    fn vols(&self) -> Vec<Vec<f64>> {
-        self.inner.vols.clone()
-    }
-
-    fn vol(&self, strike: f64, expiry: f64) -> f64 {
-        self.inner.vol(strike, expiry)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct VolSource {
-    inner: CoreVolSource,
-}
-
-impl VolSource {
-    fn to_core(&self) -> CoreVolSource {
-        self.inner.clone()
-    }
-
-    fn from_core(source: CoreVolSource, spot: f64) -> Self {
-        let inner = match source {
-            CoreVolSource::Flat(vol) => CoreVolSource::Flat(vol),
-            CoreVolSource::Sampled(surface) => CoreVolSource::Sampled(surface),
-            CoreVolSource::Parametric(surface) => {
-                CoreVolSource::Sampled(CoreSampledVolSurface::from_surface(&surface, spot))
-            }
-        };
-        Self { inner }
-    }
-}
-
-#[pymethods]
-impl VolSource {
-    #[staticmethod]
-    fn flat(vol: f64) -> Self {
-        Self {
-            inner: CoreVolSource::Flat(vol),
-        }
-    }
-
-    #[staticmethod]
-    fn sampled(surface: &SampledVolSurface) -> Self {
-        Self {
-            inner: CoreVolSource::Sampled(surface.to_core()),
-        }
-    }
-
-    #[getter]
-    fn kind(&self) -> &'static str {
-        match self.inner {
-            CoreVolSource::Flat(_) => "flat",
-            CoreVolSource::Parametric(_) => "parametric",
-            CoreVolSource::Sampled(_) => "sampled",
-        }
-    }
-
-    #[getter]
-    fn flat_vol(&self) -> Option<f64> {
-        match self.inner {
-            CoreVolSource::Flat(vol) => Some(vol),
-            _ => None,
-        }
-    }
-
-    #[getter]
-    fn sampled_surface(&self) -> Option<SampledVolSurface> {
-        match &self.inner {
-            CoreVolSource::Sampled(surface) => Some(SampledVolSurface::from_core(surface.clone())),
-            _ => None,
-        }
-    }
-
-    fn vol(&self, strike: f64, expiry: f64) -> f64 {
-        self.inner.vol(strike, expiry)
-    }
-}
-
-#[pyclass(module = "openferric", name = "Market", from_py_object)]
-#[derive(Clone)]
-pub struct Market {
-    #[pyo3(get, set)]
-    pub spot: f64,
-    #[pyo3(get, set)]
-    pub rate: f64,
-    #[pyo3(get, set)]
-    pub dividend_yield: f64,
-    vol: VolSource,
-    #[pyo3(get, set)]
-    pub reference_date: Option<String>,
-}
-
-impl Market {
-    fn to_core(&self) -> CoreMarket {
-        CoreMarket {
-            spot: self.spot,
-            rate: self.rate,
-            dividend_yield: self.dividend_yield,
-            dividend_schedule: Default::default(),
-            vol: self.vol.to_core(),
-            reference_date: self.reference_date.clone(),
-        }
-    }
-
-    fn from_core(market: CoreMarket) -> Self {
-        let spot = market.spot;
-        Self {
-            spot,
-            rate: market.rate,
-            dividend_yield: market.dividend_yield,
-            vol: VolSource::from_core(market.vol, spot),
-            reference_date: market.reference_date,
-        }
-    }
-}
-
-#[pymethods]
-impl Market {
-    #[new]
-    fn new(
-        spot: f64,
-        rate: f64,
-        dividend_yield: f64,
-        vol: VolSource,
-        reference_date: Option<String>,
-    ) -> Self {
-        Self {
-            spot,
-            rate,
-            dividend_yield,
-            vol,
-            reference_date,
-        }
-    }
-
-    #[getter]
-    fn vol_source(&self) -> VolSource {
-        self.vol.clone()
-    }
-
-    #[setter]
-    fn set_vol_source(&mut self, value: VolSource) {
-        self.vol = value;
-    }
-
-    fn vol_for(&self, strike: f64, expiry: f64) -> f64 {
-        self.to_core().vol_for(strike, expiry)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct ForwardCurveSnapshot {
-    #[pyo3(get, set)]
-    pub asset_id: String,
-    #[pyo3(get, set)]
-    pub points: Vec<(f64, f64)>,
-}
-
-impl ForwardCurveSnapshot {
-    fn to_core(&self) -> CoreForwardCurveSnapshot {
-        CoreForwardCurveSnapshot {
-            asset_id: self.asset_id.clone(),
-            points: self.points.clone(),
-        }
-    }
-
-    fn from_core(snapshot: CoreForwardCurveSnapshot) -> Self {
-        Self {
-            asset_id: snapshot.asset_id,
-            points: snapshot.points,
-        }
-    }
-}
-
-#[pymethods]
-impl ForwardCurveSnapshot {
-    #[new]
-    fn new(asset_id: String, points: Vec<(f64, f64)>) -> Self {
-        Self { asset_id, points }
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct CreditCurveSnapshot {
-    #[pyo3(get, set)]
-    pub curve_id: String,
-    survival_curve: SurvivalCurve,
-    #[pyo3(get, set)]
-    pub recovery_rate: f64,
-}
-
-impl CreditCurveSnapshot {
-    fn to_core(&self) -> CoreCreditCurveSnapshot {
-        CoreCreditCurveSnapshot {
-            curve_id: self.curve_id.clone(),
-            survival_curve: self.survival_curve.to_core(),
-            recovery_rate: self.recovery_rate,
-        }
-    }
-
-    fn from_core(snapshot: CoreCreditCurveSnapshot) -> Self {
-        Self {
-            curve_id: snapshot.curve_id,
-            survival_curve: SurvivalCurve::from_core(snapshot.survival_curve),
-            recovery_rate: snapshot.recovery_rate,
-        }
-    }
-}
-
-#[pymethods]
-impl CreditCurveSnapshot {
-    #[new]
-    fn new(curve_id: String, survival_curve: SurvivalCurve, recovery_rate: f64) -> Self {
-        Self {
-            curve_id,
-            survival_curve,
-            recovery_rate,
-        }
-    }
-
-    #[getter]
-    fn survival_curve(&self) -> SurvivalCurve {
-        self.survival_curve.clone()
-    }
-
-    #[setter]
-    fn set_survival_curve(&mut self, value: SurvivalCurve) {
-        self.survival_curve = value;
-    }
-}
-
-#[pyclass(module = "openferric", name = "MarketSnapshot", from_py_object)]
-#[derive(Clone)]
-pub struct MarketSnapshot {
-    #[pyo3(get, set)]
-    pub snapshot_id: String,
-    #[pyo3(get, set)]
-    pub timestamp_unix_ms: i64,
-    #[pyo3(get, set)]
-    pub markets: Vec<(String, Market)>,
-    #[pyo3(get, set)]
-    pub yield_curves: Vec<(String, YieldCurve)>,
-    #[pyo3(get, set)]
-    pub credit_curves: Vec<CreditCurveSnapshot>,
-    #[pyo3(get, set)]
-    pub spot_prices: Vec<(String, f64)>,
-    #[pyo3(get, set)]
-    pub forward_curves: Vec<ForwardCurveSnapshot>,
-}
-
-impl MarketSnapshot {
-    fn to_core(&self) -> CoreMarketSnapshot {
-        CoreMarketSnapshot {
-            snapshot_id: self.snapshot_id.clone(),
-            timestamp_unix_ms: self.timestamp_unix_ms,
-            markets: self
-                .markets
-                .iter()
-                .map(|(id, market)| (id.clone(), market.to_core()))
-                .collect(),
-            yield_curves: self
-                .yield_curves
-                .iter()
-                .map(|(id, curve)| (id.clone(), curve.to_core()))
-                .collect(),
-            vol_surfaces: Vec::new(),
-            credit_curves: self
-                .credit_curves
-                .iter()
-                .map(CreditCurveSnapshot::to_core)
-                .collect(),
-            spot_prices: self.spot_prices.clone(),
-            forward_curves: self
-                .forward_curves
-                .iter()
-                .map(ForwardCurveSnapshot::to_core)
-                .collect(),
-        }
-    }
-
-    fn from_core(snapshot: CoreMarketSnapshot) -> Self {
-        Self {
-            snapshot_id: snapshot.snapshot_id,
-            timestamp_unix_ms: snapshot.timestamp_unix_ms,
-            markets: snapshot
-                .markets
-                .into_iter()
-                .map(|(id, market)| (id, Market::from_core(market)))
-                .collect(),
-            yield_curves: snapshot
-                .yield_curves
-                .into_iter()
-                .map(|(id, curve)| (id, YieldCurve::from_core(curve)))
-                .collect(),
-            credit_curves: snapshot
-                .credit_curves
-                .into_iter()
-                .map(CreditCurveSnapshot::from_core)
-                .collect(),
-            spot_prices: snapshot.spot_prices,
-            forward_curves: snapshot
-                .forward_curves
-                .into_iter()
-                .map(ForwardCurveSnapshot::from_core)
-                .collect(),
-        }
-    }
-}
-
-#[pymethods]
-impl MarketSnapshot {
-    #[new]
-    fn new(
-        snapshot_id: String,
-        timestamp_unix_ms: i64,
-        markets: Vec<(String, Market)>,
-        yield_curves: Vec<(String, YieldCurve)>,
-        credit_curves: Vec<CreditCurveSnapshot>,
-        spot_prices: Vec<(String, f64)>,
-        forward_curves: Vec<ForwardCurveSnapshot>,
-    ) -> Self {
-        Self {
-            snapshot_id,
-            timestamp_unix_ms,
-            markets,
-            yield_curves,
-            credit_curves,
-            spot_prices,
-            forward_curves,
-        }
     }
 }
 
@@ -1659,7 +1143,7 @@ pub struct Position {
 }
 
 impl Position {
-    fn to_core(&self) -> core_portfolio::Position<String> {
+    pub(crate) fn to_core(&self) -> core_portfolio::Position<String> {
         core_portfolio::Position::new(
             self.instrument.clone(),
             self.quantity,
@@ -1669,7 +1153,7 @@ impl Position {
         )
     }
 
-    fn from_core(position: core_portfolio::Position<String>) -> Self {
+    pub(crate) fn from_core(position: core_portfolio::Position<String>) -> Self {
         Self {
             instrument: position.instrument,
             quantity: position.quantity,
@@ -1720,11 +1204,11 @@ pub struct Portfolio {
 }
 
 impl Portfolio {
-    fn to_core(&self) -> core_portfolio::Portfolio<String> {
+    pub(crate) fn to_core(&self) -> core_portfolio::Portfolio<String> {
         core_portfolio::Portfolio::new(self.positions.iter().map(Position::to_core).collect())
     }
 
-    fn from_core(portfolio: core_portfolio::Portfolio<String>) -> Self {
+    pub(crate) fn from_core(portfolio: core_portfolio::Portfolio<String>) -> Self {
         Self {
             positions: portfolio
                 .positions
@@ -5059,21 +4543,20 @@ pub fn py_explained_pnl_components(
 }
 
 #[pyfunction]
-pub fn py_apply_market_shock(market: &Market, shock: &MarketShock) -> Market {
-    Market::from_core(core_scenarios::apply_market_shock(
-        &market.to_core(),
+pub fn py_apply_market_shock(market: &Market, shock: &MarketShock) -> PyResult<Market> {
+    Ok(Market::from_core(core_scenarios::apply_market_shock(
+        &market.to_core()?,
         &shock.to_core(),
-    ))
+    )))
 }
 
 #[pyfunction]
 pub fn py_diff_market_snapshots(
     previous: &MarketSnapshot,
     current: &MarketSnapshot,
-) -> MarketSnapshotDiff {
-    MarketSnapshotDiff::from_core(core_scenarios::diff_market_snapshots(
-        &previous.to_core(),
-        &current.to_core(),
+) -> PyResult<MarketSnapshotDiff> {
+    Ok(MarketSnapshotDiff::from_core(
+        core_scenarios::diff_market_snapshots(&previous.to_core()?, &current.to_core()?),
     ))
 }
 
@@ -5152,9 +4635,13 @@ pub fn py_day_over_day_attribution(
         .iter()
         .map(ScenarioTrade::to_core)
         .collect::<Vec<_>>();
-    core_scenarios::day_over_day_attribution(&core_trades, &previous.to_core(), &current.to_core())
-        .map(DayOverDayAttribution::from_core)
-        .map_err(pricing_error_to_pyerr)
+    core_scenarios::day_over_day_attribution(
+        &core_trades,
+        &previous.to_core()?,
+        &current.to_core()?,
+    )
+    .map(DayOverDayAttribution::from_core)
+    .map_err(pricing_error_to_pyerr)
 }
 
 #[pyfunction]
@@ -5170,8 +4657,8 @@ pub fn py_day_over_day_attribution_with_pricer(
         .collect::<Vec<_>>();
     core_scenarios::day_over_day_attribution_with_pricer(
         &core_trades,
-        &previous.to_core(),
-        &current.to_core(),
+        &previous.to_core()?,
+        &current.to_core()?,
         |trade, shock| {
             Python::attach(|py| {
                 let callable = pricer.bind(py);
@@ -5406,18 +4893,9 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
         py_day_over_day_attribution_with_pricer,
         module
     )?)?;
-    module.add_class::<Greeks>()?;
-    module.add_class::<YieldCurve>()?;
-    module.add_class::<SurvivalCurve>()?;
     module.add_class::<KupiecBacktestResult>()?;
     module.add_class::<ChristoffersenBacktestResult>()?;
     module.add_class::<VarBacktestResult>()?;
-    module.add_class::<SampledVolSurface>()?;
-    module.add_class::<VolSource>()?;
-    module.add_class::<Market>()?;
-    module.add_class::<ForwardCurveSnapshot>()?;
-    module.add_class::<CreditCurveSnapshot>()?;
-    module.add_class::<MarketSnapshot>()?;
     module.add_class::<MarginParams>()?;
     module.add_class::<MarginCalculator>()?;
     module.add_class::<InherentLeverage>()?;

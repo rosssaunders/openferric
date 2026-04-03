@@ -991,6 +991,12 @@ pub struct CorrelationStressScenario {
     inner: core_math::CorrelationStressScenario,
 }
 
+impl CorrelationStressScenario {
+    pub(crate) fn to_core(&self) -> core_math::CorrelationStressScenario {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl CorrelationStressScenario {
     #[staticmethod]
@@ -1033,6 +1039,13 @@ impl CorrelationStressScenario {
 #[derive(Clone)]
 pub struct FactorCorrelationModel {
     inner: core_math::FactorCorrelationModel,
+}
+
+impl FactorCorrelationModel {
+    pub(crate) fn to_core(&self) -> PyResult<core_math::FactorCorrelationModel> {
+        self.inner.validate().map_err(py_value_error)?;
+        Ok(self.inner.clone())
+    }
 }
 
 #[pymethods]
