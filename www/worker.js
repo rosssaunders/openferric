@@ -259,6 +259,9 @@ function normalizeBorosMarkets(rows) {
         expiryLabel: String(row.expiryLabel || ''),
         markApr,
         floatingApr: finiteNumber(row.floatingApr),
+        predictedFundingRate: finiteNumber(row.predictedFundingRate),
+        nextFundingTimeMs: finiteNumber(row.nextFundingTimeMs),
+        predictedFundingSource: String(row.predictedFundingSource || ''),
         midApr,
         bestBid,
         bestAsk,
@@ -297,30 +300,81 @@ function selectBorosMarket(rows, asset, marketKey) {
   return [...assetRows].sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue))[0];
 }
 
-function buildForwardChart(rows, asset, selectedMarket) {
+function buildForwardChart(rows, asset, selectedMarket, asOfMs) {
   const assetRows = rows
     .filter((row) => row.asset === asset)
     .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue));
   const groups = new Map();
   for (const row of assetRows) {
     if (!groups.has(row.venue)) {
-      groups.set(row.venue, { name: row.venue, x: [], y: [], text: [], customdata: [] });
+      groups.set(row.venue, []);
     }
-    const group = groups.get(row.venue);
-    group.x.push(row.expiryTimestampMs);
-    group.y.push((finiteNumber(row.markApr, row.midApr)) * 100);
-    group.text.push(row.marketLabel);
-    group.customdata.push(row.marketKey);
+    groups.get(row.venue).push(row);
+  }
+  const series = [];
+  for (const [venue, venueRows] of groups.entries()) {
+    const sortedRows = [...venueRows].sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs);
+    const anchorRow = sortedRows.find((row) => Number.isFinite(row.floatingApr)) || sortedRows[0];
+    const points = [];
+    const spotApr = finiteNumber(anchorRow?.floatingApr, finiteNumber(anchorRow?.markApr, anchorRow?.midApr));
+    if (Number.isFinite(spotApr)) {
+      points.push({
+        x: asOfMs,
+        y: spotApr * 100,
+        text: `${venue} spot funding`,
+        pointType: 'spot',
+      });
+    }
+    const nextFundingTimeMs = finiteNumber(anchorRow?.nextFundingTimeMs);
+    const predictedFundingRate = finiteNumber(anchorRow?.predictedFundingRate);
+    const firstExpiryMs = finiteNumber(sortedRows[0]?.expiryTimestampMs);
+    if (
+      Number.isFinite(predictedFundingRate) &&
+      Number.isFinite(nextFundingTimeMs) &&
+      nextFundingTimeMs > asOfMs &&
+      (!Number.isFinite(firstExpiryMs) || nextFundingTimeMs < firstExpiryMs)
+    ) {
+      points.push({
+        x: nextFundingTimeMs,
+        y: wasm.FundingRateCurve.perPeriodRateToApr(predictedFundingRate) * 100,
+        text: `${anchorRow?.predictedFundingSource || venue} next funding estimate`,
+        pointType: 'predicted',
+      });
+    }
+    for (const row of sortedRows) {
+      const apr = finiteNumber(row.markApr, row.midApr);
+      if (!Number.isFinite(apr)) continue;
+      points.push({
+        x: row.expiryTimestampMs,
+        y: apr * 100,
+        text: row.marketLabel,
+        pointType: 'forward',
+      });
+    }
+    points.sort((a, b) => a.x - b.x);
+    series.push({
+      name: venue,
+      x: points.map((point) => point.x),
+      y: points.map((point) => point.y),
+      text: points.map((point) => point.text),
+      hoverText: points.map((point) => {
+        if (point.pointType === 'spot') return `${venue} spot`;
+        if (point.pointType === 'predicted') return `${venue} next 8h estimate`;
+        return point.text;
+      }),
+      pointTypes: points.map((point) => point.pointType),
+    });
   }
   return {
     mode: 'market-implied',
     label: 'Forward Implied',
     xType: 'date',
-    series: [...groups.values()],
+    series,
     spotApr: finiteNumber(selectedMarket?.floatingApr),
     spotLabel: selectedMarket ? `${selectedMarket.venue} spot` : 'Spot floating',
     selectedMarketKey: selectedMarket?.marketKey || '',
     selectedMarketLabel: selectedMarket?.marketLabel || '',
+    selectedVenue: selectedMarket?.venue || '',
   };
 }
 
@@ -369,6 +423,22 @@ function buildSelectedVenueCurve(rows, selectedMarket, asOfMs) {
     rate: wasm.FundingRateCurve.aprToPerPeriodRate(floatingApr),
     timestamp_ms: firstTimestampMs,
   }];
+  const nextFundingTimeMs = finiteNumber(selectedMarket.nextFundingTimeMs, finiteNumber(venueRows[0]?.nextFundingTimeMs));
+  const predictedFundingRate = finiteNumber(selectedMarket.predictedFundingRate, finiteNumber(venueRows[0]?.predictedFundingRate));
+  const firstExpiryMs = finiteNumber(venueRows[0]?.expiryTimestampMs);
+  if (
+    Number.isFinite(predictedFundingRate) &&
+    Number.isFinite(nextFundingTimeMs) &&
+    nextFundingTimeMs > firstTimestampMs &&
+    (!Number.isFinite(firstExpiryMs) || nextFundingTimeMs < firstExpiryMs)
+  ) {
+    snapshots.push({
+      venue: selectedMarket.venue,
+      asset: selectedMarket.pair || selectedMarket.asset,
+      rate: predictedFundingRate,
+      timestamp_ms: nextFundingTimeMs,
+    });
+  }
   for (const row of venueRows) {
     const apr = finiteNumber(row.markApr, row.midApr);
     if (!Number.isFinite(apr)) continue;
@@ -406,7 +476,7 @@ function computeBorosResult(payload) {
   if (chartMode === 'historical') {
     chart = buildHistoricalChart(market.historical || {}, selectedAsset, selectedMarket);
   } else if (liveMarkets.length > 0) {
-    chart = buildForwardChart(liveMarkets, selectedAsset, selectedMarket);
+    chart = buildForwardChart(liveMarkets, selectedAsset, selectedMarket, nowMs);
   } else {
     chart = {
       mode: 'market-implied',
@@ -436,6 +506,9 @@ function computeBorosResult(payload) {
       expiryLabel: selectedMarket.expiryLabel,
       markApr: finiteNumber(selectedMarket.markApr, selectedMarket.midApr),
       floatingApr: finiteNumber(selectedMarket.floatingApr),
+      predictedFundingRate: finiteNumber(selectedMarket.predictedFundingRate),
+      nextFundingTimeMs: finiteNumber(selectedMarket.nextFundingTimeMs),
+      predictedFundingSource: String(selectedMarket.predictedFundingSource || ''),
       midApr: finiteNumber(selectedMarket.midApr, selectedMarket.markApr),
       bestBid: finiteNumber(selectedMarket.bestBid),
       bestAsk: finiteNumber(selectedMarket.bestAsk),

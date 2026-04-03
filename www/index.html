@@ -1591,6 +1591,7 @@
     const BOROS_CACHE_TTL_MS = 60000;
     const BOROS_HISTORY_LIMIT = 60;
     const BOROS_QUOTE_SUFFIXES = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'USD'];
+    const BOROS_PREDICTED_SUPPORTED_VENUES = new Set(['Binance', 'Bybit']);
     const BOROS_VENUE_LABELS = {
       BINANCE: 'Binance',
       BYBIT: 'Bybit',
@@ -1750,6 +1751,68 @@
         || a.venue.localeCompare(b.venue)
         || a.expiryTimestampMs - b.expiryTimestampMs
         || a.marketLabel.localeCompare(b.marketLabel);
+    }
+
+    async function fetchBorosPredictedFundingAnchor(venue, symbol) {
+      const upperVenue = String(venue || '');
+      const marketSymbol = String(symbol || '').trim().toUpperCase();
+      if (!BOROS_PREDICTED_SUPPORTED_VENUES.has(upperVenue) || !marketSymbol) return null;
+      try {
+        if (upperVenue === 'Bybit') {
+          const resp = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${marketSymbol}`, { cache: 'no-store' });
+          if (!resp.ok) throw new Error(`Bybit predicted funding fetch failed (${resp.status})`);
+          const json = await resp.json();
+          const ticker = Array.isArray(json?.result?.list) ? json.result.list[0] : null;
+          const predictedFundingRate = Number(ticker?.fundingRate);
+          const nextFundingTimeMs = Number(ticker?.nextFundingTime);
+          if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
+          return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'Bybit' };
+        }
+        if (upperVenue === 'Binance') {
+          const resp = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${marketSymbol}`, { cache: 'no-store' });
+          if (!resp.ok) throw new Error(`Binance predicted funding fetch failed (${resp.status})`);
+          const json = await resp.json();
+          const predictedFundingRate = Number(json?.lastFundingRate);
+          const nextFundingTimeMs = Number(json?.nextFundingTime);
+          if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
+          return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'Binance' };
+        }
+      } catch (_) {
+        return null;
+      }
+      return null;
+    }
+
+    async function attachBorosPredictedFunding(liveMarkets) {
+      const requestRows = Array.isArray(liveMarkets) ? liveMarkets.filter((row) => (
+        row
+        && row.pair
+        && BOROS_PREDICTED_SUPPORTED_VENUES.has(row.venue)
+      )) : [];
+      if (requestRows.length === 0) {
+        return Array.isArray(liveMarkets) ? liveMarkets : [];
+      }
+      const keyRows = [...new Map(
+        requestRows.map((row) => [`${row.venue}:${row.pair}`, { venue: row.venue, pair: row.pair }])
+      ).values()];
+      const predictedByKey = new Map();
+      await Promise.allSettled(keyRows.map(async ({ venue, pair }) => {
+        const anchor = await fetchBorosPredictedFundingAnchor(venue, pair);
+        if (anchor) predictedByKey.set(`${venue}:${pair}`, anchor);
+      }));
+      return (liveMarkets || []).map((row) => {
+        const anchor = predictedByKey.get(`${row.venue}:${row.pair}`);
+        return {
+          ...row,
+          predictedFundingRate: Number.isFinite(Number(anchor?.predictedFundingRate))
+            ? Number(anchor.predictedFundingRate)
+            : NaN,
+          nextFundingTimeMs: Number.isFinite(Number(anchor?.nextFundingTimeMs))
+            ? Number(anchor.nextFundingTimeMs)
+            : NaN,
+          predictedFundingSource: anchor?.predictedFundingSource || '',
+        };
+      });
     }
 
     function pickDefaultBorosMarket(asset) {
@@ -1949,10 +2012,11 @@
         const resp = await fetch(BOROS_API_URL, { cache: 'no-store' });
         if (!resp.ok) throw new Error(`Boros markets fetch failed (${resp.status})`);
         const json = await resp.json();
-        const liveMarkets = extractBorosMarketRows(json)
+        const baseLiveMarkets = extractBorosMarketRows(json)
           .map(normalizeBorosApiMarket)
           .filter(Boolean)
           .sort(borosLiveMarketSort);
+        const liveMarkets = await attachBorosPredictedFunding(baseLiveMarkets);
         if (liveMarkets.length === 0) throw new Error('No active Boros markets returned');
         borosState.market.liveMarkets = liveMarkets;
         borosState.market.liveLastUpdated = Date.now();
@@ -6928,20 +6992,61 @@
       }
       p.noteEl.textContent = borosState.market.viewMode === 'historical'
         ? `Historical Binance/Bybit funding APR for ${borosState.market.selectedAsset} with Boros spot reference`
-        : `Forward implied term structure for ${borosState.market.selectedAsset} across ${lastBorosResult?.marketSummary?.venueCount || chart.series.length} venue(s)`;
-      const traces = chart.series.map((series) => ({
-        type: 'scatter',
-        mode: 'lines+markers',
-        name: series.name,
-        x: (series.x || []).map((value) => new Date(value)),
-        y: series.y || [],
-        text: series.text || [],
-        line: { color: borosVenueColor(series.name), width: chart.mode === 'historical' ? 1.8 : 2.4 },
-        marker: { size: chart.mode === 'historical' ? 3 : 5 },
-        hovertemplate: chart.mode === 'historical'
-          ? '%{fullData.name}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra></extra>'
-          : '%{text}<br>%{x|%d %b %Y}<br>%{y:.3f}%<extra>%{fullData.name}</extra>',
-      }));
+        : `Forward implied term structure for ${borosState.market.selectedAsset} with spot and short-end funding anchors across ${lastBorosResult?.marketSummary?.venueCount || chart.series.length} venue(s)`;
+      const traces = [];
+      for (const series of chart.series) {
+        const lineColor = borosVenueColor(series.name);
+        const dates = (series.x || []).map((value) => new Date(value));
+        if (chart.mode === 'historical') {
+          traces.push({
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: series.name,
+            x: dates,
+            y: series.y || [],
+            text: series.text || [],
+            line: { color: lineColor, width: 1.8 },
+            marker: { size: 3 },
+            hovertemplate: '%{fullData.name}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra></extra>',
+          });
+          continue;
+        }
+
+        const pointTypes = Array.isArray(series.pointTypes) ? series.pointTypes : [];
+        const hoverText = Array.isArray(series.hoverText) ? series.hoverText : (series.text || []);
+        traces.push({
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: series.name,
+          x: dates,
+          y: series.y || [],
+          text: hoverText,
+          line: { color: lineColor, width: 2.4 },
+          marker: {
+            size: pointTypes.map((type) => (type === 'spot' ? 11 : type === 'predicted' ? 7 : 5)),
+            symbol: pointTypes.map((type) => (type === 'spot' ? 'diamond' : type === 'predicted' ? 'square' : 'circle')),
+            color: lineColor,
+            line: { color: '#0b1117', width: 1.2 },
+          },
+          hovertemplate: '%{text}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra>%{fullData.name}</extra>',
+        });
+
+        const spotIndex = pointTypes.indexOf('spot');
+        if (spotIndex >= 0 && (!chart.selectedVenue || series.name === chart.selectedVenue)) {
+          traces.push({
+            type: 'scatter',
+            mode: 'text',
+            name: `${series.name} Spot`,
+            x: [dates[spotIndex]],
+            y: [series.y?.[spotIndex]],
+            text: ['Spot'],
+            textposition: 'middle right',
+            textfont: { color: '#d7e0ea', size: 10, family: 'JetBrains Mono' },
+            hoverinfo: 'skip',
+            showlegend: false,
+          });
+        }
+      }
       const spotPct = Number.isFinite(chart.spotApr) ? chart.spotApr * 100 : NaN;
       const annotations = [{
         xref: 'paper',
@@ -6953,7 +7058,7 @@
         font: { color: '#8ea1b8', size: 10, family: 'JetBrains Mono' },
       }];
       const shapes = [];
-      if (Number.isFinite(spotPct)) {
+      if (chart.mode === 'historical' && Number.isFinite(spotPct)) {
         shapes.push({
           type: 'line',
           xref: 'paper',
