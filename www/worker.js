@@ -280,6 +280,96 @@ function normalizeBorosMarkets(rows) {
     .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs || a.venue.localeCompare(b.venue));
 }
 
+function normalizeDiscountCurveSelection(raw) {
+  const kind = String(raw?.kind || 'none').toLowerCase();
+  return {
+    kind: kind === 'flat' || kind === 'pendle' ? kind : 'none',
+    flatRateApr: finiteNumber(raw?.flatRateApr),
+    pendleMarkets: Array.isArray(raw?.pendleMarkets) ? raw.pendleMarkets : [],
+  };
+}
+
+function discountCurveLabel(kind) {
+  if (kind === 'flat') return 'Flat Rate';
+  if (kind === 'pendle') return 'Pendle PT-implied';
+  return 'None (undiscounted)';
+}
+
+function normalizeExpiryTimestampMs(value) {
+  const timestamp = finiteNumber(value);
+  if (!Number.isFinite(timestamp)) return NaN;
+  return timestamp < 1e12 ? timestamp * 1000 : timestamp;
+}
+
+function normalizePendleDiscountMarkets(rows, asOfMs) {
+  if (!Array.isArray(rows)) return [];
+  const grouped = new Map();
+  for (const row of rows) {
+    const expiryTimestampMs = normalizeExpiryTimestampMs(row?.expiryTimestampMs);
+    const impliedApy = finiteNumber(row?.impliedApy);
+    if (!Number.isFinite(expiryTimestampMs) || !Number.isFinite(impliedApy) || expiryTimestampMs <= asOfMs) {
+      continue;
+    }
+    const group = grouped.get(expiryTimestampMs) || { expiryTimestampMs, apys: [] };
+    group.apys.push(impliedApy);
+    grouped.set(expiryTimestampMs, group);
+  }
+  return [...grouped.values()]
+    .map((group) => ({
+      expiryTimestampMs: group.expiryTimestampMs,
+      impliedApy: group.apys.reduce((sum, value) => sum + value, 0) / group.apys.length,
+    }))
+    .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs);
+}
+
+function settlementTenorsYears(swap, asOfMs) {
+  const schedule = typeof swap.settlementSchedule === 'function' ? swap.settlementSchedule() : [];
+  return (Array.isArray(schedule) ? schedule : [])
+    .map((settlementMs) => (finiteNumber(settlementMs) - asOfMs) / BOROS_MS_PER_YEAR)
+    .filter((t) => Number.isFinite(t) && t > 0)
+    .sort((a, b) => a - b);
+}
+
+function buildFlatDiscountCurve(swap, asOfMs, flatRateApr) {
+  if (!Number.isFinite(flatRateApr)) {
+    return { curve: null, error: 'flat discount rate is invalid' };
+  }
+  const tenors = settlementTenorsYears(swap, asOfMs);
+  if (tenors.length === 0) {
+    return { curve: null, error: '' };
+  }
+  const discountFactors = tenors.map((t) => Math.exp(-flatRateApr * t));
+  return { curve: new wasm.YieldCurve(tenors, discountFactors), error: '' };
+}
+
+function buildPendleDiscountCurve(asOfMs, rows) {
+  const markets = normalizePendleDiscountMarkets(rows, asOfMs);
+  if (markets.length === 0) {
+    return { curve: null, error: 'Pendle stablecoin discount curve unavailable' };
+  }
+  const tenors = markets.map((row) => (row.expiryTimestampMs - asOfMs) / BOROS_MS_PER_YEAR);
+  const discountFactors = markets.map((row, index) => {
+    const base = 1 + row.impliedApy;
+    return base > 0 ? Math.pow(base, -tenors[index]) : NaN;
+  });
+  if (discountFactors.some((value) => !Number.isFinite(value) || value <= 0)) {
+    return { curve: null, error: 'Pendle implied APY data is invalid' };
+  }
+  return { curve: new wasm.YieldCurve(tenors, discountFactors), error: '' };
+}
+
+function buildFundingSwapDiscountCurve(selection, swap, asOfMs) {
+  if (selection.kind === 'flat') {
+    const built = buildFlatDiscountCurve(swap, asOfMs, selection.flatRateApr);
+    return { curve: built.curve, label: discountCurveLabel(selection.kind), error: built.error };
+  }
+  if (selection.kind === 'pendle') {
+    const built = buildPendleDiscountCurve(asOfMs, selection.pendleMarkets);
+    return { curve: built.curve, label: discountCurveLabel(selection.kind), error: built.error };
+  }
+  return { curve: null, label: discountCurveLabel('none'), error: '' };
+}
+
 function borosAssets(rows) {
   return [...new Set(rows.map((row) => row.asset))].sort((a, b) => a.localeCompare(b));
 }
@@ -467,6 +557,7 @@ function computeBorosResult(payload) {
   const pricer = payload?.pricer || {};
   const margin = payload?.margin || {};
   const nowMs = finiteNumber(payload?.nowMs, Date.now());
+  const discountSelection = normalizeDiscountCurveSelection(payload?.discountCurve);
   const liveMarkets = normalizeBorosMarkets(market.liveMarkets);
   const selectedAsset = selectBorosAsset(liveMarkets, String(market.selectedAsset || '').toUpperCase());
   const selectedMarket = selectBorosMarket(liveMarkets, selectedAsset, market.selectedMarketKey);
@@ -547,7 +638,8 @@ function computeBorosResult(payload) {
   );
   swap.settlement_interval_hours = 8;
 
-  const risks = wasm.funding_rate_swap_risks(swap, pricingCurve, nowMs);
+  const discountCurveState = buildFundingSwapDiscountCurve(discountSelection, swap, nowMs);
+  const risks = wasm.funding_rate_swap_risks(swap, pricingCurve, nowMs, discountCurveState.curve);
 
   const timeToMaturityYears = Math.max(
     wasm.FundingRateCurve.settlementIntervalYears(),
@@ -626,6 +718,8 @@ function computeBorosResult(payload) {
       askApr: finiteNumber(selectedMarket.bestAsk),
       spreadApr: finiteNumber(selectedMarket.bestAsk) - finiteNumber(selectedMarket.bestBid),
       floatingApr: finiteNumber(selectedMarket.floatingApr),
+      discountCurveLabel: discountCurveState.label,
+      discountCurveError: discountCurveState.error,
       mtm: risks.mtm,
       dv01: risks.dv01,
       theta: risks.theta,

@@ -5,7 +5,7 @@
 use chrono::{DateTime, Duration, Utc};
 
 use crate::instruments::FundingRateSwap;
-use crate::rates::FundingRateCurve;
+use crate::rates::{FundingRateCurve, YieldCurve};
 
 /// Standard 1bp rate bump.
 pub const FUNDING_RATE_BUMP_BP: f64 = 1.0e-4;
@@ -25,35 +25,57 @@ pub struct FundingRateSwapRisks {
 pub fn funding_rate_swap_mtm(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
+    discount_curve: Option<&YieldCurve>,
     as_of: DateTime<Utc>,
 ) -> f64 {
-    swap.mark_to_market(curve, as_of)
+    swap.mark_to_market(curve, discount_curve, as_of)
 }
 
 /// PV change from a 1bp parallel shift in the funding curve.
 pub fn funding_rate_swap_dv01(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
+    discount_curve: Option<&YieldCurve>,
     as_of: DateTime<Utc>,
 ) -> f64 {
     let bumped_curve = curve.parallel_shifted(FUNDING_RATE_BUMP_BP);
-    swap.mark_to_market(&bumped_curve, as_of) - swap.mark_to_market(curve, as_of)
+    swap.mark_to_market(&bumped_curve, discount_curve, as_of)
+        - swap.mark_to_market(curve, discount_curve, as_of)
+}
+
+/// PV change from a 1bp parallel shift in the discount curve zero rates.
+pub fn funding_rate_swap_discount_dv01(
+    swap: &FundingRateSwap,
+    curve: &FundingRateCurve,
+    discount_curve: Option<&YieldCurve>,
+    as_of: DateTime<Utc>,
+) -> f64 {
+    let Some(discount_curve) = discount_curve else {
+        return 0.0;
+    };
+
+    let bumped_curve = bump_discount_curve(discount_curve, FUNDING_RATE_BUMP_BP);
+    swap.mark_to_market(curve, Some(&bumped_curve), as_of)
+        - swap.mark_to_market(curve, Some(discount_curve), as_of)
 }
 
 /// PV change from a one vol-point shift in funding-rate volatility.
 pub fn funding_rate_swap_vega(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
+    discount_curve: Option<&YieldCurve>,
     as_of: DateTime<Utc>,
 ) -> f64 {
     let bumped_curve = curve.volatility_shifted(FUNDING_RATE_VOL_BUMP);
-    swap.mark_to_market(&bumped_curve, as_of) - swap.mark_to_market(curve, as_of)
+    swap.mark_to_market(&bumped_curve, discount_curve, as_of)
+        - swap.mark_to_market(curve, discount_curve, as_of)
 }
 
 /// Time decay from advancing one funding settlement interval.
 pub fn funding_rate_swap_theta(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
+    discount_curve: Option<&YieldCurve>,
     as_of: DateTime<Utc>,
 ) -> f64 {
     let next_as_of = swap
@@ -61,21 +83,36 @@ pub fn funding_rate_swap_theta(
         .into_iter()
         .find(|settlement| *settlement > as_of)
         .unwrap_or(as_of + Duration::hours(i64::from(swap.settlement_interval_hours)));
-    swap.mark_to_market(curve, next_as_of) - swap.mark_to_market(curve, as_of)
+    swap.mark_to_market(curve, discount_curve, next_as_of)
+        - swap.mark_to_market(curve, discount_curve, as_of)
 }
 
 /// Aggregates MTM and the standard discrete funding sensitivities.
 pub fn funding_rate_swap_risks(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
+    discount_curve: Option<&YieldCurve>,
     as_of: DateTime<Utc>,
 ) -> FundingRateSwapRisks {
     FundingRateSwapRisks {
-        mtm: funding_rate_swap_mtm(swap, curve, as_of),
-        dv01: funding_rate_swap_dv01(swap, curve, as_of),
-        vega: funding_rate_swap_vega(swap, curve, as_of),
-        theta: funding_rate_swap_theta(swap, curve, as_of),
+        mtm: funding_rate_swap_mtm(swap, curve, discount_curve, as_of),
+        dv01: funding_rate_swap_dv01(swap, curve, discount_curve, as_of),
+        vega: funding_rate_swap_vega(swap, curve, discount_curve, as_of),
+        theta: funding_rate_swap_theta(swap, curve, discount_curve, as_of),
     }
+}
+
+fn bump_discount_curve(discount_curve: &YieldCurve, bump: f64) -> YieldCurve {
+    let bumped_nodes = discount_curve
+        .tenors
+        .iter()
+        .map(|(t, df)| (*t, df * (-bump * *t).exp()))
+        .collect::<Vec<_>>();
+    YieldCurve::new_with_settings(
+        bumped_nodes.clone(),
+        discount_curve.interpolation_settings(),
+    )
+    .unwrap_or_else(|_| YieldCurve::new(bumped_nodes))
 }
 
 #[cfg(test)]
@@ -83,9 +120,12 @@ mod tests {
     use approx::assert_relative_eq;
     use chrono::{DateTime, NaiveDate, Utc};
 
-    use super::{FUNDING_RATE_BUMP_BP, funding_rate_swap_dv01};
+    use super::{
+        FUNDING_RATE_BUMP_BP, funding_rate_swap_discount_dv01, funding_rate_swap_dv01,
+        funding_rate_swap_mtm,
+    };
     use crate::instruments::FundingRateSwap;
-    use crate::rates::FundingRateCurve;
+    use crate::rates::{FundingRateCurve, YieldCurve};
 
     fn dt(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Utc> {
         DateTime::from_naive_utc_and_offset(
@@ -118,8 +158,50 @@ mod tests {
             * FUNDING_RATE_BUMP_BP;
 
         assert_relative_eq!(
-            funding_rate_swap_dv01(&swap, &curve, as_of),
+            funding_rate_swap_dv01(&swap, &curve, None, as_of),
             expected,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn discount_dv01_matches_discount_curve_finite_difference() {
+        let swap = FundingRateSwap {
+            notional: 1_000.0,
+            fixed_rate: 0.10,
+            entry_time: dt(2026, 1, 1, 0),
+            maturity: dt(2026, 1, 2, 0),
+            settlement_interval_hours: 8,
+            venue: "OKX".to_string(),
+            asset: "BTCUSDT".to_string(),
+        };
+        let curve = FundingRateCurve::flat(0.13);
+        let interval = swap.interval_year_fraction();
+        let discount_curve = YieldCurve::new(vec![
+            (interval, 0.99),
+            (2.0 * interval, 0.97),
+            (3.0 * interval, 0.95),
+        ]);
+        let as_of = dt(2026, 1, 1, 0);
+
+        let expected = funding_rate_swap_mtm(
+            &swap,
+            &curve,
+            Some(&super::bump_discount_curve(
+                &discount_curve,
+                FUNDING_RATE_BUMP_BP,
+            )),
+            as_of,
+        ) - funding_rate_swap_mtm(&swap, &curve, Some(&discount_curve), as_of);
+
+        assert_relative_eq!(
+            funding_rate_swap_discount_dv01(&swap, &curve, Some(&discount_curve), as_of),
+            expected,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            funding_rate_swap_discount_dv01(&swap, &curve, None, as_of),
+            0.0,
             epsilon = 1.0e-12
         );
     }

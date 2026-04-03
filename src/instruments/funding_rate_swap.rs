@@ -5,9 +5,10 @@
 use chrono::{DateTime, Duration, Utc};
 
 use crate::core::{Instrument, PricingError};
-use crate::rates::FundingRateCurve;
+use crate::rates::{FundingRateCurve, YieldCurve};
 
 const HOURS_PER_YEAR: f64 = 8_760.0;
+const SECONDS_PER_YEAR: f64 = HOURS_PER_YEAR * 3_600.0;
 const DEFAULT_SETTLEMENT_INTERVAL_HOURS: u32 = 8;
 
 /// Discrete funding-rate swap settled on periodic UTC boundaries.
@@ -133,7 +134,12 @@ impl FundingRateSwap {
     }
 
     /// Mark-to-market of remaining unsettled intervals using the funding curve.
-    pub fn mark_to_market(&self, curve: &FundingRateCurve, as_of: DateTime<Utc>) -> f64 {
+    pub fn mark_to_market(
+        &self,
+        curve: &FundingRateCurve,
+        discount_curve: Option<&YieldCurve>,
+        as_of: DateTime<Utc>,
+    ) -> f64 {
         self.settlement_schedule()
             .into_iter()
             .filter(|settlement| *settlement > as_of)
@@ -141,7 +147,10 @@ impl FundingRateSwap {
                 let interval_start =
                     settlement - Duration::hours(i64::from(self.settlement_interval_hours));
                 let expected_rate = curve.expected_rate(as_of, interval_start, settlement);
-                self.interval_pnl_for_rate(expected_rate)
+                let t = (settlement.signed_duration_since(as_of).num_seconds() as f64)
+                    / SECONDS_PER_YEAR;
+                let discount_factor = discount_curve.map_or(1.0, |dc| dc.discount_factor(t));
+                self.interval_pnl_for_rate(expected_rate) * discount_factor
             })
             .sum()
     }
@@ -184,7 +193,7 @@ mod tests {
     use chrono::{DateTime, NaiveDate, Utc};
 
     use super::FundingRateSwap;
-    use crate::rates::FundingRateCurve;
+    use crate::rates::{FundingRateCurve, YieldCurve};
 
     fn dt(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Utc> {
         DateTime::from_naive_utc_and_offset(
@@ -253,8 +262,30 @@ mod tests {
         };
         let curve = FundingRateCurve::flat(0.13);
 
-        let mtm = swap.mark_to_market(&curve, dt(2026, 1, 1, 8));
+        let mtm = swap.mark_to_market(&curve, None, dt(2026, 1, 1, 8));
         let expected = 2.0 * (0.13 - 0.10) * swap.notional * swap.interval_year_fraction();
+
+        assert_relative_eq!(mtm, expected, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn mtm_applies_discount_curve_to_future_cashflows() {
+        let swap = FundingRateSwap {
+            notional: 1_000.0,
+            fixed_rate: 0.10,
+            entry_time: dt(2026, 1, 1, 0),
+            maturity: dt(2026, 1, 2, 0),
+            settlement_interval_hours: 8,
+            venue: "Binance".to_string(),
+            asset: "BTCUSDT".to_string(),
+        };
+        let curve = FundingRateCurve::flat(0.13);
+        let interval = swap.interval_year_fraction();
+        let discount_curve = YieldCurve::new(vec![(interval, 0.99), (2.0 * interval, 0.97)]);
+
+        let mtm = swap.mark_to_market(&curve, Some(&discount_curve), dt(2026, 1, 1, 8));
+        let expected_interval_pnl = (0.13 - 0.10) * swap.notional * interval;
+        let expected = expected_interval_pnl * 0.99 + expected_interval_pnl * 0.97;
 
         assert_relative_eq!(mtm, expected, epsilon = 1.0e-12);
     }

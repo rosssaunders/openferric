@@ -349,7 +349,7 @@ fn analyze_reference_swap(curve: &FundingRateCurve) -> Result<SwapAnalysis, Box<
         .collect::<Vec<_>>();
 
     let realized_pnl = swap.realized_pnl(&realized_fixings);
-    let mtm = funding_rate_swap_mtm(&swap, curve, as_of);
+    let mtm = funding_rate_swap_mtm(&swap, curve, None, as_of);
     let intervals = build_interval_breakdown(&swap, curve, as_of, &fixing_lookup);
 
     Ok(SwapAnalysis {
@@ -450,9 +450,9 @@ fn display_swap_pricing(analysis: &SwapAnalysis) {
 fn display_swap_risks(swap: &FundingRateSwap, curve: &FundingRateCurve, as_of: DateTime<Utc>) {
     print_section("4. Funding swap risk sensitivities");
 
-    let dv01 = funding_rate_swap_dv01(swap, curve, as_of);
-    let theta = funding_rate_swap_theta(swap, curve, as_of);
-    let report = funding_rate_swap_risks(swap, curve, as_of);
+    let dv01 = funding_rate_swap_dv01(swap, curve, None, as_of);
+    let theta = funding_rate_swap_theta(swap, curve, None, as_of);
+    let report = funding_rate_swap_risks(swap, curve, None, as_of);
 
     println!("Standalone checks:");
     println!("  DV01 (1bp parallel APR shift): {:>10.4}", dv01);

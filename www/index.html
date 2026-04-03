@@ -1623,6 +1623,9 @@
     const BOROS_API_URL = 'https://api.boros.finance/open-api/v1/markets';
     const BOROS_CACHE_TTL_MS = 60000;
     const BOROS_HISTORY_LIMIT = 60;
+    const PENDLE_DISCOUNT_API_URL = 'https://api-v2.pendle.finance/core/v1/1/markets?is_expired=false&limit=50';
+    const PENDLE_CACHE_TTL_MS = 10 * 60 * 1000;
+    const PENDLE_STABLECOIN_KEYWORDS = ['SUSDAI', 'USDAI', 'SUSDE', 'USDE', 'USDS', 'USDT', 'USDC', 'FDUSD', 'DAI'];
     const BOROS_QUOTE_SUFFIXES = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'USD'];
     const BOROS_PREDICTED_SUPPORTED_VENUES = new Set(['Binance', 'Bybit', 'OKX']);
     const BOROS_VENUE_LABELS = {
@@ -1634,6 +1637,7 @@
     let lastBorosResult = null;
     let borosPollTimer = null;
     let borosFetchInFlight = false;
+    let pendleDiscountFetchInFlight = false;
     let activeFunction = 'VOLSURF';
     const borosHistoricalFetches = new Set();
     const borosState = {
@@ -1652,6 +1656,11 @@
         fixedRatePct: NaN,
         entryDate: '',
         maturityDate: '',
+        discountCurveMode: 'none',
+        discountFlatRatePct: 5,
+        discountPendleMarkets: [],
+        discountPendleLastUpdated: 0,
+        discountPendleError: '',
         lastSyncedMarketKey: '',
       },
       margin: {
@@ -1690,6 +1699,38 @@
         if (Number.isFinite(value)) return value;
       }
       return NaN;
+    }
+
+    function readNestedField(obj, path) {
+      return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+    }
+
+    function pickNestedNumericField(obj, paths) {
+      for (const path of paths) {
+        const value = Number(readNestedField(obj, path));
+        if (Number.isFinite(value)) return value;
+      }
+      return NaN;
+    }
+
+    function pickNestedStringField(obj, paths) {
+      for (const path of paths) {
+        const value = readNestedField(obj, path);
+        if (value != null && String(value).trim()) return String(value).trim();
+      }
+      return '';
+    }
+
+    function normalizeApiTimestampMs(value) {
+      const timestamp = Number(value);
+      if (!Number.isFinite(timestamp)) return NaN;
+      return timestamp < 1e12 ? timestamp * 1000 : timestamp;
+    }
+
+    function borosDiscountCurveLabel(mode) {
+      if (mode === 'flat') return 'Flat Rate';
+      if (mode === 'pendle') return 'Pendle PT-implied';
+      return 'None (undiscounted)';
     }
 
     function inferBorosPair(imData) {
@@ -1777,6 +1818,84 @@
       if (Array.isArray(payload?.markets)) return payload.markets;
       if (Array.isArray(payload?.result?.markets)) return payload.result.markets;
       return [];
+    }
+
+    function extractPendleMarketRows(payload) {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.results)) return payload.results;
+      if (Array.isArray(payload?.result)) return payload.result;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload?.markets)) return payload.markets;
+      if (Array.isArray(payload?.result?.markets)) return payload.result.markets;
+      if (Array.isArray(payload?.data?.markets)) return payload.data.markets;
+      return [];
+    }
+
+    function normalizePendleDiscountMarket(row) {
+      const impliedApy = pickNestedNumericField(row, [
+        'impliedApy',
+        'impliedAPY',
+        'market.impliedApy',
+        'pt.impliedApy',
+      ]);
+      const expiryTimestampMs = normalizeApiTimestampMs(pickNestedNumericField(row, [
+        'expiry',
+        'expiryTs',
+        'expiryTimestamp',
+        'maturity',
+        'maturityTime',
+        'pt.expiry',
+      ]));
+      const underlying = pickNestedStringField(row, [
+        'underlyingAsset.symbol',
+        'underlying.symbol',
+        'underlying.name',
+        'asset.symbol',
+        'sy.symbol',
+        'pt.name',
+        'name',
+        'symbol',
+      ]);
+      const symbol = pickNestedStringField(row, ['symbol', 'name', 'pt.name']);
+      const stableText = `${underlying} ${symbol}`.toUpperCase();
+      const isStable = PENDLE_STABLECOIN_KEYWORDS.some((keyword) => stableText.includes(keyword));
+      if (!isStable || !Number.isFinite(impliedApy) || !Number.isFinite(expiryTimestampMs)) return null;
+      return {
+        symbol,
+        underlying,
+        impliedApy,
+        expiryTimestampMs,
+      };
+    }
+
+    async function fetchPendleDiscountMarkets(force = false) {
+      const ageMs = Date.now() - borosState.pricer.discountPendleLastUpdated;
+      if (!force && borosState.pricer.discountPendleLastUpdated && ageMs < PENDLE_CACHE_TTL_MS) {
+        if (borosState.pricer.discountCurveMode === 'pendle') triggerBorosCompute('pendle-cache');
+        return;
+      }
+      if (pendleDiscountFetchInFlight) return;
+      pendleDiscountFetchInFlight = true;
+      borosState.pricer.discountPendleError = '';
+      try {
+        const resp = await fetch(PENDLE_DISCOUNT_API_URL, { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`Pendle markets fetch failed (${resp.status})`);
+        const json = await resp.json();
+        borosState.pricer.discountPendleMarkets = extractPendleMarketRows(json)
+          .map(normalizePendleDiscountMarket)
+          .filter(Boolean)
+          .sort((a, b) => a.expiryTimestampMs - b.expiryTimestampMs);
+        borosState.pricer.discountPendleLastUpdated = Date.now();
+        if (borosState.pricer.discountPendleMarkets.length === 0) {
+          borosState.pricer.discountPendleError = 'No Pendle stablecoin markets returned';
+        }
+      } catch (err) {
+        borosState.pricer.discountPendleError = err?.message || 'Pendle discount curve unavailable';
+      } finally {
+        pendleDiscountFetchInFlight = false;
+        if (panels.borosswap) renderBorosPanels();
+        if (borosState.pricer.discountCurveMode === 'pendle') triggerBorosCompute('pendle');
+      }
     }
 
     function borosLiveMarketSort(a, b) {
@@ -1947,6 +2066,15 @@
       }
     }
 
+    function setBorosDiscountCurveMode(mode) {
+      const nextMode = mode === 'flat' || mode === 'pendle' ? mode : 'none';
+      if (borosState.pricer.discountCurveMode === nextMode) return;
+      borosState.pricer.discountCurveMode = nextMode;
+      renderBorosPanels();
+      if (nextMode === 'pendle') fetchPendleDiscountMarkets(false);
+      triggerBorosCompute('discount-mode');
+    }
+
     function borosPayload() {
       updateBorosDefaults();
       const historical = borosHistoricalState(borosState.market.selectedAsset);
@@ -1968,6 +2096,11 @@
           fixedRateApr: (Number(borosState.pricer.fixedRatePct) || 0) / 100,
           entryTimeMs: dateInputToMs(borosState.pricer.entryDate),
           maturityTimeMs: dateInputToMs(borosState.pricer.maturityDate),
+        },
+        discountCurve: {
+          kind: borosState.pricer.discountCurveMode,
+          flatRateApr: (Number(borosState.pricer.discountFlatRatePct) || 0) / 100,
+          pendleMarkets: borosState.pricer.discountPendleMarkets,
         },
         margin: {
           positionSize: Number(borosState.margin.positionSize) || 0,
@@ -4018,6 +4151,8 @@
           + '<div class="boros-field"><label>Fixed Rate APR (%)</label><input class="boros-fixed-rate" type="number" step="0.01"></div>'
           + '<div class="boros-field"><label>Entry Date</label><input class="boros-entry-date" type="date"></div>'
           + '<div class="boros-field"><label>Maturity Date</label><input class="boros-maturity-date" type="date"></div>'
+          + '<div class="boros-field"><label>Discount Curve</label><select class="boros-discount-mode"><option value="none">None (undiscounted)</option><option value="flat">Flat Rate</option><option value="pendle">Pendle PT-implied</option></select></div>'
+          + '<div class="boros-field boros-discount-flat-field"><label>Flat Discount APR (%)</label><input class="boros-discount-flat-rate" type="number" step="0.01"></div>'
           + '</div>'
           + '<div class="boros-actions"><button class="tab-btn boros-price-btn">Price</button><span class="boros-note boros-price-note">Awaiting market data</span></div>'
           + '<div class="tbl-wrap"><table class="boros-table"><tbody></tbody></table></div>';
@@ -4025,18 +4160,27 @@
         this.fixedRateInput = this._el.querySelector('.boros-fixed-rate');
         this.entryDateInput = this._el.querySelector('.boros-entry-date');
         this.maturityDateInput = this._el.querySelector('.boros-maturity-date');
+        this.discountModeInput = this._el.querySelector('.boros-discount-mode');
+        this.discountFlatField = this._el.querySelector('.boros-discount-flat-field');
+        this.discountFlatRateInput = this._el.querySelector('.boros-discount-flat-rate');
         this.marketEl = this._el.querySelector('.boros-pricer-market');
         this.midEl = this._el.querySelector('.boros-pricer-mid');
         this.bidAskEl = this._el.querySelector('.boros-pricer-bidask');
         this.spreadEl = this._el.querySelector('.boros-pricer-spread');
         this.noteEl = this._el.querySelector('.boros-price-note');
         this.tbody = this._el.querySelector('tbody');
+        this.discountModeInput.addEventListener('change', () => {
+          setBorosDiscountCurveMode(this.discountModeInput.value);
+        });
         this._el.querySelector('.boros-price-btn').addEventListener('click', () => {
           borosState.pricer.notional = Number(this.notionalInput.value) || borosState.pricer.notional;
           borosState.pricer.fixedRatePct = Number(this.fixedRateInput.value) || 0;
           borosState.pricer.entryDate = this.entryDateInput.value || borosState.pricer.entryDate;
           borosState.pricer.maturityDate = this.maturityDateInput.value || borosState.pricer.maturityDate;
+          borosState.pricer.discountCurveMode = this.discountModeInput.value || 'none';
+          borosState.pricer.discountFlatRatePct = Number(this.discountFlatRateInput.value) || 0;
           borosState.margin.positionSize = -Math.abs(borosState.pricer.notional);
+          if (borosState.pricer.discountCurveMode === 'pendle') fetchPendleDiscountMarkets(false);
           if (panels.borosmargin) renderBorosPanels();
           triggerBorosCompute('swap');
         });
@@ -7210,6 +7354,9 @@
       p.fixedRateInput.value = Number.isFinite(borosState.pricer.fixedRatePct) ? String(borosState.pricer.fixedRatePct) : '';
       p.entryDateInput.value = borosState.pricer.entryDate;
       p.maturityDateInput.value = borosState.pricer.maturityDate;
+      p.discountModeInput.value = borosState.pricer.discountCurveMode;
+      p.discountFlatRateInput.value = Number.isFinite(borosState.pricer.discountFlatRatePct) ? String(borosState.pricer.discountFlatRatePct) : '';
+      p.discountFlatField.style.display = borosState.pricer.discountCurveMode === 'flat' ? '' : 'none';
       const selectedMarket = lastBorosResult?.marketSummary?.selectedMarket || getSelectedBorosMarket();
       const pricer = lastBorosResult?.pricer || null;
       p.marketEl.textContent = selectedMarket ? selectedMarket.marketLabel : '--';
@@ -7224,16 +7371,23 @@
         rows.push(
           ['Mark APR', fmtPct(r.markApr, 3)],
           ['Spot Floating', fmtPct(r.floatingApr, 3)],
+          ['Discount Curve', r.discountCurveLabel || borosDiscountCurveLabel(borosState.pricer.discountCurveMode)],
           ['MTM', fmtSignedMoney(r.mtm)],
           ['DV01', fmtSignedMoney(r.dv01)],
           ['Theta', fmtSignedMoney(r.theta)],
           ['Vega', fmtSignedMoney(r.vega)],
           ['As Of', fmtBorosDateTime(lastBorosResult.marketSummary?.latestTimestampMs)]
         );
-        p.noteEl.textContent = `Fixed rate seeded from ${r.venue} ${r.asset} Boros mark APR; dates remain editable`;
+        p.noteEl.textContent = r.discountCurveError
+          ? `${r.discountCurveError}; pricing fell back to undiscounted cash flows`
+          : `Fixed rate seeded from ${r.venue} ${r.asset} Boros mark APR; dates remain editable`;
       } else {
         rows.push(['Status', lastBorosResult?.pricerError || currentBorosStatus()]);
-        p.noteEl.textContent = 'Awaiting selected Boros market';
+        p.noteEl.textContent = borosState.pricer.discountCurveMode === 'pendle' && borosState.pricer.discountPendleError
+          ? borosState.pricer.discountPendleError
+          : borosState.pricer.discountCurveMode === 'pendle'
+            ? 'Loading Pendle discount curve'
+            : 'Awaiting selected Boros market';
       }
       p.tbody.innerHTML = rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td></tr>`).join('');
     }

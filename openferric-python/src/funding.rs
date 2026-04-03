@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use openferric_core::instruments::FundingRateSwap as CoreFundingRateSwap;
 use openferric_core::pricing::funding_rate_swap::{
-    FundingRateSwapRisks as CoreFundingRateSwapRisks, funding_rate_swap_dv01 as core_dv01,
+    FundingRateSwapRisks as CoreFundingRateSwapRisks,
+    funding_rate_swap_discount_dv01 as core_discount_dv01, funding_rate_swap_dv01 as core_dv01,
     funding_rate_swap_mtm as core_mtm, funding_rate_swap_risks as core_risks,
     funding_rate_swap_theta as core_theta, funding_rate_swap_vega as core_vega,
 };
@@ -14,6 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::helpers::{format_datetime, parse_datetime};
+use openferric_core::rates::YieldCurve as CoreYieldCurve;
 
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
@@ -419,66 +421,103 @@ impl FundingRateSwapRisks {
 }
 
 #[pyfunction]
+#[pyo3(signature = (swap, curve, as_of, discount_curve=None))]
 pub fn funding_rate_swap_mtm(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
+    discount_curve: Option<Vec<(f64, f64)>>,
 ) -> PyResult<f64> {
+    let dc_ref = discount_curve.map(CoreYieldCurve::new);
     Ok(core_mtm(
         &swap.to_core()?,
         &curve.inner,
+        dc_ref.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
 
 #[pyfunction]
+#[pyo3(signature = (swap, curve, as_of, discount_curve=None))]
 pub fn funding_rate_swap_dv01(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
+    discount_curve: Option<Vec<(f64, f64)>>,
 ) -> PyResult<f64> {
+    let dc_ref = discount_curve.map(CoreYieldCurve::new);
     Ok(core_dv01(
         &swap.to_core()?,
         &curve.inner,
+        dc_ref.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
 
 #[pyfunction]
+#[pyo3(signature = (swap, curve, as_of, discount_curve=None))]
+pub fn funding_rate_swap_discount_dv01(
+    swap: &FundingRateSwap,
+    curve: &FundingRateCurve,
+    as_of: &str,
+    discount_curve: Option<Vec<(f64, f64)>>,
+) -> PyResult<f64> {
+    let dc_ref = discount_curve.map(CoreYieldCurve::new);
+    Ok(core_discount_dv01(
+        &swap.to_core()?,
+        &curve.inner,
+        dc_ref.as_ref(),
+        parse_datetime(as_of)?,
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (swap, curve, as_of, discount_curve=None))]
 pub fn funding_rate_swap_theta(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
+    discount_curve: Option<Vec<(f64, f64)>>,
 ) -> PyResult<f64> {
+    let dc_ref = discount_curve.map(CoreYieldCurve::new);
     Ok(core_theta(
         &swap.to_core()?,
         &curve.inner,
+        dc_ref.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
 
 #[pyfunction]
+#[pyo3(signature = (swap, curve, as_of, discount_curve=None))]
 pub fn funding_rate_swap_vega(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
+    discount_curve: Option<Vec<(f64, f64)>>,
 ) -> PyResult<f64> {
+    let dc_ref = discount_curve.map(CoreYieldCurve::new);
     Ok(core_vega(
         &swap.to_core()?,
         &curve.inner,
+        dc_ref.as_ref(),
         parse_datetime(as_of)?,
     ))
 }
 
 #[pyfunction]
+#[pyo3(signature = (swap, curve, as_of, discount_curve=None))]
 pub fn funding_rate_swap_risks(
     swap: &FundingRateSwap,
     curve: &FundingRateCurve,
     as_of: &str,
+    discount_curve: Option<Vec<(f64, f64)>>,
 ) -> PyResult<FundingRateSwapRisks> {
+    let dc_ref = discount_curve.map(CoreYieldCurve::new);
     Ok(FundingRateSwapRisks::from_core(core_risks(
         &swap.to_core()?,
         &curve.inner,
+        dc_ref.as_ref(),
         parse_datetime(as_of)?,
     )))
 }
@@ -486,6 +525,10 @@ pub fn funding_rate_swap_risks(
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_mtm, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_dv01, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        funding_rate_swap_discount_dv01,
+        module
+    )?)?;
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_theta, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_vega, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_risks, module)?)?;
