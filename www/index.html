@@ -351,6 +351,39 @@
     .boros-chart-note {
       margin-bottom: 6px;
     }
+    .boros-tenor-table-wrap {
+      max-height: 120px;
+      overflow: auto;
+      margin: 4px 6px 0;
+      font-size: 10px;
+    }
+    .boros-tenor-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+    }
+    .boros-tenor-table th {
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      color: var(--muted);
+      text-align: right;
+      padding: 2px 6px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .boros-tenor-table th:first-child { text-align: left; }
+    .boros-tenor-table td {
+      text-align: right;
+      padding: 2px 6px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+      white-space: nowrap;
+    }
+    .boros-tenor-table td:first-child {
+      text-align: left;
+      color: var(--muted);
+    }
 
     /* ---- Toolbar ---- */
     .toolbar {
@@ -1591,6 +1624,7 @@
     const BOROS_CACHE_TTL_MS = 60000;
     const BOROS_HISTORY_LIMIT = 60;
     const BOROS_QUOTE_SUFFIXES = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'USD'];
+    const BOROS_PREDICTED_SUPPORTED_VENUES = new Set(['Binance', 'Bybit', 'OKX']);
     const BOROS_VENUE_LABELS = {
       BINANCE: 'Binance',
       BYBIT: 'Bybit',
@@ -1750,6 +1784,79 @@
         || a.venue.localeCompare(b.venue)
         || a.expiryTimestampMs - b.expiryTimestampMs
         || a.marketLabel.localeCompare(b.marketLabel);
+    }
+
+    async function fetchBorosPredictedFundingAnchor(venue, symbol) {
+      const upperVenue = String(venue || '');
+      const marketSymbol = String(symbol || '').trim().toUpperCase();
+      if (!BOROS_PREDICTED_SUPPORTED_VENUES.has(upperVenue) || !marketSymbol) return null;
+      try {
+        if (upperVenue === 'Bybit') {
+          const resp = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${marketSymbol}`, { cache: 'no-store' });
+          if (!resp.ok) throw new Error(`Bybit predicted funding fetch failed (${resp.status})`);
+          const json = await resp.json();
+          const ticker = Array.isArray(json?.result?.list) ? json.result.list[0] : null;
+          const predictedFundingRate = Number(ticker?.fundingRate);
+          const nextFundingTimeMs = Number(ticker?.nextFundingTime);
+          if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
+          return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'Bybit' };
+        }
+        if (upperVenue === 'Binance') {
+          const resp = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${marketSymbol}`, { cache: 'no-store' });
+          if (!resp.ok) throw new Error(`Binance predicted funding fetch failed (${resp.status})`);
+          const json = await resp.json();
+          const predictedFundingRate = Number(json?.lastFundingRate);
+          const nextFundingTimeMs = Number(json?.nextFundingTime);
+          if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
+          return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'Binance' };
+        }
+        if (upperVenue === 'OKX') {
+          const okxSymbol = marketSymbol.replace('USDT', '-USDT-SWAP').replace('USDC', '-USDC-SWAP');
+          const resp = await fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${okxSymbol}`, { cache: 'no-store' });
+          if (!resp.ok) throw new Error(`OKX predicted funding fetch failed (${resp.status})`);
+          const json = await resp.json();
+          const entry = Array.isArray(json?.data) ? json.data[0] : null;
+          const predictedFundingRate = Number(entry?.fundingRate);
+          const nextFundingTimeMs = Number(entry?.fundingTime);
+          if (!Number.isFinite(predictedFundingRate) || !Number.isFinite(nextFundingTimeMs)) return null;
+          return { predictedFundingRate, nextFundingTimeMs, predictedFundingSource: 'OKX' };
+        }
+      } catch (_) {
+        return null;
+      }
+      return null;
+    }
+
+    async function attachBorosPredictedFunding(liveMarkets) {
+      const requestRows = Array.isArray(liveMarkets) ? liveMarkets.filter((row) => (
+        row
+        && row.pair
+        && BOROS_PREDICTED_SUPPORTED_VENUES.has(row.venue)
+      )) : [];
+      if (requestRows.length === 0) {
+        return Array.isArray(liveMarkets) ? liveMarkets : [];
+      }
+      const keyRows = [...new Map(
+        requestRows.map((row) => [`${row.venue}:${row.pair}`, { venue: row.venue, pair: row.pair }])
+      ).values()];
+      const predictedByKey = new Map();
+      await Promise.allSettled(keyRows.map(async ({ venue, pair }) => {
+        const anchor = await fetchBorosPredictedFundingAnchor(venue, pair);
+        if (anchor) predictedByKey.set(`${venue}:${pair}`, anchor);
+      }));
+      return (liveMarkets || []).map((row) => {
+        const anchor = predictedByKey.get(`${row.venue}:${row.pair}`);
+        return {
+          ...row,
+          predictedFundingRate: Number.isFinite(Number(anchor?.predictedFundingRate))
+            ? Number(anchor.predictedFundingRate)
+            : NaN,
+          nextFundingTimeMs: Number.isFinite(Number(anchor?.nextFundingTimeMs))
+            ? Number(anchor.nextFundingTimeMs)
+            : NaN,
+          predictedFundingSource: anchor?.predictedFundingSource || '',
+        };
+      });
     }
 
     function pickDefaultBorosMarket(asset) {
@@ -1949,10 +2056,11 @@
         const resp = await fetch(BOROS_API_URL, { cache: 'no-store' });
         if (!resp.ok) throw new Error(`Boros markets fetch failed (${resp.status})`);
         const json = await resp.json();
-        const liveMarkets = extractBorosMarketRows(json)
+        const baseLiveMarkets = extractBorosMarketRows(json)
           .map(normalizeBorosApiMarket)
           .filter(Boolean)
           .sort(borosLiveMarketSort);
+        const liveMarkets = await attachBorosPredictedFunding(baseLiveMarkets);
         if (liveMarkets.length === 0) throw new Error('No active Boros markets returned');
         borosState.market.liveMarkets = liveMarkets;
         borosState.market.liveLastUpdated = Date.now();
@@ -3864,8 +3972,11 @@
           + '<div class="boros-summary-card"><span class="k">Updated</span><span class="v b-updated">--</span></div>'
           + '</div>'
           + '<div class="boros-note boros-chart-note">Loading Boros market data</div>'
-          + '<div class="chart-area"></div>';
+          + '<div class="chart-area"></div>'
+          + '<div class="boros-tenor-table-wrap"><table class="boros-tenor-table"><thead></thead><tbody></tbody></table></div>';
         this.chartDiv = this._el.querySelector('.chart-area');
+        this.tenorThead = this._el.querySelector('.boros-tenor-table thead');
+        this.tenorTbody = this._el.querySelector('.boros-tenor-table tbody');
         this.assetSelect = this._el.querySelector('.boros-asset-select');
         this.modeButtons = [...this._el.querySelectorAll('[data-mode]')];
         this.spotEl = this._el.querySelector('.b-spot');
@@ -6928,20 +7039,61 @@
       }
       p.noteEl.textContent = borosState.market.viewMode === 'historical'
         ? `Historical Binance/Bybit funding APR for ${borosState.market.selectedAsset} with Boros spot reference`
-        : `Forward implied term structure for ${borosState.market.selectedAsset} across ${lastBorosResult?.marketSummary?.venueCount || chart.series.length} venue(s)`;
-      const traces = chart.series.map((series) => ({
-        type: 'scatter',
-        mode: 'lines+markers',
-        name: series.name,
-        x: (series.x || []).map((value) => new Date(value)),
-        y: series.y || [],
-        text: series.text || [],
-        line: { color: borosVenueColor(series.name), width: chart.mode === 'historical' ? 1.8 : 2.4 },
-        marker: { size: chart.mode === 'historical' ? 3 : 5 },
-        hovertemplate: chart.mode === 'historical'
-          ? '%{fullData.name}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra></extra>'
-          : '%{text}<br>%{x|%d %b %Y}<br>%{y:.3f}%<extra>%{fullData.name}</extra>',
-      }));
+        : `Forward implied term structure for ${borosState.market.selectedAsset} with spot and short-end funding anchors across ${lastBorosResult?.marketSummary?.venueCount || chart.series.length} venue(s)`;
+      const traces = [];
+      for (const series of chart.series) {
+        const lineColor = borosVenueColor(series.name);
+        const dates = (series.x || []).map((value) => new Date(value));
+        if (chart.mode === 'historical') {
+          traces.push({
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: series.name,
+            x: dates,
+            y: series.y || [],
+            text: series.text || [],
+            line: { color: lineColor, width: 1.8 },
+            marker: { size: 3 },
+            hovertemplate: '%{fullData.name}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra></extra>',
+          });
+          continue;
+        }
+
+        const pointTypes = Array.isArray(series.pointTypes) ? series.pointTypes : [];
+        const hoverText = Array.isArray(series.hoverText) ? series.hoverText : (series.text || []);
+        traces.push({
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: series.name,
+          x: dates,
+          y: series.y || [],
+          text: hoverText,
+          line: { color: lineColor, width: 2.4 },
+          marker: {
+            size: pointTypes.map((type) => (type === 'spot' ? 11 : type === 'predicted' ? 7 : 5)),
+            symbol: pointTypes.map((type) => (type === 'spot' ? 'diamond' : type === 'predicted' ? 'square' : 'circle')),
+            color: lineColor,
+            line: { color: '#0b1117', width: 1.2 },
+          },
+          hovertemplate: '%{text}<br>%{x|%d %b %Y %H:%M}<br>%{y:.3f}%<extra>%{fullData.name}</extra>',
+        });
+
+        const spotIndex = pointTypes.indexOf('spot');
+        if (spotIndex >= 0 && (!chart.selectedVenue || series.name === chart.selectedVenue)) {
+          traces.push({
+            type: 'scatter',
+            mode: 'text',
+            name: `${series.name} Spot`,
+            x: [dates[spotIndex]],
+            y: [series.y?.[spotIndex]],
+            text: ['Spot'],
+            textposition: 'middle right',
+            textfont: { color: '#d7e0ea', size: 10, family: 'JetBrains Mono' },
+            hoverinfo: 'skip',
+            showlegend: false,
+          });
+        }
+      }
       const spotPct = Number.isFinite(chart.spotApr) ? chart.spotApr * 100 : NaN;
       const annotations = [{
         xref: 'paper',
@@ -6953,7 +7105,7 @@
         font: { color: '#8ea1b8', size: 10, family: 'JetBrains Mono' },
       }];
       const shapes = [];
-      if (Number.isFinite(spotPct)) {
+      if (chart.mode === 'historical' && Number.isFinite(spotPct)) {
         shapes.push({
           type: 'line',
           xref: 'paper',
@@ -6985,6 +7137,44 @@
         shapes,
         annotations,
       }, { responsive: true, displayModeBar: false });
+
+      // Tenor table below chart
+      if (p.tenorThead && p.tenorTbody && chart.mode !== 'historical' && Array.isArray(chart.series) && chart.series.length > 0) {
+        const allDates = new Set();
+        const allTypes = new Map();
+        for (const series of chart.series) {
+          const pts = series.pointTypes || [];
+          const xs = series.x || [];
+          for (let i = 0; i < xs.length; i++) {
+            const key = String(xs[i]);
+            allDates.add(key);
+            if (!allTypes.has(key)) allTypes.set(key, pts[i] || 'forward');
+          }
+        }
+        const sortedDates = [...allDates].sort((a, b) => Number(a) - Number(b));
+        const tenorLabels = sortedDates.map((ms) => {
+          const type = allTypes.get(ms) || 'forward';
+          if (type === 'spot') return 'Spot';
+          if (type === 'predicted') return 'Next 8h';
+          const d = new Date(Number(ms));
+          return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+        });
+        p.tenorThead.innerHTML = '<tr><th>Venue</th>' + tenorLabels.map((l) => `<th>${l}</th>`).join('') + '</tr>';
+        p.tenorTbody.innerHTML = chart.series.map((series) => {
+          const lookup = new Map();
+          const xs = series.x || [];
+          const ys = series.y || [];
+          for (let i = 0; i < xs.length; i++) lookup.set(String(xs[i]), ys[i]);
+          return '<tr><td>' + escapeHtml(series.name) + '</td>'
+            + sortedDates.map((ms) => {
+              const val = lookup.get(ms);
+              return `<td>${Number.isFinite(val) ? val.toFixed(3) + '%' : '—'}</td>`;
+            }).join('') + '</tr>';
+        }).join('');
+      } else if (p.tenorThead && p.tenorTbody) {
+        p.tenorThead.innerHTML = '';
+        p.tenorTbody.innerHTML = '';
+      }
     }
 
     function renderBorosMarkets() {
