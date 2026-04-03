@@ -685,7 +685,11 @@ pub struct YieldCurve {
 }
 
 impl YieldCurve {
-    fn from_core(inner: CoreYieldCurve) -> Self {
+    pub(crate) fn to_core(&self) -> CoreYieldCurve {
+        self.inner.clone()
+    }
+
+    pub(crate) fn from_core(inner: CoreYieldCurve) -> Self {
         Self { inner }
     }
 }

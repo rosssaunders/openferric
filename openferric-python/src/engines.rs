@@ -21,6 +21,7 @@ use openferric_core::market::Market;
 use openferric_core::math::AccuracyTier;
 use openferric_core::models::Heston;
 
+use crate::core::PricingResult;
 use crate::helpers::{
     build_market, parse_barrier_direction, parse_barrier_style, parse_option_type,
 };
@@ -55,10 +56,6 @@ fn build_market_checked(spot: f64, rate: f64, div_yield: f64, vol: f64) -> PyRes
 
 fn map_pricing_err<T>(result: Result<T, openferric_core::core::PricingError>) -> PyResult<T> {
     result.map_err(|err| py_value_error(format!("{err:?}")))
-}
-
-fn diag_entries(diag: &openferric_core::core::Diagnostics) -> Vec<(String, f64)> {
-    diag.iter().map(|(k, v)| (k.to_string(), *v)).collect()
 }
 
 fn quotes_from_tuples(quotes: Vec<(f64, f64, f64)>) -> Vec<VarianceOptionQuote> {
@@ -162,36 +159,6 @@ impl From<openferric_core::core::Greeks> for GreeksResult {
             theta: value.theta,
             rho: value.rho,
         }
-    }
-}
-
-#[pyclass(module = "openferric")]
-#[derive(Clone)]
-pub struct PricingResult {
-    #[pyo3(get)]
-    pub price: f64,
-    #[pyo3(get)]
-    pub stderr: Option<f64>,
-    #[pyo3(get)]
-    pub greeks: Option<GreeksResult>,
-    diagnostics: Vec<(String, f64)>,
-}
-
-impl From<openferric_core::core::PricingResult> for PricingResult {
-    fn from(value: openferric_core::core::PricingResult) -> Self {
-        Self {
-            price: value.price,
-            stderr: value.stderr,
-            greeks: value.greeks.map(Into::into),
-            diagnostics: diag_entries(&value.diagnostics),
-        }
-    }
-}
-
-#[pymethods]
-impl PricingResult {
-    fn diagnostics(&self) -> Vec<(String, f64)> {
-        self.diagnostics.clone()
     }
 }
 
@@ -1464,7 +1431,6 @@ impl McEngine {
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<GreeksResult>()?;
-    module.add_class::<PricingResult>()?;
     module.add_class::<PdeExerciseBoundaryPoint>()?;
     module.add_class::<BermudanPdeOutput>()?;
     module.add_class::<AnalyticEngine>()?;

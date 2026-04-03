@@ -1,22 +1,27 @@
 use chrono::NaiveDate;
 use openferric_core::market::{
     BootstrappedDividendPoint as CoreBootstrappedDividendPoint,
+    CreditCurveSnapshot as CoreCreditCurveSnapshot,
     DividendCurveBootstrap as CoreDividendCurveBootstrap, DividendEvent as CoreDividendEvent,
     DividendKind as CoreDividendKind, DividendSchedule as CoreDividendSchedule,
-    FxAtmConvention as CoreFxAtmConvention, FxDeltaConvention as CoreFxDeltaConvention,
-    FxForwardCurve as CoreFxForwardCurve, FxPair as CoreFxPair, FxRrBfPillar as CoreFxRrBfPillar,
+    ForwardCurveSnapshot as CoreForwardCurveSnapshot, FxAtmConvention as CoreFxAtmConvention,
+    FxDeltaConvention as CoreFxDeltaConvention, FxForwardCurve as CoreFxForwardCurve,
+    FxPair as CoreFxPair, FxRrBfPillar as CoreFxRrBfPillar,
     FxSmileMarketQuote as CoreFxSmileMarketQuote, FxSmileSlice as CoreFxSmileSlice,
     FxVolExpiryQuote as CoreFxVolExpiryQuote, FxVolSurface as CoreFxVolSurface,
-    MalzInterpolator as CoreMalzInterpolator, Market as CoreMarket, NdfContract as CoreNdfContract,
+    MalzInterpolator as CoreMalzInterpolator, Market as CoreMarket,
+    MarketSnapshot as CoreMarketSnapshot, NdfContract as CoreNdfContract,
     NdfSettlementCurrency as CoreNdfSettlementCurrency, PremiumCurrency as CorePremiumCurrency,
     PutCallParityQuote as CorePutCallParityQuote, SampledVolSurface as CoreSampledVolSurface,
     VolSource as CoreVolSource,
 };
+use openferric_core::rates::YieldCurve as CoreYieldCurve;
 use openferric_core::vol::surface::{SviParams, VolSurface as CoreParametricVolSurface};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::credit::SurvivalCurve;
+use crate::rates::YieldCurve;
 
 fn map_string_err(err: String) -> PyErr {
     PyValueError::new_err(err)
@@ -41,11 +46,11 @@ pub struct DividendKind {
 }
 
 impl DividendKind {
-    fn to_core(&self) -> CoreDividendKind {
+    pub(crate) fn to_core(&self) -> CoreDividendKind {
         self.inner
     }
 
-    fn from_core(value: CoreDividendKind) -> Self {
+    pub(crate) fn from_core(value: CoreDividendKind) -> Self {
         Self { inner: value }
     }
 }
@@ -97,11 +102,11 @@ pub struct DividendEvent {
 }
 
 impl DividendEvent {
-    fn to_core(&self) -> CoreDividendEvent {
+    pub(crate) fn to_core(&self) -> CoreDividendEvent {
         self.inner
     }
 
-    fn from_core(value: CoreDividendEvent) -> Self {
+    pub(crate) fn from_core(value: CoreDividendEvent) -> Self {
         Self { inner: value }
     }
 }
@@ -272,7 +277,7 @@ pub struct PutCallParityQuote {
 }
 
 impl PutCallParityQuote {
-    fn to_core(self) -> CorePutCallParityQuote {
+    pub(crate) fn to_core(self) -> CorePutCallParityQuote {
         CorePutCallParityQuote {
             maturity: self.maturity,
             strike: self.strike,
@@ -281,7 +286,7 @@ impl PutCallParityQuote {
         }
     }
 
-    fn from_core(value: CorePutCallParityQuote) -> Self {
+    pub(crate) fn from_core(value: CorePutCallParityQuote) -> Self {
         Self {
             maturity: value.maturity,
             strike: value.strike,
@@ -339,7 +344,7 @@ pub struct BootstrappedDividendPoint {
 }
 
 impl BootstrappedDividendPoint {
-    fn from_core(value: CoreBootstrappedDividendPoint) -> Self {
+    pub(crate) fn from_core(value: CoreBootstrappedDividendPoint) -> Self {
         Self {
             maturity: value.maturity,
             forward: value.forward,
@@ -377,7 +382,7 @@ pub struct DividendCurveBootstrap {
 }
 
 impl DividendCurveBootstrap {
-    fn from_core(value: CoreDividendCurveBootstrap) -> Self {
+    pub(crate) fn from_core(value: CoreDividendCurveBootstrap) -> Self {
         Self { inner: value }
     }
 }
@@ -1112,7 +1117,7 @@ pub struct SampledVolSurface {
 }
 
 impl SampledVolSurface {
-    fn to_core(&self) -> PyResult<CoreSampledVolSurface> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreSampledVolSurface> {
         CoreSampledVolSurface::new(
             self.strikes.clone(),
             self.expiries.clone(),
@@ -1121,7 +1126,7 @@ impl SampledVolSurface {
         .map_err(map_string_err)
     }
 
-    fn from_core(value: CoreSampledVolSurface) -> Self {
+    pub(crate) fn from_core(value: CoreSampledVolSurface) -> Self {
         Self {
             strikes: value.strikes,
             expiries: value.expiries,
@@ -1166,7 +1171,7 @@ pub struct VolSource {
 }
 
 impl VolSource {
-    fn to_core(&self) -> PyResult<CoreVolSource> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreVolSource> {
         match &self.inner {
             VolSourceInner::Flat(vol) => Ok(CoreVolSource::Flat(*vol)),
             VolSourceInner::Sampled(surface) => Ok(CoreVolSource::Sampled(surface.to_core()?)),
@@ -1174,6 +1179,21 @@ impl VolSource {
                 Ok(CoreVolSource::Parametric(surface.clone()))
             }
         }
+    }
+
+    pub(crate) fn from_core(source: CoreVolSource, spot: f64) -> Self {
+        let inner = match source {
+            CoreVolSource::Flat(vol) => VolSourceInner::Flat(vol),
+            CoreVolSource::Sampled(surface) => {
+                VolSourceInner::Sampled(SampledVolSurface::from_core(surface))
+            }
+            CoreVolSource::Parametric(surface) => VolSourceInner::Parametric {
+                slices: Vec::new(),
+                forward: spot,
+                surface,
+            },
+        };
+        Self { inner }
     }
 }
 
@@ -1270,7 +1290,7 @@ pub struct Market {
 }
 
 impl Market {
-    fn to_core(&self) -> PyResult<CoreMarket> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreMarket> {
         Ok(CoreMarket {
             spot: self.spot,
             rate: self.rate,
@@ -1279,6 +1299,18 @@ impl Market {
             vol: self.vol.to_core()?,
             reference_date: self.reference_date.clone(),
         })
+    }
+
+    pub(crate) fn from_core(value: CoreMarket) -> Self {
+        let spot = value.spot;
+        Self {
+            spot,
+            rate: value.rate,
+            dividend_yield: value.dividend_yield,
+            dividend_schedule: DividendSchedule::from_core(value.dividend_schedule),
+            vol: VolSource::from_core(value.vol, spot),
+            reference_date: value.reference_date,
+        }
     }
 }
 
@@ -1490,6 +1522,22 @@ pub struct ForwardCurveSnapshot {
     pub points: Vec<(f64, f64)>,
 }
 
+impl ForwardCurveSnapshot {
+    pub(crate) fn to_core(&self) -> CoreForwardCurveSnapshot {
+        CoreForwardCurveSnapshot {
+            asset_id: self.asset_id.clone(),
+            points: self.points.clone(),
+        }
+    }
+
+    pub(crate) fn from_core(value: CoreForwardCurveSnapshot) -> Self {
+        Self {
+            asset_id: value.asset_id,
+            points: value.points,
+        }
+    }
+}
+
 #[pymethods]
 impl ForwardCurveSnapshot {
     #[new]
@@ -1507,6 +1555,24 @@ pub struct CreditCurveSnapshot {
     pub survival_curve: SurvivalCurve,
     #[pyo3(get, set)]
     pub recovery_rate: f64,
+}
+
+impl CreditCurveSnapshot {
+    pub(crate) fn to_core(&self) -> CoreCreditCurveSnapshot {
+        CoreCreditCurveSnapshot {
+            curve_id: self.curve_id.clone(),
+            survival_curve: self.survival_curve.to_core(),
+            recovery_rate: self.recovery_rate,
+        }
+    }
+
+    pub(crate) fn from_core(value: CoreCreditCurveSnapshot) -> Self {
+        Self {
+            curve_id: value.curve_id,
+            survival_curve: SurvivalCurve::from_core(value.survival_curve),
+            recovery_rate: value.recovery_rate,
+        }
+    }
 }
 
 #[pymethods]
@@ -1540,6 +1606,97 @@ pub struct MarketSnapshot {
     pub spot_prices: Vec<(String, f64)>,
     #[pyo3(get, set)]
     pub forward_curves: Vec<ForwardCurveSnapshot>,
+}
+
+impl MarketSnapshot {
+    pub(crate) fn to_core(&self) -> PyResult<CoreMarketSnapshot> {
+        Ok(CoreMarketSnapshot {
+            snapshot_id: self.snapshot_id.clone(),
+            timestamp_unix_ms: self.timestamp_unix_ms,
+            markets: self
+                .markets
+                .iter()
+                .map(|(id, market)| Ok((id.clone(), market.to_core()?)))
+                .collect::<PyResult<_>>()?,
+            yield_curves: self
+                .yield_curves
+                .iter()
+                .map(|(id, points)| (id.clone(), CoreYieldCurve::new(points.clone())))
+                .collect(),
+            vol_surfaces: Vec::new(),
+            credit_curves: self
+                .credit_curves
+                .iter()
+                .map(CreditCurveSnapshot::to_core)
+                .collect(),
+            spot_prices: self.spot_prices.clone(),
+            forward_curves: self
+                .forward_curves
+                .iter()
+                .map(ForwardCurveSnapshot::to_core)
+                .collect(),
+        })
+    }
+
+    pub(crate) fn from_core(value: CoreMarketSnapshot) -> Self {
+        let CoreMarketSnapshot {
+            snapshot_id,
+            timestamp_unix_ms,
+            markets,
+            yield_curves,
+            vol_surfaces,
+            credit_curves,
+            spot_prices,
+            forward_curves,
+        } = value;
+        let market_spots = markets
+            .iter()
+            .map(|(asset_id, market)| (asset_id.clone(), market.spot))
+            .collect::<Vec<_>>();
+        Self {
+            snapshot_id,
+            timestamp_unix_ms,
+            markets: markets
+                .into_iter()
+                .map(|(id, market)| (id, Market::from_core(market)))
+                .collect(),
+            yield_curves: yield_curves
+                .into_iter()
+                .map(|(id, curve)| (id, curve.tenors))
+                .collect(),
+            vol_surfaces: vol_surfaces
+                .into_iter()
+                .map(|(id, surface)| {
+                    let spot = spot_prices
+                        .iter()
+                        .find(|(asset_id, _)| asset_id == &id)
+                        .map(|(_, spot)| *spot)
+                        .or_else(|| {
+                            market_spots
+                                .iter()
+                                .find(|(asset_id, _)| asset_id == &id)
+                                .map(|(_, spot)| *spot)
+                        })
+                        .unwrap_or(1.0);
+                    (
+                        id,
+                        SampledVolSurface::from_core(CoreSampledVolSurface::from_surface(
+                            &surface, spot,
+                        )),
+                    )
+                })
+                .collect(),
+            credit_curves: credit_curves
+                .into_iter()
+                .map(CreditCurveSnapshot::from_core)
+                .collect(),
+            spot_prices,
+            forward_curves: forward_curves
+                .into_iter()
+                .map(ForwardCurveSnapshot::from_core)
+                .collect(),
+        }
+    }
 }
 
 #[pymethods]

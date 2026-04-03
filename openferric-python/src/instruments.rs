@@ -55,8 +55,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
+use crate::core::{AsianSpec, BarrierSpec, ExerciseStyle};
 use crate::funding::FundingRateSwap;
 use crate::helpers::{format_datetime, parse_datetime};
+use crate::models::{HullWhite, TwoFactorCommodityProcess, TwoFactorSpreadModel};
+use crate::rates::YieldCurve;
+use crate::risk::Portfolio;
 
 fn invalid_input(message: impl Into<String>) -> PyErr {
     PyValueError::new_err(message.into())
@@ -290,345 +294,6 @@ simple_enum_wrapper!(Frequency, CoreFrequency, parse_frequency, format_frequency
 
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
-pub struct ExerciseStyle {
-    inner: CoreExerciseStyle,
-}
-
-impl ExerciseStyle {
-    fn to_core(&self) -> CoreExerciseStyle {
-        self.inner.clone()
-    }
-
-    fn from_core(inner: CoreExerciseStyle) -> Self {
-        Self { inner }
-    }
-}
-
-#[pymethods]
-impl ExerciseStyle {
-    #[new]
-    #[pyo3(signature = (kind, dates=None))]
-    fn new(kind: &str, dates: Option<Vec<f64>>) -> PyResult<Self> {
-        let inner = match kind.to_ascii_lowercase().as_str() {
-            "european" => CoreExerciseStyle::European,
-            "american" => CoreExerciseStyle::American,
-            "bermudan" => CoreExerciseStyle::Bermudan {
-                dates: dates.unwrap_or_default(),
-            },
-            _ => {
-                return Err(invalid_input(
-                    "exercise style must be 'european', 'american', or 'bermudan'",
-                ));
-            }
-        };
-        Ok(Self { inner })
-    }
-
-    #[getter]
-    fn kind(&self) -> &'static str {
-        match &self.inner {
-            CoreExerciseStyle::European => "european",
-            CoreExerciseStyle::American => "american",
-            CoreExerciseStyle::Bermudan { .. } => "bermudan",
-        }
-    }
-
-    #[getter]
-    fn dates(&self) -> Option<Vec<f64>> {
-        match &self.inner {
-            CoreExerciseStyle::Bermudan { dates } => Some(dates.clone()),
-            _ => None,
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        match &self.inner {
-            CoreExerciseStyle::European => "ExerciseStyle('european')".to_string(),
-            CoreExerciseStyle::American => "ExerciseStyle('american')".to_string(),
-            CoreExerciseStyle::Bermudan { dates } => {
-                format!("ExerciseStyle('bermudan', dates={dates:?})")
-            }
-        }
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct BarrierSpec {
-    #[pyo3(get, set)]
-    pub direction: String,
-    #[pyo3(get, set)]
-    pub style: String,
-    #[pyo3(get, set)]
-    pub level: f64,
-    #[pyo3(get, set)]
-    pub rebate: f64,
-}
-
-impl BarrierSpec {
-    fn to_core(&self) -> PyResult<CoreBarrierSpec> {
-        Ok(CoreBarrierSpec {
-            direction: parse_barrier_direction_str(&self.direction)?,
-            style: parse_barrier_style_str(&self.style)?,
-            level: self.level,
-            rebate: self.rebate,
-        })
-    }
-
-    fn from_core(inner: CoreBarrierSpec) -> Self {
-        Self {
-            direction: format_barrier_direction(inner.direction).to_string(),
-            style: format_barrier_style(inner.style).to_string(),
-            level: inner.level,
-            rebate: inner.rebate,
-        }
-    }
-}
-
-#[pymethods]
-impl BarrierSpec {
-    #[new]
-    fn new(direction: String, style: String, level: f64, rebate: f64) -> PyResult<Self> {
-        let out = Self {
-            direction,
-            style,
-            level,
-            rebate,
-        };
-        let _ = out.to_core()?;
-        Ok(out)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "BarrierSpec(direction={:?}, style={:?}, level={}, rebate={})",
-            self.direction, self.style, self.level, self.rebate
-        )
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct AsianSpec {
-    #[pyo3(get, set)]
-    pub averaging: String,
-    #[pyo3(get, set)]
-    pub strike_type: String,
-    #[pyo3(get, set)]
-    pub observation_times: Vec<f64>,
-}
-
-impl AsianSpec {
-    fn to_core(&self) -> PyResult<CoreAsianSpec> {
-        Ok(CoreAsianSpec {
-            averaging: parse_averaging(&self.averaging)?,
-            strike_type: parse_strike_type(&self.strike_type)?,
-            observation_times: self.observation_times.clone(),
-        })
-    }
-
-    fn from_core(inner: CoreAsianSpec) -> Self {
-        Self {
-            averaging: format_averaging(inner.averaging).to_string(),
-            strike_type: format_strike_type(inner.strike_type).to_string(),
-            observation_times: inner.observation_times,
-        }
-    }
-}
-
-#[pymethods]
-impl AsianSpec {
-    #[new]
-    fn new(averaging: String, strike_type: String, observation_times: Vec<f64>) -> PyResult<Self> {
-        let out = Self {
-            averaging,
-            strike_type,
-            observation_times,
-        };
-        let _ = out.to_core()?;
-        Ok(out)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "AsianSpec(averaging={:?}, strike_type={:?}, observation_times={:?})",
-            self.averaging, self.strike_type, self.observation_times
-        )
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct YieldCurve {
-    inner: CoreYieldCurve,
-}
-
-#[pymethods]
-impl YieldCurve {
-    #[new]
-    fn new(tenors: Vec<(f64, f64)>) -> Self {
-        Self {
-            inner: CoreYieldCurve::new(tenors),
-        }
-    }
-
-    #[getter]
-    fn tenors(&self) -> Vec<(f64, f64)> {
-        self.inner.tenors.clone()
-    }
-
-    fn discount_factor(&self, t: f64) -> f64 {
-        self.inner.discount_factor(t)
-    }
-
-    fn zero_rate(&self, t: f64) -> f64 {
-        self.inner.zero_rate(t)
-    }
-
-    fn forward_rate(&self, t1: f64, t2: f64) -> f64 {
-        self.inner.forward_rate(t1, t2)
-    }
-
-    fn __repr__(&self) -> String {
-        format!("YieldCurve(tenors={})", self.inner.tenors.len())
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct HullWhite {
-    #[pyo3(get, set)]
-    pub a: f64,
-    #[pyo3(get, set)]
-    pub sigma: f64,
-    #[pyo3(get, set)]
-    pub theta: Vec<(f64, f64)>,
-}
-
-impl HullWhite {
-    fn to_core(&self) -> CoreHullWhite {
-        CoreHullWhite {
-            a: self.a,
-            sigma: self.sigma,
-            theta: self.theta.clone(),
-        }
-    }
-
-    fn from_core(inner: CoreHullWhite) -> Self {
-        Self {
-            a: inner.a,
-            sigma: inner.sigma,
-            theta: inner.theta,
-        }
-    }
-}
-
-#[pymethods]
-impl HullWhite {
-    #[new]
-    fn new(a: f64, sigma: f64) -> Self {
-        Self {
-            a,
-            sigma,
-            theta: Vec::new(),
-        }
-    }
-
-    fn calibrate_theta(&mut self, curve: &YieldCurve, times: Vec<f64>) {
-        let mut model = self.to_core();
-        model.calibrate_theta(&curve.inner, &times);
-        self.theta = model.theta;
-    }
-
-    fn theta_at(&self, t: f64) -> f64 {
-        self.to_core().theta_at(t)
-    }
-
-    fn bond_price(&self, t: f64, maturity: f64, short_rate: f64, curve: &YieldCurve) -> f64 {
-        self.to_core()
-            .bond_price(t, maturity, short_rate, &curve.inner)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "HullWhite(a={}, sigma={}, theta_points={})",
-            self.a,
-            self.sigma,
-            self.theta.len()
-        )
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone, Copy)]
-pub struct TwoFactorCommodityProcess {
-    #[pyo3(get, set)]
-    pub kappa_fast: f64,
-    #[pyo3(get, set)]
-    pub sigma_fast: f64,
-    #[pyo3(get, set)]
-    pub sigma_slow: f64,
-}
-
-impl TwoFactorCommodityProcess {
-    fn to_core(self) -> CoreTwoFactorCommodityProcess {
-        CoreTwoFactorCommodityProcess {
-            kappa_fast: self.kappa_fast,
-            sigma_fast: self.sigma_fast,
-            sigma_slow: self.sigma_slow,
-        }
-    }
-}
-
-#[pymethods]
-impl TwoFactorCommodityProcess {
-    #[new]
-    fn new(kappa_fast: f64, sigma_fast: f64, sigma_slow: f64) -> Self {
-        Self {
-            kappa_fast,
-            sigma_fast,
-            sigma_slow,
-        }
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core().validate().map_err(map_err_string)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "TwoFactorCommodityProcess(kappa_fast={}, sigma_fast={}, sigma_slow={})",
-            self.kappa_fast, self.sigma_fast, self.sigma_slow
-        )
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone, Copy)]
-pub struct TwoFactorSpreadModel {
-    #[pyo3(get, set)]
-    pub leg_1: TwoFactorCommodityProcess,
-    #[pyo3(get, set)]
-    pub leg_2: TwoFactorCommodityProcess,
-    #[pyo3(get, set)]
-    pub rho_fast: f64,
-    #[pyo3(get, set)]
-    pub rho_slow: f64,
-}
-
-impl TwoFactorSpreadModel {
-    fn to_core(self) -> CoreTwoFactorSpreadModel {
-        CoreTwoFactorSpreadModel {
-            leg_1: self.leg_1.to_core(),
-            leg_2: self.leg_2.to_core(),
-            rho_fast: self.rho_fast,
-            rho_slow: self.rho_slow,
-        }
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
 pub struct VanillaOption {
     #[pyo3(get, set)]
     pub option_type: String,
@@ -709,7 +374,7 @@ impl VanillaOption {
             self.option_type,
             self.strike,
             self.expiry,
-            self.exercise.__repr__()
+            format!("{:?}", self.exercise.to_core())
         )
     }
 }
@@ -733,7 +398,7 @@ impl AsianOption {
             option_type: parse_option_type_str(&self.option_type)?,
             strike: self.strike,
             expiry: self.expiry,
-            asian: self.asian.to_core()?,
+            asian: self.asian.to_core(),
         })
     }
 }
@@ -762,7 +427,7 @@ impl AsianOption {
             self.option_type,
             self.strike,
             self.expiry,
-            self.asian.__repr__()
+            format!("{:?}", self.asian.to_core())
         )
     }
 }
@@ -786,7 +451,7 @@ impl BarrierOption {
             option_type: parse_option_type_str(&self.option_type)?,
             strike: self.strike,
             expiry: self.expiry,
-            barrier: self.barrier.to_core()?,
+            barrier: self.barrier.to_core(),
         })
     }
 
@@ -829,7 +494,7 @@ impl BarrierOption {
             self.option_type,
             self.strike,
             self.expiry,
-            self.barrier.__repr__()
+            format!("{:?}", self.barrier.to_core())
         )
     }
 }
@@ -911,300 +576,6 @@ impl BarrierOptionBuilder {
 
     fn __repr__(&self) -> String {
         "BarrierOptionBuilder()".to_string()
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct Autocallable {
-    #[pyo3(get, set)]
-    pub underlyings: Vec<usize>,
-    #[pyo3(get, set)]
-    pub notional: f64,
-    #[pyo3(get, set)]
-    pub autocall_dates: Vec<f64>,
-    #[pyo3(get, set)]
-    pub autocall_barrier: f64,
-    #[pyo3(get, set)]
-    pub coupon_rate: f64,
-    #[pyo3(get, set)]
-    pub ki_barrier: f64,
-    #[pyo3(get, set)]
-    pub ki_strike: f64,
-    #[pyo3(get, set)]
-    pub maturity: f64,
-}
-
-impl Autocallable {
-    fn to_core(&self) -> CoreAutocallable {
-        CoreAutocallable {
-            underlyings: self.underlyings.clone(),
-            notional: self.notional,
-            autocall_dates: self.autocall_dates.clone(),
-            autocall_barrier: self.autocall_barrier,
-            coupon_rate: self.coupon_rate,
-            ki_barrier: self.ki_barrier,
-            ki_strike: self.ki_strike,
-            maturity: self.maturity,
-        }
-    }
-}
-
-#[pymethods]
-impl Autocallable {
-    #[new]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        underlyings: Vec<usize>,
-        notional: f64,
-        autocall_dates: Vec<f64>,
-        autocall_barrier: f64,
-        coupon_rate: f64,
-        ki_barrier: f64,
-        ki_strike: f64,
-        maturity: f64,
-    ) -> PyResult<Self> {
-        let out = Self {
-            underlyings,
-            notional,
-            autocall_dates,
-            autocall_barrier,
-            coupon_rate,
-            ki_barrier,
-            ki_strike,
-            maturity,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core().validate().map_err(map_err_string)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct PhoenixAutocallable {
-    #[pyo3(get, set)]
-    pub underlyings: Vec<usize>,
-    #[pyo3(get, set)]
-    pub notional: f64,
-    #[pyo3(get, set)]
-    pub autocall_dates: Vec<f64>,
-    #[pyo3(get, set)]
-    pub autocall_barrier: f64,
-    #[pyo3(get, set)]
-    pub coupon_barrier: f64,
-    #[pyo3(get, set)]
-    pub coupon_rate: f64,
-    #[pyo3(get, set)]
-    pub memory: bool,
-    #[pyo3(get, set)]
-    pub ki_barrier: f64,
-    #[pyo3(get, set)]
-    pub ki_strike: f64,
-    #[pyo3(get, set)]
-    pub maturity: f64,
-}
-
-impl PhoenixAutocallable {
-    fn to_core(&self) -> CorePhoenixAutocallable {
-        CorePhoenixAutocallable {
-            underlyings: self.underlyings.clone(),
-            notional: self.notional,
-            autocall_dates: self.autocall_dates.clone(),
-            autocall_barrier: self.autocall_barrier,
-            coupon_barrier: self.coupon_barrier,
-            coupon_rate: self.coupon_rate,
-            memory: self.memory,
-            ki_barrier: self.ki_barrier,
-            ki_strike: self.ki_strike,
-            maturity: self.maturity,
-        }
-    }
-}
-
-#[pymethods]
-impl PhoenixAutocallable {
-    #[new]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        underlyings: Vec<usize>,
-        notional: f64,
-        autocall_dates: Vec<f64>,
-        autocall_barrier: f64,
-        coupon_barrier: f64,
-        coupon_rate: f64,
-        memory: bool,
-        ki_barrier: f64,
-        ki_strike: f64,
-        maturity: f64,
-    ) -> PyResult<Self> {
-        let out = Self {
-            underlyings,
-            notional,
-            autocall_dates,
-            autocall_barrier,
-            coupon_barrier,
-            coupon_rate,
-            memory,
-            ki_barrier,
-            ki_strike,
-            maturity,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core().validate().map_err(map_err_string)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct BasketOption {
-    #[pyo3(get, set)]
-    pub weights: Vec<f64>,
-    #[pyo3(get, set)]
-    pub strike: f64,
-    #[pyo3(get, set)]
-    pub maturity: f64,
-    #[pyo3(get, set)]
-    pub is_call: bool,
-    #[pyo3(get, set)]
-    pub basket_type: String,
-}
-
-impl BasketOption {
-    fn to_core(&self) -> PyResult<CoreBasketOption> {
-        Ok(CoreBasketOption {
-            weights: self.weights.clone(),
-            strike: self.strike,
-            maturity: self.maturity,
-            is_call: self.is_call,
-            basket_type: parse_basket_type(&self.basket_type)?,
-        })
-    }
-
-    fn from_core(inner: CoreBasketOption) -> Self {
-        Self {
-            weights: inner.weights,
-            strike: inner.strike,
-            maturity: inner.maturity,
-            is_call: inner.is_call,
-            basket_type: format_basket_type(inner.basket_type).to_string(),
-        }
-    }
-}
-
-#[pymethods]
-impl BasketOption {
-    #[new]
-    fn new(
-        weights: Vec<f64>,
-        strike: f64,
-        maturity: f64,
-        is_call: bool,
-        basket_type: String,
-    ) -> PyResult<Self> {
-        let out = Self {
-            weights,
-            strike,
-            maturity,
-            is_call,
-            basket_type,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core()?.validate().map_err(map_err_string)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct OutperformanceBasketOption {
-    #[pyo3(get, set)]
-    pub leader_index: usize,
-    #[pyo3(get, set)]
-    pub lagger_weights: Vec<f64>,
-    #[pyo3(get, set)]
-    pub strike: f64,
-    #[pyo3(get, set)]
-    pub maturity: f64,
-    #[pyo3(get, set)]
-    pub option_type: String,
-}
-
-impl OutperformanceBasketOption {
-    fn to_core(&self) -> PyResult<CoreOutperformanceBasketOption> {
-        Ok(CoreOutperformanceBasketOption {
-            leader_index: self.leader_index,
-            lagger_weights: self.lagger_weights.clone(),
-            strike: self.strike,
-            maturity: self.maturity,
-            option_type: parse_option_type_str(&self.option_type)?,
-        })
-    }
-}
-
-#[pymethods]
-impl OutperformanceBasketOption {
-    #[new]
-    fn new(
-        leader_index: usize,
-        lagger_weights: Vec<f64>,
-        strike: f64,
-        maturity: f64,
-        option_type: String,
-    ) -> PyResult<Self> {
-        let out = Self {
-            leader_index,
-            lagger_weights,
-            strike,
-            maturity,
-            option_type,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core()?.validate().map_err(map_err_string)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct QuantoBasketOption {
-    #[pyo3(get, set)]
-    pub basket: BasketOption,
-    #[pyo3(get, set)]
-    pub fx_rate: f64,
-    #[pyo3(get, set)]
-    pub fx_vol: f64,
-    #[pyo3(get, set)]
-    pub asset_fx_corr: Vec<f64>,
-    #[pyo3(get, set)]
-    pub domestic_rate: f64,
-    #[pyo3(get, set)]
-    pub foreign_rate: f64,
-}
-
-impl QuantoBasketOption {
-    fn to_core(&self) -> PyResult<CoreQuantoBasketOption> {
-        Ok(CoreQuantoBasketOption {
-            basket: self.basket.to_core()?,
-            fx_rate: self.fx_rate,
-            fx_vol: self.fx_vol,
-            asset_fx_corr: self.asset_fx_corr.clone(),
-            domestic_rate: self.domestic_rate,
-            foreign_rate: self.foreign_rate,
-        })
     }
 }
 
@@ -2829,94 +2200,6 @@ impl PoStrip {
 }
 
 #[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct RangeAccrual {
-    #[pyo3(get, set)]
-    pub notional: f64,
-    #[pyo3(get, set)]
-    pub coupon_rate: f64,
-    #[pyo3(get, set)]
-    pub lower_bound: f64,
-    #[pyo3(get, set)]
-    pub upper_bound: f64,
-    #[pyo3(get, set)]
-    pub fixing_times: Vec<f64>,
-    #[pyo3(get, set)]
-    pub payment_time: f64,
-}
-
-impl RangeAccrual {
-    fn to_core(&self) -> CoreRangeAccrual {
-        CoreRangeAccrual {
-            notional: self.notional,
-            coupon_rate: self.coupon_rate,
-            lower_bound: self.lower_bound,
-            upper_bound: self.upper_bound,
-            fixing_times: self.fixing_times.clone(),
-            payment_time: self.payment_time,
-        }
-    }
-}
-
-#[pymethods]
-impl RangeAccrual {
-    #[new]
-    fn new(
-        notional: f64,
-        coupon_rate: f64,
-        lower_bound: f64,
-        upper_bound: f64,
-        fixing_times: Vec<f64>,
-        payment_time: f64,
-    ) -> PyResult<Self> {
-        let out = Self {
-            notional,
-            coupon_rate,
-            lower_bound,
-            upper_bound,
-            fixing_times,
-            payment_time,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core().validate().map_err(map_err_string)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct DualRangeAccrual {
-    #[pyo3(get, set)]
-    pub notional: f64,
-    #[pyo3(get, set)]
-    pub coupon_rate: f64,
-    #[pyo3(get, set)]
-    pub lower_bound: f64,
-    #[pyo3(get, set)]
-    pub upper_bound: f64,
-    #[pyo3(get, set)]
-    pub fixing_times: Vec<f64>,
-    #[pyo3(get, set)]
-    pub payment_time: f64,
-}
-
-impl DualRangeAccrual {
-    fn to_core(&self) -> CoreDualRangeAccrual {
-        CoreDualRangeAccrual {
-            notional: self.notional,
-            coupon_rate: self.coupon_rate,
-            lower_bound: self.lower_bound,
-            upper_bound: self.upper_bound,
-            fixing_times: self.fixing_times.clone(),
-            payment_time: self.payment_time,
-        }
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct BestOfTwoCallOption {
     #[pyo3(get, set)]
@@ -3403,172 +2686,6 @@ impl CatastropheBond {
     }
 }
 
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct Tarf {
-    #[pyo3(get, set)]
-    pub strike: f64,
-    #[pyo3(get, set)]
-    pub notional_per_fixing: f64,
-    #[pyo3(get, set)]
-    pub ko_barrier: f64,
-    #[pyo3(get, set)]
-    pub target_profit: f64,
-    #[pyo3(get, set)]
-    pub downside_leverage: f64,
-    #[pyo3(get, set)]
-    pub fixing_times: Vec<f64>,
-    #[pyo3(get, set)]
-    pub tarf_type: String,
-}
-
-impl Tarf {
-    fn to_core(&self) -> PyResult<CoreTarf> {
-        Ok(CoreTarf {
-            strike: self.strike,
-            notional_per_fixing: self.notional_per_fixing,
-            ko_barrier: self.ko_barrier,
-            target_profit: self.target_profit,
-            downside_leverage: self.downside_leverage,
-            fixing_times: self.fixing_times.clone(),
-            tarf_type: parse_tarf_type(&self.tarf_type)?,
-        })
-    }
-}
-
-#[pymethods]
-impl Tarf {
-    #[new]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        strike: f64,
-        notional_per_fixing: f64,
-        ko_barrier: f64,
-        target_profit: f64,
-        downside_leverage: f64,
-        fixing_times: Vec<f64>,
-        tarf_type: String,
-    ) -> PyResult<Self> {
-        let out = Self {
-            strike,
-            notional_per_fixing,
-            ko_barrier,
-            target_profit,
-            downside_leverage,
-            fixing_times,
-            tarf_type,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    #[staticmethod]
-    fn standard(
-        strike: f64,
-        notional_per_fixing: f64,
-        ko_barrier: f64,
-        target_profit: f64,
-        downside_leverage: f64,
-        fixing_times: Vec<f64>,
-    ) -> Self {
-        Self {
-            strike,
-            notional_per_fixing,
-            ko_barrier,
-            target_profit,
-            downside_leverage,
-            fixing_times,
-            tarf_type: "standard".to_string(),
-        }
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core()?.validate().map_err(map_err_string)
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone, Copy)]
-pub struct DiscreteCashFlow {
-    #[pyo3(get, set)]
-    pub time: f64,
-    #[pyo3(get, set)]
-    pub amount: f64,
-}
-
-#[pymethods]
-impl DiscreteCashFlow {
-    #[new]
-    fn new(time: f64, amount: f64) -> Self {
-        Self { time, amount }
-    }
-}
-
-#[pyclass(module = "openferric", from_py_object)]
-#[derive(Clone)]
-pub struct RealOptionBinomialSpec {
-    #[pyo3(get, set)]
-    pub project_value: f64,
-    #[pyo3(get, set)]
-    pub volatility: f64,
-    #[pyo3(get, set)]
-    pub risk_free_rate: f64,
-    #[pyo3(get, set)]
-    pub maturity: f64,
-    #[pyo3(get, set)]
-    pub steps: usize,
-    #[pyo3(get, set)]
-    pub cash_flows: Vec<DiscreteCashFlow>,
-}
-
-impl RealOptionBinomialSpec {
-    fn to_core(&self) -> CoreRealOptionBinomialSpec {
-        CoreRealOptionBinomialSpec {
-            project_value: self.project_value,
-            volatility: self.volatility,
-            risk_free_rate: self.risk_free_rate,
-            maturity: self.maturity,
-            steps: self.steps,
-            cash_flows: self
-                .cash_flows
-                .iter()
-                .map(|cf| CoreDiscreteCashFlow {
-                    time: cf.time,
-                    amount: cf.amount,
-                })
-                .collect(),
-        }
-    }
-}
-
-#[pymethods]
-impl RealOptionBinomialSpec {
-    #[new]
-    fn new(
-        project_value: f64,
-        volatility: f64,
-        risk_free_rate: f64,
-        maturity: f64,
-        steps: usize,
-        cash_flows: Vec<DiscreteCashFlow>,
-    ) -> PyResult<Self> {
-        let out = Self {
-            project_value,
-            volatility,
-            risk_free_rate,
-            maturity,
-            steps,
-            cash_flows,
-        };
-        out.validate()?;
-        Ok(out)
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core().validate().map_err(map_err_string)
-    }
-}
-
 macro_rules! simple_payload_enum {
     ($name:ident) => {
         #[pyclass(module = "openferric")]
@@ -3719,41 +2836,557 @@ impl Trade {
     }
 }
 
-#[pyclass(module = "openferric")]
-pub struct Portfolio {
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct Autocallable {
     #[pyo3(get, set)]
-    pub portfolio_id: String,
+    pub underlyings: Vec<usize>,
     #[pyo3(get, set)]
-    pub market_snapshot_id: Option<String>,
-    trades: Vec<Py<PyAny>>,
+    pub notional: f64,
+    #[pyo3(get, set)]
+    pub autocall_dates: Vec<f64>,
+    #[pyo3(get, set)]
+    pub autocall_barrier: f64,
+    #[pyo3(get, set)]
+    pub coupon_rate: f64,
+    #[pyo3(get, set)]
+    pub ki_barrier: f64,
+    #[pyo3(get, set)]
+    pub ki_strike: f64,
+    #[pyo3(get, set)]
+    pub maturity: f64,
+}
+
+impl Autocallable {
+    pub(crate) fn to_core(&self) -> CoreAutocallable {
+        CoreAutocallable {
+            underlyings: self.underlyings.clone(),
+            notional: self.notional,
+            autocall_dates: self.autocall_dates.clone(),
+            autocall_barrier: self.autocall_barrier,
+            coupon_rate: self.coupon_rate,
+            ki_barrier: self.ki_barrier,
+            ki_strike: self.ki_strike,
+            maturity: self.maturity,
+        }
+    }
 }
 
 #[pymethods]
-impl Portfolio {
+impl Autocallable {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        underlyings: Vec<usize>,
+        notional: f64,
+        autocall_dates: Vec<f64>,
+        autocall_barrier: f64,
+        coupon_rate: f64,
+        ki_barrier: f64,
+        ki_strike: f64,
+        maturity: f64,
+    ) -> PyResult<Self> {
+        let out = Self {
+            underlyings,
+            notional,
+            autocall_dates,
+            autocall_barrier,
+            coupon_rate,
+            ki_barrier,
+            ki_strike,
+            maturity,
+        };
+        out.validate()?;
+        Ok(out)
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct PhoenixAutocallable {
+    #[pyo3(get, set)]
+    pub underlyings: Vec<usize>,
+    #[pyo3(get, set)]
+    pub notional: f64,
+    #[pyo3(get, set)]
+    pub autocall_dates: Vec<f64>,
+    #[pyo3(get, set)]
+    pub autocall_barrier: f64,
+    #[pyo3(get, set)]
+    pub coupon_barrier: f64,
+    #[pyo3(get, set)]
+    pub coupon_rate: f64,
+    #[pyo3(get, set)]
+    pub memory: bool,
+    #[pyo3(get, set)]
+    pub ki_barrier: f64,
+    #[pyo3(get, set)]
+    pub ki_strike: f64,
+    #[pyo3(get, set)]
+    pub maturity: f64,
+}
+
+impl PhoenixAutocallable {
+    pub(crate) fn to_core(&self) -> CorePhoenixAutocallable {
+        CorePhoenixAutocallable {
+            underlyings: self.underlyings.clone(),
+            notional: self.notional,
+            autocall_dates: self.autocall_dates.clone(),
+            autocall_barrier: self.autocall_barrier,
+            coupon_barrier: self.coupon_barrier,
+            coupon_rate: self.coupon_rate,
+            memory: self.memory,
+            ki_barrier: self.ki_barrier,
+            ki_strike: self.ki_strike,
+            maturity: self.maturity,
+        }
+    }
+}
+
+#[pymethods]
+impl PhoenixAutocallable {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        underlyings: Vec<usize>,
+        notional: f64,
+        autocall_dates: Vec<f64>,
+        autocall_barrier: f64,
+        coupon_barrier: f64,
+        coupon_rate: f64,
+        memory: bool,
+        ki_barrier: f64,
+        ki_strike: f64,
+        maturity: f64,
+    ) -> PyResult<Self> {
+        let out = Self {
+            underlyings,
+            notional,
+            autocall_dates,
+            autocall_barrier,
+            coupon_barrier,
+            coupon_rate,
+            memory,
+            ki_barrier,
+            ki_strike,
+            maturity,
+        };
+        out.validate()?;
+        Ok(out)
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct BasketOption {
+    #[pyo3(get, set)]
+    pub weights: Vec<f64>,
+    #[pyo3(get, set)]
+    pub strike: f64,
+    #[pyo3(get, set)]
+    pub maturity: f64,
+    #[pyo3(get, set)]
+    pub is_call: bool,
+    #[pyo3(get, set)]
+    pub basket_type: String,
+}
+
+impl BasketOption {
+    pub(crate) fn to_core(&self) -> PyResult<CoreBasketOption> {
+        Ok(CoreBasketOption {
+            weights: self.weights.clone(),
+            strike: self.strike,
+            maturity: self.maturity,
+            is_call: self.is_call,
+            basket_type: parse_basket_type(&self.basket_type)?,
+        })
+    }
+
+    pub(crate) fn from_core(inner: CoreBasketOption) -> Self {
+        Self {
+            weights: inner.weights,
+            strike: inner.strike,
+            maturity: inner.maturity,
+            is_call: inner.is_call,
+            basket_type: format_basket_type(inner.basket_type).to_string(),
+        }
+    }
+}
+
+#[pymethods]
+impl BasketOption {
     #[new]
     fn new(
-        portfolio_id: String,
-        market_snapshot_id: Option<String>,
-        trades: Vec<Py<PyAny>>,
+        weights: Vec<f64>,
+        strike: f64,
+        maturity: f64,
+        is_call: bool,
+        basket_type: String,
+    ) -> PyResult<Self> {
+        let out = Self {
+            weights,
+            strike,
+            maturity,
+            is_call,
+            basket_type,
+        };
+        out.validate()?;
+        Ok(out)
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.to_core()?.validate().map_err(map_err_string)
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct OutperformanceBasketOption {
+    #[pyo3(get, set)]
+    pub leader_index: usize,
+    #[pyo3(get, set)]
+    pub lagger_weights: Vec<f64>,
+    #[pyo3(get, set)]
+    pub strike: f64,
+    #[pyo3(get, set)]
+    pub maturity: f64,
+    #[pyo3(get, set)]
+    pub option_type: String,
+}
+
+impl OutperformanceBasketOption {
+    pub(crate) fn to_core(&self) -> PyResult<CoreOutperformanceBasketOption> {
+        Ok(CoreOutperformanceBasketOption {
+            leader_index: self.leader_index,
+            lagger_weights: self.lagger_weights.clone(),
+            strike: self.strike,
+            maturity: self.maturity,
+            option_type: parse_option_type_str(&self.option_type)?,
+        })
+    }
+}
+
+#[pymethods]
+impl OutperformanceBasketOption {
+    #[new]
+    fn new(
+        leader_index: usize,
+        lagger_weights: Vec<f64>,
+        strike: f64,
+        maturity: f64,
+        option_type: String,
+    ) -> PyResult<Self> {
+        let out = Self {
+            leader_index,
+            lagger_weights,
+            strike,
+            maturity,
+            option_type,
+        };
+        out.validate()?;
+        Ok(out)
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.to_core()?.validate().map_err(map_err_string)
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct QuantoBasketOption {
+    #[pyo3(get, set)]
+    pub basket: BasketOption,
+    #[pyo3(get, set)]
+    pub fx_rate: f64,
+    #[pyo3(get, set)]
+    pub fx_vol: f64,
+    #[pyo3(get, set)]
+    pub asset_fx_corr: Vec<f64>,
+    #[pyo3(get, set)]
+    pub domestic_rate: f64,
+    #[pyo3(get, set)]
+    pub foreign_rate: f64,
+}
+
+impl QuantoBasketOption {
+    pub(crate) fn to_core(&self) -> PyResult<CoreQuantoBasketOption> {
+        Ok(CoreQuantoBasketOption {
+            basket: self.basket.to_core()?,
+            fx_rate: self.fx_rate,
+            fx_vol: self.fx_vol,
+            asset_fx_corr: self.asset_fx_corr.clone(),
+            domestic_rate: self.domestic_rate,
+            foreign_rate: self.foreign_rate,
+        })
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct RangeAccrual {
+    #[pyo3(get, set)]
+    pub notional: f64,
+    #[pyo3(get, set)]
+    pub coupon_rate: f64,
+    #[pyo3(get, set)]
+    pub lower_bound: f64,
+    #[pyo3(get, set)]
+    pub upper_bound: f64,
+    #[pyo3(get, set)]
+    pub fixing_times: Vec<f64>,
+    #[pyo3(get, set)]
+    pub payment_time: f64,
+}
+
+impl RangeAccrual {
+    pub(crate) fn to_core(&self) -> CoreRangeAccrual {
+        CoreRangeAccrual {
+            notional: self.notional,
+            coupon_rate: self.coupon_rate,
+            lower_bound: self.lower_bound,
+            upper_bound: self.upper_bound,
+            fixing_times: self.fixing_times.clone(),
+            payment_time: self.payment_time,
+        }
+    }
+}
+
+#[pymethods]
+impl RangeAccrual {
+    #[new]
+    fn new(
+        notional: f64,
+        coupon_rate: f64,
+        lower_bound: f64,
+        upper_bound: f64,
+        fixing_times: Vec<f64>,
+        payment_time: f64,
+    ) -> PyResult<Self> {
+        let out = Self {
+            notional,
+            coupon_rate,
+            lower_bound,
+            upper_bound,
+            fixing_times,
+            payment_time,
+        };
+        out.validate()?;
+        Ok(out)
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct DualRangeAccrual {
+    #[pyo3(get, set)]
+    pub notional: f64,
+    #[pyo3(get, set)]
+    pub coupon_rate: f64,
+    #[pyo3(get, set)]
+    pub lower_bound: f64,
+    #[pyo3(get, set)]
+    pub upper_bound: f64,
+    #[pyo3(get, set)]
+    pub fixing_times: Vec<f64>,
+    #[pyo3(get, set)]
+    pub payment_time: f64,
+}
+
+impl DualRangeAccrual {
+    pub(crate) fn to_core(&self) -> CoreDualRangeAccrual {
+        CoreDualRangeAccrual {
+            notional: self.notional,
+            coupon_rate: self.coupon_rate,
+            lower_bound: self.lower_bound,
+            upper_bound: self.upper_bound,
+            fixing_times: self.fixing_times.clone(),
+            payment_time: self.payment_time,
+        }
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct Tarf {
+    #[pyo3(get, set)]
+    pub strike: f64,
+    #[pyo3(get, set)]
+    pub notional_per_fixing: f64,
+    #[pyo3(get, set)]
+    pub ko_barrier: f64,
+    #[pyo3(get, set)]
+    pub target_profit: f64,
+    #[pyo3(get, set)]
+    pub downside_leverage: f64,
+    #[pyo3(get, set)]
+    pub fixing_times: Vec<f64>,
+    #[pyo3(get, set)]
+    pub tarf_type: String,
+}
+
+impl Tarf {
+    pub(crate) fn to_core(&self) -> PyResult<CoreTarf> {
+        Ok(CoreTarf {
+            strike: self.strike,
+            notional_per_fixing: self.notional_per_fixing,
+            ko_barrier: self.ko_barrier,
+            target_profit: self.target_profit,
+            downside_leverage: self.downside_leverage,
+            fixing_times: self.fixing_times.clone(),
+            tarf_type: parse_tarf_type(&self.tarf_type)?,
+        })
+    }
+}
+
+#[pymethods]
+impl Tarf {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        strike: f64,
+        notional_per_fixing: f64,
+        ko_barrier: f64,
+        target_profit: f64,
+        downside_leverage: f64,
+        fixing_times: Vec<f64>,
+        tarf_type: String,
+    ) -> PyResult<Self> {
+        let out = Self {
+            strike,
+            notional_per_fixing,
+            ko_barrier,
+            target_profit,
+            downside_leverage,
+            fixing_times,
+            tarf_type,
+        };
+        out.validate()?;
+        Ok(out)
+    }
+
+    #[staticmethod]
+    fn standard(
+        strike: f64,
+        notional_per_fixing: f64,
+        ko_barrier: f64,
+        target_profit: f64,
+        downside_leverage: f64,
+        fixing_times: Vec<f64>,
     ) -> Self {
         Self {
-            portfolio_id,
-            market_snapshot_id,
-            trades,
+            strike,
+            notional_per_fixing,
+            ko_barrier,
+            target_profit,
+            downside_leverage,
+            fixing_times,
+            tarf_type: "standard".to_string(),
         }
     }
 
-    #[getter]
-    fn trades(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
-        self.trades
-            .iter()
-            .map(|trade| trade.clone_ref(py))
-            .collect()
+    fn validate(&self) -> PyResult<()> {
+        self.to_core()?.validate().map_err(map_err_string)
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone, Copy)]
+pub struct DiscreteCashFlow {
+    #[pyo3(get, set)]
+    pub time: f64,
+    #[pyo3(get, set)]
+    pub amount: f64,
+}
+
+impl DiscreteCashFlow {
+    pub(crate) fn to_core(&self) -> CoreDiscreteCashFlow {
+        CoreDiscreteCashFlow {
+            time: self.time,
+            amount: self.amount,
+        }
+    }
+}
+
+#[pymethods]
+impl DiscreteCashFlow {
+    #[new]
+    fn new(time: f64, amount: f64) -> Self {
+        Self { time, amount }
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct RealOptionBinomialSpec {
+    #[pyo3(get, set)]
+    pub project_value: f64,
+    #[pyo3(get, set)]
+    pub volatility: f64,
+    #[pyo3(get, set)]
+    pub risk_free_rate: f64,
+    #[pyo3(get, set)]
+    pub maturity: f64,
+    #[pyo3(get, set)]
+    pub steps: usize,
+    #[pyo3(get, set)]
+    pub cash_flows: Vec<DiscreteCashFlow>,
+}
+
+impl RealOptionBinomialSpec {
+    pub(crate) fn to_core(&self) -> CoreRealOptionBinomialSpec {
+        CoreRealOptionBinomialSpec {
+            project_value: self.project_value,
+            volatility: self.volatility,
+            risk_free_rate: self.risk_free_rate,
+            maturity: self.maturity,
+            steps: self.steps,
+            cash_flows: self
+                .cash_flows
+                .iter()
+                .map(DiscreteCashFlow::to_core)
+                .collect(),
+        }
+    }
+}
+
+#[pymethods]
+impl RealOptionBinomialSpec {
+    #[new]
+    fn new(
+        project_value: f64,
+        volatility: f64,
+        risk_free_rate: f64,
+        maturity: f64,
+        steps: usize,
+        cash_flows: Vec<DiscreteCashFlow>,
+    ) -> PyResult<Self> {
+        let out = Self {
+            project_value,
+            volatility,
+            risk_free_rate,
+            maturity,
+            steps,
+            cash_flows,
+        };
+        out.validate()?;
+        Ok(out)
     }
 
-    #[setter]
-    fn set_trades(&mut self, trades: Vec<Py<PyAny>>) {
-        self.trades = trades;
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
     }
 }
 
@@ -3768,22 +3401,10 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<TarfType>()?;
     module.add_class::<DegreeDayType>()?;
     module.add_class::<Frequency>()?;
-    module.add_class::<ExerciseStyle>()?;
-    module.add_class::<BarrierSpec>()?;
-    module.add_class::<AsianSpec>()?;
-    module.add_class::<YieldCurve>()?;
-    module.add_class::<HullWhite>()?;
-    module.add_class::<TwoFactorCommodityProcess>()?;
-    module.add_class::<TwoFactorSpreadModel>()?;
     module.add_class::<VanillaOption>()?;
     module.add_class::<AsianOption>()?;
     module.add_class::<BarrierOption>()?;
     module.add_class::<BarrierOptionBuilder>()?;
-    module.add_class::<Autocallable>()?;
-    module.add_class::<PhoenixAutocallable>()?;
-    module.add_class::<BasketOption>()?;
-    module.add_class::<OutperformanceBasketOption>()?;
-    module.add_class::<QuantoBasketOption>()?;
     module.add_class::<BermudanOption>()?;
     module.add_class::<FuturesOption>()?;
     module.add_class::<ForwardStartOption>()?;
@@ -3809,8 +3430,16 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<MbsPassThrough>()?;
     module.add_class::<IoStrip>()?;
     module.add_class::<PoStrip>()?;
+    module.add_class::<Autocallable>()?;
+    module.add_class::<PhoenixAutocallable>()?;
+    module.add_class::<BasketOption>()?;
+    module.add_class::<OutperformanceBasketOption>()?;
+    module.add_class::<QuantoBasketOption>()?;
     module.add_class::<RangeAccrual>()?;
     module.add_class::<DualRangeAccrual>()?;
+    module.add_class::<Tarf>()?;
+    module.add_class::<DiscreteCashFlow>()?;
+    module.add_class::<RealOptionBinomialSpec>()?;
     module.add_class::<BestOfTwoCallOption>()?;
     module.add_class::<WorstOfTwoCallOption>()?;
     module.add_class::<TwoAssetCorrelationOption>()?;
@@ -3818,9 +3447,6 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<WeatherSwap>()?;
     module.add_class::<WeatherOption>()?;
     module.add_class::<CatastropheBond>()?;
-    module.add_class::<Tarf>()?;
-    module.add_class::<DiscreteCashFlow>()?;
-    module.add_class::<RealOptionBinomialSpec>()?;
     module.add_class::<RealOptionInstrument>()?;
     module.add_class::<ExoticOption>()?;
     module.add_class::<StructuredCoupon>()?;
@@ -3830,7 +3456,6 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<TradeMetadata>()?;
     module.add_class::<TradeInstrument>()?;
     module.add_class::<Trade>()?;
-    module.add_class::<Portfolio>()?;
     module.add_class::<FundingRateSwap>()?;
     Ok(())
 }
@@ -4009,37 +3634,5 @@ impl QuantoBasketOption {
 
     fn validate(&self) -> PyResult<()> {
         self.to_core()?.validate().map_err(map_err_string)
-    }
-}
-
-#[pymethods]
-impl TwoFactorSpreadModel {
-    #[new]
-    fn new(
-        leg_1: TwoFactorCommodityProcess,
-        leg_2: TwoFactorCommodityProcess,
-        rho_fast: f64,
-        rho_slow: f64,
-    ) -> Self {
-        Self {
-            leg_1,
-            leg_2,
-            rho_fast,
-            rho_slow,
-        }
-    }
-
-    fn validate(&self) -> PyResult<()> {
-        self.to_core().validate().map_err(map_err_string)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "TwoFactorSpreadModel(leg_1={}, leg_2={}, rho_fast={}, rho_slow={})",
-            self.leg_1.__repr__(),
-            self.leg_2.__repr__(),
-            self.rho_fast,
-            self.rho_slow
-        )
     }
 }

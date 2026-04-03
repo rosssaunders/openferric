@@ -740,6 +740,12 @@ impl PricingResult {
     }
 }
 
+impl From<CorePricingResult> for PricingResult {
+    fn from(value: CorePricingResult) -> Self {
+        Self::from_core(value)
+    }
+}
+
 #[pymethods]
 impl PricingResult {
     #[new]

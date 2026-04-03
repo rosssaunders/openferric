@@ -335,7 +335,7 @@ pub struct HullWhite {
 }
 
 impl HullWhite {
-    fn to_core(&self) -> CoreHullWhite {
+    pub(crate) fn to_core(&self) -> CoreHullWhite {
         CoreHullWhite {
             a: self.a,
             sigma: self.sigma,
@@ -1072,7 +1072,7 @@ pub struct TwoFactorCommodityProcess {
 }
 
 impl TwoFactorCommodityProcess {
-    fn to_core(self) -> CoreTwoFactorCommodityProcess {
+    pub(crate) fn to_core(self) -> CoreTwoFactorCommodityProcess {
         CoreTwoFactorCommodityProcess {
             kappa_fast: self.kappa_fast,
             sigma_fast: self.sigma_fast,
@@ -1111,7 +1111,7 @@ pub struct TwoFactorSpreadModel {
 }
 
 impl TwoFactorSpreadModel {
-    fn to_core(self) -> CoreTwoFactorSpreadModel {
+    pub(crate) fn to_core(self) -> CoreTwoFactorSpreadModel {
         CoreTwoFactorSpreadModel {
             leg_1: self.leg_1.to_core(),
             leg_2: self.leg_2.to_core(),
