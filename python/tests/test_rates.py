@@ -1,19 +1,18 @@
 """Tests for rates functions: swaption pricing."""
 
 import pytest
+from conftest import is_nan
 from openferric import py_swaption_price
-from conftest import REL_TOL, is_nan
-
 
 # =========================================================================
 # 21. py_swaption_price
 # =========================================================================
 
+
 class TestSwaptionPrice:
     @pytest.fixture
     def swaption_params(self):
-        return dict(notional=1_000_000.0, strike=0.03, swap_tenor=5.0,
-                    option_expiry=1.0, vol=0.15, discount_rate=0.03)
+        return dict(notional=1_000_000.0, strike=0.03, swap_tenor=5.0, option_expiry=1.0, vol=0.15, discount_rate=0.03)
 
     def test_payer_positive(self, swaption_params):
         price = py_swaption_price(**swaption_params, option_type="payer")

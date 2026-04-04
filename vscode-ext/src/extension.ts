@@ -1,10 +1,13 @@
 import * as vscode from "vscode";
-import {
-  LanguageClient,
+import type {
   LanguageClientOptions,
-  ServerOptions,
+  ServerOptions} from "vscode-languageclient/node";
+import {
+  LanguageClient
 } from "vscode-languageclient/node";
-import { PricingPanelProvider, PricingResult, MarketSnapshot } from "./pricingPanel";
+
+import type { PricingResult, MarketSnapshot } from "./pricingPanel";
+import { PricingPanelProvider } from "./pricingPanel";
 
 const LANGUAGE_ID = "openferric";
 const MARKET_STATE_KEY = "openferric.marketState";
@@ -12,7 +15,7 @@ let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = vscode.workspace.getConfiguration("openferric");
-  const lspPath = config.get<string>(
+  const lspPath = config.get(
     "lsp.path",
     "openferric-lsp"
   );
@@ -29,10 +32,10 @@ export function activate(context: vscode.ExtensionContext): void {
     documentSelector: [{ language: LANGUAGE_ID }],
     initializationOptions: {
       pricing: {
-        enabled: config.get<boolean>("pricing.enabled", true),
-        numPaths: config.get<number>("pricing.numPaths", 50000),
-        numSteps: config.get<number>("pricing.numSteps", 100),
-        seed: config.get<number>("pricing.seed", 42),
+        enabled: config.get("pricing.enabled", true),
+        numPaths: config.get("pricing.numPaths", 50000),
+        numSteps: config.get("pricing.numSteps", 100),
+        seed: config.get("pricing.seed", 42),
       },
       market: initialMarket,
     },
@@ -56,26 +59,27 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Forward market edits from webview to LSP and persist.
   pricingProvider.onMarketUpdate((market: MarketSnapshot) => {
-    context.workspaceState.update(MARKET_STATE_KEY, market);
+    void context.workspaceState.update(MARKET_STATE_KEY, market);
     if (client) {
-      client.sendNotification("openferric/updateMarket", market);
+      void client.sendNotification("openferric/updateMarket", market);
     }
   });
 
   // Start client and listen for pricing notifications.
-  client.start().then(() => {
-    client!.onNotification(
+  void (async () => {
+    await client.start();
+    client.onNotification(
       "openferric/pricingResult",
       (result: PricingResult) => {
         pricingProvider.update(result);
       }
     );
-  });
+  })();
 
   context.subscriptions.push({
     dispose: () => {
       if (client) {
-        client.stop();
+        void client.stop();
       }
     },
   });
