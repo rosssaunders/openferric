@@ -4,7 +4,9 @@
 //! curve in year-fraction time, with linear interpolation between observed
 //! settlement points and exact integration of the piecewise-linear path.
 
-use crate::math::interpolation::{ExtrapolationMode, Interpolator, LinearInterpolator};
+use crate::math::interpolation::{
+    ExtrapolationMode, Interpolator, LinearInterpolator, PiecewiseConstantInterpolator,
+};
 use chrono::{DateTime, Utc};
 
 const FUNDING_PERIODS_PER_YEAR: f64 = 1095.0;
@@ -88,17 +90,51 @@ impl FundingRateStats {
     }
 }
 
+/// Interpolation strategy for funding rate curves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FundingRateInterpolation {
+    /// Piecewise-linear interpolation between rate nodes.
+    Linear,
+    /// Piecewise-constant (step function): each rate holds flat until the next node.
+    /// Appropriate for Boros-style markets where each swap locks a fixed APR.
+    PiecewiseConstant,
+}
+
+impl Default for FundingRateInterpolation {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
 /// Forward funding-rate term structure built from observed snapshots.
 ///
 /// Times `t` are expressed in years from the earliest snapshot in the input
 /// history. `forward_rate(t)` returns a per-8-hour rate, while
 /// `cumulative_index(t)` returns total accrued funding over `[0, t]`.
-#[derive(Debug, Clone)]
 pub struct FundingRateCurve {
     snapshots: Vec<FundingRateSnapshot>,
     anchor_timestamp: Option<DateTime<Utc>>,
     nodes: Vec<(f64, f64)>,
-    interpolator: Option<LinearInterpolator>,
+    interpolation_mode: FundingRateInterpolation,
+    interpolator: Option<Box<dyn Interpolator + Send + Sync>>,
+}
+
+impl std::fmt::Debug for FundingRateCurve {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FundingRateCurve")
+            .field("snapshots", &self.snapshots)
+            .field("anchor_timestamp", &self.anchor_timestamp)
+            .field("nodes", &self.nodes)
+            .field("interpolation_mode", &self.interpolation_mode)
+            .field("interpolator", &self.interpolator.is_some())
+            .finish()
+    }
+}
+
+impl Clone for FundingRateCurve {
+    fn clone(&self) -> Self {
+        Self::new_with_interpolation(self.snapshots.clone(), self.interpolation_mode)
+    }
 }
 
 impl FundingRateCurve {
@@ -107,17 +143,26 @@ impl FundingRateCurve {
     /// Snapshots are sorted by timestamp, non-finite rates are removed, and
     /// duplicate timestamps keep the last supplied observation.
     pub fn new(snapshots: Vec<FundingRateSnapshot>) -> Self {
+        Self::new_with_interpolation(snapshots, FundingRateInterpolation::Linear)
+    }
+
+    /// Builds a funding curve with an explicit interpolation strategy.
+    pub fn new_with_interpolation(
+        snapshots: Vec<FundingRateSnapshot>,
+        mode: FundingRateInterpolation,
+    ) -> Self {
         let snapshots = sanitize_snapshots(snapshots);
         let anchor_timestamp = snapshots
             .first()
             .map(|snapshot| snapshot.timestamp.to_owned());
         let nodes = build_nodes(&snapshots, anchor_timestamp.as_ref());
-        let interpolator = build_interpolator(&nodes);
+        let interpolator = build_interpolator(&nodes, mode);
 
         Self {
             snapshots,
             anchor_timestamp,
             nodes,
+            interpolation_mode: mode,
             interpolator,
         }
     }
@@ -135,6 +180,11 @@ impl FundingRateCurve {
     /// Returns the internal curve nodes as `(time_in_years, per_8h_rate)`.
     pub fn nodes(&self) -> &[(f64, f64)] {
         &self.nodes
+    }
+
+    /// Returns the interpolation mode used by this curve.
+    pub fn interpolation_mode(&self) -> FundingRateInterpolation {
+        self.interpolation_mode
     }
 
     /// Converts a per-8-hour funding rate to an annualized APR.
@@ -381,14 +431,26 @@ fn build_nodes(
         .collect()
 }
 
-fn build_interpolator(nodes: &[(f64, f64)]) -> Option<LinearInterpolator> {
+fn build_interpolator(
+    nodes: &[(f64, f64)],
+    mode: FundingRateInterpolation,
+) -> Option<Box<dyn Interpolator + Send + Sync>> {
     if nodes.len() < 2 {
         return None;
     }
 
     let x = nodes.iter().map(|(time, _)| *time).collect::<Vec<_>>();
     let y = nodes.iter().map(|(_, rate)| *rate).collect::<Vec<_>>();
-    LinearInterpolator::new(x, y, ExtrapolationMode::Flat).ok()
+    match mode {
+        FundingRateInterpolation::Linear => LinearInterpolator::new(x, y, ExtrapolationMode::Flat)
+            .ok()
+            .map(|i| Box::new(i) as Box<dyn Interpolator + Send + Sync>),
+        FundingRateInterpolation::PiecewiseConstant => {
+            PiecewiseConstantInterpolator::new(x, y, ExtrapolationMode::Flat)
+                .ok()
+                .map(|i| Box::new(i) as Box<dyn Interpolator + Send + Sync>)
+        }
+    }
 }
 
 fn year_fraction_between(start: &DateTime<Utc>, end: &DateTime<Utc>) -> f64 {
@@ -425,8 +487,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        FUNDING_INTERVAL_YEARS, FundingRateCurve, FundingRateSnapshot, FundingRateStats,
-        MultiVenueFundingCurve,
+        FUNDING_INTERVAL_YEARS, FundingRateCurve, FundingRateInterpolation, FundingRateSnapshot,
+        FundingRateStats, MultiVenueFundingCurve,
     };
     use approx::assert_relative_eq;
     use chrono::{TimeZone, Utc};
@@ -550,6 +612,79 @@ mod tests {
                 skew: 0.0,
                 kurtosis: -1.5,
             }
+        );
+    }
+
+    #[test]
+    fn piecewise_constant_holds_rate_flat_between_nodes() {
+        let snaps = vec![
+            FundingRateSnapshot {
+                venue: "binance".into(),
+                asset: "BTCUSDT".into(),
+                rate: 0.001,
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            },
+            FundingRateSnapshot {
+                venue: "binance".into(),
+                asset: "BTCUSDT".into(),
+                rate: 0.003,
+                timestamp: Utc.with_ymd_and_hms(2025, 4, 1, 0, 0, 0).unwrap(),
+            },
+        ];
+        let curve = FundingRateCurve::new_with_interpolation(
+            snaps,
+            FundingRateInterpolation::PiecewiseConstant,
+        );
+        // Midpoint between nodes should return first node's rate (step function)
+        let midpoint = 0.125; // ~halfway between 0 and 0.25 years
+        let rate = curve.forward_rate(midpoint);
+        assert!(
+            (rate - 0.001).abs() < 1e-10,
+            "piecewise constant should hold first rate flat, got {rate}"
+        );
+        // At the second node, should return second rate
+        let at_second = 0.25; // approximately where the second node is
+        let rate2 = curve.forward_rate(at_second);
+        // The exact time depends on node computation, but after the jump it should be 0.003
+        assert!(
+            rate2 > 0.001,
+            "should have jumped to higher rate at second node"
+        );
+    }
+
+    #[test]
+    fn linear_interpolation_differs_from_piecewise_constant() {
+        let snaps = vec![
+            FundingRateSnapshot {
+                venue: "binance".into(),
+                asset: "BTCUSDT".into(),
+                rate: 0.001,
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            },
+            FundingRateSnapshot {
+                venue: "binance".into(),
+                asset: "BTCUSDT".into(),
+                rate: 0.005,
+                timestamp: Utc.with_ymd_and_hms(2025, 7, 1, 0, 0, 0).unwrap(),
+            },
+        ];
+        let linear = FundingRateCurve::new(snaps.clone());
+        let step = FundingRateCurve::new_with_interpolation(
+            snaps,
+            FundingRateInterpolation::PiecewiseConstant,
+        );
+        let mid = 0.25; // quarter way between nodes
+        let linear_rate = linear.forward_rate(mid);
+        let step_rate = step.forward_rate(mid);
+        // Linear should interpolate between 0.001 and 0.005
+        // Step should hold at 0.001
+        assert!(
+            (linear_rate - step_rate).abs() > 1e-6,
+            "linear and step should differ at midpoint: linear={linear_rate}, step={step_rate}"
+        );
+        assert!(
+            (step_rate - 0.001).abs() < 1e-10,
+            "step should hold first rate: got {step_rate}"
         );
     }
 

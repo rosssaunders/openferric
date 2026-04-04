@@ -368,6 +368,93 @@ impl Interpolator for LinearInterpolator {
     }
 }
 
+/// Piecewise-constant (step function) interpolation.
+///
+/// For a query point xq in [x[i], x[i+1]), returns y[i].
+/// This is appropriate for funding rate curves where each market
+/// locks a flat rate until the next maturity (per the Boros whitepaper).
+#[derive(Debug, Clone)]
+pub struct PiecewiseConstantInterpolator {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    extrapolation: ExtrapolationMode,
+}
+
+impl PiecewiseConstantInterpolator {
+    pub fn new(
+        x: Vec<f64>,
+        y: Vec<f64>,
+        extrapolation: ExtrapolationMode,
+    ) -> Result<Self, InterpolationError> {
+        validate_xy(&x, &y, 2)?;
+        Ok(Self {
+            x,
+            y,
+            extrapolation,
+        })
+    }
+}
+
+impl Interpolator for PiecewiseConstantInterpolator {
+    fn value(&self, xq: f64) -> Result<f64, InterpolationError> {
+        match query_location(&self.x, xq) {
+            QueryLocation::Left => match self.extrapolation {
+                ExtrapolationMode::Flat => Ok(self.y[0]),
+                ExtrapolationMode::Linear => Ok(self.y[0]),
+                ExtrapolationMode::Error => Err(InterpolationError::ExtrapolationDisabled),
+            },
+            QueryLocation::Right => {
+                let n = self.x.len();
+                match self.extrapolation {
+                    ExtrapolationMode::Flat => Ok(self.y[n - 1]),
+                    ExtrapolationMode::Linear => Ok(self.y[n - 1]),
+                    ExtrapolationMode::Error => Err(InterpolationError::ExtrapolationDisabled),
+                }
+            }
+            QueryLocation::Inside(i) => Ok(self.y[i]),
+        }
+    }
+
+    fn derivative(&self, _xq: f64) -> Result<f64, InterpolationError> {
+        Ok(0.0) // Step function has zero derivative everywhere (except at discontinuities)
+    }
+
+    fn jacobian(&self, xq: f64) -> Result<Vec<f64>, InterpolationError> {
+        let mut j = vec![0.0; self.y.len()];
+        match query_location(&self.x, xq) {
+            QueryLocation::Left => match self.extrapolation {
+                ExtrapolationMode::Flat | ExtrapolationMode::Linear => {
+                    j[0] = 1.0;
+                    Ok(j)
+                }
+                ExtrapolationMode::Error => Err(InterpolationError::ExtrapolationDisabled),
+            },
+            QueryLocation::Right => {
+                let n = self.y.len();
+                match self.extrapolation {
+                    ExtrapolationMode::Flat | ExtrapolationMode::Linear => {
+                        j[n - 1] = 1.0;
+                        Ok(j)
+                    }
+                    ExtrapolationMode::Error => Err(InterpolationError::ExtrapolationDisabled),
+                }
+            }
+            QueryLocation::Inside(i) => {
+                j[i] = 1.0;
+                Ok(j)
+            }
+        }
+    }
+
+    fn x(&self) -> &[f64] {
+        &self.x
+    }
+
+    fn y(&self) -> &[f64] {
+        &self.y
+    }
+}
+
 /// Log-linear interpolation in strictly positive `y`.
 #[derive(Debug, Clone)]
 pub struct LogLinearInterpolator {
