@@ -45,7 +45,8 @@ pub use capfloor::CapFloor;
 pub use day_count::{DayCountConvention, year_fraction};
 pub use fra::ForwardRateAgreement;
 pub use funding_rate::{
-    FundingRateCurve, FundingRateSnapshot, FundingRateStats, MultiVenueFundingCurve,
+    FundingRateCurve, FundingRateInterpolation, FundingRateSnapshot, FundingRateStats,
+    MultiVenueFundingCurve,
 };
 pub use futures::{Future, InterestRateFutureQuote};
 pub use inflation::{

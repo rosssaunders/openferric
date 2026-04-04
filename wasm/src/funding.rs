@@ -168,6 +168,22 @@ impl FundingRateCurve {
         })
     }
 
+    #[wasm_bindgen(js_name = fromJsonPiecewiseConstant)]
+    pub fn from_json_piecewise_constant(snapshots_json: &str) -> Result<Self, JsValue> {
+        let wires = serde_json::from_str::<Vec<FundingRateSnapshotWire>>(snapshots_json)
+            .map_err(|err| js_error(err.to_string()))?;
+        let snapshots = wires
+            .into_iter()
+            .map(snapshot_wire_to_core)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            inner: CoreFundingRateCurve::new_with_interpolation(
+                snapshots,
+                openferric::rates::funding_rate::FundingRateInterpolation::PiecewiseConstant,
+            ),
+        })
+    }
+
     #[wasm_bindgen(js_name = flat)]
     pub fn flat(apr: f64) -> Self {
         Self {
