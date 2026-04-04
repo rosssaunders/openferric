@@ -59,6 +59,7 @@ impl Cds {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: CoreCds) -> Self {
         Self {
             notional: value.notional,
@@ -668,7 +669,7 @@ impl GaussianCopula {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProtectionSide {
     Buyer,
@@ -701,7 +702,7 @@ impl ProtectionSide {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CdsDateRule {
     TwentiethImm,
@@ -838,9 +839,7 @@ impl DatedCds {
         conventions: Option<&IsdaConventions>,
     ) -> PyResult<CdsPriceResult> {
         let valuation_date = parse_naive_date(&valuation_date)?;
-        let conventions = conventions
-            .map(IsdaConventions::to_core)
-            .unwrap_or_default();
+        let conventions = conventions.map(|c| c.to_core()).unwrap_or_default();
         Ok(CdsPriceResult::from_core(price_midpoint_flat(
             &self.to_core()?,
             valuation_date,
@@ -858,9 +857,7 @@ impl DatedCds {
         conventions: Option<&IsdaConventions>,
     ) -> PyResult<CdsPriceResult> {
         let valuation_date = parse_naive_date(&valuation_date)?;
-        let conventions = conventions
-            .map(IsdaConventions::to_core)
-            .unwrap_or_default();
+        let conventions = conventions.map(|c| c.to_core()).unwrap_or_default();
         Ok(CdsPriceResult::from_core(price_isda_flat(
             &self.to_core()?,
             valuation_date,
@@ -895,7 +892,7 @@ pub struct IsdaConventions {
 }
 
 impl IsdaConventions {
-    fn to_core(&self) -> CoreIsdaConventions {
+    fn to_core(self) -> CoreIsdaConventions {
         CoreIsdaConventions {
             step_in_days: self.step_in_days,
             cash_settle_days: self.cash_settle_days,

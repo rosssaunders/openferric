@@ -71,13 +71,13 @@ jobs:
         run: pip install maturin pytest
 
       - name: Build Python wheel
-        run: maturin build --release -m openferric-python/Cargo.toml
+        run: maturin build --release -m python/Cargo.toml
 
       - name: Install wheel
         run: pip install target/wheels/*.whl
 
       - name: Run Python tests
-        run: pytest openferric-python/tests/ -v
+        run: pytest python/tests/ -v
 
   wasm:
     name: WASM
@@ -96,4 +96,4 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
-        run: wasm-pack build openferric-wasm --target web --out-dir ../www/pkg
+        run: wasm-pack build wasm --target web --out-dir ../www/pkg

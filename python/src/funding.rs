@@ -116,6 +116,7 @@ impl FundingRateStats {
         Self::from_core(CoreFundingRateStats::from_rates(&rates))
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("window_size", self.window_size)?;
@@ -403,6 +404,7 @@ impl FundingRateSwapRisks {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("mtm", self.mtm)?;

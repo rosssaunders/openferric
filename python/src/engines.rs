@@ -135,7 +135,7 @@ fn adi_scheme_from_str(value: Option<&str>) -> PyResult<pde_core::AdiScheme> {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct GreeksResult {
     #[pyo3(get)]
@@ -162,7 +162,7 @@ impl From<openferric_core::core::Greeks> for GreeksResult {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PdeExerciseBoundaryPoint {
     #[pyo3(get)]
@@ -183,7 +183,7 @@ impl From<pde_core::PdeExerciseBoundaryPoint> for PdeExerciseBoundaryPoint {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct BermudanPdeOutput {
     #[pyo3(get)]
@@ -205,7 +205,7 @@ impl From<pde_core::BermudanPdeOutput> for BermudanPdeOutput {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy, Default)]
 pub struct AnalyticEngine;
 
@@ -1016,7 +1016,7 @@ impl AnalyticEngine {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy, Default)]
 pub struct PdeEngine;
 
@@ -1227,7 +1227,7 @@ impl PdeEngine {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy, Default)]
 pub struct McEngine;
 

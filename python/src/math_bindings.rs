@@ -46,7 +46,7 @@ fn rng_kind_name(kind: core_math::FastRngKind) -> &'static str {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct Dual {
     inner: core_math::Dual,
@@ -175,7 +175,7 @@ impl Dual {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct Dual2 {
     inner: core_math::Dual2,
@@ -313,7 +313,7 @@ impl Dual2 {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct AadVar {
     inner: core_math::Var,
@@ -326,7 +326,7 @@ impl AadVar {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct TapeCheckpoint {
     inner: core_math::TapeCheckpoint,
@@ -339,7 +339,7 @@ impl TapeCheckpoint {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct AadTape {
     inner: core_math::AadTape,
 }
@@ -508,7 +508,7 @@ pub fn py_black_scholes_price_greeks_aad(
     ))
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct ExtrapolationMode {
     inner: core_math::ExtrapolationMode,
@@ -551,7 +551,7 @@ impl ExtrapolationMode {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct LinearInterpolator {
     inner: core_math::LinearInterpolator,
 }
@@ -587,7 +587,7 @@ impl LinearInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct LogLinearInterpolator {
     inner: core_math::LogLinearInterpolator,
 }
@@ -623,7 +623,7 @@ impl LogLinearInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct MonotoneConvexInterpolator {
     inner: core_math::MonotoneConvexInterpolator,
 }
@@ -659,7 +659,7 @@ impl MonotoneConvexInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct TensionSplineInterpolator {
     inner: core_math::TensionSplineInterpolator,
 }
@@ -700,7 +700,7 @@ impl TensionSplineInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct HermiteMonotoneInterpolator {
     inner: core_math::HermiteMonotoneInterpolator,
 }
@@ -736,7 +736,7 @@ impl HermiteMonotoneInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct LogCubicMonotoneInterpolator {
     inner: core_math::LogCubicMonotoneInterpolator,
 }
@@ -772,7 +772,7 @@ impl LogCubicMonotoneInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct NelsonSiegelInterpolator {
     inner: core_math::NelsonSiegelInterpolator,
 }
@@ -833,7 +833,7 @@ impl NelsonSiegelInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct NelsonSiegelSvenssonInterpolator {
     inner: core_math::NelsonSiegelSvenssonInterpolator,
 }
@@ -869,7 +869,7 @@ impl NelsonSiegelSvenssonInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct SmithWilsonInterpolator {
     inner: core_math::SmithWilsonInterpolator,
 }
@@ -911,7 +911,7 @@ impl SmithWilsonInterpolator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PsdProjectionConfig {
     #[pyo3(get, set)]
@@ -946,7 +946,7 @@ impl PsdProjectionConfig {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct CopulaFamily {
     inner: core_math::CopulaFamily,
@@ -985,7 +985,7 @@ impl CopulaFamily {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct CorrelationStressScenario {
     inner: core_math::CorrelationStressScenario,
@@ -1035,7 +1035,7 @@ impl CorrelationStressScenario {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct FactorCorrelationModel {
     inner: core_math::FactorCorrelationModel,
@@ -1089,7 +1089,7 @@ impl FactorCorrelationModel {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct FastRngKind {
     inner: core_math::FastRngKind,
@@ -1138,7 +1138,7 @@ impl FastRngKind {
     }
 }
 
-#[pyclass(module = "openferric", unsendable)]
+#[pyclass(module = "openferric", unsendable, skip_from_py_object)]
 pub struct FastRng {
     pub(crate) inner: core_math::FastRng,
     kind: core_math::FastRngKind,
