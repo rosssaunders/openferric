@@ -1,14 +1,15 @@
 """Tests for volatility functions: implied vol, SABR, SVI."""
 
 import math
-import pytest
-from openferric import py_implied_vol, py_sabr_vol, py_svi_vol, py_bs_price
-from conftest import REL_TOL, ABS_TOL, is_nan
 
+import pytest
+from conftest import REL_TOL, is_nan
+from openferric import py_bs_price, py_implied_vol, py_sabr_vol, py_svi_vol
 
 # =========================================================================
 # 11. py_implied_vol
 # =========================================================================
+
 
 class TestImpliedVol:
     def test_round_trip_call(self):
@@ -39,6 +40,7 @@ class TestImpliedVol:
 # 12. py_sabr_vol
 # =========================================================================
 
+
 class TestSabrVol:
     def test_atm_vol(self):
         """ATM vol should be approximately alpha for beta=1."""
@@ -67,6 +69,7 @@ class TestSabrVol:
 # =========================================================================
 # 13. py_svi_vol
 # =========================================================================
+
 
 class TestSviVol:
     def test_basic_svi(self):

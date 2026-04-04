@@ -3,10 +3,8 @@
 import math
 
 import pytest
-
 from conftest import ABS_TOL
 from openferric import (
-    YieldCurve,
     FundingRateCurve,
     FundingRateModel,
     FundingRateSnapshot,
@@ -20,6 +18,7 @@ from openferric import (
     MultiVenueFundingCurve,
     StressScenario,
     Vasicek,
+    YieldCurve,
     funding_rate_swap_discount_dv01,
     funding_rate_swap_dv01,
     funding_rate_swap_mtm,
@@ -72,9 +71,7 @@ class TestFundingRateCurve:
         assert math.isfinite(rolling[-1]["vol"])
 
     def test_multi_venue_weighting(self):
-        venue_a = FundingRateCurve(
-            build_snapshots("Binance", "BTCUSDT", [0.0001, 0.0001])
-        )
+        venue_a = FundingRateCurve(build_snapshots("Binance", "BTCUSDT", [0.0001, 0.0001]))
         venue_b = FundingRateCurve(build_snapshots("Bybit", "BTCUSDT", [0.0003, 0.0003]))
         composite = MultiVenueFundingCurve([(venue_a, 1.0), (venue_b, 3.0)])
 
@@ -114,10 +111,12 @@ class TestFundingRateSwap:
         mtm = funding_rate_swap_mtm(swap, curve, "2026-01-01T08:00:00Z")
         assert mtm == pytest.approx(2.0 * (0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0), abs=1e-12)
 
-        discount_curve = YieldCurve([
-            (8.0 / 8760.0, 0.99),
-            (16.0 / 8760.0, 0.97),
-        ])
+        discount_curve = YieldCurve(
+            [
+                (8.0 / 8760.0, 0.99),
+                (16.0 / 8760.0, 0.97),
+            ]
+        )
         discounted_mtm = funding_rate_swap_mtm(
             swap,
             curve,
@@ -173,9 +172,7 @@ class TestMarginAndLiquidation:
         health_ratio = MarginCalculator.health_ratio(initial_margin * 1.2, 5_000_000.0, 0.0, params)
         assert health_ratio > 1.0
 
-        liquidation_rate = MarginCalculator.liquidation_rate(
-            0.12, initial_margin * 1.2, -5_000_000.0, params
-        )
+        liquidation_rate = MarginCalculator.liquidation_rate(0.12, initial_margin * 1.2, -5_000_000.0, params)
         assert math.isfinite(liquidation_rate)
 
         leverage = InherentLeverage.leverage(5_000_000.0, 125_000.0)

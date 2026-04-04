@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
 from urllib.request import Request, urlopen
 
 from openferric import (
@@ -27,7 +27,6 @@ from openferric import (
     funding_rate_swap_theta,
     funding_rate_swap_vega,
 )
-
 
 HOURS_PER_YEAR = 8760.0
 BINANCE_WEIGHT = 0.65
@@ -63,9 +62,7 @@ def fetch_json(url: str) -> object:
 
 
 def fetch_binance_snapshots(symbol: str = "BTCUSDT", limit: int = FUNDING_LIMIT) -> list[FundingRateSnapshot]:
-    payload = fetch_json(
-        f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit={limit}"
-    )
+    payload = fetch_json(f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit={limit}")
     if not isinstance(payload, list) or not payload:
         raise RuntimeError("Binance funding API returned no rows")
 
@@ -98,9 +95,7 @@ def fetch_bybit_snapshots(symbol: str = "BTCUSDT", limit: int = FUNDING_LIMIT) -
             "Bybit",
             symbol,
             float(row["fundingRate"]),
-            isoformat_utc(
-                datetime.fromtimestamp(int(row["fundingRateTimestamp"]) / 1000, tz=timezone.utc)
-            ),
+            isoformat_utc(datetime.fromtimestamp(int(row["fundingRateTimestamp"]) / 1000, tz=timezone.utc)),
         )
         for row in rows
     ]
@@ -111,9 +106,7 @@ def blend_snapshots(
 ) -> list[FundingRateSnapshot]:
     bybit_by_timestamp = {snapshot.timestamp: snapshot for snapshot in bybit_snapshots}
     common_timestamps = [
-        snapshot.timestamp
-        for snapshot in binance_snapshots
-        if snapshot.timestamp in bybit_by_timestamp
+        snapshot.timestamp for snapshot in binance_snapshots if snapshot.timestamp in bybit_by_timestamp
     ]
     if not common_timestamps:
         raise RuntimeError("Binance and Bybit histories have no common funding timestamps")
@@ -126,8 +119,7 @@ def blend_snapshots(
             FundingRateSnapshot(
                 "BorosComposite",
                 binance.asset,
-                (BINANCE_WEIGHT * binance.rate + BYBIT_WEIGHT * bybit.rate)
-                / (BINANCE_WEIGHT + BYBIT_WEIGHT),
+                (BINANCE_WEIGHT * binance.rate + BYBIT_WEIGHT * bybit.rate) / (BINANCE_WEIGHT + BYBIT_WEIGHT),
                 timestamp,
             )
         )
@@ -141,9 +133,7 @@ def build_reference_market_curves() -> MarketContext:
 
     binance_curve = FundingRateCurve(binance_snapshots)
     bybit_curve = FundingRateCurve(bybit_snapshots)
-    composite_curve = MultiVenueFundingCurve(
-        [(binance_curve, BINANCE_WEIGHT), (bybit_curve, BYBIT_WEIGHT)]
-    )
+    composite_curve = MultiVenueFundingCurve([(binance_curve, BINANCE_WEIGHT), (bybit_curve, BYBIT_WEIGHT)])
     pricing_curve = FundingRateCurve(blended_snapshots)
     return MarketContext(binance_curve, bybit_curve, composite_curve, pricing_curve)
 
@@ -166,9 +156,7 @@ def main() -> None:
 
     rolling_window = max(2, min(9, len(market.binance_curve.snapshots())))
     rolling = market.binance_curve.rolling_stats(rolling_window)
-    overall = FundingRateStats.from_rates(
-        [snapshot.rate for snapshot in market.binance_curve.snapshots()]
-    )
+    overall = FundingRateStats.from_rates([snapshot.rate for snapshot in market.binance_curve.snapshots()])
 
     print("\nPendle Boros Funding Rate Swap Reference Example\n")
     print(f"Anchor UTC: {market.binance_curve.anchor_timestamp()}")
@@ -244,8 +232,7 @@ def main() -> None:
     print(f"Initial margin:           {initial_margin:,.2f}")
     print(f"Maintenance margin:       {maintenance_margin:,.2f}")
     print(
-        f"Health ratio:             "
-        f"{MarginCalculator.health_ratio(collateral, swap.notional, 0.0, margin_params):.4f}"
+        f"Health ratio:             {MarginCalculator.health_ratio(collateral, swap.notional, 0.0, margin_params):.4f}"
     )
     print(
         f"Liquidation funding APR:  "
