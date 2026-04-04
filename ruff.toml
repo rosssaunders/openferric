@@ -1,0 +1,22 @@
+target-version = "py39"
+line-length = 120
+
+[lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "N",    # pep8-naming
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "TCH",  # flake8-type-checking
+  "RUF",  # ruff-specific
+]
+
+[lint.per-file-ignores]
+"vendor/**" = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "TCH", "RUF"]
+
+[format]
+quote-style = "double"

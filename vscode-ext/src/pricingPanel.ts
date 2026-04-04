@@ -64,9 +64,9 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = this.getHtml();
 
-    webviewView.webview.onDidReceiveMessage((msg) => {
+    webviewView.webview.onDidReceiveMessage((msg: { type: string; data: MarketSnapshot }) => {
       if (msg.type === "marketUpdate") {
-        this._onMarketUpdate.fire(msg.data as MarketSnapshot);
+        this._onMarketUpdate.fire(msg.data);
       }
     });
 

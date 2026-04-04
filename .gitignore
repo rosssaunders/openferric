@@ -4,3 +4,6 @@ www/pkg/
 vol_surface.html
 __pycache__/
 .DS_Store
+node_modules/
+*.tsbuildinfo
+*.d.ts.map

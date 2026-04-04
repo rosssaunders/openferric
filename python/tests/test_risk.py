@@ -1,40 +1,35 @@
 """Tests for risk functions: CVA, SA-CCR, VaR, ES."""
 
-import math
 import pytest
-from openferric import py_cva, py_sa_ccr_ead, py_historical_var, py_historical_es
-from conftest import REL_TOL, ABS_TOL, is_nan
-
+from conftest import ABS_TOL, is_nan
+from openferric import py_cva, py_historical_es, py_historical_var, py_sa_ccr_ead
 
 # =========================================================================
 # 22. py_cva
 # =========================================================================
+
 
 class TestCva:
     def test_nonzero_cva(self):
         """CVA should be nonzero for a positive exposure profile."""
         times = [0.5, 1.0, 2.0, 3.0, 5.0]
         ee = [100_000.0, 90_000.0, 80_000.0, 60_000.0, 40_000.0]
-        cva = py_cva(times=times, ee_profile=ee, discount_rate=0.03,
-                     hazard_rate=0.02, lgd=0.60)
+        cva = py_cva(times=times, ee_profile=ee, discount_rate=0.03, hazard_rate=0.02, lgd=0.60)
         assert cva != 0.0
 
     def test_zero_exposure_zero_cva(self):
         """Zero exposure → zero CVA."""
         times = [1.0, 2.0, 3.0]
         ee = [0.0, 0.0, 0.0]
-        cva = py_cva(times=times, ee_profile=ee, discount_rate=0.03,
-                     hazard_rate=0.02, lgd=0.60)
+        cva = py_cva(times=times, ee_profile=ee, discount_rate=0.03, hazard_rate=0.02, lgd=0.60)
         assert cva == pytest.approx(0.0, abs=ABS_TOL)
 
     def test_higher_hazard_larger_magnitude_cva(self):
         """Higher hazard rate → larger magnitude CVA."""
         times = [1.0, 2.0, 3.0]
         ee = [100_000.0, 80_000.0, 50_000.0]
-        cva_low = py_cva(times=times, ee_profile=ee, discount_rate=0.03,
-                          hazard_rate=0.01, lgd=0.60)
-        cva_high = py_cva(times=times, ee_profile=ee, discount_rate=0.03,
-                           hazard_rate=0.05, lgd=0.60)
+        cva_low = py_cva(times=times, ee_profile=ee, discount_rate=0.03, hazard_rate=0.01, lgd=0.60)
+        cva_high = py_cva(times=times, ee_profile=ee, discount_rate=0.03, hazard_rate=0.05, lgd=0.60)
         assert abs(cva_high) > abs(cva_low)
 
 
@@ -42,11 +37,11 @@ class TestCva:
 # 23. py_sa_ccr_ead
 # =========================================================================
 
+
 class TestSaCcrEad:
     @pytest.mark.parametrize("asset_class", ["ir", "fx", "credit", "equity", "commodity"])
     def test_positive_ead(self, asset_class):
-        ead = py_sa_ccr_ead(replacement_cost=100_000.0, notional=1_000_000.0,
-                            maturity=5.0, asset_class=asset_class)
+        ead = py_sa_ccr_ead(replacement_cost=100_000.0, notional=1_000_000.0, maturity=5.0, asset_class=asset_class)
         assert ead > 0.0
 
     def test_interest_rate_alias(self):
@@ -66,6 +61,7 @@ class TestSaCcrEad:
 # =========================================================================
 # 24. py_historical_var
 # =========================================================================
+
 
 class TestHistoricalVar:
     def test_known_percentile(self):
@@ -91,6 +87,7 @@ class TestHistoricalVar:
 # =========================================================================
 # 25. py_historical_es
 # =========================================================================
+
 
 class TestHistoricalEs:
     def test_es_ge_var(self):
