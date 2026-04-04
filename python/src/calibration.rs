@@ -380,6 +380,7 @@ impl HestonCalibrationParams {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_vec(&self) -> Vec<f64> {
         self.to_core().to_vec()
     }
@@ -417,6 +418,7 @@ impl HullWhiteCalibrationParams {
         Self { a, sigma }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_vec(&self) -> Vec<f64> {
         vec![self.a, self.sigma]
     }
@@ -624,10 +626,12 @@ impl HestonCalibrator {
     #[new]
     #[pyo3(signature=(spot=100.0, rate=0.02, dividend_yield=0.0))]
     fn new(spot: f64, rate: f64, dividend_yield: f64) -> Self {
-        let mut inner = CoreHestonCalibrator::default();
-        inner.spot = spot;
-        inner.rate = rate;
-        inner.dividend_yield = dividend_yield;
+        let inner = CoreHestonCalibrator {
+            spot,
+            rate,
+            dividend_yield,
+            ..Default::default()
+        };
         Self { inner }
     }
 

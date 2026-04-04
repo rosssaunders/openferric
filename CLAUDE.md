@@ -18,9 +18,9 @@ cargo bench --bench pricing_bench          # single benchmark suite
 
 **Feature flags (core):** `parallel` (rayon MC), `simd` (AVX2/NEON), `gpu` (wgpu WebGPU)
 
-**WASM build:** `wasm-pack build openferric-wasm --target web --out-dir ../www/pkg`
+**WASM build:** `wasm-pack build wasm --target web --out-dir ../www/pkg`
 
-**Python wheel:** `cd openferric-python && pip install .`
+**Python wheel:** `cd python && pip install .`
 
 **Workspace test:** `cargo test --workspace`
 
@@ -81,8 +81,8 @@ core::PricingResult          →  price + stderr + Greeks + Diagnostics
 
 | Crate | Purpose |
 |---|---|
-| `openferric-wasm/` | wasm-bindgen bindings + Deribit-specific `calibrate_slice` |
-| `openferric-python/` | PyO3 bindings (55+ exported functions) |
+| `wasm/` | wasm-bindgen bindings + `calibrate_slice` |
+| `python/` | PyO3 bindings (55+ exported functions) |
 
 ### Key Patterns
 

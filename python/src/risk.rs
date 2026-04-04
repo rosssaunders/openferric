@@ -1,14 +1,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
-use openferric_core::core::{Greeks as CoreGreeks, PricingError as CorePricingError};
+use openferric_core::core::PricingError as CorePricingError;
 use openferric_core::credit::SurvivalCurve as CoreSurvivalCurve;
-use openferric_core::market::{
-    CreditCurveSnapshot as CoreCreditCurveSnapshot,
-    ForwardCurveSnapshot as CoreForwardCurveSnapshot, Market as CoreMarket,
-    MarketSnapshot as CoreMarketSnapshot, SampledVolSurface as CoreSampledVolSurface,
-    VolSource as CoreVolSource,
-};
 use openferric_core::math::VarBacktestResult as CoreVarBacktestResult;
 use openferric_core::models::short_rate::{CIR, Vasicek as CoreVasicek};
 use openferric_core::rates::YieldCurve as CoreYieldCurve;
@@ -34,9 +28,7 @@ use pyo3::types::PyAny;
 use crate::core::Greeks;
 use crate::credit::SurvivalCurve;
 use crate::helpers::{catch_unwind_py, panic_to_pyerr};
-use crate::market::{
-    CreditCurveSnapshot, ForwardCurveSnapshot, Market, MarketSnapshot, SampledVolSurface, VolSource,
-};
+use crate::market::{Market, MarketSnapshot};
 use crate::rates::YieldCurve;
 
 fn pricing_error_to_pyerr(err: CorePricingError) -> PyErr {
@@ -995,6 +987,7 @@ impl SimmRiskClass {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_mva::SimmRiskClass) -> Self {
         match value {
             core_mva::SimmRiskClass::InterestRate => Self::InterestRate,
@@ -1030,6 +1023,7 @@ impl SimmMargin {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_mva::SimmMargin) -> Self {
         Self {
             risk_class: SimmRiskClass::from_core(value.risk_class),
@@ -1208,6 +1202,7 @@ impl Portfolio {
         core_portfolio::Portfolio::new(self.positions.iter().map(Position::to_core).collect())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_core(portfolio: core_portfolio::Portfolio<String>) -> Self {
         Self {
             positions: portfolio
@@ -1714,6 +1709,7 @@ pub struct SurfaceBumpMode {
 }
 
 impl SurfaceBumpMode {
+    #[allow(dead_code)]
     fn to_core(self) -> core_sens::SurfaceBumpMode {
         self.inner
     }
@@ -2082,6 +2078,7 @@ impl ChainRuleJacobian {
 
 #[pyclass(module = "openferric", eq, eq_int, from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum RegulatoryRiskClass {
     IR,
     FX,
@@ -2136,6 +2133,7 @@ impl SensitivityMeasure {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_sens::SensitivityMeasure) -> Self {
         match value {
             core_sens::SensitivityMeasure::Delta => Self::Delta,
@@ -2186,6 +2184,7 @@ impl SensitivityRecord {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_sens::SensitivityRecord) -> Self {
         Self {
             portfolio_id: value.portfolio_id,
@@ -3327,6 +3326,7 @@ impl HistoricalReplayDefinition {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_scenarios::HistoricalReplayDefinition) -> Self {
         Self {
             scenario_id: value.scenario_id,
@@ -3377,6 +3377,7 @@ impl HypotheticalScenarioDefinition {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_scenarios::HypotheticalScenarioDefinition) -> Self {
         Self {
             scenario_id: value.scenario_id,
@@ -3425,6 +3426,7 @@ impl StressAxis {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_scenarios::StressAxis) -> Self {
         Self {
             factor: ShockFactor::from_core(value.factor),
@@ -3461,6 +3463,7 @@ impl ParametricStress2dDefinition {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: core_scenarios::ParametricStress2dDefinition) -> Self {
         Self {
             scenario_id: value.scenario_id,

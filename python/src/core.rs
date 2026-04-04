@@ -6,10 +6,9 @@ use openferric_core::core::{
     PricingError as CorePricingError, PricingResult as CorePricingResult,
     StrikeType as CoreStrikeType,
 };
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OptionType {
     Call,
@@ -21,13 +20,6 @@ impl OptionType {
         match self {
             Self::Call => CoreOptionType::Call,
             Self::Put => CoreOptionType::Put,
-        }
-    }
-
-    pub(crate) fn from_core(value: CoreOptionType) -> Self {
-        match value {
-            CoreOptionType::Call => Self::Call,
-            CoreOptionType::Put => Self::Put,
         }
     }
 }
@@ -122,7 +114,7 @@ impl ExerciseStyle {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BarrierDirection {
     Up,
@@ -160,7 +152,7 @@ impl BarrierDirection {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BarrierStyle {
     In,
@@ -276,7 +268,7 @@ impl BarrierSpec {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Averaging {
     Arithmetic,
@@ -314,7 +306,7 @@ impl Averaging {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StrikeType {
     Fixed,
@@ -361,10 +353,6 @@ pub struct AsianSpec {
 impl AsianSpec {
     pub(crate) fn to_core(&self) -> CoreAsianSpec {
         self.inner.clone()
-    }
-
-    pub(crate) fn from_core(value: CoreAsianSpec) -> Self {
-        Self { inner: value }
     }
 }
 
@@ -477,7 +465,7 @@ impl Greeks {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DiagKey {
     BarrierLevel,
@@ -561,49 +549,6 @@ impl DiagKey {
             Self::VarOfVar => CoreDiagKey::VarOfVar,
             Self::Vol => CoreDiagKey::Vol,
             Self::VolAdj => CoreDiagKey::VolAdj,
-        }
-    }
-
-    pub(crate) fn from_core(value: CoreDiagKey) -> Self {
-        match value {
-            CoreDiagKey::BarrierLevel => Self::BarrierLevel,
-            CoreDiagKey::ConversionValue => Self::ConversionValue,
-            CoreDiagKey::CreditSpread => Self::CreditSpread,
-            CoreDiagKey::D => Self::D,
-            CoreDiagKey::D1 => Self::D1,
-            CoreDiagKey::D2 => Self::D2,
-            CoreDiagKey::Delta => Self::Delta,
-            CoreDiagKey::DiscountFactor => Self::DiscountFactor,
-            CoreDiagKey::DoubleKnockoutBase => Self::DoubleKnockoutBase,
-            CoreDiagKey::EffectiveVol => Self::EffectiveVol,
-            CoreDiagKey::ExerciseDates => Self::ExerciseDates,
-            CoreDiagKey::FairVariance => Self::FairVariance,
-            CoreDiagKey::FairVolatility => Self::FairVolatility,
-            CoreDiagKey::InsideBarriers => Self::InsideBarriers,
-            CoreDiagKey::Integral => Self::Integral,
-            CoreDiagKey::MaxExercises => Self::MaxExercises,
-            CoreDiagKey::MinExercises => Self::MinExercises,
-            CoreDiagKey::Npv => Self::Npv,
-            CoreDiagKey::NumPaths => Self::NumPaths,
-            CoreDiagKey::NumThreads => Self::NumThreads,
-            CoreDiagKey::ObservationCount => Self::ObservationCount,
-            CoreDiagKey::NumSpaceSteps => Self::NumSpaceSteps,
-            CoreDiagKey::NumSteps => Self::NumSteps,
-            CoreDiagKey::NumTimeSteps => Self::NumTimeSteps,
-            CoreDiagKey::Pd => Self::Pd,
-            CoreDiagKey::Pm => Self::Pm,
-            CoreDiagKey::Pu => Self::Pu,
-            CoreDiagKey::PvForward => Self::PvForward,
-            CoreDiagKey::Rho => Self::Rho,
-            CoreDiagKey::RhoDomestic => Self::RhoDomestic,
-            CoreDiagKey::RhoForeign => Self::RhoForeign,
-            CoreDiagKey::SMax => Self::SMax,
-            CoreDiagKey::SeriesTerms => Self::SeriesTerms,
-            CoreDiagKey::SurvivalDigital => Self::SurvivalDigital,
-            CoreDiagKey::U => Self::U,
-            CoreDiagKey::VarOfVar => Self::VarOfVar,
-            CoreDiagKey::Vol => Self::Vol,
-            CoreDiagKey::VolAdj => Self::VolAdj,
         }
     }
 }
@@ -731,10 +676,6 @@ pub struct PricingResult {
 }
 
 impl PricingResult {
-    pub(crate) fn to_core(&self) -> CorePricingResult {
-        self.inner.clone()
-    }
-
     pub(crate) fn from_core(value: CorePricingResult) -> Self {
         Self { inner: value }
     }
@@ -822,12 +763,6 @@ pub struct PricingError {
     inner: CorePricingError,
 }
 
-impl PricingError {
-    pub(crate) fn from_core(value: CorePricingError) -> Self {
-        Self { inner: value }
-    }
-}
-
 #[pymethods]
 impl PricingError {
     #[staticmethod]
@@ -889,13 +824,6 @@ impl PricingError {
     fn __str__(&self) -> String {
         self.inner.to_string()
     }
-}
-
-pub(crate) fn diag_key_from_str(key: &str) -> PyResult<DiagKey> {
-    let core: CoreDiagKey = key
-        .parse()
-        .map_err(|()| PyValueError::new_err(format!("unsupported diagnostics key '{key}'")))?;
-    Ok(DiagKey::from_core(core))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

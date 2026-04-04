@@ -13,7 +13,7 @@ Python interface to the [OpenFerric](https://github.com/rosssaunders/openferric)
 ### Install (development)
 
 ```bash
-cd openferric-python
+cd python
 pip install maturin
 maturin develop
 ```
@@ -23,7 +23,7 @@ This compiles the Rust library and installs `openferric` as an editable Python p
 ### Install (release wheel)
 
 ```bash
-cd openferric-python
+cd python
 maturin build --release
 pip install target/wheels/openferric-*.whl
 ```
@@ -90,7 +90,7 @@ See [`examples/boros_funding_swap.py`](../examples/boros_funding_swap.py) for th
 ## Running Tests
 
 ```bash
-cd openferric-python
+cd python
 maturin develop
 python -m pytest tests/ -v
 ```
@@ -101,7 +101,7 @@ The Python package is a thin PyO3 wrapper around the Rust `openferric` core libr
 
 ```
 openferric (Python)
-  └── PyO3 FFI layer (openferric-python/src/*.rs)
+  └── PyO3 FFI layer (python/src/*.rs)
        └── openferric core (Rust library)
 ```
 

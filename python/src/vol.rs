@@ -99,7 +99,7 @@ pub struct SabrParams {
 }
 
 impl SabrParams {
-    fn to_core(&self) -> CoreSabrParams {
+    fn to_core(self) -> CoreSabrParams {
         CoreSabrParams {
             alpha: self.alpha,
             beta: self.beta,
@@ -158,7 +158,7 @@ pub struct SviParams {
 }
 
 impl SviParams {
-    fn to_core(&self) -> CoreSviParams {
+    fn to_core(self) -> CoreSviParams {
         CoreSviParams {
             a: self.a,
             b: self.b,
@@ -468,7 +468,7 @@ pub struct HestonVolOfVolPoint {
 }
 
 impl HestonVolOfVolPoint {
-    fn to_core(&self) -> CoreHestonVolOfVolPoint {
+    fn to_core(self) -> CoreHestonVolOfVolPoint {
         CoreHestonVolOfVolPoint {
             expiry: self.expiry,
             sigma_v: self.sigma_v,
@@ -537,7 +537,7 @@ pub struct SabrVolOfVolPoint {
 }
 
 impl SabrVolOfVolPoint {
-    fn to_core(&self) -> CoreSabrVolOfVolPoint {
+    fn to_core(self) -> CoreSabrVolOfVolPoint {
         CoreSabrVolOfVolPoint {
             expiry: self.expiry,
             alpha: self.alpha,
@@ -624,7 +624,7 @@ pub struct VixSettings {
 }
 
 impl VixSettings {
-    fn to_core(&self) -> CoreVixSettings {
+    fn to_core(self) -> CoreVixSettings {
         CoreVixSettings {
             target_days: self.target_days,
             strike_count: self.strike_count,
@@ -1055,7 +1055,7 @@ pub struct VannaVolgaQuote {
 }
 
 impl VannaVolgaQuote {
-    fn to_core(&self) -> CoreVannaVolgaQuote {
+    fn to_core(self) -> CoreVannaVolgaQuote {
         CoreVannaVolgaQuote::new(self.atm_vol, self.rr_25d, self.bf_25d)
     }
 }

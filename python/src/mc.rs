@@ -68,7 +68,7 @@ fn python_path_evaluator(
     (evaluator, error)
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct GbmPathGenerator {
     inner: core_mc::GbmPathGenerator,
@@ -134,7 +134,7 @@ impl GbmPathGenerator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct HestonPathGenerator {
     inner: core_mc::HestonPathGenerator,
@@ -215,7 +215,7 @@ impl HestonPathGenerator {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 pub struct ControlVariate {
     expected: f64,
     evaluator: Py<PyAny>,
@@ -258,7 +258,7 @@ impl ControlVariate {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct MonteCarloEngine {
     num_paths: usize,

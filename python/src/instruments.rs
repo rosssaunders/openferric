@@ -1,66 +1,38 @@
-use chrono::{DateTime, Utc};
-use openferric_core::core::{
-    AsianSpec as CoreAsianSpec, Averaging as CoreAveraging,
-    BarrierDirection as CoreBarrierDirection, BarrierSpec as CoreBarrierSpec,
-    BarrierStyle as CoreBarrierStyle, ExerciseStyle as CoreExerciseStyle,
-    OptionType as CoreOptionType, StrikeType as CoreStrikeType,
-};
+use openferric_core::core::OptionType as CoreOptionType;
 use openferric_core::instruments::{
-    AbandonmentOption as CoreAbandonmentOption, AsianOption as CoreAsianOption,
-    AssetOrNothingOption as CoreAssetOrNothingOption, Autocallable as CoreAutocallable,
-    BarrierOption as CoreBarrierOption, BarrierOptionBuilder as CoreBarrierOptionBuilder,
-    BasketOption as CoreBasketOption, BasketType as CoreBasketType,
-    BermudanOption as CoreBermudanOption, BestOfTwoCallOption as CoreBestOfTwoCallOption,
-    CallableRangeAccrualNote as CoreCallableRangeAccrualNote,
-    CallableRateNote as CoreCallableRateNote, CashOrNothingOption as CoreCashOrNothingOption,
-    CatastropheBond as CoreCatastropheBond, ChooserOption as CoreChooserOption,
-    CliquetOption as CoreCliquetOption, CmsLinkedNote as CoreCmsLinkedNote,
+    AsianOption as CoreAsianOption, AssetOrNothingOption as CoreAssetOrNothingOption,
+    Autocallable as CoreAutocallable, BarrierOption as CoreBarrierOption,
+    BarrierOptionBuilder as CoreBarrierOptionBuilder, BasketOption as CoreBasketOption,
+    BasketType as CoreBasketType, BermudanOption as CoreBermudanOption,
+    BestOfTwoCallOption as CoreBestOfTwoCallOption, CashOrNothingOption as CoreCashOrNothingOption,
+    CatastropheBond as CoreCatastropheBond, CliquetOption as CoreCliquetOption,
     CommodityForward as CoreCommodityForward, CommodityFutures as CoreCommodityFutures,
     CommodityOption as CoreCommodityOption, CommoditySpreadOption as CoreCommoditySpreadOption,
-    CompoundOption as CoreCompoundOption, ConstantCpr as CoreConstantCpr,
-    ConvertibleBond as CoreConvertibleBond, CouponPeriod as CoreCouponPeriod,
-    CouponScheduleBuilder as CoreCouponScheduleBuilder, CouponType as CoreCouponType,
-    DeferInvestmentOption as CoreDeferInvestmentOption, DegreeDayType as CoreDegreeDayType,
-    DiscreteCashFlow as CoreDiscreteCashFlow, DoubleBarrierOption as CoreDoubleBarrierOption,
-    DoubleBarrierType as CoreDoubleBarrierType, DualRangeAccrual as CoreDualRangeAccrual,
-    EmployeeStockOption as CoreEmployeeStockOption, ExerciseSchedule as CoreExerciseSchedule,
-    ExoticOption as CoreExoticOption, ExpandOption as CoreExpandOption,
+    ConstantCpr as CoreConstantCpr, ConvertibleBond as CoreConvertibleBond,
+    DegreeDayType as CoreDegreeDayType, DiscreteCashFlow as CoreDiscreteCashFlow,
+    DoubleBarrierOption as CoreDoubleBarrierOption, DoubleBarrierType as CoreDoubleBarrierType,
+    DualRangeAccrual as CoreDualRangeAccrual, EmployeeStockOption as CoreEmployeeStockOption,
     ForwardStartOption as CoreForwardStartOption, FuturesOption as CoreFuturesOption,
-    FxOption as CoreFxOption, GapOption as CoreGapOption,
-    InverseFloaterNote as CoreInverseFloaterNote, LookbackFixedOption as CoreLookbackFixedOption,
-    LookbackFloatingOption as CoreLookbackFloatingOption, MbsCashflow as CoreMbsCashflow,
+    FxOption as CoreFxOption, GapOption as CoreGapOption, MbsCashflow as CoreMbsCashflow,
     MbsPassThrough as CoreMbsPassThrough,
     OutperformanceBasketOption as CoreOutperformanceBasketOption,
-    PhoenixAutocallable as CorePhoenixAutocallable, Portfolio as CorePortfolio,
-    PowerOption as CorePowerOption, PrepaymentModel as CorePrepaymentModel,
-    PsaModel as CorePsaModel, QuantoBasketOption as CoreQuantoBasketOption,
-    QuantoOption as CoreQuantoOption, RangeAccrual as CoreRangeAccrual,
-    RealOptionBinomialSpec as CoreRealOptionBinomialSpec,
-    RealOptionInstrument as CoreRealOptionInstrument, SnowballNote as CoreSnowballNote,
-    SpreadOption as CoreSpreadOption, StructuredCoupon as CoreStructuredCoupon,
+    PhoenixAutocallable as CorePhoenixAutocallable, PowerOption as CorePowerOption,
+    PrepaymentModel as CorePrepaymentModel, PsaModel as CorePsaModel,
+    QuantoBasketOption as CoreQuantoBasketOption, RangeAccrual as CoreRangeAccrual,
+    RealOptionBinomialSpec as CoreRealOptionBinomialSpec, SpreadOption as CoreSpreadOption,
     SwingOption as CoreSwingOption, Tarf as CoreTarf, TarfType as CoreTarfType,
-    TargetRedemptionNote as CoreTargetRedemptionNote, Trade as CoreTrade,
-    TradeInstrument as CoreTradeInstrument, TradeMetadata as CoreTradeMetadata,
     TwoAssetCorrelationOption as CoreTwoAssetCorrelationOption, VanillaOption as CoreVanillaOption,
-    VarianceOptionQuote as CoreVarianceOptionQuote, VarianceSwap as CoreVarianceSwap,
-    VolatilitySwap as CoreVolatilitySwap, WeatherOption as CoreWeatherOption,
+    VarianceOptionQuote as CoreVarianceOptionQuote, WeatherOption as CoreWeatherOption,
     WeatherSwap as CoreWeatherSwap, WorstOfTwoCallOption as CoreWorstOfTwoCallOption,
 };
-use openferric_core::models::{
-    HullWhite as CoreHullWhite, TwoFactorCommodityProcess as CoreTwoFactorCommodityProcess,
-    TwoFactorSpreadModel as CoreTwoFactorSpreadModel,
-};
-use openferric_core::rates::{Frequency as CoreFrequency, YieldCurve as CoreYieldCurve};
+use openferric_core::rates::Frequency as CoreFrequency;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::PyAny;
 
 use crate::core::{AsianSpec, BarrierSpec, ExerciseStyle};
 use crate::funding::FundingRateSwap;
-use crate::helpers::{format_datetime, parse_datetime};
-use crate::models::{HullWhite, TwoFactorCommodityProcess, TwoFactorSpreadModel};
-use crate::rates::YieldCurve;
-use crate::risk::Portfolio;
+use crate::models::TwoFactorSpreadModel;
 
 fn invalid_input(message: impl Into<String>) -> PyErr {
     PyValueError::new_err(message.into())
@@ -82,68 +54,6 @@ fn format_option_type(value: CoreOptionType) -> &'static str {
     match value {
         CoreOptionType::Call => "call",
         CoreOptionType::Put => "put",
-    }
-}
-
-fn parse_averaging(value: &str) -> PyResult<CoreAveraging> {
-    match value.to_ascii_lowercase().as_str() {
-        "arithmetic" => Ok(CoreAveraging::Arithmetic),
-        "geometric" => Ok(CoreAveraging::Geometric),
-        _ => Err(invalid_input(
-            "averaging must be 'arithmetic' or 'geometric'",
-        )),
-    }
-}
-
-fn format_averaging(value: CoreAveraging) -> &'static str {
-    match value {
-        CoreAveraging::Arithmetic => "arithmetic",
-        CoreAveraging::Geometric => "geometric",
-    }
-}
-
-fn parse_strike_type(value: &str) -> PyResult<CoreStrikeType> {
-    match value.to_ascii_lowercase().as_str() {
-        "fixed" => Ok(CoreStrikeType::Fixed),
-        "floating" => Ok(CoreStrikeType::Floating),
-        _ => Err(invalid_input("strike_type must be 'fixed' or 'floating'")),
-    }
-}
-
-fn format_strike_type(value: CoreStrikeType) -> &'static str {
-    match value {
-        CoreStrikeType::Fixed => "fixed",
-        CoreStrikeType::Floating => "floating",
-    }
-}
-
-fn parse_barrier_direction_str(value: &str) -> PyResult<CoreBarrierDirection> {
-    match value.to_ascii_lowercase().as_str() {
-        "up" => Ok(CoreBarrierDirection::Up),
-        "down" => Ok(CoreBarrierDirection::Down),
-        _ => Err(invalid_input("barrier direction must be 'up' or 'down'")),
-    }
-}
-
-fn format_barrier_direction(value: CoreBarrierDirection) -> &'static str {
-    match value {
-        CoreBarrierDirection::Up => "up",
-        CoreBarrierDirection::Down => "down",
-    }
-}
-
-fn parse_barrier_style_str(value: &str) -> PyResult<CoreBarrierStyle> {
-    match value.to_ascii_lowercase().as_str() {
-        "in" => Ok(CoreBarrierStyle::In),
-        "out" => Ok(CoreBarrierStyle::Out),
-        _ => Err(invalid_input("barrier style must be 'in' or 'out'")),
-    }
-}
-
-fn format_barrier_style(value: CoreBarrierStyle) -> &'static str {
-    match value {
-        CoreBarrierStyle::In => "in",
-        CoreBarrierStyle::Out => "out",
     }
 }
 
@@ -238,16 +148,10 @@ fn format_degree_day_type(value: CoreDegreeDayType) -> &'static str {
 
 macro_rules! simple_enum_wrapper {
     ($name:ident, $core:ty, $parse:ident, $format:ident) => {
-        #[pyclass(module = "openferric", frozen)]
+        #[pyclass(module = "openferric", frozen, from_py_object)]
         #[derive(Clone, Copy)]
         pub struct $name {
             inner: $core,
-        }
-
-        impl $name {
-            fn to_core(self) -> $core {
-                self.inner
-            }
         }
 
         #[pymethods]
@@ -370,11 +274,11 @@ impl VanillaOption {
 
     fn __repr__(&self) -> String {
         format!(
-            "VanillaOption(option_type={:?}, strike={}, expiry={}, exercise={})",
+            "VanillaOption(option_type={:?}, strike={}, expiry={}, exercise={:?})",
             self.option_type,
             self.strike,
             self.expiry,
-            format!("{:?}", self.exercise.to_core())
+            self.exercise.to_core()
         )
     }
 }
@@ -423,11 +327,11 @@ impl AsianOption {
 
     fn __repr__(&self) -> String {
         format!(
-            "AsianOption(option_type={:?}, strike={}, expiry={}, asian={})",
+            "AsianOption(option_type={:?}, strike={}, expiry={}, asian={:?})",
             self.option_type,
             self.strike,
             self.expiry,
-            format!("{:?}", self.asian.to_core())
+            self.asian.to_core()
         )
     }
 }
@@ -490,11 +394,11 @@ impl BarrierOption {
 
     fn __repr__(&self) -> String {
         format!(
-            "BarrierOption(option_type={:?}, strike={}, expiry={}, barrier={})",
+            "BarrierOption(option_type={:?}, strike={}, expiry={}, barrier={:?})",
             self.option_type,
             self.strike,
             self.expiry,
-            format!("{:?}", self.barrier.to_core())
+            self.barrier.to_core()
         )
     }
 }
@@ -682,7 +586,7 @@ pub struct FuturesOption {
 }
 
 impl FuturesOption {
-    fn to_core(self) -> PyResult<CoreFuturesOption> {
+    fn to_core(&self) -> PyResult<CoreFuturesOption> {
         Ok(CoreFuturesOption::new(
             self.forward,
             self.strike,
@@ -739,7 +643,7 @@ impl FuturesOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 }
 
@@ -765,7 +669,7 @@ pub struct ForwardStartOption {
 }
 
 impl ForwardStartOption {
-    fn to_core(self) -> PyResult<CoreForwardStartOption> {
+    fn to_core(&self) -> PyResult<CoreForwardStartOption> {
         Ok(CoreForwardStartOption {
             option_type: parse_option_type_str(&self.option_type)?,
             spot: self.spot,
@@ -840,14 +744,11 @@ impl ForwardStartOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 
     fn price_rubinstein(&self) -> PyResult<f64> {
-        self.clone()
-            .to_core()?
-            .price_rubinstein()
-            .map_err(map_err_string)
+        self.to_core()?.price_rubinstein().map_err(map_err_string)
     }
 }
 
@@ -1013,22 +914,19 @@ impl CommodityForward {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 
     fn theoretical_forward_price(&self) -> f64 {
-        self.clone().to_core().theoretical_forward_price()
+        (*self).to_core().theoretical_forward_price()
     }
 
     fn present_value(&self) -> PyResult<f64> {
-        self.clone()
-            .to_core()
-            .present_value()
-            .map_err(map_err_string)
+        (*self).to_core().present_value().map_err(map_err_string)
     }
 
     fn mark_to_market(&self, market_forward: f64) -> PyResult<f64> {
-        self.clone()
+        (*self)
             .to_core()
             .mark_to_market(market_forward)
             .map_err(map_err_string)
@@ -1070,14 +968,11 @@ impl CommodityFutures {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 
     fn value(&self, mark_price: f64) -> PyResult<f64> {
-        self.clone()
-            .to_core()
-            .value(mark_price)
-            .map_err(map_err_string)
+        (*self).to_core().value(mark_price).map_err(map_err_string)
     }
 }
 
@@ -1101,7 +996,7 @@ pub struct CommodityOption {
 }
 
 impl CommodityOption {
-    fn to_core(self) -> PyResult<CoreCommodityOption> {
+    fn to_core(&self) -> PyResult<CoreCommodityOption> {
         Ok(CoreCommodityOption {
             forward: self.forward,
             strike: self.strike,
@@ -1144,7 +1039,7 @@ pub struct CommoditySpreadOption {
 }
 
 impl CommoditySpreadOption {
-    fn to_core(self) -> PyResult<CoreCommoditySpreadOption> {
+    fn to_core(&self) -> PyResult<CoreCommoditySpreadOption> {
         Ok(CoreCommoditySpreadOption {
             option_type: parse_option_type_str(&self.option_type)?,
             forward_1: self.forward_1,
@@ -1289,11 +1184,11 @@ impl CommoditySpreadOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 
     fn price_kirk(&self) -> PyResult<f64> {
-        self.clone().to_core()?.price_kirk().map_err(map_err_string)
+        self.to_core()?.price_kirk().map_err(map_err_string)
     }
 
     fn price_two_factor_mc(
@@ -1302,8 +1197,7 @@ impl CommoditySpreadOption {
         num_paths: usize,
         seed: u64,
     ) -> PyResult<(f64, f64)> {
-        self.clone()
-            .to_core()?
+        self.to_core()?
             .price_two_factor_mc(&model.to_core(), num_paths, seed)
             .map_err(map_err_string)
     }
@@ -1862,11 +1756,11 @@ impl SpreadOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 
     fn effective_volatility(&self) -> PyResult<f64> {
-        self.clone()
+        (*self)
             .to_core()
             .effective_volatility()
             .map_err(map_err_string)
@@ -2274,7 +2168,7 @@ impl BestOfTwoCallOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 }
 
@@ -2353,7 +2247,7 @@ impl WorstOfTwoCallOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 }
 
@@ -2387,7 +2281,7 @@ pub struct TwoAssetCorrelationOption {
 }
 
 impl TwoAssetCorrelationOption {
-    fn to_core(self) -> PyResult<CoreTwoAssetCorrelationOption> {
+    fn to_core(&self) -> PyResult<CoreTwoAssetCorrelationOption> {
         Ok(CoreTwoAssetCorrelationOption {
             option_type: parse_option_type_str(&self.option_type)?,
             s1: self.s1,
@@ -2442,7 +2336,7 @@ impl TwoAssetCorrelationOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 }
 
@@ -2477,7 +2371,7 @@ impl VarianceOptionQuote {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 }
 
@@ -2534,7 +2428,7 @@ pub struct WeatherSwap {
 }
 
 impl WeatherSwap {
-    fn to_core(self) -> PyResult<CoreWeatherSwap> {
+    fn to_core(&self) -> PyResult<CoreWeatherSwap> {
         Ok(CoreWeatherSwap {
             index_type: parse_degree_day_type(&self.index_type)?,
             strike: self.strike,
@@ -2567,7 +2461,7 @@ pub struct WeatherOption {
 }
 
 impl WeatherOption {
-    fn to_core(self) -> PyResult<CoreWeatherOption> {
+    fn to_core(&self) -> PyResult<CoreWeatherOption> {
         Ok(CoreWeatherOption {
             index_type: parse_degree_day_type(&self.index_type)?,
             option_type: parse_option_type_str(&self.option_type)?,
@@ -2607,12 +2501,11 @@ impl WeatherOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 
     fn payoff(&self, realized_index: f64) -> PyResult<f64> {
-        self.clone()
-            .to_core()?
+        self.to_core()?
             .payoff(realized_index)
             .map_err(map_err_string)
     }
@@ -2678,17 +2571,17 @@ impl CatastropheBond {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core().validate().map_err(map_err_string)
+        (*self).to_core().validate().map_err(map_err_string)
     }
 
     fn price(&self) -> PyResult<f64> {
-        self.clone().to_core().price().map_err(map_err_string)
+        (*self).to_core().price().map_err(map_err_string)
     }
 }
 
 macro_rules! simple_payload_enum {
     ($name:ident) => {
-        #[pyclass(module = "openferric")]
+        #[pyclass(module = "openferric", skip_from_py_object)]
         pub struct $name {
             kind: String,
             payload: Py<PyAny>,
@@ -2727,7 +2620,7 @@ simple_payload_enum!(StructuredCoupon);
 simple_payload_enum!(CouponType);
 simple_payload_enum!(TradeInstrument);
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct CouponPeriod {
     #[pyo3(get, set)]
     pub start_time: f64,
@@ -2813,7 +2706,7 @@ impl TradeMetadata {
     }
 }
 
-#[pyclass(module = "openferric")]
+#[pyclass(module = "openferric", skip_from_py_object)]
 pub struct Trade {
     #[pyo3(get, set)]
     pub metadata: TradeMetadata,
@@ -3008,16 +2901,6 @@ impl BasketOption {
             is_call: self.is_call,
             basket_type: parse_basket_type(&self.basket_type)?,
         })
-    }
-
-    pub(crate) fn from_core(inner: CoreBasketOption) -> Self {
-        Self {
-            weights: inner.weights,
-            strike: inner.strike,
-            maturity: inner.maturity,
-            is_call: inner.is_call,
-            basket_type: format_basket_type(inner.basket_type).to_string(),
-        }
     }
 }
 
@@ -3312,7 +3195,7 @@ pub struct DiscreteCashFlow {
 }
 
 impl DiscreteCashFlow {
-    pub(crate) fn to_core(&self) -> CoreDiscreteCashFlow {
+    pub(crate) fn to_core(self) -> CoreDiscreteCashFlow {
         CoreDiscreteCashFlow {
             time: self.time,
             amount: self.amount,
@@ -3356,6 +3239,7 @@ impl RealOptionBinomialSpec {
             cash_flows: self
                 .cash_flows
                 .iter()
+                .copied()
                 .map(DiscreteCashFlow::to_core)
                 .collect(),
         }
@@ -3487,26 +3371,23 @@ impl WeatherSwap {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 
     fn payoff(&self, realized_index: f64) -> PyResult<f64> {
-        self.clone()
-            .to_core()?
+        self.to_core()?
             .payoff(realized_index)
             .map_err(map_err_string)
     }
 
     fn price_from_expected_index(&self, expected_index: f64) -> PyResult<f64> {
-        self.clone()
-            .to_core()?
+        self.to_core()?
             .price_from_expected_index(expected_index)
             .map_err(map_err_string)
     }
 
     fn price_from_historical_indices(&self, historical_indices: Vec<f64>) -> PyResult<f64> {
-        self.clone()
-            .to_core()?
+        self.to_core()?
             .price_from_historical_indices(&historical_indices)
             .map_err(map_err_string)
     }
@@ -3592,20 +3473,17 @@ impl CommodityOption {
     }
 
     fn validate(&self) -> PyResult<()> {
-        self.clone().to_core()?.validate().map_err(map_err_string)
+        self.to_core()?.validate().map_err(map_err_string)
     }
 
     fn as_futures_option(&self) -> PyResult<FuturesOption> {
         Ok(FuturesOption::from_core(
-            self.clone().to_core()?.as_futures_option(),
+            self.to_core()?.as_futures_option(),
         ))
     }
 
     fn price_black76(&self) -> PyResult<f64> {
-        self.clone()
-            .to_core()?
-            .price_black76()
-            .map_err(map_err_string)
+        self.to_core()?.price_black76().map_err(map_err_string)
     }
 }
 

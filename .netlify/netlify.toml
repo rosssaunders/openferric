@@ -10,7 +10,7 @@ redirects = []
 publish = "/home/rosssaunders/code/rosssaunders/openferric/www"
 publishOrigin = "config"
 commandOrigin = "config"
-command = "    curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh && rustup target add wasm32-unknown-unknown && wasm-pack build openferric-wasm --target web --out-dir ../www/pkg\n  "
+command = "    curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh && rustup target add wasm32-unknown-unknown && wasm-pack build wasm --target web --out-dir ../www/pkg\n  "
 
 [build.environment]
 RUSTUP_TOOLCHAIN = "1.94.0"

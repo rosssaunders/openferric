@@ -1,6 +1,6 @@
 # OpenFerric
 
-**High-performance quantitative finance in Rust.** Derivatives pricing, risk analytics, and live market tools.
+**High-performance quantitative finance in Rust.** Derivatives pricing and risk analytics.
 
 [![Crates.io](https://img.shields.io/crates/v/openferric.svg)](https://crates.io/crates/openferric)
 [![docs.rs](https://docs.rs/openferric/badge.svg)](https://docs.rs/openferric)
@@ -8,18 +8,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen)](#testing)
 [![Coverage](https://codecov.io/gh/rosssaunders/openferric/graph/badge.svg)](https://codecov.io/gh/rosssaunders/openferric)
-[![Lines](https://img.shields.io/badge/lines-72K%2B-blue)](#)
 
 ---
 
 ## Highlights
 
-- **72,000+ lines** of Rust across 201 source files
 - **366 tests** — validated against QuantLib, Haug, Alan Lewis, and Fabozzi reference values
 - **Trait-based architecture**: `Instrument` + `PricingEngine` — composable, extensible
 - **SIMD-accelerated**: AVX2 vectorized Black-Scholes (69M options/sec)
 - **FFT pricing**: Carr-Madan for entire strike grids in O(N log N)
-- **Live market tools**: Deribit vol surface snapshot tooling plus rich browser dashboard — **[Live Demo](https://openferric.netlify.app)**
 - **Python bindings**: Optional PyO3 module for research integration
 - **SQL integration**: Designed as extension for [OpenAssay](https://github.com/rosssaunders/openassay)
 
@@ -75,8 +72,6 @@ Full coverage details in [docs/COVERAGE.md](docs/COVERAGE.md). Summary:
 
 **Numerical Engines** — Analytic (15+), binomial/trinomial trees, explicit/implicit/Crank-Nicolson/Hopscotch FD, Longstaff-Schwartz, Monte Carlo (antithetic, control variate, SIMD, parallel), FFT (Carr-Madan, FRFT), generalized & two-asset trees
 
-**Live Market** — Deribit vol surface snapshot (REST + SVI calibration + 3D Plotly) and [browser dashboard](https://openferric.netlify.app)
-
 ## Architecture
 
 ```
@@ -99,7 +94,6 @@ Instruments ─→ Engines ─→ Market ─→ PricingResult
 |---|---|
 | `python` | PyO3 bindings for Python integration |
 | `parallel` | Rayon-parallelized Monte Carlo |
-| `deribit` | Deribit live market data tools using reqwest + tokio |
 
 ## Testing
 

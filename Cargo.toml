@@ -1,10 +1,10 @@
 [workspace]
 members = [
     ".",
-    "openferric-wasm",
-    "openferric-python",
-    "openferric-lsp",
-    "openferric-mcp",
+    "wasm",
+    "python",
+    "lsp",
+    "mcp",
 ]
 
 [workspace.lints.rust]
@@ -34,9 +34,9 @@ exclude = [
     "vendor/",
     "excel-addin/",
     "vscode-ext/",
-    "openferric-wasm/",
-    "openferric-python/",
-    "openferric-lsp/",
+    "wasm/",
+    "python/",
+    "lsp/",
     "www/",
     ".github/",
     "docs/",

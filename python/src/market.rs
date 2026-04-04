@@ -21,7 +21,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::credit::SurvivalCurve;
-use crate::rates::YieldCurve;
 
 fn map_string_err(err: String) -> PyErr {
     PyValueError::new_err(err)
@@ -286,6 +285,7 @@ impl PutCallParityQuote {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_core(value: CorePutCallParityQuote) -> Self {
         Self {
             maturity: value.maturity,
@@ -440,7 +440,7 @@ impl DividendCurveBootstrap {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PremiumCurrency {
     Domestic,
@@ -463,7 +463,7 @@ impl PremiumCurrency {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FxDeltaConvention {
     Spot,
@@ -492,7 +492,7 @@ impl FxDeltaConvention {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FxAtmConvention {
     Spot,
@@ -518,7 +518,7 @@ impl FxAtmConvention {
     }
 }
 
-#[pyclass(eq, eq_int, module = "openferric")]
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NdfSettlementCurrency {
     Domestic,
@@ -533,6 +533,7 @@ impl NdfSettlementCurrency {
         }
     }
 
+    #[allow(dead_code)]
     fn from_core(value: CoreNdfSettlementCurrency) -> Self {
         match value {
             CoreNdfSettlementCurrency::Domestic => Self::Domestic,
@@ -975,6 +976,7 @@ pub struct FxVolSurface {
 }
 
 impl FxVolSurface {
+    #[allow(dead_code)]
     pub(crate) fn to_core(&self) -> CoreFxVolSurface {
         self.inner.clone()
     }
@@ -1530,6 +1532,7 @@ impl ForwardCurveSnapshot {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_core(value: CoreForwardCurveSnapshot) -> Self {
         Self {
             asset_id: value.asset_id,
@@ -1566,6 +1569,7 @@ impl CreditCurveSnapshot {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_core(value: CoreCreditCurveSnapshot) -> Self {
         Self {
             curve_id: value.curve_id,
@@ -1638,6 +1642,7 @@ impl MarketSnapshot {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_core(value: CoreMarketSnapshot) -> Self {
         let CoreMarketSnapshot {
             snapshot_id,

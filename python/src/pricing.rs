@@ -1,32 +1,14 @@
-use openferric_core::core::{
-    Greeks as CoreGreeks, PricingEngine, PricingError, PricingResult as CorePricingResult,
-};
+use openferric_core::core::{Greeks as CoreGreeks, PricingEngine, PricingError};
 use openferric_core::engines::analytic::{
     DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, kirk_spread_price,
     margrabe_exchange_price,
 };
 use openferric_core::greeks::black_scholes_merton_greeks;
 use openferric_core::instruments::{
-    AbandonmentOption as CoreAbandonmentOption, AssetOrNothingOption,
-    Autocallable as CoreAutocallable, BasketOption as CoreBasketOption,
-    BasketType as CoreBasketType, CashOrNothingOption,
-    DeferInvestmentOption as CoreDeferInvestmentOption, DiscreteCashFlow as CoreDiscreteCashFlow,
-    DualRangeAccrual as CoreDualRangeAccrual, ExoticOption, ExpandOption as CoreExpandOption,
-    FxOption, LookbackFixedOption, LookbackFloatingOption,
-    OutperformanceBasketOption as CoreOutperformanceBasketOption,
-    PhoenixAutocallable as CorePhoenixAutocallable, QuantoBasketOption as CoreQuantoBasketOption,
-    RangeAccrual as CoreRangeAccrual, RealOptionBinomialSpec as CoreRealOptionBinomialSpec,
-    SpreadOption, Tarf as CoreTarf, TarfType as CoreTarfType,
-};
-use openferric_core::market::{
-    BootstrappedDividendPoint as CoreBootstrappedDividendPoint,
-    DividendCurveBootstrap as CoreDividendCurveBootstrap, DividendEvent as CoreDividendEvent,
-    DividendKind as CoreDividendKind, DividendSchedule as CoreDividendSchedule,
-    PutCallParityQuote as CorePutCallParityQuote,
-};
-use openferric_core::math::{
-    CorrelationStressScenario as CoreCorrelationStressScenario,
-    FactorCorrelationModel as CoreFactorCorrelationModel,
+    AbandonmentOption as CoreAbandonmentOption, AssetOrNothingOption, BasketType as CoreBasketType,
+    CashOrNothingOption, DeferInvestmentOption as CoreDeferInvestmentOption, ExoticOption,
+    ExpandOption as CoreExpandOption, FxOption, LookbackFixedOption, LookbackFloatingOption,
+    SpreadOption, TarfType as CoreTarfType,
 };
 use openferric_core::pricing::american::{crr_binomial_american, longstaff_schwartz_american_put};
 use openferric_core::pricing::asian::{
@@ -79,13 +61,10 @@ use crate::helpers::{
     parse_option_type, parse_spread_method,
 };
 use crate::instruments::{
-    Autocallable, BasketOption, DiscreteCashFlow, DualRangeAccrual, OutperformanceBasketOption,
-    PhoenixAutocallable, QuantoBasketOption, RangeAccrual, RealOptionBinomialSpec, Tarf,
+    Autocallable, BasketOption, DualRangeAccrual, OutperformanceBasketOption, PhoenixAutocallable,
+    QuantoBasketOption, RangeAccrual, RealOptionBinomialSpec, Tarf,
 };
-use crate::market::{
-    BootstrappedDividendPoint, DividendCurveBootstrap, DividendEvent, DividendKind,
-    DividendSchedule, PutCallParityQuote,
-};
+use crate::market::{DividendCurveBootstrap, DividendSchedule, PutCallParityQuote};
 use crate::math_bindings::{CorrelationStressScenario, FactorCorrelationModel};
 
 fn pricing_error_to_pyerr(err: PricingError) -> PyErr {
@@ -112,6 +91,7 @@ pub struct PricingGreeks {
 }
 
 impl PricingGreeks {
+    #[allow(dead_code)]
     fn from_core(greeks: CoreGreeks) -> Self {
         Self {
             delta: greeks.delta,
@@ -136,6 +116,7 @@ impl PricingGreeks {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("delta", self.delta)?;
@@ -257,6 +238,7 @@ pub struct BasketType {
 }
 
 impl BasketType {
+    #[allow(dead_code)]
     fn to_core(&self) -> PyResult<CoreBasketType> {
         match self.kind.to_ascii_lowercase().as_str() {
             "average" => Ok(CoreBasketType::Average),
@@ -494,6 +476,7 @@ pub struct TarfType {
 }
 
 impl TarfType {
+    #[allow(dead_code)]
     fn to_core(&self) -> PyResult<CoreTarfType> {
         match self.kind.to_ascii_lowercase().as_str() {
             "standard" => Ok(CoreTarfType::Standard),

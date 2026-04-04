@@ -288,6 +288,7 @@ impl Sabr {
 
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
+#[allow(clippy::upper_case_acronyms)]
 pub struct CIR {
     #[pyo3(get, set)]
     pub a: f64,

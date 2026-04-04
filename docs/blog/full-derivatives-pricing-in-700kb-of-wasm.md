@@ -83,9 +83,9 @@ This gets compiled to bytecode and executed inside the Monte Carlo engine. The b
 
 ## The WASM Compilation
 
-Getting from 72K lines of Rust to a 700KB WASM binary requires a few tricks:
+Getting from Rust to a 700KB WASM binary requires a few tricks:
 
-**1. Feature gates.** The WASM crate (`openferric-wasm`) only exposes what the browser needs. Server-only functionality (file I/O, Python bindings, GPU compute) is gated behind features.
+**1. Feature gates.** The WASM crate (`wasm/`) only exposes what the browser needs. Server-only functionality (file I/O, Python bindings, GPU compute) is gated behind features.
 
 **2. wasm-bindgen.** We use `wasm-bindgen` to generate JavaScript bindings. The API surface is deliberately small — a handful of functions that accept JSON configs and return JSON results. All the complexity stays in Rust.
 
