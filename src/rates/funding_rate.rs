@@ -91,19 +91,14 @@ impl FundingRateStats {
 }
 
 /// Interpolation strategy for funding rate curves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FundingRateInterpolation {
     /// Piecewise-linear interpolation between rate nodes.
+    #[default]
     Linear,
     /// Piecewise-constant (step function): each rate holds flat until the next node.
     /// Appropriate for Boros-style markets where each swap locks a fixed APR.
     PiecewiseConstant,
-}
-
-impl Default for FundingRateInterpolation {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 
 /// Forward funding-rate term structure built from observed snapshots.

@@ -44,6 +44,7 @@ exclude = [
     "benches/",
     "examples/",
     "Makefile",
+    "AGENTS.md",
     "CLAUDE.md",
     ".copilot-instructions.md",
     ".codecov.yml",
