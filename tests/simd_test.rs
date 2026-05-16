@@ -253,7 +253,99 @@ mod neon_tests {
 
     use openferric::core::OptionType;
     use openferric::engines::analytic::bs_price_batch;
+    #[cfg(feature = "simd")]
+    use openferric::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
     use openferric::pricing::european::black_scholes_price;
+
+    #[cfg(feature = "simd")]
+    unsafe fn neon_ln_batch(xs: &[f64]) -> Vec<f64> {
+        let mut out = vec![0.0; xs.len()];
+        let mut i = 0usize;
+        while i + 2 <= xs.len() {
+            let x = unsafe { load_f64x2(xs, i) };
+            let y = unsafe { simd_ln_f64x2(x) };
+            unsafe { store_f64x2(&mut out, i, y) };
+            i += 2;
+        }
+        while i < xs.len() {
+            out[i] = xs[i].ln();
+            i += 1;
+        }
+        out
+    }
+
+    #[cfg(feature = "simd")]
+    unsafe fn neon_exp_batch(xs: &[f64]) -> Vec<f64> {
+        let mut out = vec![0.0; xs.len()];
+        let mut i = 0usize;
+        while i + 2 <= xs.len() {
+            let x = unsafe { load_f64x2(xs, i) };
+            let y = unsafe { simd_exp_f64x2(x) };
+            unsafe { store_f64x2(&mut out, i, y) };
+            i += 2;
+        }
+        while i < xs.len() {
+            out[i] = xs[i].exp();
+            i += 1;
+        }
+        out
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn neon_ln_matches_scalar() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+
+        let mut rng = StdRng::seed_from_u64(7);
+        let n = 32_768usize;
+        let mut xs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let e = rng.random_range(-300.0..300.0);
+            let m = rng.random_range(1.0..10.0);
+            xs.push(m * 10f64.powf(e));
+        }
+
+        let simd = unsafe { neon_ln_batch(&xs) };
+        for (x, y) in xs.iter().zip(simd.iter()) {
+            let expected = x.ln();
+            let abs_err = (*y - expected).abs();
+            assert!(
+                abs_err <= 1e-9,
+                "x={x} neon={y} expected={expected} abs_err={abs_err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn neon_exp_matches_scalar() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+
+        let mut rng = StdRng::seed_from_u64(11);
+        let n = 32_768usize;
+        let mut xs = Vec::with_capacity(n);
+        for _ in 0..n {
+            xs.push(rng.random_range(-700.0..700.0));
+        }
+
+        let simd = unsafe { neon_exp_batch(&xs) };
+        for (x, y) in xs.iter().zip(simd.iter()) {
+            let expected = x.exp();
+            let rel_err = if expected.abs() > 0.0 {
+                ((*y - expected) / expected).abs()
+            } else {
+                (*y - expected).abs()
+            };
+            assert!(
+                rel_err <= 1e-12,
+                "x={x} neon={y} expected={expected} rel_err={rel_err}"
+            );
+        }
+    }
 
     #[test]
     fn neon_bs_price_matches_scalar_within_1e6() {

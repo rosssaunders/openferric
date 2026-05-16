@@ -80,8 +80,9 @@ Current CI in `.github/workflows/ci.yml` runs:
 1. `cargo fmt --all --check`
 2. `cargo clippy --workspace --all-targets --features parallel,simd`
 3. `cargo test --workspace --features parallel,simd`
-4. Python wheel build plus `pytest python/tests -v`
-5. `wasm-pack build wasm --target web --out-dir ../www/pkg`
+4. ARM64 NEON SIMD regression tests on `ubuntu-24.04-arm`
+5. Python wheel build plus `pytest python/tests -v`
+6. `wasm-pack build wasm --target web --out-dir ../www/pkg`
 
 Prefer validating the narrowest relevant subset locally, but make sure changes are consistent with the CI commands above before opening a PR.
 

@@ -115,6 +115,26 @@ jobs:
       - name: Run Python tests
         run: pytest python/tests/ -v
 
+  arm64-simd:
+    name: ARM64 SIMD
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run NEON SIMD regressions
+        run: |
+          cargo test -p openferric --test simd_test --features simd
+          cargo test -p openferric --lib --features simd commodity_forward_product_mean_reverts
+        env:
+          RUSTFLAGS: ""
+
   wasm:
     name: WASM
     runs-on: ubuntu-latest

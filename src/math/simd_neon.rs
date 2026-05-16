@@ -87,14 +87,11 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     poly = vfmaq_f64(one, poly, r);
     poly = vfmaq_f64(one, poly, r);
 
-    // Reconstruct: exp(x) = poly * 2^n via IEEE 754 exponent manipulation
-    let mut n_lanes = [0_i64; 2];
-    vst1q_f64(n_lanes.as_mut_ptr() as *mut f64, n_f64);
-    let mut exp_lanes = [0_u64; 2];
-    for i in 0..2 {
-        exp_lanes[i] = ((n_lanes[i] + 1023) as u64) << 52;
-    }
-    let two_pow_n: float64x2_t = std::mem::transmute(vld1q_u64(exp_lanes.as_ptr()));
+    // Reconstruct: exp(x) = poly * 2^n via IEEE 754 exponent manipulation.
+    let n_i64 = vcvtq_s64_f64(n_f64);
+    let biased_exponent = vaddq_s64(n_i64, vdupq_n_s64(1023));
+    let exp_bits = vshlq_n_s64(biased_exponent, 52);
+    let two_pow_n = vreinterpretq_f64_s64(exp_bits);
     vmulq_f64(poly, two_pow_n)
 }
 
