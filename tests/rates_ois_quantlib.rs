@@ -11,7 +11,7 @@
 
 use approx::assert_relative_eq;
 
-use openferric::rates::{OvernightIndexSwap, YieldCurve};
+use openferric::rates::{BasisSwap, OvernightIndexSwap, YieldCurve};
 
 /// Build a flat continuous yield curve.
 fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
@@ -253,4 +253,85 @@ fn ois_negative_tenor_returns_zero() {
 
     assert_eq!(ois.fixed_leg_pv(&curve), 0.0);
     assert_eq!(ois.floating_leg_pv(&curve, &curve), 0.0);
+}
+
+#[test]
+fn basis_swap_par_spread_reprices_to_zero() {
+    // Source context: QuantLib overnightindexedswap.cpp fair-spread tests.
+    // This simplified basis-swap model uses the same zero-NPV fair-spread invariant.
+    let discount_curve = flat_curve(0.03, 5.0);
+    let short_curve = flat_curve(0.04, 5.0);
+    let long_curve = flat_curve(0.05, 5.0);
+    let swap = BasisSwap {
+        notional: 10_000_000.0,
+        spread_on_short_leg: 0.0,
+        tenor: 3.0,
+        short_leg_payments_per_year: 4,
+        long_leg_payments_per_year: 2,
+    };
+
+    let par_spread = swap.par_spread_on_short_leg(&discount_curve, &short_curve, &long_curve);
+    let par_swap = BasisSwap {
+        spread_on_short_leg: par_spread,
+        ..swap
+    };
+
+    assert!(par_spread > 0.0);
+    assert_relative_eq!(
+        par_swap.npv(&discount_curve, &short_curve, &long_curve, true),
+        0.0,
+        epsilon = 1.0e-5
+    );
+}
+
+#[test]
+fn basis_swap_pay_receive_orientation_reverses_sign() {
+    let discount_curve = flat_curve(0.03, 5.0);
+    let short_curve = flat_curve(0.04, 5.0);
+    let long_curve = flat_curve(0.05, 5.0);
+    let swap = BasisSwap {
+        notional: 1_000_000.0,
+        spread_on_short_leg: 0.001,
+        tenor: 2.5,
+        short_leg_payments_per_year: 4,
+        long_leg_payments_per_year: 2,
+    };
+
+    let pay_short = swap.npv(&discount_curve, &short_curve, &long_curve, true);
+    let receive_short = swap.npv(&discount_curve, &short_curve, &long_curve, false);
+
+    assert!(pay_short.is_finite());
+    assert_relative_eq!(pay_short, -receive_short, epsilon = 1.0e-9);
+}
+
+#[test]
+fn basis_swap_invalid_inputs_return_zero_or_nan() {
+    let curve = flat_curve(0.03, 2.0);
+    let zero_notional = BasisSwap {
+        notional: 0.0,
+        spread_on_short_leg: 0.0,
+        tenor: 1.0,
+        short_leg_payments_per_year: 4,
+        long_leg_payments_per_year: 2,
+    };
+    let zero_frequency = BasisSwap {
+        notional: 1_000_000.0,
+        spread_on_short_leg: 0.0,
+        tenor: 1.0,
+        short_leg_payments_per_year: 0,
+        long_leg_payments_per_year: 2,
+    };
+
+    assert_eq!(zero_notional.npv(&curve, &curve, &curve, true), 0.0);
+    assert!(
+        zero_notional
+            .par_spread_on_short_leg(&curve, &curve, &curve)
+            .is_nan()
+    );
+    assert!(zero_frequency.npv(&curve, &curve, &curve, true) > 0.0);
+    assert!(
+        zero_frequency
+            .par_spread_on_short_leg(&curve, &curve, &curve)
+            .is_nan()
+    );
 }
