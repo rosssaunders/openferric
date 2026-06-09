@@ -28,8 +28,26 @@ fn flat_continuous_curve(rate: f64, max_tenor: f64) -> YieldCurve {
     YieldCurve::new(points)
 }
 
-/// Price a bond analytically using the same compounding convention as
-/// `FixedRateBond::discount_at`: (1 + y/m)^{-m*t}.
+/// Build a flat curve embedding m-times compounding: DF(t) = (1 + r/m)^{-m t}.
+///
+/// Curve-based bond pricing discounts with the curve's own discount factors,
+/// so the classic par/discount-bond identities at a quoted yield `r` hold on
+/// this curve. ln DF is linear in t, so log-linear interpolation reproduces
+/// these discount factors exactly at every coupon date.
+fn flat_compounded_curve(rate: f64, m: u32, max_tenor: f64) -> YieldCurve {
+    let mf = m as f64;
+    let n = max_tenor.ceil() as usize + 1;
+    let points: Vec<(f64, f64)> = (1..=n)
+        .map(|i| {
+            let t = i as f64;
+            (t, (1.0 + rate / mf).powf(-mf * t))
+        })
+        .collect();
+    YieldCurve::new(points)
+}
+
+/// Price a bond analytically using the quoted-yield compounding convention
+/// (the same one `FixedRateBond::ytm` solves for): (1 + y/m)^{-m*t}.
 ///
 /// PV = sum_{k=1..N} [C/m * (1+y/m)^{-k}] + Face * (1+y/m)^{-N}
 /// where N = maturity * m, C = face * coupon_rate.
@@ -50,12 +68,13 @@ fn analytic_bond_price(face: f64, coupon_rate: f64, freq: u32, maturity: f64, y:
 // 1. Par bond tests -- coupon_rate = yield => price ~ face
 // ===========================================================================
 
-/// Strata convention: a semi-annual par bond prices at 100 when coupon = yield.
+/// Strata convention: a semi-annual par bond prices at 100 when coupon = yield
+/// (with the curve discounting at that yield, semi-annually compounded).
 /// Tested across multiple maturities (5Y, 10Y, 30Y).
 #[test]
 fn strata_par_bond_semiannual_various_maturities() {
     let rate = 0.05;
-    let curve = flat_continuous_curve(rate, 35.0);
+    let curve = flat_compounded_curve(rate, 2, 35.0);
 
     for maturity in [5.0, 10.0, 30.0] {
         let bond = FixedRateBond {
@@ -71,12 +90,13 @@ fn strata_par_bond_semiannual_various_maturities() {
 }
 
 /// Par bond identity at different coupon frequencies (1, 2, 4 per year).
+/// The curve must embed the matching compounding frequency for the identity.
 #[test]
 fn strata_par_bond_various_frequencies() {
     let rate = 0.04;
-    let curve = flat_continuous_curve(rate, 12.0);
 
     for freq in [1, 2, 4] {
+        let curve = flat_compounded_curve(rate, freq, 12.0);
         let bond = FixedRateBond {
             face_value: 100.0,
             coupon_rate: rate,
@@ -130,7 +150,7 @@ fn strata_premium_bond_increases_with_maturity() {
 fn strata_discount_bond_below_par() {
     let yield_rate = 0.07;
     let coupon = 0.03;
-    let curve = flat_continuous_curve(yield_rate, 15.0);
+    let curve = flat_compounded_curve(yield_rate, 2, 15.0);
 
     let bond = FixedRateBond {
         face_value: 100.0,
@@ -145,9 +165,9 @@ fn strata_discount_bond_below_par() {
         "Discount bond must price below par, got {price}"
     );
 
-    // Verify against analytic formula using the same zero rate
-    let z = curve.zero_rate(5.0); // flat curve, same for all t
-    let expected = analytic_bond_price(100.0, coupon, 2, 10.0, z);
+    // The curve embeds semiannual compounding at 7%, so curve-based pricing
+    // matches the analytic semiannual-yield formula exactly.
+    let expected = analytic_bond_price(100.0, coupon, 2, 10.0, yield_rate);
     assert_relative_eq!(price, expected, epsilon = 1.0e-6);
 }
 
@@ -155,13 +175,13 @@ fn strata_discount_bond_below_par() {
 // 3. Zero-coupon bond
 // ===========================================================================
 
-/// Zero-coupon bond: price = face * (1 + r/m)^{-m*T} under frequency-m
-/// compounding.  For frequency=1 this is 100 * (1+r)^{-T}.
+/// Zero-coupon bond: price = face * DF(T). On a curve embedding annual
+/// compounding at rate r, DF(T) = (1+r)^{-T} so price = 100 * (1+r)^{-T}.
 /// Duration of a zero-coupon bond equals its maturity.
 #[test]
 fn strata_zero_coupon_price_and_duration() {
     let rate = 0.04;
-    let curve = flat_continuous_curve(rate, 35.0);
+    let curve = flat_compounded_curve(rate, 1, 35.0);
 
     for maturity in [1.0, 5.0, 10.0, 30.0] {
         let bond = FixedRateBond {

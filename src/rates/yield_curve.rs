@@ -365,6 +365,17 @@ impl YieldCurveBuilder {
     }
 
     /// Bootstraps discount factors from par swap rates with explicit interpolation.
+    ///
+    /// Each input swap is modeled single-curve: fixed leg pays `swap_rate / freq`
+    /// at `t_i = i / freq`, the float leg is worth `1 - DF(T)`, so the par
+    /// condition is
+    ///
+    /// `coupon * sum_{i=1..N} DF(t_i) + DF(T) = 1`  (with `t_N = T`).
+    ///
+    /// Each pillar DF is solved with a 1-D bisection so the par condition holds
+    /// exactly under the configured interpolation: interior coupon DFs between
+    /// the previous pillar and the new pillar are interpolated against the
+    /// candidate pillar value during the solve.
     pub fn from_swap_rates_with_settings(
         swap_rates: &[(f64, f64)],
         frequency: usize,
@@ -375,33 +386,75 @@ impl YieldCurveBuilder {
         let mut sorted = swap_rates.to_vec();
         sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-        let mut points: Vec<(f64, f64)> = Vec::with_capacity(sorted.len());
         let freq = frequency as f64;
         let dt = 1.0 / freq;
 
-        for (tenor, swap_rate) in sorted {
-            if tenor <= 0.0 {
-                continue;
-            }
+        // (tenor, fixed periods, per-period coupon), aligned with `points`.
+        let instruments: Vec<(f64, usize, f64)> = sorted
+            .iter()
+            .filter(|(tenor, _)| *tenor > 0.0)
+            .filter_map(|&(tenor, swap_rate)| {
+                let periods = (tenor * freq).round() as usize;
+                (periods > 0).then_some((tenor, periods, swap_rate / freq))
+            })
+            .collect();
 
-            let periods = (tenor * freq).round() as usize;
-            if periods == 0 {
-                continue;
-            }
+        // Par residual as a function of the candidate pillar DF, with the other
+        // pillars in `base` held fixed. Builds one candidate curve per
+        // evaluation (not per coupon date) and prices every coupon off it.
+        // Increasing `df` raises all interior DFs, so the residual is monotone
+        // in `df`.
+        let par_residual = |base: &[(f64, f64)],
+                            tenor: f64,
+                            periods: usize,
+                            coupon: f64,
+                            df: f64|
+         -> Result<f64, InterpolationError> {
+            let mut candidate = base.to_vec();
+            candidate.push((tenor, df));
+            let curve = YieldCurve::new_with_settings(candidate, settings)?;
 
-            let coupon = swap_rate / freq;
-            let mut pv_coupons = 0.0;
+            let mut annuity = 0.0;
             for i in 1..periods {
-                let ti = i as f64 * dt;
-                pv_coupons += coupon * discount_factor_from_points(&points, ti, settings)?;
+                annuity += curve.try_discount_factor(i as f64 * dt)?;
             }
+            // Final fixed payment occurs at the pillar tenor.
+            Ok(coupon * (annuity + df) + df - 1.0)
+        };
 
-            let mut df = (1.0 - pv_coupons) / (1.0 + coupon);
-            if df <= 0.0 {
-                df = 1.0e-12;
+        // Sequential pass: solve each pillar against the pillars known so far.
+        let mut points: Vec<(f64, f64)> = Vec::with_capacity(instruments.len());
+        for &(tenor, periods, coupon) in &instruments {
+            let df = solve_monotone_root(
+                |df| par_residual(&points, tenor, periods, coupon, df),
+                1.0e-10,
+                4.0,
+            )?;
+            points.push((tenor, df.max(1.0e-12)));
+        }
+
+        // Gauss-Seidel sweeps: nonlocal interpolation methods (monotone-convex,
+        // cubic and parametric families) shift earlier segments when later
+        // pillars are added, so re-solve each pillar with the others fixed
+        // until the curve reprices every input swap simultaneously. Local
+        // methods (log-linear, linear zero) converge after the first sweep.
+        for _ in 0..25 {
+            let mut max_change: f64 = 0.0;
+            for (k, &(tenor, periods, coupon)) in instruments.iter().enumerate() {
+                let mut base = points.clone();
+                base.remove(k);
+                let df = solve_monotone_root(
+                    |df| par_residual(&base, tenor, periods, coupon, df),
+                    1.0e-10,
+                    4.0,
+                )?
+                .max(1.0e-12);
+                max_change = max_change.max((df - points[k].1).abs());
+                points[k].1 = df;
             }
-            points.push((tenor, df));
-            points.sort_by(|a, b| a.0.total_cmp(&b.0));
+            if max_change < 1.0e-15 {
+                break;
+            }
         }
 
         YieldCurve::new_with_settings(points, settings)
@@ -670,16 +723,48 @@ fn discount_factor_one_point(t1: f64, df1: f64, t: f64, extrapolation: Extrapola
     }
 }
 
-fn discount_factor_from_points(
-    points: &[(f64, f64)],
-    t: f64,
-    settings: YieldCurveInterpolationSettings,
-) -> Result<f64, InterpolationError> {
-    if t <= 0.0 || points.is_empty() {
-        return Ok(1.0);
+/// Bisection root-finder for a monotone residual on `[lo, hi]`.
+///
+/// Used by curve bootstrap routines to solve a pillar discount factor so the
+/// corresponding instrument reprices exactly. If the residual does not change
+/// sign over the bracket, the endpoint with the smaller absolute residual is
+/// returned (degenerate inputs such as `rate * tenor > 1`).
+pub(crate) fn solve_monotone_root<F>(
+    mut f: F,
+    mut lo: f64,
+    mut hi: f64,
+) -> Result<f64, InterpolationError>
+where
+    F: FnMut(f64) -> Result<f64, InterpolationError>,
+{
+    let mut f_lo = f(lo)?;
+    let f_hi = f(hi)?;
+
+    if f_lo == 0.0 {
+        return Ok(lo);
     }
-    let curve = YieldCurve::new_with_settings(points.to_vec(), settings)?;
-    curve.try_discount_factor(t)
+    if f_hi == 0.0 {
+        return Ok(hi);
+    }
+    if f_lo.signum() == f_hi.signum() {
+        return Ok(if f_lo.abs() <= f_hi.abs() { lo } else { hi });
+    }
+
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        let f_mid = f(mid)?;
+        if f_mid == 0.0 || (hi - lo) <= 1.0e-16 * mid.abs().max(1.0) {
+            return Ok(mid);
+        }
+        if f_mid.signum() == f_lo.signum() {
+            lo = mid;
+            f_lo = f_mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    Ok(0.5 * (lo + hi))
 }
 
 #[cfg(test)]
@@ -718,6 +803,58 @@ mod tests {
 
         for t in [0.5, 2.0, 7.0, 10.0] {
             assert_relative_eq!(yc.zero_rate(t), r, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn swap_bootstrap_reprices_input_par_rates() {
+        // The bootstrap models each input swap single-curve: fixed leg pays
+        // rate/freq on the grid t_i = i/freq, float leg = 1 - DF(T). Repricing
+        // with the same conventions must return the input par rate exactly.
+        let swap_rates = vec![
+            (1.0, 0.0500),
+            (2.0, 0.0520),
+            (3.0, 0.0540),
+            (5.0, 0.0560),
+            (10.0, 0.0580),
+        ];
+
+        let methods = [
+            YieldCurveInterpolationMethod::LogLinearDiscount,
+            YieldCurveInterpolationMethod::LinearZeroRate,
+            YieldCurveInterpolationMethod::MonotoneConvex,
+        ];
+
+        for method in methods {
+            for frequency in [1usize, 2, 4] {
+                let curve = YieldCurveBuilder::from_swap_rates_with_settings(
+                    &swap_rates,
+                    frequency,
+                    settings(method),
+                )
+                .unwrap();
+
+                let freq = frequency as f64;
+                let dt = 1.0 / freq;
+                for &(tenor, rate) in &swap_rates {
+                    let periods = (tenor * freq).round() as usize;
+                    let annuity: f64 = (1..=periods)
+                        .map(|i| dt * curve.discount_factor(i as f64 * dt))
+                        .sum();
+                    let df_n = curve.discount_factor(tenor);
+
+                    // Par rate recovery to root-finder precision.
+                    let par = (1.0 - df_n) / annuity;
+                    assert_relative_eq!(par, rate, epsilon = 1.0e-10);
+
+                    // Payer-swap NPV at the input rate is zero.
+                    let npv = (1.0 - df_n) - rate * annuity;
+                    assert!(
+                        npv.abs() < 1.0e-10,
+                        "method={method:?} freq={frequency} tenor={tenor}: npv={npv}"
+                    );
+                }
+            }
         }
     }
 

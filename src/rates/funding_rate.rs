@@ -1,8 +1,10 @@
 //! Funding-rate term structures for crypto perpetuals.
 //!
 //! This module models Binance-style 8-hour funding settlements as a forward
-//! curve in year-fraction time, with linear interpolation between observed
-//! settlement points and exact integration of the piecewise-linear path.
+//! curve in year-fraction time, with linear or piecewise-constant
+//! interpolation between observed settlement points and exact integration of
+//! the corresponding rate path (trapezoidal for linear, stepwise for
+//! piecewise-constant).
 
 use crate::math::interpolation::{
     ExtrapolationMode, Interpolator, LinearInterpolator, PiecewiseConstantInterpolator,
@@ -328,8 +330,17 @@ impl FundingRateCurve {
 
             let upper = horizon.min(end_t);
             if upper > start_t {
-                let upper_rate = linear_rate(start_t, end_t, start_rate, end_rate, upper);
-                area += 0.5 * (start_rate + upper_rate) * (upper - start_t);
+                area += match self.interpolation_mode {
+                    // Trapezoid under the piecewise-linear rate path.
+                    FundingRateInterpolation::Linear => {
+                        let upper_rate = linear_rate(start_t, end_t, start_rate, end_rate, upper);
+                        0.5 * (start_rate + upper_rate) * (upper - start_t)
+                    }
+                    // Step function: the node rate holds flat until the next
+                    // node, matching `forward_rate` for piecewise-constant
+                    // curves.
+                    FundingRateInterpolation::PiecewiseConstant => start_rate * (upper - start_t),
+                };
             }
 
             if horizon <= end_t {
@@ -482,8 +493,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        FUNDING_INTERVAL_YEARS, FundingRateCurve, FundingRateInterpolation, FundingRateSnapshot,
-        FundingRateStats, MultiVenueFundingCurve,
+        FUNDING_INTERVAL_YEARS, FUNDING_PERIODS_PER_YEAR, FundingRateCurve,
+        FundingRateInterpolation, FundingRateSnapshot, FundingRateStats, MultiVenueFundingCurve,
     };
     use approx::assert_relative_eq;
     use chrono::{TimeZone, Utc};
@@ -644,6 +655,52 @@ mod tests {
         assert!(
             rate2 > 0.001,
             "should have jumped to higher rate at second node"
+        );
+    }
+
+    #[test]
+    fn step_curve_discount_factor_consistent_with_forward_rate() {
+        // For a piecewise-constant curve, cumulative_index/discount_factor must
+        // integrate the same step function that forward_rate returns:
+        // DF(t) = exp(-PERIODS_PER_YEAR * sum_i r_i * dt_i), so discount
+        // factors telescope with the flat forward rate over each segment.
+        let curve = FundingRateCurve::new_with_interpolation(
+            vec![
+                snapshot("binance", "BTCUSDT", 0.001, 2025, 1, 1, 0),
+                snapshot("binance", "BTCUSDT", 0.003, 2025, 4, 1, 0),
+                snapshot("binance", "BTCUSDT", 0.002, 2025, 7, 1, 0),
+            ],
+            FundingRateInterpolation::PiecewiseConstant,
+        );
+        let nodes = curve.nodes().to_vec();
+        let (t1, r0) = (nodes[1].0, nodes[0].1);
+        let (t2, r1) = (nodes[2].0, nodes[1].1);
+        let r2 = nodes[2].1;
+
+        // Within one segment the forward rate is flat, so
+        // DF(tb)/DF(ta) = exp(-PERIODS_PER_YEAR * forward_rate(ta) * (tb - ta)).
+        for (ta, tb) in [
+            (0.2 * t1, 0.7 * t1),
+            (t1 + 0.1 * (t2 - t1), t1 + 0.9 * (t2 - t1)),
+            (t2 + 0.05, t2 + 0.20),
+        ] {
+            let lhs = curve.discount_factor(tb) / curve.discount_factor(ta);
+            let rhs = (-FUNDING_PERIODS_PER_YEAR * curve.forward_rate(ta) * (tb - ta)).exp();
+            assert_relative_eq!(lhs, rhs, epsilon = 1.0e-12);
+        }
+
+        // Across segments the integral telescopes: exp(-integral) over [0, T].
+        let horizon = t2 + 0.1;
+        let integral = r0 * t1 + r1 * (t2 - t1) + r2 * (horizon - t2);
+        assert_relative_eq!(
+            curve.cumulative_index(horizon),
+            FUNDING_PERIODS_PER_YEAR * integral,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            curve.discount_factor(horizon),
+            (-FUNDING_PERIODS_PER_YEAR * integral).exp(),
+            epsilon = 1.0e-12
         );
     }
 

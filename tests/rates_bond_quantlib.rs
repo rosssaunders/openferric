@@ -6,12 +6,16 @@
 //! Our API uses year-fraction maturity and continuous compounding rather than
 //! calendar-based schedules, so tolerances are relaxed to 1e-4 where
 //! calendar effects matter.
+//!
+//! Curve-based bond pricing discounts every cashflow with the curve's own
+//! discount factors (`curve.discount_factor(t)`); discrete compounding only
+//! enters through the quoted-yield path (`FixedRateBond::ytm`).
 
 use approx::assert_relative_eq;
 
 use openferric::rates::{DayCountConvention, FixedRateBond, YieldCurve};
 
-/// Build a flat continuous yield curve.
+/// Build a flat continuous yield curve: DF(t) = exp(-r t).
 fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
     let points: Vec<(f64, f64)> = (1..=(max_tenor.ceil() as usize + 1))
         .map(|i| {
@@ -22,14 +26,32 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
     YieldCurve::new(points)
 }
 
+/// Build a flat curve whose discount factors embed m-times compounding:
+/// DF(t) = (1 + r/m)^(-m t).
+///
+/// ln DF is linear in t, so the default log-linear interpolation reproduces
+/// these discount factors exactly at every coupon date.
+fn flat_compounded_curve(rate: f64, m: u32, max_tenor: f64) -> YieldCurve {
+    let m = m as f64;
+    let points: Vec<(f64, f64)> = (1..=(max_tenor.ceil() as usize + 1))
+        .map(|i| {
+            let t = i as f64;
+            (t, (1.0 + rate / m).powf(-m * t))
+        })
+        .collect();
+    YieldCurve::new(points)
+}
+
 // ── Fixed-coupon bond pricing ───────────────────────────────────────────────
 
 /// A par bond (coupon = yield) should price at face value.
 /// Reference: fundamental fixed-income identity.
+///
+/// The par identity requires the curve to discount with the same compounding
+/// as the bond's coupon frequency, i.e. DF(t) = (1 + c/m)^(-m t).
 #[test]
 fn fixed_coupon_bond_par_pricing() {
     let rate = 0.05;
-    let curve = flat_curve(rate, 12.0);
 
     for (coupon, freq, maturity) in [
         (0.05, 2, 2.0),
@@ -38,6 +60,7 @@ fn fixed_coupon_bond_par_pricing() {
         (0.05, 1, 5.0),
         (0.05, 4, 5.0),
     ] {
+        let curve = flat_compounded_curve(rate, freq, 12.0);
         let bond = FixedRateBond {
             face_value: 100.0,
             coupon_rate: coupon,
@@ -85,11 +108,19 @@ fn fixed_coupon_bond_premium_and_discount() {
     );
 }
 
-/// Cached reference values for fixed-coupon bonds on a flat 5% curve.
-/// Computed via closed-form PV of coupon annuity + principal.
+/// Cached reference values for fixed-coupon bonds on a flat 5% continuous curve.
+/// Computed via closed-form PV of coupon annuity + principal with the curve's
+/// own (continuous) discount factors:
 ///
-/// PV = C/m * sum_{k=1..n*m} (1 + y/m)^(-k) + 100 * (1 + y/m)^(-n*m)
-/// where y = zero_rate(t) on a flat continuous curve => simple compounding rate
+/// PV = C/m * sum_{k=1..n*m} exp(-r * k/m) + 100 * exp(-r * n)
+///
+/// With q = exp(-r/m), the coupon annuity is q (1 - q^{n m}) / (1 - q).
+/// For r = 0.05:
+///   8% semi 10Y: 4 * 15.5428625 + 100 e^{-0.5}  = 122.8245006
+///   2% semi 10Y: 1 * 15.5428625 + 100 e^{-0.5}  =  76.1959246
+///   5% annual 30Y: 5 * 15.1522902 + 100 e^{-1.5} = 98.0740095
+/// (a 5% annual bond is below par on a 5% continuous curve, since the
+/// annually-compounded equivalent yield e^{0.05} - 1 = 5.127% exceeds 5%).
 #[test]
 fn fixed_coupon_bond_cached_values() {
     let rate = 0.05;
@@ -99,35 +130,35 @@ fn fixed_coupon_bond_cached_values() {
         coupon_rate: f64,
         frequency: u32,
         maturity: f64,
-        // Expected dirty price (from formula, not QuantLib C++ directly)
+        // Expected dirty price (closed-form continuous discounting, above)
         expected_dirty_price: f64,
         tolerance: f64,
     }
 
     let cases = vec![
-        // 8% semiannual 10Y on 5% flat curve
+        // 8% semiannual 10Y on 5% flat continuous curve
         BondCase {
             coupon_rate: 0.08,
             frequency: 2,
             maturity: 10.0,
-            expected_dirty_price: 123.3862, // PV of premium bond
-            tolerance: 0.5,
+            expected_dirty_price: 122.8245006, // PV of premium bond
+            tolerance: 1.0e-6,
         },
-        // 2% semiannual 10Y on 5% flat curve
+        // 2% semiannual 10Y on 5% flat continuous curve
         BondCase {
             coupon_rate: 0.02,
             frequency: 2,
             maturity: 10.0,
-            expected_dirty_price: 76.6138, // PV of discount bond (symmetric)
-            tolerance: 0.5,
+            expected_dirty_price: 76.1959246, // PV of discount bond
+            tolerance: 1.0e-6,
         },
-        // 5% annual 30Y on 5% flat curve => par
+        // 5% annual 30Y on 5% flat continuous curve
         BondCase {
             coupon_rate: 0.05,
             frequency: 1,
             maturity: 30.0,
-            expected_dirty_price: 100.0,
-            tolerance: 1.0e-4,
+            expected_dirty_price: 98.0740095,
+            tolerance: 1.0e-6,
         },
     ];
 
@@ -162,11 +193,10 @@ fn zero_coupon_bond_cached_values() {
             day_count: DayCountConvention::Act365Fixed,
         };
 
-        // discount_at uses (1 + z/m)^(-m*t) with m=frequency=1, z=zero_rate.
-        // On a flat continuous curve with rate r, zero_rate(t) = r,
-        // so price = 100 * (1 + r)^(-t).
+        // Curve-based pricing discounts with the curve's own discount factor,
+        // so on a flat continuous curve price = 100 * exp(-r * t).
         let price = bond.dirty_price(&curve);
-        let expected = 100.0 * (1.0 + rate).powf(-maturity);
+        let expected = 100.0 * (-rate * maturity).exp();
         assert_relative_eq!(price, expected, epsilon = 1.0e-6,);
         // Must be below par for positive rates
         assert!(
@@ -212,11 +242,12 @@ fn ytm_round_trip() {
     let price = bond.dirty_price(&curve);
     let ytm = bond.ytm(price);
 
-    // Re-price using ytm as flat yield
-    let ytm_curve = flat_curve(ytm, 12.0);
+    // Re-price on a curve embedding the YTM's own compounding convention,
+    // DF(t) = (1 + y/m)^(-m t): the round-trip must recover the price exactly.
+    let ytm_curve = flat_compounded_curve(ytm, 2, 12.0);
     let reprice = bond.dirty_price(&ytm_curve);
 
-    assert_relative_eq!(reprice, price, epsilon = 0.01);
+    assert_relative_eq!(reprice, price, epsilon = 1.0e-8);
 }
 
 // ── Duration and Convexity ──────────────────────────────────────────────────

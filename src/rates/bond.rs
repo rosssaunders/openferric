@@ -87,6 +87,11 @@ impl FixedRateBond {
     }
 
     /// Yield-to-maturity solved by Newton-Raphson.
+    ///
+    /// This is the quoted-yield path: the solved yield `y` is compounded
+    /// `frequency` times per year, i.e. cashflows discount as
+    /// `(1 + y/m)^(-m t)`. It is intentionally distinct from curve-based
+    /// pricing, which uses `YieldCurve::discount_factor` directly.
     pub fn ytm(&self, market_price: f64) -> f64 {
         if self.frequency == 0 || market_price <= 0.0 {
             return f64::NAN;
@@ -130,13 +135,16 @@ impl FixedRateBond {
         y
     }
 
+    /// Discounts a cashflow at time `t` using the curve's own discount factor.
+    ///
+    /// The curve is the pricing primitive: `P(t) = curve.discount_factor(t)`.
+    /// Discrete-compounding yield conventions only apply to the yield-based
+    /// path ([`Self::ytm`]), never to curve-based pricing.
     fn discount_at(&self, curve: &YieldCurve, t: f64) -> f64 {
         if t <= 0.0 {
             return 1.0;
         }
-        let m = self.frequency.max(1) as f64;
-        let z = curve.zero_rate(t);
-        (1.0 + z / m).powf(-m * t)
+        curve.discount_factor(t)
     }
 
     fn cashflows(&self) -> Vec<(f64, f64)> {
