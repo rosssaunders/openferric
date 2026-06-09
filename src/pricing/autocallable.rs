@@ -11,7 +11,7 @@
 //! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use std::collections::BTreeMap;
 
-use crate::core::{Greeks, PricingError, PricingResult};
+use crate::core::{DiagKey, Greeks, PricingError, PricingResult};
 use crate::instruments::{Autocallable, PhoenixAutocallable};
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 
@@ -33,10 +33,12 @@ pub struct AutocallableSensitivities {
 
 #[derive(Debug, Clone)]
 struct PreparedAutocallable {
-    underlyings: Vec<usize>,
     initial_spots: Vec<f64>,
     vols: Vec<f64>,
     corr_matrix: Vec<Vec<f64>>,
+    /// Lower Cholesky factor of `corr_matrix`, computed once at preparation
+    /// time so spot/vol bumps can reuse it without re-factorizing.
+    chol: Vec<Vec<f64>>,
     maturity: f64,
     notional: f64,
     observation_schedule: Vec<(usize, f64)>,
@@ -48,6 +50,10 @@ struct PreparedAutocallable {
     memory: bool,
 }
 
+/// Prices a standard autocallable note (no Greeks).
+///
+/// Use [`price_autocallable_with_greeks`] when the bump-and-reprice Greeks
+/// ladder is required; it costs roughly 9x a plain price call.
 #[allow(clippy::too_many_arguments)]
 pub fn price_autocallable(
     autocall: &Autocallable,
@@ -59,42 +65,44 @@ pub fn price_autocallable(
     n_paths: usize,
     n_steps: usize,
 ) -> PricingResult {
-    let Ok((price, stderr)) = price_standard_for_inputs(
-        autocall,
-        spots,
-        vols,
-        corr_matrix,
+    let Ok(prepared) = prepare_standard(autocall, spots, vols, corr_matrix, n_steps) else {
+        return invalid_result();
+    };
+    price_prepared(
+        &prepared,
+        autocall.autocall_dates.len(),
         r,
         q,
         n_paths,
         n_steps,
-        MC_SEED,
-    ) else {
+        false,
+    )
+}
+
+/// Prices a standard autocallable note including bump-and-reprice Greeks.
+#[allow(clippy::too_many_arguments)]
+pub fn price_autocallable_with_greeks(
+    autocall: &Autocallable,
+    spots: &[f64],
+    vols: &[f64],
+    corr_matrix: &[Vec<f64>],
+    r: f64,
+    q: f64,
+    n_paths: usize,
+    n_steps: usize,
+) -> PricingResult {
+    let Ok(prepared) = prepare_standard(autocall, spots, vols, corr_matrix, n_steps) else {
         return invalid_result();
     };
-
-    let greeks =
-        autocallable_sensitivities(autocall, spots, vols, corr_matrix, r, q, n_paths, n_steps)
-            .ok()
-            .map(|s| Greeks {
-                delta: s.delta.iter().sum::<f64>(),
-                gamma: 0.0,
-                vega: s.vega,
-                theta: 0.0,
-                rho: s.cega,
-            });
-
-    let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", n_steps as f64);
-    diagnostics.insert("observation_count", autocall.autocall_dates.len() as f64);
-
-    PricingResult {
-        price,
-        stderr: Some(stderr),
-        greeks,
-        diagnostics,
-    }
+    price_prepared(
+        &prepared,
+        autocall.autocall_dates.len(),
+        r,
+        q,
+        n_paths,
+        n_steps,
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -109,28 +117,13 @@ pub fn autocallable_sensitivities(
     n_steps: usize,
 ) -> Result<AutocallableSensitivities, PricingError> {
     let prepared = prepare_standard(autocall, spots, vols, corr_matrix, n_steps)?;
-    bump_and_reprice_sensitivities(
-        &prepared.underlyings,
-        spots,
-        vols,
-        corr_matrix,
-        |bumped_spots, bumped_vols, bumped_corr| {
-            price_standard_for_inputs(
-                autocall,
-                bumped_spots,
-                bumped_vols,
-                bumped_corr,
-                r,
-                q,
-                n_paths,
-                n_steps,
-                MC_SEED,
-            )
-            .map(|(p, _)| p)
-        },
-    )
+    bump_and_reprice_sensitivities(&prepared, r, q, n_paths, n_steps, MC_SEED)
 }
 
+/// Prices a phoenix autocallable note (no Greeks).
+///
+/// Use [`price_phoenix_autocallable_with_greeks`] when the bump-and-reprice
+/// Greeks ladder is required; it costs roughly 9x a plain price call.
 #[allow(clippy::too_many_arguments)]
 pub fn price_phoenix_autocallable(
     phoenix: &PhoenixAutocallable,
@@ -142,50 +135,44 @@ pub fn price_phoenix_autocallable(
     n_paths: usize,
     n_steps: usize,
 ) -> PricingResult {
-    let Ok((price, stderr)) = price_phoenix_for_inputs(
-        phoenix,
-        spots,
-        vols,
-        corr_matrix,
-        r,
-        q,
-        n_paths,
-        n_steps,
-        MC_SEED,
-    ) else {
+    let Ok(prepared) = prepare_phoenix(phoenix, spots, vols, corr_matrix, n_steps) else {
         return invalid_result();
     };
-
-    let greeks = phoenix_autocallable_sensitivities(
-        phoenix,
-        spots,
-        vols,
-        corr_matrix,
+    price_prepared(
+        &prepared,
+        phoenix.autocall_dates.len(),
         r,
         q,
         n_paths,
         n_steps,
+        false,
     )
-    .ok()
-    .map(|s| Greeks {
-        delta: s.delta.iter().sum::<f64>(),
-        gamma: 0.0,
-        vega: s.vega,
-        theta: 0.0,
-        rho: s.cega,
-    });
+}
 
-    let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", n_steps as f64);
-    diagnostics.insert("observation_count", phoenix.autocall_dates.len() as f64);
-
-    PricingResult {
-        price,
-        stderr: Some(stderr),
-        greeks,
-        diagnostics,
-    }
+/// Prices a phoenix autocallable note including bump-and-reprice Greeks.
+#[allow(clippy::too_many_arguments)]
+pub fn price_phoenix_autocallable_with_greeks(
+    phoenix: &PhoenixAutocallable,
+    spots: &[f64],
+    vols: &[f64],
+    corr_matrix: &[Vec<f64>],
+    r: f64,
+    q: f64,
+    n_paths: usize,
+    n_steps: usize,
+) -> PricingResult {
+    let Ok(prepared) = prepare_phoenix(phoenix, spots, vols, corr_matrix, n_steps) else {
+        return invalid_result();
+    };
+    price_prepared(
+        &prepared,
+        phoenix.autocall_dates.len(),
+        r,
+        q,
+        n_paths,
+        n_steps,
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -200,26 +187,50 @@ pub fn phoenix_autocallable_sensitivities(
     n_steps: usize,
 ) -> Result<AutocallableSensitivities, PricingError> {
     let prepared = prepare_phoenix(phoenix, spots, vols, corr_matrix, n_steps)?;
-    bump_and_reprice_sensitivities(
-        &prepared.underlyings,
-        spots,
-        vols,
-        corr_matrix,
-        |bumped_spots, bumped_vols, bumped_corr| {
-            price_phoenix_for_inputs(
-                phoenix,
-                bumped_spots,
-                bumped_vols,
-                bumped_corr,
-                r,
-                q,
-                n_paths,
-                n_steps,
-                MC_SEED,
-            )
-            .map(|(p, _)| p)
-        },
-    )
+    bump_and_reprice_sensitivities(&prepared, r, q, n_paths, n_steps, MC_SEED)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn price_prepared(
+    prepared: &PreparedAutocallable,
+    observation_count: usize,
+    r: f64,
+    q: f64,
+    n_paths: usize,
+    n_steps: usize,
+    with_greeks: bool,
+) -> PricingResult {
+    let Ok((price, stderr)) =
+        simulate_autocallable_paths(prepared, r, q, n_paths, n_steps, MC_SEED)
+    else {
+        return invalid_result();
+    };
+
+    let greeks = if with_greeks {
+        bump_and_reprice_sensitivities(prepared, r, q, n_paths, n_steps, MC_SEED)
+            .ok()
+            .map(|s| Greeks {
+                delta: s.delta.iter().sum::<f64>(),
+                gamma: 0.0,
+                vega: s.vega,
+                theta: 0.0,
+                rho: s.cega,
+            })
+    } else {
+        None
+    };
+
+    let mut diagnostics = crate::core::Diagnostics::new();
+    diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(DiagKey::NumSteps, n_steps as f64);
+    diagnostics.insert_key(DiagKey::ObservationCount, observation_count as f64);
+
+    PricingResult {
+        price,
+        stderr: Some(stderr),
+        greeks,
+        diagnostics,
+    }
 }
 
 fn invalid_result() -> PricingResult {
@@ -231,6 +242,7 @@ fn invalid_result() -> PricingResult {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn price_standard_for_inputs(
     autocall: &Autocallable,
@@ -247,6 +259,7 @@ fn price_standard_for_inputs(
     simulate_autocallable_paths(&prepared, r, q, n_paths, n_steps, seed)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn price_phoenix_for_inputs(
     phoenix: &PhoenixAutocallable,
@@ -364,11 +377,15 @@ fn prepare_common(
 
     let observation_schedule = observation_schedule(autocall_dates, maturity, n_steps);
 
+    let chol = cholesky_lower(&selected_corr).ok_or_else(|| {
+        PricingError::InvalidInput("autocallable correlation matrix is not PSD".to_string())
+    })?;
+
     Ok(PreparedAutocallable {
-        underlyings: underlyings.to_vec(),
         initial_spots,
         vols: selected_vols,
         corr_matrix: selected_corr,
+        chol,
         maturity,
         notional,
         observation_schedule,
@@ -381,48 +398,60 @@ fn prepare_common(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn bump_and_reprice_sensitivities<F>(
-    underlyings: &[usize],
-    spots: &[f64],
-    vols: &[f64],
-    corr_matrix: &[Vec<f64>],
-    mut price_fn: F,
-) -> Result<AutocallableSensitivities, PricingError>
-where
-    F: FnMut(&[f64], &[f64], &[Vec<f64>]) -> Result<f64, PricingError>,
-{
-    let mut delta = Vec::with_capacity(underlyings.len());
-    for &idx in underlyings {
-        let bump = (spots[idx].abs() * SPOT_BUMP_REL).max(1.0e-4);
-        let mut up_spots = spots.to_vec();
-        let mut dn_spots = spots.to_vec();
-        up_spots[idx] += bump;
-        dn_spots[idx] = (dn_spots[idx] - bump).max(1.0e-8);
+/// Bump-and-reprice sensitivities computed in prepared (contract) space.
+///
+/// Spot and vol bumps reuse the Cholesky factor computed once at preparation
+/// time; only correlation bumps (cega) re-factorize the bumped matrix.
+fn bump_and_reprice_sensitivities(
+    prepared: &PreparedAutocallable,
+    r: f64,
+    q: f64,
+    n_paths: usize,
+    n_steps: usize,
+    seed: u64,
+) -> Result<AutocallableSensitivities, PricingError> {
+    let n_assets = prepared.initial_spots.len();
 
-        let up = price_fn(&up_spots, vols, corr_matrix)?;
-        let dn = price_fn(&dn_spots, vols, corr_matrix)?;
-        delta.push((up - dn) / (2.0 * bump));
+    let mut delta = Vec::with_capacity(n_assets);
+    for k in 0..n_assets {
+        let bump = (prepared.initial_spots[k].abs() * SPOT_BUMP_REL).max(1.0e-4);
+        let mut up = prepared.clone();
+        up.initial_spots[k] += bump;
+        let mut dn = prepared.clone();
+        dn.initial_spots[k] = (dn.initial_spots[k] - bump).max(1.0e-8);
+
+        let up_p = simulate_autocallable_paths(&up, r, q, n_paths, n_steps, seed)?.0;
+        let dn_p = simulate_autocallable_paths(&dn, r, q, n_paths, n_steps, seed)?.0;
+        delta.push((up_p - dn_p) / (2.0 * bump));
     }
 
-    let mut up_vols = vols.to_vec();
-    let mut dn_vols = vols.to_vec();
-    for &idx in underlyings {
-        up_vols[idx] += VOL_BUMP_ABS;
-        dn_vols[idx] = (dn_vols[idx] - VOL_BUMP_ABS).max(1.0e-6);
+    let mut up_vols = prepared.clone();
+    let mut dn_vols = prepared.clone();
+    for k in 0..n_assets {
+        up_vols.vols[k] += VOL_BUMP_ABS;
+        dn_vols.vols[k] = (dn_vols.vols[k] - VOL_BUMP_ABS).max(1.0e-6);
     }
-    let vega_up = price_fn(spots, &up_vols, corr_matrix)?;
-    let vega_dn = price_fn(spots, &dn_vols, corr_matrix)?;
+    let vega_up = simulate_autocallable_paths(&up_vols, r, q, n_paths, n_steps, seed)?.0;
+    let vega_dn = simulate_autocallable_paths(&dn_vols, r, q, n_paths, n_steps, seed)?.0;
     let vega = (vega_up - vega_dn) / (2.0 * VOL_BUMP_ABS);
 
     let mut cega = f64::NAN;
     let mut corr_bump = CORR_BUMP;
     for _ in 0..6 {
-        let up_corr = bump_corr_matrix(corr_matrix, corr_bump);
-        let dn_corr = bump_corr_matrix(corr_matrix, -corr_bump);
-        let up = price_fn(spots, vols, &up_corr);
-        let dn = price_fn(spots, vols, &dn_corr);
-        if let (Ok(up_p), Ok(dn_p)) = (up, dn) {
+        let up_corr = bump_corr_matrix(&prepared.corr_matrix, corr_bump);
+        let dn_corr = bump_corr_matrix(&prepared.corr_matrix, -corr_bump);
+
+        if let (Some(up_chol), Some(dn_chol)) = (cholesky_lower(&up_corr), cholesky_lower(&dn_corr))
+        {
+            let mut up = prepared.clone();
+            up.corr_matrix = up_corr;
+            up.chol = up_chol;
+            let mut dn = prepared.clone();
+            dn.corr_matrix = dn_corr;
+            dn.chol = dn_chol;
+
+            let up_p = simulate_autocallable_paths(&up, r, q, n_paths, n_steps, seed)?.0;
+            let dn_p = simulate_autocallable_paths(&dn, r, q, n_paths, n_steps, seed)?.0;
             cega = (up_p - dn_p) / (2.0 * corr_bump);
             break;
         }
@@ -456,9 +485,7 @@ fn simulate_autocallable_paths(
     let dt = prepared.maturity / n_steps as f64;
     let sqrt_dt = dt.sqrt();
 
-    let chol = cholesky_lower(&prepared.corr_matrix).ok_or_else(|| {
-        PricingError::InvalidInput("autocallable correlation matrix is not PSD".to_string())
-    })?;
+    let chol = &prepared.chol;
 
     let drift = prepared
         .vols
@@ -494,7 +521,7 @@ fn simulate_autocallable_paths(
             for z in &mut indep {
                 *z = sample_standard_normal(&mut rng);
             }
-            correlate_normals(&chol, &indep, &mut corr);
+            correlate_normals(chol, &indep, &mut corr);
 
             for i in 0..n_assets {
                 state[i] *= (drift[i] + vol_dt[i] * corr[i]).exp();

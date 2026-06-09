@@ -175,39 +175,51 @@ where
     let mut converged = false;
     let mut stagnation = 0usize;
 
+    // Jacobian state for the current `x`. Rejected steps leave `x` and
+    // `residuals` unchanged, so the same Jacobian (and normal equations) are
+    // reused with an inflated lambda instead of recomputing finite differences.
+    let mut jacobian = DMatrix::zeros(0, 0);
+    let mut a_base = DMatrix::zeros(0, 0);
+    let mut g = DVector::zeros(0);
+    let mut jacobian_current = false;
+
     for iter in 0..options.max_iterations {
         iterations = iter + 1;
 
-        let jacobian = finite_difference_jacobian(
-            &x,
-            &residuals,
-            bounds,
-            options.finite_diff_epsilon.max(1e-8),
-            &mut residual_fn,
-            &mut evals,
-        );
+        if !jacobian_current {
+            jacobian = finite_difference_jacobian(
+                &x,
+                &residuals,
+                bounds,
+                options.finite_diff_epsilon.max(1e-8),
+                &mut residual_fn,
+                &mut evals,
+            );
 
-        let r_vec = DVector::from_column_slice(&residuals);
-        let jt = jacobian.transpose();
-        let mut a = &jt * &jacobian;
-        let g = &jt * r_vec;
+            let r_vec = DVector::from_column_slice(&residuals);
+            let jt = jacobian.transpose();
+            a_base = &jt * &jacobian;
+            g = &jt * r_vec;
+            jacobian_current = true;
 
-        last_gradient_norm = g.norm();
-        if !last_gradient_norm.is_finite() {
-            reason = TerminationReason::NumericalFailure;
-            break;
+            last_gradient_norm = g.norm();
+            if !last_gradient_norm.is_finite() {
+                reason = TerminationReason::NumericalFailure;
+                break;
+            }
+            if last_gradient_norm <= options.gradient_tolerance {
+                converged = true;
+                reason = TerminationReason::GradientTolerance;
+                break;
+            }
         }
-        if last_gradient_norm <= options.gradient_tolerance {
-            converged = true;
-            reason = TerminationReason::GradientTolerance;
-            break;
-        }
 
+        let mut a = a_base.clone();
         for i in 0..a.nrows() {
             a[(i, i)] += lambda * (a[(i, i)].abs() + 1.0);
         }
 
-        let Some(delta) = a.lu().solve(&(-g)) else {
+        let Some(delta) = a.lu().solve(&(-&g)) else {
             lambda = (lambda * options.lambda_up).min(1e12);
             stagnation += 1;
             if stagnation >= options.max_stagnation {
@@ -216,13 +228,6 @@ where
             }
             continue;
         };
-
-        last_step_norm = delta.norm();
-        if last_step_norm <= options.step_tolerance {
-            converged = true;
-            reason = TerminationReason::StepTolerance;
-            break;
-        }
 
         let mut candidate = x.clone();
         for i in 0..candidate.len() {
@@ -241,6 +246,16 @@ where
             objective = candidate_obj;
             lambda = (lambda * options.lambda_down).max(1e-12);
             stagnation = 0;
+            jacobian_current = false;
+
+            // Step-size convergence is only meaningful for accepted steps:
+            // after rejections, lambda inflation shrinks ||delta|| mechanically.
+            last_step_norm = delta.norm();
+            if last_step_norm <= options.step_tolerance {
+                converged = true;
+                reason = TerminationReason::StepTolerance;
+                break;
+            }
 
             if improvement <= options.objective_tolerance {
                 converged = true;
@@ -248,6 +263,8 @@ where
                 break;
             }
         } else {
+            // Rejected: retry from the same point with a larger lambda,
+            // reusing the already-computed Jacobian.
             lambda = (lambda * options.lambda_up).min(1e12);
             stagnation += 1;
             if stagnation >= options.max_stagnation {
@@ -257,14 +274,16 @@ where
         }
     }
 
-    let jacobian = finite_difference_jacobian(
-        &x,
-        &residuals,
-        bounds,
-        options.finite_diff_epsilon.max(1e-8),
-        &mut residual_fn,
-        &mut evals,
-    );
+    if !jacobian_current {
+        jacobian = finite_difference_jacobian(
+            &x,
+            &residuals,
+            bounds,
+            options.finite_diff_epsilon.max(1e-8),
+            &mut residual_fn,
+            &mut evals,
+        );
+    }
 
     Ok(OptimisationResult {
         x,
@@ -563,6 +582,66 @@ mod tests {
 
         assert!((out.x[0] - 1.5).abs() < 1e-6);
         assert!((out.x[1] + 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lm_quadratic_converges_with_few_residual_evaluations() {
+        use std::cell::Cell;
+
+        let bounds = BoxConstraints::new(vec![-5.0, -5.0], vec![5.0, 5.0]).unwrap();
+        let initial = [4.0, -4.0];
+        let n_params = initial.len();
+        let eval_count = Cell::new(0usize);
+
+        let out = levenberg_marquardt(&initial, &bounds, LmOptions::default(), |x| {
+            eval_count.set(eval_count.get() + 1);
+            vec![x[0] - 1.5, x[1] + 2.0]
+        })
+        .unwrap();
+
+        assert!(out.convergence.converged, "LM must converge on a quadratic");
+        assert!((out.x[0] - 1.5).abs() < 1e-6);
+        assert!((out.x[1] + 2.0).abs() < 1e-6);
+
+        // The Jacobian must not be recomputed after rejected steps or
+        // unconditionally at the end: total residual evaluations stay
+        // strictly below iterations * n_params * 2.
+        let iterations = out.convergence.iterations.max(1);
+        assert!(
+            eval_count.get() < iterations * n_params * 2,
+            "residual evaluations {} must be < iterations {} * n_params {} * 2",
+            eval_count.get(),
+            iterations,
+            n_params
+        );
+        assert_eq!(eval_count.get(), out.convergence.objective_evaluations);
+    }
+
+    #[test]
+    fn lm_step_tolerance_not_triggered_by_rejected_steps() {
+        // A residual function whose objective improves slowly forces step
+        // rejections; the optimizer must not claim StepTolerance convergence
+        // off the back of lambda-inflated (rejected) steps.
+        let bounds = BoxConstraints::new(vec![-10.0], vec![10.0]).unwrap();
+        let out = levenberg_marquardt(
+            &[3.0],
+            &bounds,
+            LmOptions {
+                max_iterations: 60,
+                ..LmOptions::default()
+            },
+            |x| vec![(x[0] * x[0] - 2.0), 10.0 * (x[0] - 2.0_f64.sqrt())],
+        )
+        .unwrap();
+
+        if matches!(out.convergence.reason, TerminationReason::StepTolerance) {
+            assert!(out.convergence.converged);
+            assert!(
+                out.convergence.step_norm <= LmOptions::default().step_tolerance,
+                "StepTolerance must reflect an accepted step norm"
+            );
+        }
+        assert!((out.x[0] - 2.0_f64.sqrt()).abs() < 1e-4);
     }
 
     #[test]

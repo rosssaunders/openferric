@@ -55,22 +55,29 @@ impl FxOption {
 
     /// Validates instrument fields.
     pub fn validate(&self) -> Result<(), PricingError> {
-        if self.spot_fx <= 0.0 {
+        if !self.spot_fx.is_finite() || self.spot_fx <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "fx spot_fx must be > 0".to_string(),
+                "fx spot_fx must be finite and > 0".to_string(),
             ));
         }
-        if self.strike_fx <= 0.0 {
+        if !self.strike_fx.is_finite() || self.strike_fx <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "fx strike_fx must be > 0".to_string(),
+                "fx strike_fx must be finite and > 0".to_string(),
             ));
         }
-        if self.vol <= 0.0 {
-            return Err(PricingError::InvalidInput("fx vol must be > 0".to_string()));
-        }
-        if self.maturity < 0.0 {
+        if !self.vol.is_finite() || self.vol <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "fx maturity must be >= 0".to_string(),
+                "fx vol must be finite and > 0".to_string(),
+            ));
+        }
+        if !self.maturity.is_finite() || self.maturity < 0.0 {
+            return Err(PricingError::InvalidInput(
+                "fx maturity must be finite and >= 0".to_string(),
+            ));
+        }
+        if !self.domestic_rate.is_finite() || !self.foreign_rate.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "fx domestic_rate and foreign_rate must be finite".to_string(),
             ));
         }
         Ok(())
@@ -80,5 +87,56 @@ impl FxOption {
 impl Instrument for FxOption {
     fn instrument_type(&self) -> &str {
         "FxOption"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_option() -> FxOption {
+        FxOption::new(OptionType::Call, 0.03, 0.01, 1.25, 1.30, 0.1, 1.0)
+    }
+
+    #[test]
+    fn validate_rejects_nan_fields() {
+        assert!(valid_option().validate().is_ok());
+
+        let cases: Vec<(&str, FxOption)> = vec![
+            ("NaN spot_fx", {
+                let mut o = valid_option();
+                o.spot_fx = f64::NAN;
+                o
+            }),
+            ("NaN strike_fx", {
+                let mut o = valid_option();
+                o.strike_fx = f64::NAN;
+                o
+            }),
+            ("NaN vol", {
+                let mut o = valid_option();
+                o.vol = f64::NAN;
+                o
+            }),
+            ("NaN maturity", {
+                let mut o = valid_option();
+                o.maturity = f64::NAN;
+                o
+            }),
+            ("NaN domestic_rate", {
+                let mut o = valid_option();
+                o.domestic_rate = f64::NAN;
+                o
+            }),
+            ("NaN foreign_rate", {
+                let mut o = valid_option();
+                o.foreign_rate = f64::NAN;
+                o
+            }),
+        ];
+
+        for (label, option) in cases {
+            assert!(option.validate().is_err(), "{label} must be rejected");
+        }
     }
 }

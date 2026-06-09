@@ -1051,6 +1051,20 @@ fn map_exercise_steps(dates: &[f64], horizon: f64, steps: usize) -> Vec<bool> {
     flags
 }
 
+/// Tree time slice at which a coupon must be observed.
+///
+/// Fixed coupons carry no rate dependence and are simply added at the
+/// payment-date node. Floating, range-accrual, inverse-floater and CMS
+/// coupons fix at the period START (reset-in-advance), so they must be
+/// evaluated on the fixing-date slice; the cashflow is then discounted from
+/// payment date to the fixing node analytically (see [`coupon_cashflow_tree`]).
+fn coupon_observation_time(period: &CouponPeriod) -> f64 {
+    match &period.coupon {
+        CouponType::Fixed { .. } => period.payment_time,
+        CouponType::Floating { .. } | CouponType::Structured(_) => period.start_time,
+    }
+}
+
 fn map_coupon_steps(
     coupon_schedule: &[CouponPeriod],
     horizon: f64,
@@ -1058,7 +1072,7 @@ fn map_coupon_steps(
 ) -> Vec<Vec<usize>> {
     let mut map = vec![Vec::new(); steps + 1];
     for (idx, period) in coupon_schedule.iter().enumerate() {
-        let step = ((period.payment_time / horizon) * steps as f64).round() as usize;
+        let step = ((coupon_observation_time(period) / horizon) * steps as f64).round() as usize;
         map[step.min(steps)].push(idx);
     }
     map
@@ -1090,6 +1104,13 @@ fn trinomial_probs(model: &HullWhite, t: f64, rate: f64, dt: f64, dx: f64) -> (f
     }
 }
 
+/// Value of a coupon at the node where it is observed.
+///
+/// Rate-dependent coupons are evaluated at the fixing-date node (`eval_time`,
+/// the period start slice) using the node short rate, then discounted from
+/// payment date to the fixing node with the model's analytic bond price:
+/// `coupon(r_fix) * P(t_fix, t_pay; r_fix)`. Fixed coupons are added at the
+/// payment-date node and need no extra discounting.
 fn coupon_cashflow_tree(
     notional: f64,
     period: &CouponPeriod,
@@ -1102,6 +1123,13 @@ fn coupon_cashflow_tree(
     if accrual <= 0.0 {
         return Ok(0.0);
     }
+
+    let df_fixing_to_payment = match &period.coupon {
+        CouponType::Fixed { .. } => 1.0,
+        CouponType::Floating { .. } | CouponType::Structured(_) => {
+            model.bond_price(eval_time, period.payment_time, short_rate, curve)
+        }
+    };
 
     let rate = match &period.coupon {
         CouponType::Fixed { rate } => *rate,
@@ -1146,7 +1174,7 @@ fn coupon_cashflow_tree(
         }
     };
 
-    Ok(notional * accrual * rate)
+    Ok(notional * accrual * rate * df_fixing_to_payment)
 }
 
 fn forward_swap_rate(
@@ -1454,6 +1482,70 @@ mod tests {
             .unwrap();
 
         assert!(high > low);
+    }
+
+    #[test]
+    fn floating_coupons_fix_in_advance_not_at_payment_date() {
+        // Upward-sloping curve: zero rate 1% + 1%/yr, so the instantaneous
+        // forward grows ~2%/yr. A floating coupon that fixes at the period
+        // START must therefore be worth LESS than one (incorrectly) fixed at
+        // the payment date.
+        let curve = YieldCurve::new(
+            (1..=200)
+                .map(|i| {
+                    let t = i as f64 * 0.05;
+                    let zero = 0.01 + 0.01 * t;
+                    (t, (-zero * t).exp())
+                })
+                .collect(),
+        );
+        let hw = HullWhite::new(0.10, 0.01);
+
+        let coupons = CouponScheduleBuilder::new(0.0, 2.0, Frequency::Annual)
+            .unwrap()
+            .build_floating(0.0, None, None)
+            .unwrap();
+
+        // Effectively non-callable: call price far above any continuation value.
+        let note = CallableRateNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            call_price: 1.0e12,
+            maturity: 2.0,
+            coupon_schedule: coupons.clone(),
+            exercise_schedule: ExerciseSchedule::new(vec![1.0], 0.0).unwrap(),
+        };
+
+        let tree_price = note.price_hull_white_tree(&hw, &curve, 400).unwrap();
+
+        // Deterministic benchmarks: short-rate coupon fixed in advance
+        // (period start) vs incorrectly at the payment date.
+        let pv_with_fixing = |at_payment: bool| -> f64 {
+            let mut pv = 0.0;
+            for p in &coupons {
+                let fix_time = if at_payment {
+                    p.payment_time
+                } else {
+                    p.start_time
+                };
+                let r_fix = HullWhite::instantaneous_forward(&curve, fix_time);
+                pv += note.notional * p.accrual() * r_fix * curve.discount_factor(p.payment_time);
+            }
+            pv + note.redemption * curve.discount_factor(note.maturity)
+        };
+        let advance_value = pv_with_fixing(false);
+        let arrears_value = pv_with_fixing(true);
+
+        assert!(
+            tree_price < arrears_value,
+            "reset-in-advance must price below payment-date fixing on an upward curve: \
+             tree={tree_price} arrears={arrears_value}"
+        );
+        assert!(
+            (tree_price - advance_value).abs() < (tree_price - arrears_value).abs(),
+            "tree price {tree_price} should be closer to in-advance benchmark {advance_value} \
+             than to payment-date benchmark {arrears_value}"
+        );
     }
 
     #[test]

@@ -50,34 +50,34 @@ impl ConvertibleBond {
 
     /// Validates instrument fields.
     pub fn validate(&self) -> Result<(), PricingError> {
-        if self.face_value <= 0.0 {
+        if !self.face_value.is_finite() || self.face_value <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "convertible face_value must be > 0".to_string(),
+                "convertible face_value must be finite and > 0".to_string(),
             ));
         }
-        if self.coupon_rate < 0.0 {
+        if !self.coupon_rate.is_finite() || self.coupon_rate < 0.0 {
             return Err(PricingError::InvalidInput(
-                "convertible coupon_rate must be >= 0".to_string(),
+                "convertible coupon_rate must be finite and >= 0".to_string(),
             ));
         }
-        if self.maturity < 0.0 {
+        if !self.maturity.is_finite() || self.maturity < 0.0 {
             return Err(PricingError::InvalidInput(
-                "convertible maturity must be >= 0".to_string(),
+                "convertible maturity must be finite and >= 0".to_string(),
             ));
         }
-        if self.conversion_ratio < 0.0 {
+        if !self.conversion_ratio.is_finite() || self.conversion_ratio < 0.0 {
             return Err(PricingError::InvalidInput(
-                "convertible conversion_ratio must be >= 0".to_string(),
+                "convertible conversion_ratio must be finite and >= 0".to_string(),
             ));
         }
-        if self.call_price.is_some_and(|x| x <= 0.0) {
+        if self.call_price.is_some_and(|x| !x.is_finite() || x <= 0.0) {
             return Err(PricingError::InvalidInput(
-                "convertible call_price must be > 0 when provided".to_string(),
+                "convertible call_price must be finite and > 0 when provided".to_string(),
             ));
         }
-        if self.put_price.is_some_and(|x| x <= 0.0) {
+        if self.put_price.is_some_and(|x| !x.is_finite() || x <= 0.0) {
             return Err(PricingError::InvalidInput(
-                "convertible put_price must be > 0 when provided".to_string(),
+                "convertible put_price must be finite and > 0 when provided".to_string(),
             ));
         }
 
@@ -88,5 +88,56 @@ impl ConvertibleBond {
 impl Instrument for ConvertibleBond {
     fn instrument_type(&self) -> &str {
         "ConvertibleBond"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_bond() -> ConvertibleBond {
+        ConvertibleBond::new(100.0, 0.05, 5.0, 2.0, Some(110.0), Some(90.0))
+    }
+
+    #[test]
+    fn validate_rejects_nan_fields() {
+        assert!(valid_bond().validate().is_ok());
+
+        let cases: Vec<(&str, ConvertibleBond)> = vec![
+            ("NaN face_value", {
+                let mut b = valid_bond();
+                b.face_value = f64::NAN;
+                b
+            }),
+            ("NaN coupon_rate", {
+                let mut b = valid_bond();
+                b.coupon_rate = f64::NAN;
+                b
+            }),
+            ("NaN maturity", {
+                let mut b = valid_bond();
+                b.maturity = f64::NAN;
+                b
+            }),
+            ("NaN conversion_ratio", {
+                let mut b = valid_bond();
+                b.conversion_ratio = f64::NAN;
+                b
+            }),
+            ("NaN call_price", {
+                let mut b = valid_bond();
+                b.call_price = Some(f64::NAN);
+                b
+            }),
+            ("NaN put_price", {
+                let mut b = valid_bond();
+                b.put_price = Some(f64::NAN);
+                b
+            }),
+        ];
+
+        for (label, bond) in cases {
+            assert!(bond.validate().is_err(), "{label} must be rejected");
+        }
     }
 }
