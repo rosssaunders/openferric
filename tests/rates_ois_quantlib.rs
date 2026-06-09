@@ -28,10 +28,11 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
 // ── Cached value test ───────────────────────────────────────────────────────
 
 /// Reference: QuantLib overnightindexedswap.cpp testCachedValue.
-/// Setup: flat 5% OIS curve, 1Y tenor, notional 100, fixed rate 5%.
+/// Setup: flat 5% (continuous) OIS curve, 1Y tenor, notional 100.
 ///
-/// When discount = projection curve and fixed_rate = curve rate, the
-/// OIS should be approximately at-par (NPV ≈ 0).
+/// The float leg compounds the overnight rate over each annual period,
+/// which on a flat continuous curve pays the simple annual equivalent
+/// e^r - 1, so that is the at-par fixed rate (NPV = 0).
 #[test]
 fn ois_cached_value_flat_curve_at_par() {
     let rate = 0.05;
@@ -39,7 +40,7 @@ fn ois_cached_value_flat_curve_at_par() {
 
     let ois = OvernightIndexSwap {
         notional: 100.0,
-        fixed_rate: rate,
+        fixed_rate: rate.exp() - 1.0,
         float_spread: 0.0,
         tenor: 1.0,
     };
@@ -56,9 +57,9 @@ fn ois_cached_value_flat_curve_at_par() {
         "Floating leg PV must be positive: {floating_pv}"
     );
 
-    // NPV (pay fixed) should be approximately zero for at-par swap
+    // NPV (pay fixed) is exactly zero at the simple annual par rate
     let npv = ois.npv(&curve, &curve, true);
-    assert_relative_eq!(npv, 0.0, epsilon = 0.01,);
+    assert_relative_eq!(npv, 0.0, epsilon = 1.0e-10,);
 }
 
 /// Reference: QuantLib overnightindexedswap.cpp testCachedValue.
@@ -93,7 +94,8 @@ fn ois_off_market_npv() {
 
 // ── Par rate ────────────────────────────────────────────────────────────────
 
-/// Par fixed rate on a flat curve should approximately equal the curve rate.
+/// Par fixed rate on a flat continuous curve equals the simple annual
+/// equivalent e^r - 1 (the compounded overnight rate over unit periods).
 #[test]
 fn ois_par_rate_flat_curve() {
     let rate = 0.05;
@@ -108,7 +110,7 @@ fn ois_par_rate_flat_curve() {
         };
 
         let par = ois.par_fixed_rate(&curve, &curve);
-        assert_relative_eq!(par, rate, epsilon = 1.0e-6,);
+        assert_relative_eq!(par, rate.exp() - 1.0, epsilon = 1.0e-10,);
     }
 }
 

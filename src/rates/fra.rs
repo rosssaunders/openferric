@@ -14,34 +14,47 @@ use chrono::NaiveDate;
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 
 /// Forward rate agreement over a single accrual period.
+///
+/// `valuation_date` anchors the curve's time axis so forward-starting FRAs
+/// (e.g. a 3x6) project the forward over `[start, end]` rather than treating
+/// the accrual period as starting today.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForwardRateAgreement {
     pub notional: f64,
     pub fixed_rate: f64,
+    pub valuation_date: NaiveDate,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
     pub day_count: DayCountConvention,
 }
 
 impl ForwardRateAgreement {
-    /// Continuously-compounded forward rate implied by the curve.
-    pub fn forward_rate(&self, curve: &YieldCurve) -> f64 {
+    fn period_times(&self) -> (f64, f64, f64) {
         let tau = year_fraction(self.start_date, self.end_date, self.day_count);
+        let t1 = year_fraction(self.valuation_date, self.start_date, self.day_count).max(0.0);
+        (t1, t1 + tau, tau)
+    }
+
+    /// Simple (money-market) forward rate over `[start, end]` implied by the curve.
+    pub fn forward_rate(&self, curve: &YieldCurve) -> f64 {
+        let (t1, t2, tau) = self.period_times();
         if tau <= 0.0 {
             return 0.0;
         }
-        curve.forward_rate(0.0, tau)
+        let df1 = curve.discount_factor(t1);
+        let df2 = curve.discount_factor(t2);
+        (df1 / df2 - 1.0) / tau
     }
 
-    /// FRA PV discounted to period end.
+    /// FRA PV: (forward - fixed) accrued over the period, discounted from period end.
     pub fn npv(&self, curve: &YieldCurve) -> f64 {
-        let tau = year_fraction(self.start_date, self.end_date, self.day_count);
+        let (_, t2, tau) = self.period_times();
         if tau <= 0.0 {
             return 0.0;
         }
 
         let fwd = self.forward_rate(curve);
-        let df = curve.discount_factor(tau);
+        let df = curve.discount_factor(t2);
         self.notional * (fwd - self.fixed_rate) * tau * df
     }
 }

@@ -328,6 +328,7 @@ fn fra_price(args: &Value) -> ToolCallResult {
     let fra = ForwardRateAgreement {
         notional,
         fixed_rate,
+        valuation_date: base,
         start_date: base + Duration::days((start * 365.0).round() as i64),
         end_date: base + Duration::days((end * 365.0).round() as i64),
         day_count: DayCountConvention::Act365Fixed,

@@ -84,9 +84,13 @@ impl InterestRateSwap {
                     return 0.0;
                 }
 
-                let fwd = curve.forward_rate(t1, t2);
-                let df = curve.discount_factor(t2);
-                self.notional * (fwd + self.float_spread) * accrual * df
+                // Simple (money-market) forward over the accrual period:
+                // F = (DF(t1)/DF(t2) - 1)/accrual, so the coupon PV telescopes to
+                // N*(DF(t1) - DF(t2)) when the spread is zero.
+                let df1 = curve.discount_factor(t1);
+                let df2 = curve.discount_factor(t2);
+                let fwd = (df1 / df2 - 1.0) / accrual;
+                self.notional * (fwd + self.float_spread) * accrual * df2
             })
             .sum()
     }

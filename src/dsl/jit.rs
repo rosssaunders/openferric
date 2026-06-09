@@ -386,11 +386,16 @@ fn compile_program(
         while pc < instructions.len() {
             if pc > 0 {
                 if let Some(&target_block) = block_map.get(&pc) {
-                    if !block_terminated {
-                        builder.ins().jump(target_block, &[]);
+                    // JUMP_FALSE already switches to the fall-through block
+                    // (which is this pc's block); avoid emitting a self-jump
+                    // and re-switching to an already-current block.
+                    if builder.current_block() != Some(target_block) {
+                        if !block_terminated {
+                            builder.ins().jump(target_block, &[]);
+                        }
+                        builder.switch_to_block(target_block);
+                        block_terminated = false;
                     }
-                    builder.switch_to_block(target_block);
-                    block_terminated = false;
                 }
             }
 
@@ -606,25 +611,64 @@ fn compile_program(
                     let new_pv = builder.ins().fadd(cur, discounted);
                     builder.ins().store(mem, new_pv, pv_ptr, 0);
                     builder.ins().jump(return_redeemed_block, &[]);
-                    block_terminated = true;
+                    // Continue lowering any remaining instructions into a
+                    // fresh (unreachable) block. The new block is unfilled,
+                    // so `block_terminated` must be reset to false.
                     let dead = builder.create_block();
                     builder.switch_to_block(dead);
+                    block_terminated = false;
                 }
                 opcode::SKIP => {
                     builder.ins().jump(return_skipped_block, &[]);
-                    block_terminated = true;
                     let dead = builder.create_block();
                     builder.switch_to_block(dead);
+                    block_terminated = false;
                 }
 
                 opcode::PRICE => {
+                    // Bounds-check the f64 index before converting and
+                    // loading: a NaN or negative index would trap in
+                    // `fcvt_to_uint`, and an index >= num_assets would be an
+                    // out-of-bounds read. Out-of-range (or NaN) indices
+                    // produce NaN, which propagates to the PV and matches the
+                    // interpreter's error contract of never reading out of
+                    // bounds.
                     let idx_f64 = stack.pop();
+                    let num_assets = builder.use_var(var_num_assets);
+                    let num_assets_f64 = builder.ins().fcvt_from_uint(F64, num_assets);
+                    let zero = builder.ins().f64const(0.0);
+                    let ge_zero = builder
+                        .ins()
+                        .fcmp(FloatCC::GreaterThanOrEqual, idx_f64, zero);
+                    let lt_len = builder
+                        .ins()
+                        .fcmp(FloatCC::LessThan, idx_f64, num_assets_f64);
+                    // NaN compares false on both, so it is rejected here.
+                    let in_bounds = builder.ins().band(ge_zero, lt_len);
+
+                    let load_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, F64);
+
+                    let nan = builder.ins().f64const(f64::NAN);
+                    builder
+                        .ins()
+                        .brif(in_bounds, load_block, &[], merge_block, &[nan]);
+
+                    builder.switch_to_block(load_block);
+                    // Safe: 0.0 <= idx_f64 < num_assets, so the conversion
+                    // cannot trap and the load is within the spots slice.
                     let idx_i64 = builder.ins().fcvt_to_uint(I64, idx_f64);
                     let eight = builder.ins().iconst(I64, 8);
                     let byte_off = builder.ins().imul(idx_i64, eight);
                     let s_ptr = builder.use_var(var_spots);
                     let addr = builder.ins().iadd(s_ptr, byte_off);
-                    stack.push(builder.ins().load(F64, mem, addr, 0));
+                    let loaded = builder.ins().load(F64, mem, addr, 0);
+                    builder.ins().jump(merge_block, &[loaded]);
+
+                    builder.switch_to_block(merge_block);
+                    let result = builder.block_params(merge_block)[0];
+                    stack.push(result);
                 }
                 opcode::WORST_OF => {
                     let n = inst.operand as usize;
@@ -671,9 +715,9 @@ fn compile_program(
                     let target_pc = inst.operand as usize;
                     let target_block = block_map[&target_pc];
                     builder.ins().jump(target_block, &[]);
-                    block_terminated = true;
                     let dead = builder.create_block();
                     builder.switch_to_block(dead);
+                    block_terminated = false;
                 }
                 opcode::JUMP_FALSE => {
                     let target_pc = inst.operand as usize;
@@ -706,6 +750,15 @@ fn compile_program(
         }
 
         if !block_terminated {
+            builder.ins().jump(return_continue_block, &[]);
+        }
+
+        // A jump may target the end of the program (pc == instructions.len(),
+        // e.g. the exit of an if/else); that block was created in the block
+        // map but never lowered, so terminate it with a fall-through to
+        // Continue.
+        if let Some(&end_block) = block_map.get(&instructions.len()) {
+            builder.switch_to_block(end_block);
             builder.ins().jump(return_continue_block, &[]);
         }
 
@@ -1351,6 +1404,238 @@ mod tests {
             )
         };
         assert!((locals[0] - 250.0).abs() < 1e-10, "PRICE(1)={}", locals[0]);
+    }
+
+    #[test]
+    fn jit_price_negative_index_returns_nan() {
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PRICE, 0),
+            inst(opcode::STORE_LOCAL, 0),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[-1.0]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        let result = unsafe {
+            compiled.execute(
+                &[100.0, 250.0, 300.0],
+                &[100.0, 100.0, 100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert!(
+            locals[0].is_nan(),
+            "PRICE(-1) should yield NaN, got {}",
+            locals[0]
+        );
+    }
+
+    #[test]
+    fn jit_price_nan_index_returns_nan() {
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PRICE, 0),
+            inst(opcode::STORE_LOCAL, 0),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[f64::NAN]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        let result = unsafe {
+            compiled.execute(
+                &[100.0, 250.0, 300.0],
+                &[100.0, 100.0, 100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert!(
+            locals[0].is_nan(),
+            "PRICE(NaN) should yield NaN, got {}",
+            locals[0]
+        );
+    }
+
+    #[test]
+    fn jit_price_index_out_of_range_returns_nan() {
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PRICE, 0),
+            inst(opcode::STORE_LOCAL, 0),
+        ];
+        // Index 3 with only 3 spots (valid indices 0..=2).
+        let compiled = JitCompiledProgram::compile(&code, &[3.0]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        let result = unsafe {
+            compiled.execute(
+                &[100.0, 250.0, 300.0],
+                &[100.0, 100.0, 100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert!(
+            locals[0].is_nan(),
+            "PRICE(3) with 3 assets should yield NaN, got {}",
+            locals[0]
+        );
+
+        // A far-out-of-range index must also be NaN, not an OOB read.
+        let compiled = JitCompiledProgram::compile(&code, &[1e18]).unwrap();
+        locals[0] = 0.0;
+        let result = unsafe {
+            compiled.execute(
+                &[100.0, 250.0, 300.0],
+                &[100.0, 100.0, 100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert!(
+            locals[0].is_nan(),
+            "PRICE(1e18) should yield NaN, got {}",
+            locals[0]
+        );
+    }
+
+    #[test]
+    fn jit_in_bounds_price_unaffected_by_bounds_check() {
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PRICE, 0),
+            inst(opcode::STORE_LOCAL, 0),
+            inst(opcode::PUSH_CONST, 1),
+            inst(opcode::PRICE, 0),
+            inst(opcode::STORE_LOCAL, 1),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[0.0, 2.0]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        unsafe {
+            compiled.execute(
+                &[100.0, 250.0, 300.0],
+                &[100.0, 100.0, 100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!((locals[0] - 100.0).abs() < 1e-10, "PRICE(0)={}", locals[0]);
+        assert!((locals[1] - 300.0).abs() < 1e-10, "PRICE(2)={}", locals[1]);
+    }
+
+    #[test]
+    fn jit_instructions_after_redeem_compile_and_are_unreachable() {
+        // `redeem 50` followed by `pay 999`: must compile (previously
+        // panicked with "you have to fill your block before switching") and
+        // the trailing pay must never execute, matching the interpreter's
+        // early return on REDEEM.
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::REDEEM, 0),
+            inst(opcode::PUSH_CONST, 1),
+            inst(opcode::PAY, 0),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[50.0, 999.0])
+            .expect("bytecode with instructions after REDEEM must compile");
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        let result = unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Redeemed));
+        assert!(
+            (pv - 50.0).abs() < 1e-10,
+            "post-redeem pay must not run; expected pv=50.0, got {pv}"
+        );
+    }
+
+    #[test]
+    fn jit_instructions_after_skip_compile_and_are_unreachable() {
+        let code = vec![
+            inst(opcode::SKIP, 0),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PAY, 0),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[999.0])
+            .expect("bytecode with instructions after SKIP must compile");
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        let result = unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Skipped));
+        assert!(
+            pv.abs() < 1e-10,
+            "post-skip pay must not run; expected pv=0.0, got {pv}"
+        );
     }
 
     #[test]

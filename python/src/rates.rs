@@ -1543,22 +1543,34 @@ impl ForwardRateAgreement {
 #[pymethods]
 impl ForwardRateAgreement {
     #[new]
+    #[pyo3(signature = (notional, fixed_rate, start_date, end_date, day_count, valuation_date=None))]
     fn new(
         notional: f64,
         fixed_rate: f64,
         start_date: &str,
         end_date: &str,
         day_count: &DayCountConvention,
+        valuation_date: Option<&str>,
     ) -> PyResult<Self> {
+        let start = parse_date(start_date)?;
         Ok(Self {
             inner: CoreForwardRateAgreement {
                 notional,
                 fixed_rate,
-                start_date: parse_date(start_date)?,
+                valuation_date: match valuation_date {
+                    Some(d) => parse_date(d)?,
+                    None => start,
+                },
+                start_date: start,
                 end_date: parse_date(end_date)?,
                 day_count: day_count.to_core(),
             },
         })
+    }
+
+    #[getter]
+    fn valuation_date(&self) -> String {
+        format_date(self.inner.valuation_date)
     }
 
     #[getter]

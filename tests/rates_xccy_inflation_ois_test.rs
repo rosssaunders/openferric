@@ -85,10 +85,12 @@ fn xccy_swap_usd_eur_par_trade_npv_is_near_zero_at_inception() {
 #[test]
 fn quantlib_usd_try_const_notional_xccy_cached_npv_is_close_under_annual_model() {
     // Source: QuantLib test-suite/constnotionalcrosscurrencyswap.cpp
-    // testFloatFixXCCYSwapPricing. QuantLib uses full date schedules and
-    // quarterly USD Libor; OpenFerric's current XCCY API is annualized, so
-    // this checks the overlapping fixed-vs-floating economics within model
-    // granularity rather than exact coupon-level BPS.
+    // testFloatFixXCCYSwapPricing. QuantLib uses full date schedules with
+    // quarterly simple USD Libor coupons; OpenFerric's XCCY API aggregates
+    // annually with simple (annually-compounded) forwards, which overstates
+    // a non-compounded quarterly leg by roughly the intra-year compounding
+    // (~f^2/2 per period), so this checks the economics within annual-model
+    // granularity (~10 bp of USD notional) rather than coupon-level BPS.
     let usd_discount = quantlib_usd_discount_curve_annual_nodes();
     let usd_projection = quantlib_usd_projection_curve_annual_nodes();
     let try_discount = quantlib_try_discount_curve_annual_nodes();
@@ -105,7 +107,7 @@ fn quantlib_usd_try_const_notional_xccy_cached_npv_is_close_under_annual_model()
     let npv_try = swap.npv_dual_curve(&try_discount, &usd_discount, &usd_projection, true);
     let npv_usd = npv_try / fx_spot;
 
-    assert_relative_eq!(npv_usd, 218_961.99, epsilon = 750.0);
+    assert_relative_eq!(npv_usd, 218_961.99, epsilon = 25_000.0);
 
     let par_fixed = swap.par_fixed_rate(&try_discount, &usd_discount, &usd_projection);
     let par_swap = XccySwap {
@@ -250,16 +252,19 @@ fn inflation_indexed_bond_prices_projected_quantlib_rpi_principal_and_coupons() 
 fn ois_swap_npv_is_near_zero_at_flat_par_rate() {
     let ois_curve = flat_curve_continuous(0.035, 10);
 
+    // Compounded overnight over unit annual periods on a flat continuous
+    // curve pays the simple annual equivalent e^r - 1.
+    let par = 0.035_f64.exp() - 1.0;
     let swap = OvernightIndexSwap {
         notional: 100_000_000.0,
-        fixed_rate: 0.035,
+        fixed_rate: par,
         float_spread: 0.0,
         tenor: 2.0,
     };
 
     assert_relative_eq!(
         swap.par_fixed_rate(&ois_curve, &ois_curve),
-        0.035,
+        par,
         epsilon = 1.0e-12
     );
     assert_relative_eq!(

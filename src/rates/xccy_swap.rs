@@ -62,7 +62,10 @@ impl XccySwap {
                 continue;
             }
 
-            let fwd = ccy2_projection_curve.forward_rate(start, end);
+            // Simple forward on the projection curve: (DF(s)/DF(e) - 1)/accrual.
+            let df1 = ccy2_projection_curve.discount_factor(start);
+            let df2 = ccy2_projection_curve.discount_factor(end);
+            let fwd = (df1 / df2 - 1.0) / accrual;
             let df = ccy2_discount_curve.discount_factor(end);
             pv += self.notional2 * (fwd + self.float_spread) * accrual * df;
         }

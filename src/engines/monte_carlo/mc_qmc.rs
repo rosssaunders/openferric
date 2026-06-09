@@ -43,7 +43,7 @@ pub fn mc_european_qmc_with_seed(
     n_steps: usize,
     seed: u64,
 ) -> PricingResult {
-    if n_paths == 0 || n_steps == 0 {
+    if n_paths == 0 || n_steps == 0 || n_steps > crate::math::sobol::SOBOL_MAX_DIMENSIONS {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -92,10 +92,12 @@ pub fn mc_european_qmc_with_seed(
     // Pre-allocate the uniform buffer once; avoid per-sample Vec allocation.
     let mut uniforms = vec![0.0_f64; n_steps];
 
+    let mut paths_done = 0_usize;
     for _ in 0..n_paths {
         if !sobol.next_into(&mut uniforms) {
             break;
         }
+        paths_done += 1;
         let mut spot = market.spot;
         // Log-Euler GBM step: exp() is always positive, no clamp needed.
         // Unroll by 4 for instruction-level parallelism.
@@ -122,16 +124,25 @@ pub fn mc_european_qmc_with_seed(
         sum_sq += px * px;
     }
 
-    let n = n_paths as f64;
+    if paths_done == 0 {
+        return PricingResult {
+            price: f64::NAN,
+            stderr: None,
+            greeks: None,
+            diagnostics: crate::core::Diagnostics::new(),
+        };
+    }
+
+    let n = paths_done as f64;
     let mean = sum / n;
-    let variance = if n_paths > 1 {
+    let variance = if paths_done > 1 {
         ((sum_sq - sum * sum / n) / (n - 1.0)).max(0.0)
     } else {
         0.0
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert_key(crate::core::DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(crate::core::DiagKey::NumPaths, paths_done as f64);
     diagnostics.insert_key(crate::core::DiagKey::NumSteps, n_steps as f64);
     diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
 
