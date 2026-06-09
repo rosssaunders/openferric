@@ -193,7 +193,9 @@ pub fn mc_european_pathwise_aad(
     let n = samples as f64;
     let mean = sum / n;
     let variance = if samples > 1 {
-        (sum_sq - sum * sum / n) / (n - 1.0)
+        // Clamp to guard against catastrophic cancellation producing a tiny
+        // negative value (and a NaN stderr after sqrt).
+        (sum_sq - sum * sum / n).max(0.0) / (n - 1.0)
     } else {
         0.0
     };

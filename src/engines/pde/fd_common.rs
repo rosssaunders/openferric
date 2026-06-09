@@ -136,16 +136,49 @@ pub(super) fn build_operator_coefficients(
     (a, b, c)
 }
 
-pub(super) fn explicit_cfl_dt_max(b: &[f64], cfl_safety_factor: f64) -> Result<f64, PricingError> {
+/// Maximum stable forward-Euler time step for the explicit scheme
+/// `u_new_i = dt*a_i*u_{i-1} + (1 + dt*b_i)*u_i + dt*c_i*u_{i+1}`.
+///
+/// Positivity (monotonicity) of the update needs all three coefficients
+/// non-negative:
+/// - `1 + dt*b_i >= 0` bounds `dt <= -1/b_i` on the diagonal;
+/// - `dt*a_i >= 0` and `dt*c_i >= 0` are dt-independent: on a stretched grid,
+///   drift-dominated cells can make `a_i` or `c_i` negative regardless of
+///   `dt`. Fixing that properly is an upwinding (spatial discretization)
+///   question, not a time-step question. For such rows this function clamps
+///   the dt-dependent part with the tighter bound
+///   `dt <= 1 / (|a_i| + |c_i| - b_i)`, which keeps `1 + dt*b_i >= 0` and
+///   limits the per-step l-inf amplification from the sign-indefinite row
+///   (row sum of magnitudes <= 1 + 2*dt*(negative off-diagonal mass)).
+pub(super) fn explicit_cfl_dt_max(
+    a: &[f64],
+    b: &[f64],
+    c: &[f64],
+    cfl_safety_factor: f64,
+) -> Result<f64, PricingError> {
     if !cfl_safety_factor.is_finite() || cfl_safety_factor <= 0.0 {
         return Err(PricingError::InvalidInput(
             "cfl_safety_factor must be finite and > 0".to_string(),
         ));
     }
+    if a.len() != b.len() || c.len() != b.len() {
+        return Err(PricingError::InvalidInput(
+            "operator coefficient lengths must match".to_string(),
+        ));
+    }
 
     let mut dt_max = f64::INFINITY;
-    for &bi in b.iter().skip(1).take(b.len().saturating_sub(2)) {
-        if bi < -1.0e-14 {
+    let interior = 1..b.len().saturating_sub(1);
+    for i in interior {
+        let (ai, bi, ci) = (a[i], b[i], c[i]);
+        if ai < -1.0e-14 || ci < -1.0e-14 {
+            // Drift-dominated row: off-diagonal positivity cannot be restored
+            // by any dt (upwinding question); clamp the dt-dependent part.
+            let denom = ai.abs() + ci.abs() - bi;
+            if denom > 1.0e-14 {
+                dt_max = dt_max.min((1.0 / denom) * cfl_safety_factor);
+            }
+        } else if bi < -1.0e-14 {
             dt_max = dt_max.min((-1.0 / bi) * cfl_safety_factor);
         }
     }
@@ -224,4 +257,62 @@ pub(super) fn solve_tridiagonal_inplace(
         out[i] = d_star[i] - c_star[i] * out[i + 1];
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cfl_bound_tightens_for_drift_dominated_coefficients() {
+        // High rate, tiny vol: the convection term dominates diffusion on the
+        // stretched grid and flips off-diagonal coefficients negative.
+        let grid = build_stretched_spot_grid(200, 400.0, 100.0, 0.25).expect("grid builds");
+        let (a, b, c) = build_operator_coefficients(&grid, 0.30, 0.0, 0.05);
+
+        let n = b.len();
+        let has_negative_offdiag = (1..n - 1).any(|i| a[i] < -1.0e-14 || c[i] < -1.0e-14);
+        assert!(
+            has_negative_offdiag,
+            "parameter set should be drift-dominated (negative off-diagonal)"
+        );
+
+        let dt_max = explicit_cfl_dt_max(&a, &b, &c, 1.0).expect("cfl bound exists");
+
+        // Diagonal-only bound (the old check).
+        let mut dt_diag = f64::INFINITY;
+        for &bi in b.iter().skip(1).take(n - 2) {
+            if bi < -1.0e-14 {
+                dt_diag = dt_diag.min(-1.0 / bi);
+            }
+        }
+
+        assert!(
+            dt_max < dt_diag,
+            "off-diagonal-aware bound {dt_max} should be tighter than diagonal-only {dt_diag}"
+        );
+
+        // The bound satisfies every row constraint.
+        for i in 1..n - 1 {
+            assert!(1.0 + dt_max * b[i] >= -1.0e-12, "diagonal row {i} violated");
+            if a[i] < -1.0e-14 || c[i] < -1.0e-14 {
+                let denom = a[i].abs() + c[i].abs() - b[i];
+                assert!(
+                    dt_max <= 1.0 / denom + 1.0e-12,
+                    "drift-dominated row {i} violated"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cfl_bound_is_diagonal_bound_when_offdiagonals_are_nonnegative() {
+        // Diffusion-dominated rows (a, c >= 0): the bound is exactly -1/b.
+        let a = vec![0.0, 1.0, 2.0, 0.0];
+        let b = vec![0.0, -4.0, -5.0, 0.0];
+        let c = vec![0.0, 1.5, 2.5, 0.0];
+
+        let dt_max = explicit_cfl_dt_max(&a, &b, &c, 1.0).expect("cfl bound exists");
+        assert!((dt_max - 0.2).abs() <= 1.0e-15, "dt_max={dt_max}");
+    }
 }

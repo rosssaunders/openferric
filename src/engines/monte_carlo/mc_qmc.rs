@@ -23,6 +23,20 @@ fn payoff(option_type: crate::core::OptionType, spot: f64, strike: f64) -> f64 {
     }
 }
 
+/// Number of independent digital-shift randomizations used for the
+/// randomized-QMC (RQMC) standard-error estimate.
+const QMC_RANDOMIZATIONS: usize = 8;
+
+/// SplitMix64 mix used to derive independent per-randomization Sobol seeds
+/// from the user seed (mirrors the scramble derivation in `math::sobol`).
+#[inline]
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
 /// Quasi-Monte Carlo pricer for European vanilla options under GBM.
 ///
 /// Sobol points are transformed to standard normals using inverse CDF.
@@ -36,6 +50,13 @@ pub fn mc_european_qmc(
 }
 
 /// Quasi-Monte Carlo pricer with explicit Sobol seed.
+///
+/// Error estimation is randomized QMC: the path budget is split into
+/// `QMC_RANDOMIZATIONS` independent digital-shift scrambles of the Sobol
+/// sequence (seeds derived deterministically from `seed`), and the reported
+/// standard error is the sample standard error across the per-randomization
+/// estimates. A naive iid-sample stderr over deterministic Sobol points would
+/// be statistically meaningless because the points are not independent.
 pub fn mc_european_qmc_with_seed(
     instrument: &VanillaOption,
     market: &Market,
@@ -86,45 +107,73 @@ pub fn mc_european_qmc_with_seed(
     let dt_vol = vol * dt.sqrt();
     let discount = (-market.rate * instrument.expiry).exp();
 
-    let mut sobol = SobolSequence::new(n_steps, seed);
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
     // Pre-allocate the uniform buffer once; avoid per-sample Vec allocation.
     let mut uniforms = vec![0.0_f64; n_steps];
 
-    let mut paths_done = 0_usize;
-    for _ in 0..n_paths {
-        if !sobol.next_into(&mut uniforms) {
-            break;
-        }
-        paths_done += 1;
-        let mut spot = market.spot;
-        // Log-Euler GBM step: exp() is always positive, no clamp needed.
-        // Unroll by 4 for instruction-level parallelism.
-        let mut step = 0;
-        while step + 4 <= n_steps {
-            let z0 = normal_inv_cdf(uniform_open01(uniforms[step]));
-            let z1 = normal_inv_cdf(uniform_open01(uniforms[step + 1]));
-            let z2 = normal_inv_cdf(uniform_open01(uniforms[step + 2]));
-            let z3 = normal_inv_cdf(uniform_open01(uniforms[step + 3]));
-            spot *= dt_vol.mul_add(z0, dt_drift).exp();
-            spot *= dt_vol.mul_add(z1, dt_drift).exp();
-            spot *= dt_vol.mul_add(z2, dt_drift).exp();
-            spot *= dt_vol.mul_add(z3, dt_drift).exp();
-            step += 4;
-        }
-        while step < n_steps {
-            let z = normal_inv_cdf(uniform_open01(uniforms[step]));
-            spot *= dt_vol.mul_add(z, dt_drift).exp();
-            step += 1;
-        }
+    // Mean discounted-payoff estimate over `batch_paths` points of one
+    // digitally-shifted Sobol stream.
+    let mut run_batch = |sobol_seed: u64, batch_paths: usize| -> (f64, usize) {
+        let mut sobol = SobolSequence::new(n_steps, sobol_seed);
+        let mut sum = 0.0_f64;
+        let mut done = 0_usize;
+        for _ in 0..batch_paths {
+            if !sobol.next_into(&mut uniforms) {
+                break;
+            }
+            done += 1;
+            let mut spot = market.spot;
+            // Log-Euler GBM step: exp() is always positive, no clamp needed.
+            // Unroll by 4 for instruction-level parallelism.
+            let mut step = 0;
+            while step + 4 <= n_steps {
+                let z0 = normal_inv_cdf(uniform_open01(uniforms[step]));
+                let z1 = normal_inv_cdf(uniform_open01(uniforms[step + 1]));
+                let z2 = normal_inv_cdf(uniform_open01(uniforms[step + 2]));
+                let z3 = normal_inv_cdf(uniform_open01(uniforms[step + 3]));
+                spot *= dt_vol.mul_add(z0, dt_drift).exp();
+                spot *= dt_vol.mul_add(z1, dt_drift).exp();
+                spot *= dt_vol.mul_add(z2, dt_drift).exp();
+                spot *= dt_vol.mul_add(z3, dt_drift).exp();
+                step += 4;
+            }
+            while step < n_steps {
+                let z = normal_inv_cdf(uniform_open01(uniforms[step]));
+                spot *= dt_vol.mul_add(z, dt_drift).exp();
+                step += 1;
+            }
 
-        let px = payoff(instrument.option_type, spot, instrument.strike);
-        sum += px;
-        sum_sq += px * px;
+            sum += payoff(instrument.option_type, spot, instrument.strike);
+        }
+        (sum, done)
+    };
+
+    // Randomized QMC: M independent digital shifts of n/M points each (total
+    // path count unchanged). Each shift seed is derived from the user seed.
+    let m = QMC_RANDOMIZATIONS.min(n_paths);
+    let base_batch = n_paths / m;
+    let remainder = n_paths % m;
+
+    let mut batch_means = Vec::with_capacity(m);
+    let mut total_sum = 0.0_f64;
+    let mut paths_done = 0_usize;
+    for batch in 0..m {
+        let batch_paths = base_batch + usize::from(batch < remainder);
+        if batch_paths == 0 {
+            continue;
+        }
+        // Always a non-zero seed so every batch gets an independent digital
+        // shift (seed 0 would be the unscrambled canonical sequence).
+        let sobol_seed = splitmix64(seed ^ ((batch as u64 + 1) << 40)).max(1);
+        let (sum, done) = run_batch(sobol_seed, batch_paths);
+        if done == 0 {
+            continue;
+        }
+        batch_means.push(sum / done as f64);
+        total_sum += sum;
+        paths_done += done;
     }
 
-    if paths_done == 0 {
+    if paths_done == 0 || batch_means.is_empty() {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -133,10 +182,18 @@ pub fn mc_european_qmc_with_seed(
         };
     }
 
-    let n = paths_done as f64;
-    let mean = sum / n;
-    let variance = if paths_done > 1 {
-        ((sum_sq - sum * sum / n) / (n - 1.0)).max(0.0)
+    let mean = total_sum / paths_done as f64;
+
+    // Standard error across the M independent randomization estimates.
+    let m_done = batch_means.len();
+    let stderr = if m_done > 1 {
+        let batch_mean = batch_means.iter().sum::<f64>() / m_done as f64;
+        let var = batch_means
+            .iter()
+            .map(|&b| (b - batch_mean) * (b - batch_mean))
+            .sum::<f64>()
+            / (m_done as f64 - 1.0);
+        (var / m_done as f64).sqrt()
     } else {
         0.0
     };
@@ -145,10 +202,12 @@ pub fn mc_european_qmc_with_seed(
     diagnostics.insert_key(crate::core::DiagKey::NumPaths, paths_done as f64);
     diagnostics.insert_key(crate::core::DiagKey::NumSteps, n_steps as f64);
     diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
+    // Note: the number of RQMC randomizations is QMC_RANDOMIZATIONS (capped by
+    // n_paths); DiagKey has no dedicated slot for it, so it is not exported.
 
     PricingResult {
         price: discount * mean,
-        stderr: Some(discount * (variance / n).sqrt()),
+        stderr: Some(discount * stderr),
         greeks: None,
         diagnostics,
     }
@@ -189,6 +248,25 @@ mod tests {
         assert!(
             qmc_err < mc_err * 1.2,
             "qmc stderr={qmc_err} mc stderr={mc_err} — expected QMC to be competitive"
+        );
+    }
+
+    #[test]
+    fn rqmc_stderr_is_positive_and_consistent_with_true_error() {
+        let (option, market) = setup_case();
+        let qmc = mc_european_qmc_with_seed(&option, &market, 32_768, 4, 2024);
+        let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
+
+        let stderr = qmc.stderr.expect("stderr present");
+        assert!(stderr > 0.0, "RQMC stderr should be strictly positive");
+
+        // The randomized-QMC stderr is an honest error estimate: the true
+        // error should be within a few standard errors (8 randomizations make
+        // the estimate noisy, so allow a generous multiple).
+        let err = (qmc.price - bs).abs();
+        assert!(
+            err <= 8.0 * stderr,
+            "true error {err} should be consistent with RQMC stderr {stderr}"
         );
     }
 

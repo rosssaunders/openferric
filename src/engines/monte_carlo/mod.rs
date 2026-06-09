@@ -37,6 +37,6 @@ pub use mc_parallel::{
 pub use mc_qmc::{mc_european_qmc, mc_european_qmc_with_seed};
 pub use mc_simd::{
     SoaPaths, mc_european_call_soa, mc_european_call_soa_scalar, simulate_gbm_paths_soa,
-    simulate_gbm_paths_soa_scalar,
+    simulate_gbm_paths_soa_scalar, simulate_gbm_terminal_soa, simulate_gbm_terminal_soa_scalar,
 };
 pub use spread_mc::SpreadMonteCarloEngine;

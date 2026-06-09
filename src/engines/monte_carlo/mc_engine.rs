@@ -50,6 +50,16 @@ pub trait MonteCarloInstrument: Instrument {
     fn reference_strike(&self, spot: f64) -> f64;
     /// Computes path payoff.
     fn payoff_from_path(&self, path: &[f64]) -> f64;
+    /// Computes the path payoff expressed as a value at maturity, with access
+    /// to the continuously compounded short rate for cashflows paid before
+    /// maturity (e.g. knock-out rebates paid at hit time): such cashflows are
+    /// compounded forward to maturity so that the engine's single
+    /// discount-from-maturity factor prices them correctly.
+    ///
+    /// Defaults to `payoff_from_path` (all cashflows at maturity).
+    fn payoff_from_path_with_rate(&self, path: &[f64], _rate: f64) -> f64 {
+        self.payoff_from_path(path)
+    }
     /// Optional control variate for this instrument.
     fn control_variate(&self, _market: &Market, _vol: f64) -> Option<ControlVariate> {
         None
@@ -80,6 +90,18 @@ fn path_hits_barrier(path: &[f64], barrier: f64, direction: crate::core::Barrier
     match direction {
         crate::core::BarrierDirection::Up => path.iter().any(|&s| s >= barrier),
         crate::core::BarrierDirection::Down => path.iter().any(|&s| s <= barrier),
+    }
+}
+
+/// Index of the first path point that breaches the barrier, if any.
+fn first_barrier_hit_index(
+    path: &[f64],
+    barrier: f64,
+    direction: crate::core::BarrierDirection,
+) -> Option<usize> {
+    match direction {
+        crate::core::BarrierDirection::Up => path.iter().position(|&s| s >= barrier),
+        crate::core::BarrierDirection::Down => path.iter().position(|&s| s <= barrier),
     }
 }
 
@@ -324,7 +346,9 @@ pub fn mc_european_with_arena(
     }
     let mean = sum / n;
     let variance = if n_paths > 1 {
-        (sum_sq - sum * sum / n) / (n - 1.0)
+        // Clamp to guard against catastrophic cancellation producing a tiny
+        // negative value (and a NaN stderr after sqrt).
+        (sum_sq - sum * sum / n).max(0.0) / (n - 1.0)
     } else {
         0.0
     };
@@ -509,6 +533,36 @@ impl MonteCarloInstrument for BarrierOption {
             vanilla_payoff(self.option_type, path[path.len() - 1], self.strike)
         } else {
             self.barrier.rebate
+        }
+    }
+
+    fn payoff_from_path_with_rate(&self, path: &[f64], rate: f64) -> f64 {
+        let hit_idx = first_barrier_hit_index(path, self.barrier.level, self.barrier.direction);
+        let active = match self.barrier.style {
+            BarrierStyle::In => hit_idx.is_some(),
+            BarrierStyle::Out => hit_idx.is_none(),
+        };
+
+        if active {
+            vanilla_payoff(self.option_type, path[path.len() - 1], self.strike)
+        } else {
+            match self.barrier.style {
+                // Knock-out breached: the rebate is paid at the hit time, not
+                // at expiry. The engine discounts the returned value from
+                // maturity, so compound the rebate forward from t_hit to T.
+                BarrierStyle::Out => {
+                    let idx = hit_idx.expect("inactive knock-out implies a barrier hit");
+                    let n_steps = path.len().saturating_sub(1);
+                    let t_hit = if n_steps > 0 {
+                        self.expiry * idx as f64 / n_steps as f64
+                    } else {
+                        0.0
+                    };
+                    self.barrier.rebate * (rate * (self.expiry - t_hit)).exp()
+                }
+                // Knock-in never triggered: rebate is paid at expiry.
+                BarrierStyle::In => self.barrier.rebate,
+            }
         }
     }
 }
@@ -950,13 +1004,13 @@ where
             );
             engine.run(
                 &generator,
-                |path| instrument.payoff_from_path(path),
+                |path| instrument.payoff_from_path_with_rate(path, market.rate),
                 discount_factor,
             )
         } else {
             engine.run(
                 &generator,
-                |path| instrument.payoff_from_path(path),
+                |path| instrument.payoff_from_path_with_rate(path, market.rate),
                 discount_factor,
             )
         };
@@ -1127,6 +1181,71 @@ mod tests {
             "arithmetic Asian MC mismatch: mc={} expected={} rel_err={}",
             result.price,
             expected,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn mc_knock_out_rebate_is_discounted_from_hit_time() {
+        use crate::instruments::BarrierOption;
+
+        // High rate + long maturity: a rebate paid at the (early) hit time is
+        // worth substantially more than the same rebate discounted from expiry.
+        let rate = 0.10;
+        let expiry = 5.0;
+        let rebate = 10.0;
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(rate)
+            .dividend_yield(0.0)
+            .flat_vol(0.20)
+            .build()
+            .expect("valid market");
+
+        // Barrier just above spot: virtually every path knocks out early, and
+        // surviving paths (S_t < 105 for all t) can never reach strike 200, so
+        // the price is purely the rebate value.
+        let option = BarrierOption::builder()
+            .call()
+            .strike(200.0)
+            .expiry(expiry)
+            .up_and_out(105.0)
+            .rebate(rebate)
+            .build()
+            .expect("valid barrier option");
+
+        let result = MonteCarloPricingEngine::new(100_000, 250, 42)
+            .price(&option, &market)
+            .expect("mc pricing succeeds");
+
+        // Pay-at-expiry would cap the value at rebate * exp(-r*T) ≈ 6.065.
+        let pay_at_expiry_bound = rebate * (-rate * expiry).exp();
+        assert!(
+            result.price > pay_at_expiry_bound * 1.3,
+            "rebate-at-hit value {} should clearly exceed pay-at-expiry bound {}",
+            result.price,
+            pay_at_expiry_bound
+        );
+        assert!(
+            result.price < rebate,
+            "discounted rebate {} cannot exceed undiscounted rebate {}",
+            result.price,
+            rebate
+        );
+
+        // Hand-computed reference: for GBM with drift mu = r - sigma^2/2 = 0.08,
+        // sigma = 0.2, log-barrier b = ln(1.05), the first-passage Laplace
+        // transform gives E[exp(-r*tau)] = exp(b/sigma^2 * (mu - sqrt(mu^2 + 2*r*sigma^2)))
+        // ≈ 0.9524, so price ≈ 9.52 (slightly less under discrete monitoring).
+        let mu = rate - 0.5 * 0.2_f64 * 0.2;
+        let b = (105.0_f64 / 100.0).ln();
+        let reference = rebate * ((b / 0.04) * (mu - (mu * mu + 2.0 * rate * 0.04).sqrt())).exp();
+        let rel_err = ((result.price - reference) / reference).abs();
+        assert!(
+            rel_err < 0.05,
+            "rebate-at-hit price {} deviates from continuous-monitoring reference {} (rel err {})",
+            result.price,
+            reference,
             rel_err
         );
     }

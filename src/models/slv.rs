@@ -13,7 +13,7 @@ use crate::core::{Diagnostics, PricingError, PricingResult};
 use crate::engines::monte_carlo::MonteCarloInstrument;
 use crate::market::Market;
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
-use crate::vol::local_vol::{ImpliedVolSurface, dupire_local_vol};
+use crate::vol::local_vol::{DupireLocalVol, ImpliedVolSurface};
 
 const MIN_SPOT: f64 = 1e-12;
 const MIN_VARIANCE: f64 = 1e-12;
@@ -240,6 +240,14 @@ fn silverman_bandwidth(samples: &[f64], s_min: f64, s_max: f64) -> f64 {
     raw.clamp(floor, cap)
 }
 
+/// Dupire local vol consistent with the SLV drift `mu = r - q`: the forward
+/// is anchored at spot and carried at `(r - q)`, matching `with_rates`.
+fn market_local_vol(market: &Market, s: f64, t: f64) -> f64 {
+    DupireLocalVol::new(MarketImpliedVol { market }, market.spot)
+        .with_rates(market.rate, market.dividend_yield)
+        .local_vol(s, t)
+}
+
 fn calibrate_slice(
     spots: &[f64],
     variances: &[f64],
@@ -259,12 +267,7 @@ fn calibrate_slice(
         s_max = s_max.max(s);
     }
     if !s_min.is_finite() || !s_max.is_finite() || (s_max - s_min).abs() < 1e-10 {
-        let lv = dupire_local_vol(
-            MarketImpliedVol { market },
-            forward,
-            forward,
-            time.max(1e-6),
-        );
+        let lv = market_local_vol(market, forward, time.max(1e-6));
         let leverage = (lv / mean_var.sqrt()).clamp(MIN_LEVERAGE, MAX_LEVERAGE);
         return LeverageSlice::from_single_point(time, forward, leverage);
     }
@@ -280,8 +283,7 @@ fn calibrate_slice(
         let s = s_min + i as f64 * ds;
         let cond_var = nadaraya_watson_conditional_mean(s, spots, variances, bandwidth, mean_var)
             .max(MIN_VARIANCE);
-        let lv =
-            dupire_local_vol(MarketImpliedVol { market }, forward, s, time.max(1e-6)).max(1e-8);
+        let lv = market_local_vol(market, s, time.max(1e-6)).max(1e-8);
         let lev = (lv / cond_var.sqrt()).clamp(MIN_LEVERAGE, MAX_LEVERAGE);
         grid_spots.push(s);
         grid_leverage.push(lev);
@@ -437,12 +439,7 @@ fn price_with_leverage_surface<I: MonteCarloInstrument>(
     };
     let stderr = (var / n).sqrt();
 
-    let atm_local_vol = dupire_local_vol(
-        MarketImpliedVol { market },
-        market.spot,
-        market.spot,
-        dt.max(1e-6),
-    );
+    let atm_local_vol = market_local_vol(market, market.spot, dt.max(1e-6));
     let atm_leverage = leverage_surface.value(market.spot, 0.0);
     let mut diagnostics = Diagnostics::new();
     diagnostics.insert("num_paths", n_paths as f64);
@@ -614,7 +611,7 @@ mod tests {
             for step in 0..n_steps {
                 let z = sample_standard_normal(&mut rng);
                 let t = (step as f64 * dt).max(1e-6);
-                let sigma = dupire_local_vol(MarketImpliedVol { market }, market.spot, s, t);
+                let sigma = market_local_vol(market, s, t);
                 let var = sigma * sigma;
                 s *= ((mu - 0.5 * var) * dt + sigma * sqrt_dt * z).exp();
                 s = s.max(MIN_SPOT);

@@ -53,12 +53,18 @@ fn apply_embedded_features(
     put_price: Option<f64>,
     call_price: Option<f64>,
 ) -> f64 {
-    let mut value = continuation.max(conversion_value);
+    // Standard convertible node treatment: the issuer call caps only the hold
+    // (continuation) value, after which the holder may still convert or put.
+    // value = max(conversion, put, min(hold, call)). This preserves forced
+    // conversion: when conversion value exceeds the call price, the holder
+    // converts and receives the conversion value, not the call price.
+    let mut value = match call_price {
+        Some(call) => continuation.min(call),
+        None => continuation,
+    };
+    value = value.max(conversion_value);
     if let Some(put) = put_price {
         value = value.max(put);
-    }
-    if let Some(call) = call_price {
-        value = value.min(call);
     }
     value
 }
@@ -258,5 +264,48 @@ mod tests {
         let call_price = engine.price(&with_call, &market).unwrap().price;
 
         assert!(call_price <= no_call_price);
+    }
+
+    #[test]
+    fn apply_embedded_features_preserves_forced_conversion() {
+        // Conversion value above the call price: the issuer calls, the holder
+        // is forced to convert and receives the conversion value, not the
+        // (lower) call price.
+        let value = apply_embedded_features(130.0, 120.0, None, Some(110.0));
+        assert_eq!(value, 120.0);
+
+        // Put floor still applies on top of the capped hold value.
+        let value = apply_embedded_features(100.0, 90.0, Some(105.0), Some(95.0));
+        assert_eq!(value, 105.0);
+
+        // Without forced conversion the call caps the hold value.
+        let value = apply_embedded_features(130.0, 80.0, None, Some(110.0));
+        assert_eq!(value, 110.0);
+    }
+
+    #[test]
+    fn deep_itm_callable_convertible_is_worth_at_least_conversion_value() {
+        // Deep in-the-money conversion with a low call price: forced conversion
+        // means the bond must be worth at least its immediate conversion value,
+        // which exceeds the call price.
+        let market = Market::builder()
+            .spot(150.0)
+            .rate(0.05)
+            .dividend_yield(0.02)
+            .flat_vol(0.20)
+            .build()
+            .unwrap();
+        let engine = ConvertibleBinomialEngine::new(0.03).with_steps(400);
+
+        // conversion ratio 1.0 -> conversion value = 150 > call price = 110
+        let bond = ConvertibleBond::new(100.0, 0.05, 5.0, 1.0, Some(110.0), None);
+        let price = engine.price(&bond, &market).unwrap().price;
+        let conversion_value = bond.conversion_ratio * market.spot;
+
+        assert!(
+            price >= conversion_value - 1e-9,
+            "forced conversion lost: price {price} < conversion value {conversion_value}"
+        );
+        assert!(price > 110.0, "price {price} capped at call price");
     }
 }
