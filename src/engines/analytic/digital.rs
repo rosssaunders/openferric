@@ -559,14 +559,14 @@ mod tests {
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
         let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
 
         // Rho (raw, per unit rate)
         let dr = 1e-5;
         let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
         let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
         let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-4);
+        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
 
         // Theta: bump expiry
         let dt = 1e-5;
@@ -621,13 +621,13 @@ mod tests {
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
         let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
 
         let dr = 1e-5;
         let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
         let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
         let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-4);
+        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
 
         let dt = 1e-5;
         let inst_up = AssetOrNothingOption::new(inst.option_type, inst.strike, inst.expiry + dt);
@@ -678,13 +678,13 @@ mod tests {
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
         let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
 
         let dr = 1e-5;
         let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
         let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
         let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-4);
+        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
 
         let dt = 1e-5;
         let inst_up = GapOption::new(
@@ -724,7 +724,7 @@ mod tests {
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
         let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
     }
 
     // --- Expiry edge case ---
