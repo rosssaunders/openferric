@@ -49,6 +49,8 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     // Clamp to avoid overflow/underflow
     let max_x = vdupq_n_f64(709.782_712_893_384);
     let min_x = vdupq_n_f64(-708.396_418_532_264_1);
+    // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
+    let overflow = vcgtq_f64(x, max_x);
     let x = vmaxq_f64(min_x, vminq_f64(x, max_x));
 
     // Range reduction: x = n*ln(2) + r, |r| <= ln(2)/2
@@ -87,12 +89,22 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     poly = vfmaq_f64(one, poly, r);
     poly = vfmaq_f64(one, poly, r);
 
-    // Reconstruct: exp(x) = poly * 2^n via IEEE 754 exponent manipulation.
+    // Reconstruct: exp(x) = poly * 2^n1 * 2^n2 with n1 = n/2, n2 = n - n1.
+    // A single 2^n overflows the biased exponent for n = 1024, which
+    // round(x*log2e) produces for x in [~709.44, 709.78] where exp(x) is
+    // still finite.
     let n_i64 = vcvtq_s64_f64(n_f64);
-    let biased_exponent = vaddq_s64(n_i64, vdupq_n_s64(1023));
-    let exp_bits = vshlq_n_s64(biased_exponent, 52);
-    let two_pow_n = vreinterpretq_f64_s64(exp_bits);
-    vmulq_f64(poly, two_pow_n)
+    let n1_i64 = vshrq_n_s64(n_i64, 1);
+    let n2_i64 = vsubq_s64(n_i64, n1_i64);
+    let bias = vdupq_n_s64(1023);
+    let e1 = vshlq_n_s64(vaddq_s64(n1_i64, bias), 52);
+    let e2 = vshlq_n_s64(vaddq_s64(n2_i64, bias), 52);
+    let y = vmulq_f64(
+        vmulq_f64(poly, vreinterpretq_f64_s64(e1)),
+        vreinterpretq_f64_s64(e2),
+    );
+
+    vbslq_f64(overflow, vdupq_n_f64(f64::INFINITY), y)
 }
 
 /// Vectorized ln(x) for NEON f64x2 using fdlibm kernel with IEEE 754 bit extraction.
@@ -164,7 +176,18 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     let mut y = vfmaq_f64(ln_m, k, ln2_hi);
     y = vfmaq_f64(y, k, ln2_lo);
 
-    y
+    // Special values, mirroring the AVX2/AVX512 implementations:
+    // ln(0) = -inf, ln(negative) = NaN, ln(+inf) = +inf. The exponent mask
+    // above drops the sign bit, so without these blends ln(-x) would
+    // silently return ln(|x|) and ln(0) a finite ~-709.
+    let zero = vdupq_n_f64(0.0);
+    let neg = vcltq_f64(x, zero);
+    let eq_zero = vceqq_f64(x, zero);
+    let is_inf = vceqq_f64(x, vdupq_n_f64(f64::INFINITY));
+
+    y = vbslq_f64(eq_zero, vdupq_n_f64(f64::NEG_INFINITY), y);
+    y = vbslq_f64(neg, vdupq_n_f64(f64::NAN), y);
+    vbslq_f64(is_inf, vdupq_n_f64(f64::INFINITY), y)
 }
 
 #[inline]
@@ -208,11 +231,23 @@ fn normal_cdf_scalar(x: f64) -> f64 {
 
 #[inline]
 fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
-    if t <= 0.0 || vol <= 0.0 {
+    if t <= 0.0 {
         return if is_call {
             (spot - strike).max(0.0)
         } else {
             (strike - spot).max(0.0)
+        };
+    }
+    if vol <= 0.0 {
+        // Deterministic (zero-vol) limit with t > 0: discounted forward
+        // intrinsic e^{-rT} (S e^{(r-q)T} - K)^+ (put analogue likewise),
+        // not the undiscounted spot intrinsic.
+        let fwd = spot * ((r - q) * t).exp();
+        let df_r = (-r * t).exp();
+        return if is_call {
+            df_r * (fwd - strike).max(0.0)
+        } else {
+            df_r * (strike - fwd).max(0.0)
         };
     }
 

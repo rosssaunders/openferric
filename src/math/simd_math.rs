@@ -51,6 +51,8 @@ pub unsafe fn store_f64x4(values: &mut [f64], i: usize, v: __m256d) {
 pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
     let max_x = _mm256_set1_pd(709.782_712_893_384);
     let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
+    // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
+    let overflow = _mm256_cmp_pd(x, max_x, _CMP_GT_OQ);
     let x = _mm256_max_pd(min_x, _mm256_min_pd(x, max_x));
 
     let log2e = _mm256_set1_pd(std::f64::consts::LOG2_E);
@@ -89,12 +91,21 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
     poly = _mm256_fmadd_pd(poly, r, c1);
     poly = _mm256_fmadd_pd(poly, r, c0);
 
+    // Reconstruct 2^n as 2^n1 * 2^n2 (n1 = n/2, n2 = n - n1). A single 2^n
+    // overflows the biased exponent for n = 1024, which round(x*log2e)
+    // produces for x in [~709.44, 709.78] where exp(x) is still finite.
     let n_i32 = _mm256_cvtpd_epi32(n);
-    let n_i64 = _mm256_cvtepi32_epi64(n_i32);
-    let exp_bits = _mm256_slli_epi64(_mm256_add_epi64(n_i64, _mm256_set1_epi64x(1023)), 52);
-    let two_pow_n = _mm256_castsi256_pd(exp_bits);
+    let n1_i32 = _mm_srai_epi32::<1>(n_i32);
+    let n2_i32 = _mm_sub_epi32(n_i32, n1_i32);
+    let bias = _mm256_set1_epi64x(1023);
+    let e1 = _mm256_slli_epi64(_mm256_add_epi64(_mm256_cvtepi32_epi64(n1_i32), bias), 52);
+    let e2 = _mm256_slli_epi64(_mm256_add_epi64(_mm256_cvtepi32_epi64(n2_i32), bias), 52);
+    let y = _mm256_mul_pd(
+        _mm256_mul_pd(poly, _mm256_castsi256_pd(e1)),
+        _mm256_castsi256_pd(e2),
+    );
 
-    _mm256_mul_pd(poly, two_pow_n)
+    _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), overflow)
 }
 
 /// Fast exp() with degree-7 minimax polynomial (~2e-10 relative error).
@@ -109,6 +120,7 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
 pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
     let max_x = _mm256_set1_pd(709.782_712_893_384);
     let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
+    let overflow = _mm256_cmp_pd(x, max_x, _CMP_GT_OQ);
     let x = _mm256_max_pd(min_x, _mm256_min_pd(x, max_x));
 
     let log2e = _mm256_set1_pd(std::f64::consts::LOG2_E);
@@ -143,12 +155,19 @@ pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
     poly = _mm256_fmadd_pd(poly, r, c1);
     poly = _mm256_fmadd_pd(poly, r, c0);
 
+    // Split 2^n into 2^n1 * 2^n2 to avoid biased-exponent overflow at n=1024.
     let n_i32 = _mm256_cvtpd_epi32(n);
-    let n_i64 = _mm256_cvtepi32_epi64(n_i32);
-    let exp_bits = _mm256_slli_epi64(_mm256_add_epi64(n_i64, _mm256_set1_epi64x(1023)), 52);
-    let two_pow_n = _mm256_castsi256_pd(exp_bits);
+    let n1_i32 = _mm_srai_epi32::<1>(n_i32);
+    let n2_i32 = _mm_sub_epi32(n_i32, n1_i32);
+    let bias = _mm256_set1_epi64x(1023);
+    let e1 = _mm256_slli_epi64(_mm256_add_epi64(_mm256_cvtepi32_epi64(n1_i32), bias), 52);
+    let e2 = _mm256_slli_epi64(_mm256_add_epi64(_mm256_cvtepi32_epi64(n2_i32), bias), 52);
+    let y = _mm256_mul_pd(
+        _mm256_mul_pd(poly, _mm256_castsi256_pd(e1)),
+        _mm256_castsi256_pd(e2),
+    );
 
-    _mm256_mul_pd(poly, two_pow_n)
+    _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), overflow)
 }
 
 #[inline]
@@ -399,7 +418,23 @@ pub unsafe fn inv_norm_cdf_f64x4(p: __m256d) -> __m256d {
         let is_high = _mm256_cmp_pd(p, p_high, _CMP_GT_OQ);
 
         let result = _mm256_blendv_pd(val_central, val_low, is_low);
-        _mm256_blendv_pd(result, val_high, is_high)
+        let result = _mm256_blendv_pd(result, val_high, is_high);
+
+        // ── Domain boundaries: match the scalar contract of
+        // `beasley_springer_moro_inv_cdf` exactly so a value's result does not
+        // depend on whether it lands in the vector body or scalar remainder:
+        //   p == 0 -> -inf, p == 1 -> +inf, p < 0 / p > 1 / NaN -> NaN.
+        let zero = _mm256_setzero_pd();
+        let is_zero = _mm256_cmp_pd(p, zero, _CMP_EQ_OQ);
+        let is_one = _mm256_cmp_pd(p, one, _CMP_EQ_OQ);
+        let below = _mm256_cmp_pd(p, zero, _CMP_LT_OQ);
+        let above = _mm256_cmp_pd(p, one, _CMP_GT_OQ);
+        let unordered = _mm256_cmp_pd(p, p, _CMP_UNORD_Q);
+        let invalid = _mm256_or_pd(_mm256_or_pd(below, above), unordered);
+
+        let result = _mm256_blendv_pd(result, _mm256_set1_pd(f64::NEG_INFINITY), is_zero);
+        let result = _mm256_blendv_pd(result, _mm256_set1_pd(f64::INFINITY), is_one);
+        _mm256_blendv_pd(result, _mm256_set1_pd(f64::NAN), invalid)
     }
 }
 

@@ -378,10 +378,15 @@ pub fn cholesky_lower_psd(matrix: &[Vec<f64>], tol: f64) -> Option<Vec<Vec<f64>>
                 if sum < -tol {
                     return None;
                 }
-                l[i][j] = sum.max(tol).sqrt();
-            } else if l[j][j] > tol {
+                // Standard PSD Cholesky: a (numerically) zero pivot means the
+                // matrix is rank-deficient at this column; set the pivot to
+                // zero rather than flooring it at sqrt(tol), which would
+                // amplify round-off noise in the dependent column by ~1/sqrt(tol).
+                l[i][j] = if sum <= tol { 0.0 } else { sum.sqrt() };
+            } else if l[j][j] > 0.0 {
                 l[i][j] = sum / l[j][j];
             }
+            // For a zero pivot the dependent column entries stay 0.
         }
     }
 
@@ -551,7 +556,12 @@ fn map_copula_normals_to_uniforms(
     match copula {
         CopulaFamily::Gaussian => {
             for (u, z) in out_uniforms.iter_mut().zip(corr_normals.iter()) {
-                *u = normal_cdf(*z).clamp(1.0e-12, 1.0 - 1.0e-12);
+                // `normal_cdf` is relative-accurate in the lower tail, so the
+                // lower clamp only needs to guard the hard zero returned for
+                // z < -37; the inverse CDF handles 1e-300 fine. Near one the
+                // attainable resolution is limited by f64 spacing, hence the
+                // 1 - 1e-16 upper clamp (largest f64 strictly below 1).
+                *u = normal_cdf(*z).clamp(COPULA_UNIFORM_MIN, COPULA_UNIFORM_MAX);
             }
         }
         CopulaFamily::StudentT { degrees_of_freedom } => {
@@ -559,26 +569,63 @@ fn map_copula_normals_to_uniforms(
                 return Err("student-t copula requires degrees_of_freedom >= 2".to_string());
             }
             let dof_f = degrees_of_freedom as f64;
-            let chi2 = sample_chi_square_integer_dof(degrees_of_freedom, rng);
+            let chi2 = sample_chi_square(dof_f, rng);
             let scale = (chi2 / dof_f).max(1.0e-16).sqrt();
             let student = StudentsT::new(0.0, 1.0, dof_f).map_err(|e| e.to_string())?;
 
             for (u, z) in out_uniforms.iter_mut().zip(corr_normals.iter()) {
                 let t = *z / scale;
-                *u = student.cdf(t).clamp(1.0e-12, 1.0 - 1.0e-12);
+                *u = student.cdf(t).clamp(COPULA_UNIFORM_MIN, COPULA_UNIFORM_MAX);
             }
         }
     }
     Ok(())
 }
 
-fn sample_chi_square_integer_dof(degrees_of_freedom: u32, rng: &mut FastRng) -> f64 {
-    let mut sum = 0.0;
-    for _ in 0..degrees_of_freedom {
-        let z = sample_standard_normal(rng);
-        sum += z * z;
+/// Lower clamp for copula uniforms; far below any value an accurate normal
+/// CDF produces for realistic normals, but keeps `u > 0` for inverse CDFs.
+const COPULA_UNIFORM_MIN: f64 = 1.0e-300;
+/// Upper clamp for copula uniforms: largest representable f64 strictly below 1.
+const COPULA_UNIFORM_MAX: f64 = 1.0 - 1.0e-16;
+
+/// Samples a chi-square variate with (possibly non-integer) `dof > 0` degrees
+/// of freedom as `2 * Gamma(dof / 2, scale = 1)` using the Marsaglia-Tsang
+/// (2000) squeeze method. O(1) per draw instead of summing `dof` squared
+/// normals.
+fn sample_chi_square(dof: f64, rng: &mut FastRng) -> f64 {
+    2.0 * sample_gamma_marsaglia_tsang(0.5 * dof, rng)
+}
+
+/// Marsaglia-Tsang (2000) Gamma(shape, scale = 1) sampler.
+fn sample_gamma_marsaglia_tsang(shape: f64, rng: &mut FastRng) -> f64 {
+    debug_assert!(shape > 0.0, "gamma shape must be positive");
+
+    if shape < 1.0 {
+        // Boosting: Gamma(a) = Gamma(a + 1) * U^(1/a).
+        let u = rng.random_f64().max(f64::MIN_POSITIVE);
+        return sample_gamma_marsaglia_tsang(shape + 1.0, rng) * u.powf(1.0 / shape);
     }
-    sum
+
+    let d = shape - 1.0 / 3.0;
+    let c = 1.0 / (3.0 * d.sqrt());
+    loop {
+        let x = sample_standard_normal(rng);
+        let v = {
+            let t = 1.0 + c * x;
+            t * t * t
+        };
+        if v <= 0.0 {
+            continue;
+        }
+        let u = rng.random_f64();
+        let x2 = x * x;
+        if u < 1.0 - 0.0331 * x2 * x2 {
+            return d * v;
+        }
+        if u > 0.0 && u.ln() < 0.5 * x2 + d * (1.0 - v + v.ln()) {
+            return d * v;
+        }
+    }
 }
 
 fn to_dmatrix(matrix: &[Vec<f64>]) -> DMatrix<f64> {
@@ -626,7 +673,7 @@ pub fn copula_uniforms_to_normals(uniforms: &[f64], out_normals: &mut [f64]) -> 
         return Err("uniform and output lengths must match".to_string());
     }
     for (u, z) in uniforms.iter().zip(out_normals.iter_mut()) {
-        *z = normal_inv_cdf((*u).clamp(1.0e-12, 1.0 - 1.0e-12));
+        *z = normal_inv_cdf((*u).clamp(COPULA_UNIFORM_MIN, COPULA_UNIFORM_MAX));
     }
     Ok(())
 }
@@ -667,6 +714,63 @@ mod tests {
         let corr = model.correlation_matrix().expect("valid factor model");
         validate_correlation_matrix(&corr, 4).expect("valid corr matrix");
         assert!(is_positive_semidefinite(&corr, 1.0e-10));
+    }
+
+    #[test]
+    fn psd_cholesky_handles_rank_deficient_matrix_without_noise_amplification() {
+        // Rank-1 correlation matrix: all entries 1.
+        let n = 4;
+        let ones = vec![vec![1.0; n]; n];
+        let l = cholesky_lower_psd(&ones, 1.0e-12).expect("rank-1 matrix is PSD");
+
+        for i in 0..n {
+            for j in 0..n {
+                let mut acc = 0.0;
+                for k in 0..n {
+                    acc += l[i][k] * l[j][k];
+                }
+                assert!(
+                    (acc - 1.0).abs() < 1.0e-12,
+                    "L L^T ({i},{j}) = {acc}, expected 1"
+                );
+            }
+        }
+
+        // Zero pivots must be exactly zero, not floored at sqrt(tol).
+        for (i, row) in l.iter().enumerate().skip(1) {
+            assert_eq!(row[i], 0.0, "pivot {i} should collapse to zero");
+        }
+    }
+
+    #[test]
+    fn marsaglia_tsang_chi_square_matches_moments() {
+        let n = 200_000usize;
+        for &nu in &[5.0_f64, 8.5] {
+            let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 12345);
+            let mut sum = 0.0;
+            let mut sum_sq = 0.0;
+            for _ in 0..n {
+                let x = sample_chi_square(nu, &mut rng);
+                assert!(x.is_finite() && x > 0.0);
+                sum += x;
+                sum_sq += x * x;
+            }
+            let mean = sum / n as f64;
+            let var = sum_sq / n as f64 - mean * mean;
+
+            // Mean nu, variance 2*nu. Std errors: sqrt(2nu/n) and ~sqrt(8nu^2... )
+            let mean_tol = 5.0 * (2.0 * nu / n as f64).sqrt();
+            let var_tol = 0.05 * 2.0 * nu + 0.5;
+            assert!(
+                (mean - nu).abs() < mean_tol,
+                "nu={nu} mean={mean} tol={mean_tol}"
+            );
+            assert!(
+                (var - 2.0 * nu).abs() < var_tol,
+                "nu={nu} var={var} expected={}",
+                2.0 * nu
+            );
+        }
     }
 
     #[test]

@@ -322,10 +322,10 @@ fn schwartz_smith_two_factor_chi_mean_reverts() {
 fn black76_atm_call_quantlib() {
     let price = black76_price(OptionType::Call, 100.0, 100.0, 0.0, 0.20, 1.0).unwrap();
     // The library's normal CDF approximation introduces ~1e-5 difference from
-    // exact QuantLib values (7.965567455406). We validate against the library's
+    // exact QuantLib values (7.965567455406), which the library now matches; we
     // own consistent output.
     assert!(
-        (price - 7.965579241666).abs() < 1e-6,
+        (price - 7.965567455405796).abs() < 1e-6,
         "ATM call: expected ~7.9656, got {}",
         price
     );
@@ -335,7 +335,7 @@ fn black76_atm_call_quantlib() {
 fn black76_itm_call_quantlib() {
     let price = black76_price(OptionType::Call, 100.0, 90.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 13.589117199942).abs() < 1e-6,
+        (price - 13.5891081160548).abs() < 1e-6,
         "ITM call (K=90): expected ~13.5891, got {}",
         price
     );
@@ -345,7 +345,7 @@ fn black76_itm_call_quantlib() {
 fn black76_otm_call_quantlib() {
     let price = black76_price(OptionType::Call, 100.0, 110.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 4.292021129766).abs() < 1e-6,
+        (price - 4.292010941409888).abs() < 1e-6,
         "OTM call (K=110): expected ~4.2920, got {}",
         price
     );
@@ -355,7 +355,7 @@ fn black76_otm_call_quantlib() {
 fn black76_itm_put_quantlib() {
     let price = black76_price(OptionType::Put, 100.0, 110.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 14.292021129766).abs() < 1e-6,
+        (price - 14.29201094140989).abs() < 1e-6,
         "ITM put (K=110): expected ~14.2920, got {}",
         price
     );
@@ -365,7 +365,7 @@ fn black76_itm_put_quantlib() {
 fn black76_otm_put_quantlib() {
     let price = black76_price(OptionType::Put, 100.0, 90.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 3.589117199942).abs() < 1e-6,
+        (price - 3.589108116054802).abs() < 1e-6,
         "OTM put (K=90): expected ~3.5891, got {}",
         price
     );

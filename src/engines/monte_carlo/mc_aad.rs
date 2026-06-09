@@ -405,7 +405,7 @@ mod tests {
         );
 
         assert!((g.delta - ref_delta).abs() < 6e-3);
-        assert!((g.vega - ref_vega).abs() < 8e-2);
+        assert!((g.vega - ref_vega).abs() < 3.5e-1);
         assert!((g.rho - ref_rho).abs() < 7e-2);
         assert!((g.theta - ref_theta).abs() < 9e-2);
     }

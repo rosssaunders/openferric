@@ -199,9 +199,18 @@ impl SplitMix64 {
     }
 }
 
+/// Derives a per-stream seed from a base seed and stream index.
+///
+/// Mixes through SplitMix64 so distinct `(base_seed, stream_index)` pairs map
+/// to well-separated seeds. The previous affine form `base + 7919 * i` let
+/// `(base, i + k)` collide with `(base + 7919 * k, i)`, correlating Monte
+/// Carlo streams across nearby base seeds.
 #[inline]
 pub fn stream_seed(base_seed: u64, stream_index: usize) -> u64 {
-    base_seed.wrapping_add((stream_index as u64).wrapping_mul(7_919))
+    // Golden-ratio increment decorrelates consecutive stream indices before
+    // the SplitMix64 finalizer scrambles the combined state.
+    let mixed = base_seed ^ (stream_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    SplitMix64::new(mixed).next_u64()
 }
 
 #[inline]
@@ -264,6 +273,25 @@ mod tests {
 
         for _ in 0..128 {
             assert_eq!(a.random_u64(), b.random_u64());
+        }
+    }
+
+    #[test]
+    fn stream_seed_avoids_affine_collisions() {
+        // The old scheme `base + 7919 * i` collided across
+        // (base, i + k) and (base + 7919 * k, i).
+        let base = 42_u64;
+        for k in 1..64_usize {
+            assert_ne!(
+                stream_seed(base, k),
+                stream_seed(base + 7_919 * k as u64, 0),
+                "k={k}"
+            );
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..4096_usize {
+            assert!(seen.insert(stream_seed(base, i)), "duplicate at i={i}");
         }
     }
 

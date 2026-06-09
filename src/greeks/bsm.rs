@@ -156,6 +156,18 @@ pub fn bump_and_reprice<P: GenericPricer>(
     )
 }
 
+/// Second derivative on a possibly non-uniform 3-point stencil
+/// `(x - h_dn, x, x + h_up)`. Exact for quadratics for any `h_up, h_dn > 0`.
+/// Returns 0 when the down-spacing collapses (degenerate base point at the
+/// domain boundary), where no second-order information is available.
+#[inline]
+fn second_derivative_nonuniform(p_up: f64, p0: f64, p_dn: f64, h_up: f64, h_dn: f64) -> f64 {
+    if h_dn <= 0.0 || h_up <= 0.0 {
+        return 0.0;
+    }
+    2.0 * (h_dn * p_up - (h_up + h_dn) * p0 + h_up * p_dn) / (h_up * h_dn * (h_up + h_dn))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn finite_difference_greeks<P: GenericPricer>(
     pricer: &P,
@@ -169,36 +181,52 @@ pub fn finite_difference_greeks<P: GenericPricer>(
     dv: f64,
     dt: f64,
 ) -> FiniteDifferenceGreeks {
-    let s_dn = (s - ds).max(1e-8);
-    let v_dn = (sigma - dv).max(1e-8);
+    // Down bumps are floored to keep the pricer in its valid domain, but never
+    // above the base point. All difference quotients below use the ACTUAL
+    // spacings, so a clamped (asymmetric) stencil is still consistent instead
+    // of being scaled as if it were symmetric.
+    let s_up = s + ds;
+    let s_dn = (s - ds).max(1e-8).min(s);
+    let v_up = sigma + dv;
+    let v_dn = (sigma - dv).max(1e-8).min(sigma);
+    let t_up = t + dt;
+    let t_dn = (t - dt).max(1e-8).min(t);
+
+    let hs_up = s_up - s;
+    let hs_dn = s - s_dn;
+    let hv_up = v_up - sigma;
+    let hv_dn = sigma - v_dn;
 
     let p0 = pricer.price(s, k, r, sigma, t);
 
-    let p_s_up = pricer.price(s + ds, k, r, sigma, t);
+    let p_s_up = pricer.price(s_up, k, r, sigma, t);
     let p_s_dn = pricer.price(s_dn, k, r, sigma, t);
 
     let p_r_up = pricer.price(s, k, r + dr, sigma, t);
     let p_r_dn = pricer.price(s, k, r - dr, sigma, t);
 
-    let p_v_up = pricer.price(s, k, r, sigma + dv, t);
+    let p_v_up = pricer.price(s, k, r, v_up, t);
     let p_v_dn = pricer.price(s, k, r, v_dn, t);
 
-    let p_t_up = pricer.price(s, k, r, sigma, t + dt);
-    let p_t_dn = pricer.price(s, k, r, sigma, (t - dt).max(1e-8));
+    let p_t_up = pricer.price(s, k, r, sigma, t_up);
+    let p_t_dn = pricer.price(s, k, r, sigma, t_dn);
 
-    let p_s_up_v_up = pricer.price(s + ds, k, r, sigma + dv, t);
-    let p_s_up_v_dn = pricer.price(s + ds, k, r, v_dn, t);
-    let p_s_dn_v_up = pricer.price(s_dn, k, r, sigma + dv, t);
+    let p_s_up_v_up = pricer.price(s_up, k, r, v_up, t);
+    let p_s_up_v_dn = pricer.price(s_up, k, r, v_dn, t);
+    let p_s_dn_v_up = pricer.price(s_dn, k, r, v_up, t);
     let p_s_dn_v_dn = pricer.price(s_dn, k, r, v_dn, t);
 
-    let delta = (p_s_up - p_s_dn) / (2.0 * ds);
-    let gamma = (p_s_up - 2.0 * p0 + p_s_dn) / (ds * ds);
+    // First derivatives over the actual (possibly one-sided) spans. The up
+    // bumps are never clamped, so these denominators are strictly positive.
+    let delta = (p_s_up - p_s_dn) / (s_up - s_dn);
+    let gamma = second_derivative_nonuniform(p_s_up, p0, p_s_dn, hs_up, hs_dn);
     let rho = (p_r_up - p_r_dn) / (2.0 * dr);
-    let vega = (p_v_up - p_v_dn) / (2.0 * dv);
+    let vega = (p_v_up - p_v_dn) / (v_up - v_dn);
     // Market convention: theta is dV/d(calendar time), i.e. -dV/d(maturity).
-    let theta = -(p_t_up - p_t_dn) / (2.0 * dt);
-    let vanna = (p_s_up_v_up - p_s_up_v_dn - p_s_dn_v_up + p_s_dn_v_dn) / (4.0 * ds * dv);
-    let volga = (p_v_up - 2.0 * p0 + p_v_dn) / (dv * dv);
+    let theta = -(p_t_up - p_t_dn) / (t_up - t_dn);
+    let vanna =
+        (p_s_up_v_up - p_s_up_v_dn - p_s_dn_v_up + p_s_dn_v_dn) / ((s_up - s_dn) * (v_up - v_dn));
+    let volga = second_derivative_nonuniform(p_v_up, p0, p_v_dn, hv_up, hv_dn);
 
     FiniteDifferenceGreeks {
         delta,
@@ -240,6 +268,39 @@ mod tests {
         assert!((fd.rho - cf.rho).abs() < 5e-3);
         assert!((fd.vanna - cf.vanna).abs() < 4e-3);
         assert!((fd.volga - cf.volga).abs() < 1e-2);
+    }
+
+    #[test]
+    fn finite_difference_greeks_are_finite_near_degenerate_inputs() {
+        let pricer = |s: f64, k: f64, r: f64, v: f64, t: f64| {
+            black_scholes_price(OptionType::Call, s, k, r, v, t)
+        };
+
+        // sigma -> 0 and t -> 0: clamped down-bumps used to be divided by the
+        // nominal symmetric spacing, corrupting the Greeks.
+        let (s, k, r, sigma, t) = (100.0, 90.0, 0.05, 1.0e-9, 1.0e-9);
+        let fd = finite_difference_greeks(&pricer, s, k, r, sigma, t, 1e-3, 1e-4, 1e-4, 1e-4);
+
+        for (name, v) in [
+            ("delta", fd.delta),
+            ("gamma", fd.gamma),
+            ("vega", fd.vega),
+            ("theta", fd.theta),
+            ("rho", fd.rho),
+            ("vanna", fd.vanna),
+            ("volga", fd.volga),
+        ] {
+            assert!(v.is_finite(), "{name}={v} not finite");
+        }
+
+        // Analytic deterministic limits for a deep-ITM call as sigma, t -> 0:
+        // delta -> 1, gamma -> 0, vega -> 0, theta -> -r*K (continuous comp).
+        assert!((fd.delta - 1.0).abs() < 1e-6, "delta={}", fd.delta);
+        assert!(fd.gamma.abs() < 1e-6, "gamma={}", fd.gamma);
+        assert!(fd.vega.abs() < 1e-3, "vega={}", fd.vega);
+        assert!((fd.theta + r * k).abs() < 1e-2, "theta={}", fd.theta);
+        assert!(fd.volga.abs() < 1.0, "volga={}", fd.volga);
+        assert!(fd.vanna.abs() < 1.0, "vanna={}", fd.vanna);
     }
 
     #[test]
