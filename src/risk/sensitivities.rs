@@ -310,14 +310,9 @@ fn locate_bounds(grid: &[f64], x: f64) -> (usize, usize, f64) {
         return (last, last, 0.0);
     }
 
-    let mut lo = 0usize;
-    for i in 0..last {
-        if x >= grid[i] && x <= grid[i + 1] {
-            lo = i;
-            break;
-        }
-    }
-    let hi = lo + 1;
+    // grid[0] < x < grid[last]: first index with grid[hi] >= x is in [1, last].
+    let hi = grid.partition_point(|&g| g < x);
+    let lo = hi - 1;
     let w = (x - grid[lo]) / (grid[hi] - grid[lo]);
     (lo, hi, w)
 }
@@ -344,6 +339,7 @@ fn derivative(base: f64, up: f64, down: Option<f64>, h: f64, scheme: Differencin
 
 fn second_derivative<F>(
     mut eval: F,
+    base_price: f64,
     base_state: &[f64],
     idx: usize,
     h: f64,
@@ -359,10 +355,9 @@ where
             let mut dn = base_state.to_vec();
             dn[idx] -= h;
 
-            let p0 = eval(base_state);
             let p_up = eval(&up);
             let p_dn = eval(&dn);
-            (p_up - 2.0 * p0 + p_dn) / (h * h)
+            (p_up - 2.0 * base_price + p_dn) / (h * h)
         }
         DifferencingScheme::Forward => {
             let mut up = base_state.to_vec();
@@ -370,10 +365,9 @@ where
             let mut up2 = base_state.to_vec();
             up2[idx] += 2.0 * h;
 
-            let p0 = eval(base_state);
             let p_up = eval(&up);
             let p_up2 = eval(&up2);
-            (p_up2 - 2.0 * p_up + p0) / (h * h)
+            (p_up2 - 2.0 * p_up + base_price) / (h * h)
         }
     }
 }
@@ -596,6 +590,8 @@ where
     P: Fn(&YieldCurve) -> f64,
 {
     let state = curve_state(curve, config.mode);
+    // The unbumped price is pillar-independent; price it once for the ladder.
+    let base_price = pricer(curve);
 
     curve
         .tenors
@@ -608,6 +604,7 @@ where
                     let c = curve_from_state(curve, config.mode, x);
                     pricer(&c)
                 },
+                base_price,
                 &state,
                 idx,
                 h,
