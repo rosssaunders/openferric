@@ -123,6 +123,13 @@ impl LmmModel {
     }
 
     /// Prices a European swaption with Monte Carlo under the LMM.
+    ///
+    /// Forwards evolve under the spot-LIBOR measure, and each path payoff is
+    /// deflated by the realized rolling bank account
+    /// `B(T_e) = prod_k (1 + tau_k F_k(T_k))` over the accrual periods covering
+    /// `[T_0, T_e]`, so the numeraire matches the simulation measure. With the
+    /// module convention of no discounting before the first tenor date,
+    /// `B(0) = 1` and the price is `mean(payoff / B(T_e))`.
     #[allow(clippy::too_many_arguments)]
     pub fn price_european_swaption_mc(
         &self,
@@ -137,6 +144,37 @@ impl LmmModel {
         num_steps: usize,
         seed: u64,
     ) -> Result<f64, String> {
+        self.price_european_swaption_mc_with_stderr(
+            initial_forwards,
+            strike,
+            expiry,
+            swap_start,
+            swap_end,
+            is_payer,
+            notional,
+            num_paths,
+            num_steps,
+            seed,
+        )
+        .map(|(price, _stderr)| price)
+    }
+
+    /// As [`Self::price_european_swaption_mc`], but also returns the Monte
+    /// Carlo standard error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn price_european_swaption_mc_with_stderr(
+        &self,
+        initial_forwards: &[f64],
+        strike: f64,
+        expiry: f64,
+        swap_start: f64,
+        swap_end: f64,
+        is_payer: bool,
+        notional: f64,
+        num_paths: usize,
+        num_steps: usize,
+        seed: u64,
+    ) -> Result<(f64, f64), String> {
         if !strike.is_finite()
             || strike <= 0.0
             || !expiry.is_finite()
@@ -168,13 +206,13 @@ impl LmmModel {
             .ok_or_else(|| "correlation matrix is not positive semidefinite".to_string())?;
         let taus = self.params.taus();
         let dt = expiry / num_steps as f64;
-        let discount_to_expiry = initial_discount_to(initial_forwards, &self.params.tenors, expiry)
-            .ok_or_else(|| "failed to compute initial discount factor to expiry".to_string())?;
 
         let mut rng = StdRng::seed_from_u64(seed);
+        let mut forwards = vec![0.0_f64; initial_forwards.len()];
         let mut payoff_sum = 0.0;
+        let mut payoff_sq_sum = 0.0;
         for _ in 0..num_paths {
-            let mut forwards = initial_forwards.to_vec();
+            forwards.copy_from_slice(initial_forwards);
             self.evolve_forwards_path(&mut forwards, &taus, &chol, dt, num_steps, &mut rng);
 
             let (swap_rate, annuity) =
@@ -184,10 +222,24 @@ impl LmmModel {
             } else {
                 (strike - swap_rate).max(0.0)
             };
-            payoff_sum += notional * annuity * intrinsic;
+
+            // Realized rolling bank account B(T_e) under the spot-LIBOR
+            // measure. Forwards freeze at their reset dates during evolution,
+            // so `forwards[k]` holds F_k(T_k) for expired forwards.
+            let bank = rolling_bank_account_to(&forwards, &self.params.tenors, expiry);
+            let deflated = notional * annuity * intrinsic / bank;
+            payoff_sum += deflated;
+            payoff_sq_sum += deflated * deflated;
         }
 
-        Ok(discount_to_expiry * payoff_sum / num_paths as f64)
+        let m = num_paths as f64;
+        let mean = payoff_sum / m;
+        let stderr = if num_paths > 1 {
+            ((payoff_sq_sum - m * mean * mean).max(0.0) / (m - 1.0) / m).sqrt()
+        } else {
+            0.0
+        };
+        Ok((mean, stderr))
     }
 
     fn evolve_forwards_path(
@@ -207,16 +259,19 @@ impl LmmModel {
 
         for step in 0..num_steps {
             let t = step as f64 * dt;
-            let active = first_active_forward_index(&self.params.tenors, t);
+            // Forwards freeze at their reset date T_i: F_i is alive while t < T_i.
+            // The spot-LIBOR drift sums over alive forwards only (Brigo &
+            // Mercurio Eq. 6.16 with beta(t) = first index with T_k >= t).
+            let alive = first_alive_forward_index(&self.params.tenors, t);
 
             for zi in &mut indep {
                 *zi = StandardNormal.sample(rng);
             }
             correlate_normals(chol, &indep, &mut z);
 
-            for (i, drift_i) in drifts.iter_mut().enumerate().take(n).skip(active) {
+            for (i, drift_i) in drifts.iter_mut().enumerate().take(n).skip(alive) {
                 let mut drift = 0.0;
-                for k in active..=i {
+                for k in alive..=i {
                     let denom = 1.0 + taus[k] * forwards[k];
                     if denom > 1.0e-12 {
                         drift += self.params.volatilities[i]
@@ -230,7 +285,7 @@ impl LmmModel {
                 *drift_i = drift;
             }
 
-            for i in active..n {
+            for i in alive..n {
                 let vol = self.params.volatilities[i];
                 let diffusion = vol * sqrt_dt * z[i];
                 let drift_term = (drifts[i] - 0.5 * vol * vol) * dt;
@@ -366,11 +421,36 @@ fn tenor_index(tenors: &[f64], t: f64) -> Option<usize> {
     tenors.iter().position(|ti| (*ti - t).abs() <= 1.0e-10)
 }
 
-fn first_active_forward_index(tenors: &[f64], t: f64) -> usize {
-    tenors
-        .windows(2)
-        .position(|w| w[1] > t + 1.0e-12)
-        .unwrap_or(tenors.len().saturating_sub(2))
+/// First forward index whose reset date `T_i = tenors[i]` lies strictly after `t`.
+fn first_alive_forward_index(tenors: &[f64], t: f64) -> usize {
+    let n = tenors.len().saturating_sub(1);
+    tenors[..n]
+        .iter()
+        .position(|&tk| tk > t + 1.0e-12)
+        .unwrap_or(n)
+}
+
+/// Realized spot-LIBOR rolling bank account `B(t)` accumulated to `t` from the
+/// realized forwards at their reset dates (`forwards[k] = F_k(T_k)` for expired
+/// forwards). Accrual periods fully before `t` compound at the full period
+/// rate; a period straddling `t` accrues the full period at its frozen reset
+/// rate and is then discounted from the period end back to `t` at that same
+/// rate. With the module convention of no discounting before `tenors[0]`,
+/// `B(0) = 1`.
+fn rolling_bank_account_to(forwards: &[f64], tenors: &[f64], t: f64) -> f64 {
+    let mut bank = 1.0;
+    for k in 0..forwards.len() {
+        let t_start = tenors[k];
+        let t_end = tenors[k + 1];
+        if t_end <= t + 1.0e-12 {
+            bank *= 1.0 + (t_end - t_start) * forwards[k];
+        } else if t_start < t - 1.0e-12 {
+            bank *= (1.0 + (t_end - t_start) * forwards[k]) / (1.0 + (t_end - t) * forwards[k]);
+        } else {
+            break;
+        }
+    }
+    bank
 }
 
 fn correlate_normals(chol: &[Vec<f64>], indep: &[f64], out: &mut [f64]) {
@@ -418,6 +498,72 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-period swaption is a caplet, which is priced exactly by Black-76
+    /// in the lognormal LMM: F_m is driftless lognormal with volatility
+    /// `sigma_m` under its forward measure. The spot-measure simulation with
+    /// pathwise bank-account deflation must reproduce it within MC error.
+    #[test]
+    fn lmm_one_period_swaption_matches_black76_within_mc_error() {
+        let tenors = (0..=6).map(|i| i as f64 * 0.5).collect::<Vec<_>>();
+        let n = tenors.len() - 1;
+        let vol = 0.20;
+        // Correlated forwards so the rolling bank account correlates with the
+        // payoff: this gives the test power against numeraire/measure mixing.
+        let corr = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| if i == j { 1.0 } else { 0.9 })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let params = LmmParams {
+            volatilities: vec![vol; n],
+            correlation: corr,
+            tenors: tenors.clone(),
+        };
+        let model = LmmModel::new(params).unwrap();
+
+        let initial_forwards = vec![0.05; n];
+        let notional = 1_000_000.0;
+        let strike = 0.05;
+        let expiry = 2.0;
+        let swap_start = 2.0;
+        let swap_end = 2.5;
+
+        let (mc, stderr) = model
+            .price_european_swaption_mc_with_stderr(
+                &initial_forwards,
+                strike,
+                expiry,
+                swap_start,
+                swap_end,
+                true,
+                notional,
+                120_000,
+                80,
+                11,
+            )
+            .unwrap();
+
+        let (forward_swap_rate, annuity) =
+            initial_swap_rate_annuity(&initial_forwards, &tenors, swap_start, swap_end).unwrap();
+        let black = black_swaption_price(
+            notional,
+            forward_swap_rate,
+            strike,
+            annuity,
+            vol,
+            expiry,
+            true,
+        );
+
+        assert!(stderr > 0.0 && stderr.is_finite());
+        assert!(
+            (mc - black).abs() <= 3.0 * stderr,
+            "mc={mc} black={black} stderr={stderr}"
+        );
+    }
 
     #[test]
     fn lmm_swaption_mc_matches_black_within_two_percent() {

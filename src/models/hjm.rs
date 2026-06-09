@@ -223,24 +223,27 @@ impl HjmModel {
         self.factors[factor_index].integrated_sigma(maturity - t)
     }
 
-    /// No-arbitrage HJM drift `mu(t, T)`.
+    /// No-arbitrage risk-neutral HJM drift `mu(t, T) = sigma(t, T) * \int_t^T sigma(t, s) ds`
+    /// (summed over correlated factors). Supports up to 3 factors (enforced by `validate`).
     pub fn drift(&self, t: f64, maturity: f64) -> f64 {
         if maturity <= t {
             return 0.0;
         }
 
-        let n = self.factors.len();
-        let mut sigma = vec![0.0_f64; n];
-        let mut integrated = vec![0.0_f64; n];
+        // Stack buffers: validate() caps the model at 3 factors, so avoid heap
+        // allocations on this hot path.
+        let n = self.factors.len().min(3);
+        let mut sigma = [0.0_f64; 3];
+        let mut integrated = [0.0_f64; 3];
         for i in 0..n {
             sigma[i] = self.factor_volatility(i, t, maturity);
             integrated[i] = self.integrated_factor_volatility(i, t, maturity);
         }
 
         let mut drift = 0.0;
-        for (i, sigma_i) in sigma.iter().enumerate().take(n) {
-            for (j, integrated_j) in integrated.iter().enumerate().take(n) {
-                drift += self.correlation[i][j] * sigma_i * integrated_j;
+        for (row, &sigma_i) in self.correlation.iter().zip(sigma.iter()).take(n) {
+            for (&cij, &integrated_j) in row.iter().zip(integrated.iter()).take(n) {
+                drift += cij * sigma_i * integrated_j;
             }
         }
         drift
@@ -351,6 +354,13 @@ impl HjmModel {
     }
 
     /// Monte Carlo price of a European payer/receiver swaption under HJM.
+    ///
+    /// Forwards are simulated under the risk-neutral measure (HJM no-arbitrage
+    /// drift) and each path payoff is discounted with the pathwise bank account
+    /// `exp(-\int_0^{T_e} r_s ds)` accumulated from the simulated short rate
+    /// `r_t = f(t, t)`, keeping measure and numeraire consistent. The short rate
+    /// is read off the simulated curve by interpolation; this is exact whenever
+    /// the maturity grid contains the simulation step times.
     #[allow(clippy::too_many_arguments)]
     pub fn price_swaption_mc(
         &self,
@@ -366,6 +376,38 @@ impl HjmModel {
         num_steps: usize,
         seed: u64,
     ) -> Result<f64, String> {
+        self.price_swaption_mc_with_stderr(
+            initial_forwards,
+            maturities,
+            strike,
+            option_expiry,
+            swap_start,
+            swap_end,
+            is_payer,
+            notional,
+            num_paths,
+            num_steps,
+            seed,
+        )
+        .map(|(price, _stderr)| price)
+    }
+
+    /// As [`Self::price_swaption_mc`], but also returns the Monte Carlo standard error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn price_swaption_mc_with_stderr(
+        &self,
+        initial_forwards: &[f64],
+        maturities: &[f64],
+        strike: f64,
+        option_expiry: f64,
+        swap_start: f64,
+        swap_end: f64,
+        is_payer: bool,
+        notional: f64,
+        num_paths: usize,
+        num_steps: usize,
+        seed: u64,
+    ) -> Result<(f64, f64), String> {
         self.validate()?;
         validate_curve_inputs(initial_forwards, maturities, option_expiry, num_steps)?;
 
@@ -384,24 +426,75 @@ impl HjmModel {
             return Err("invalid swaption inputs".to_string());
         }
 
-        let p0_expiry =
-            Self::zero_coupon_bond_price(0.0, option_expiry, maturities, initial_forwards)?;
+        let n = maturities.len();
+        let n_factors = self.factors.len();
+        let dt = option_expiry / num_steps as f64;
+        let sqrt_dt = dt.sqrt();
+
+        // Hoisted out of the path loop: the correlation Cholesky factor and the
+        // path-independent drift / volatility loadings per (step, maturity).
+        let chol = cholesky_lower(&self.correlation)
+            .ok_or_else(|| "correlation matrix is not positive semidefinite".to_string())?;
+        let mut drift_dt = vec![0.0_f64; num_steps * n];
+        let mut vol_sqrt_dt = vec![0.0_f64; num_steps * n * n_factors];
+        for step in 0..num_steps {
+            let t = step as f64 * dt;
+            for j in 0..n {
+                let maturity = maturities[j];
+                if maturity <= t {
+                    continue;
+                }
+                drift_dt[step * n + j] = self.drift(t, maturity) * dt;
+                for k in 0..n_factors {
+                    vol_sqrt_dt[(step * n + j) * n_factors + k] =
+                        self.factor_volatility(k, t, maturity) * sqrt_dt;
+                }
+            }
+        }
+
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut indep = vec![0.0_f64; n_factors];
+        let mut z = vec![0.0_f64; n_factors];
+        let mut forwards = vec![0.0_f64; n];
+
         let mut payoff_sum = 0.0;
-        for path_id in 0..num_paths {
-            let path = self.simulate_forward_curve_euler(
-                initial_forwards,
-                maturities,
-                option_expiry,
-                num_steps,
-                seed.wrapping_add(path_id as u64),
-            )?;
-            let forwards_at_expiry = &path[path.len() - 1];
+        let mut payoff_sq_sum = 0.0;
+        for _ in 0..num_paths {
+            forwards.copy_from_slice(initial_forwards);
+
+            // Trapezoidal accumulation of \int_0^{T_e} r_s ds with r_t = f(t, t).
+            let mut int_r = 0.0;
+            let mut r_prev = linear_interp(maturities, &forwards, 0.0);
+            for step in 0..num_steps {
+                let t = step as f64 * dt;
+                for zi in &mut indep {
+                    *zi = StandardNormal.sample(&mut rng);
+                }
+                correlate_normals(&chol, &indep, &mut z);
+
+                for j in 0..n {
+                    if maturities[j] <= t {
+                        continue;
+                    }
+                    let mut diffusion = 0.0;
+                    for (k, zk) in z.iter().enumerate().take(n_factors) {
+                        diffusion += vol_sqrt_dt[(step * n + j) * n_factors + k] * *zk;
+                    }
+                    forwards[j] += drift_dt[step * n + j] + diffusion;
+                }
+
+                let t_next = (step + 1) as f64 * dt;
+                let r_next = linear_interp(maturities, &forwards, t_next);
+                int_r += 0.5 * (r_prev + r_next) * dt;
+                r_prev = r_next;
+            }
+
             let (swap_rate, annuity) = swap_rate_and_annuity_from_forwards(
                 option_expiry,
                 swap_start,
                 swap_end,
                 maturities,
-                forwards_at_expiry,
+                &forwards,
             )?;
 
             let intrinsic = if is_payer {
@@ -409,10 +502,19 @@ impl HjmModel {
             } else {
                 (strike - swap_rate).max(0.0)
             };
-            payoff_sum += notional * annuity * intrinsic;
+            let discounted = (-int_r).exp() * notional * annuity * intrinsic;
+            payoff_sum += discounted;
+            payoff_sq_sum += discounted * discounted;
         }
 
-        Ok(p0_expiry * payoff_sum / num_paths as f64)
+        let m = num_paths as f64;
+        let mean = payoff_sum / m;
+        let stderr = if num_paths > 1 {
+            ((payoff_sq_sum - m * mean * mean).max(0.0) / (m - 1.0) / m).sqrt()
+        } else {
+            0.0
+        };
+        Ok((mean, stderr))
     }
 }
 
@@ -576,6 +678,67 @@ mod tests {
         let p = HjmModel::zero_coupon_bond_price(0.0, 5.0, &maturities, &forwards).unwrap();
 
         assert_relative_eq!(p, (-0.03_f64 * 5.0).exp(), epsilon = 1.0e-12);
+    }
+
+    /// Constant-sigma one-factor HJM (`kappa = 0`) is Ho-Lee, where a one-period
+    /// payer swaption equals `(1 + K*tau)` puts on the zero-coupon bond
+    /// `P(T0, T1)` struck at `1 / (1 + K*tau)`, with the Gaussian bond-option
+    /// closed form using `sigma_p = sigma0 * (T1 - T0) * sqrt(T0)`.
+    #[test]
+    fn ho_lee_one_period_swaption_matches_gaussian_bond_option_closed_form() {
+        use crate::math::normal_cdf;
+
+        let sigma0 = 0.015;
+        let model = HjmModel::single_factor_exponential(sigma0, 0.0);
+
+        let f0 = 0.03;
+        let t0 = 3.0_f64;
+        let t1 = 4.0_f64;
+        let tau = t1 - t0;
+        let notional = 100.0;
+        let num_steps = 60_usize;
+
+        // Grid aligned with simulation steps up to expiry (exact short-rate
+        // readout), then coarser out to the swap end.
+        let dt = t0 / num_steps as f64;
+        let mut maturities = (0..=num_steps).map(|i| i as f64 * dt).collect::<Vec<_>>();
+        for i in 1..=10 {
+            maturities.push(t0 + i as f64 * 0.1);
+        }
+        let forwards = vec![f0; maturities.len()];
+
+        let p0_t0 = (-f0 * t0).exp();
+        let p0_t1 = (-f0 * t1).exp();
+        let strike = (p0_t0 - p0_t1) / (tau * p0_t1); // ATM forward swap rate
+
+        // Closed form: payer swaption = (1 + K*tau) * ZBP(0, T0, T1, X).
+        let x = 1.0 / (1.0 + strike * tau);
+        let sigma_p = sigma0 * tau * t0.sqrt();
+        let h = (p0_t1 / (x * p0_t0)).ln() / sigma_p + 0.5 * sigma_p;
+        let zbp = x * p0_t0 * normal_cdf(-h + sigma_p) - p0_t1 * normal_cdf(-h);
+        let closed_form = notional * (1.0 + strike * tau) * zbp;
+
+        let (mc, stderr) = model
+            .price_swaption_mc_with_stderr(
+                &forwards,
+                &maturities,
+                strike,
+                t0,
+                t0,
+                t1,
+                true,
+                notional,
+                30_000,
+                num_steps,
+                42,
+            )
+            .unwrap();
+
+        assert!(stderr > 0.0 && stderr.is_finite());
+        assert!(
+            (mc - closed_form).abs() <= 3.0 * stderr,
+            "mc={mc} closed_form={closed_form} stderr={stderr}"
+        );
     }
 
     #[test]
