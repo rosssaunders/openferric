@@ -105,7 +105,7 @@ impl Cds {
     }
 }
 
-fn payment_times(maturity: f64, payment_freq: usize) -> Vec<f64> {
+pub(crate) fn payment_times(maturity: f64, payment_freq: usize) -> Vec<f64> {
     if maturity <= 0.0 || payment_freq == 0 {
         return vec![];
     }
@@ -139,6 +139,8 @@ fn leg_annuity_terms(
     let mut protection_term = 0.0;
 
     let mut t_prev = 0.0;
+    // S(0) = 1; carry the period-start survival forward instead of re-querying it.
+    let mut survival_prev = 1.0;
     for &t in &times {
         let dt = t - t_prev;
         let survival_t = survival_curve.survival_prob(t);
@@ -146,7 +148,7 @@ fn leg_annuity_terms(
         let df_pay = discount_curve.discount_factor(t);
         coupon_annuity += dt * df_pay * survival_t;
 
-        let default_prob = survival_curve.default_prob(t_prev, t);
+        let default_prob = (survival_prev - survival_t).clamp(0.0, 1.0);
         let t_mid = 0.5 * (t_prev + t);
         let df_mid = discount_curve.discount_factor(t_mid);
 
@@ -155,6 +157,7 @@ fn leg_annuity_terms(
         protection_term += df_mid * default_prob;
 
         t_prev = t;
+        survival_prev = survival_t;
     }
 
     (coupon_annuity, accrual_annuity, protection_term)

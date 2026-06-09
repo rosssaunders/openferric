@@ -296,6 +296,14 @@ fn price_flat_with_model(
         let t1 = year_fraction(valuation_date, default_start, DayCountConvention::Act360).max(0.0);
         let t2 = year_fraction(valuation_date, period_end, DayCountConvention::Act360).max(0.0);
 
+        // ISDA standard model convention: on default the protection buyer owes
+        // premium accrued from the period start, even though survival-weighted
+        // integration only starts at the step-in date. For the stub period
+        // containing step-in this shifts the accrual origin back by
+        // `accrual_offset = period_start -> default_start`; for all later
+        // periods the offset is zero.
+        let accrual_offset = year_fraction(period_start, default_start, DayCountConvention::Act360);
+
         match model {
             PricingModel::Midpoint => {
                 let default_prob = ((-h * t1).exp() - (-h * t2).exp()).max(0.0);
@@ -305,10 +313,12 @@ fn price_flat_with_model(
                     year_fraction(default_start, period_end, DayCountConvention::Act360);
 
                 protection_term += df_mid * default_prob;
-                accrual_on_default += 0.5 * accrual_default * df_mid * default_prob;
+                accrual_on_default +=
+                    (accrual_offset + 0.5 * accrual_default) * df_mid * default_prob;
             }
             PricingModel::IsdaStandard => {
-                let (accrual_term, protection_piece) = exact_flat_interval_terms(t1, t2, r, h);
+                let (accrual_term, protection_piece) =
+                    exact_flat_interval_terms(t1, t2, r, h, accrual_offset);
                 protection_term += protection_piece;
                 accrual_on_default += accrual_term;
             }
@@ -348,7 +358,7 @@ fn price_flat_with_model(
     }
 }
 
-fn exact_flat_interval_terms(t1: f64, t2: f64, r: f64, h: f64) -> (f64, f64) {
+fn exact_flat_interval_terms(t1: f64, t2: f64, r: f64, h: f64, accrual_offset: f64) -> (f64, f64) {
     if t2 <= t1 || h <= 0.0 {
         return (0.0, 0.0);
     }
@@ -360,10 +370,13 @@ fn exact_flat_interval_terms(t1: f64, t2: f64, r: f64, h: f64) -> (f64, f64) {
     // Protection integral: ∫_t1^t2 DF(t) h S(t) dt.
     let protection = (h / k) * (exp1 - exp2);
 
-    // Accrual-on-default integral using accrual from interval start t1:
-    // ∫_t1^t2 (t - t1) DF(t) h S(t) dt.
+    // Accrual-on-default integral with accrual measured from the period accrual
+    // start t0 = t1 - accrual_offset (accrued owed from period start on default):
+    // ∫_t1^t2 (t - t0) DF(t) h S(t) dt
+    //   = ∫_t1^t2 (t - t1) DF(t) h S(t) dt + (t1 - t0) ∫_t1^t2 DF(t) h S(t) dt.
     let dt = t2 - t1;
-    let accrual = h * ((exp1 - exp2) / (k * k) - dt * exp2 / k);
+    let accrual =
+        h * ((exp1 - exp2) / (k * k) - dt * exp2 / k) + accrual_offset.max(0.0) * protection;
 
     (accrual.max(0.0), protection.max(0.0))
 }
@@ -424,6 +437,153 @@ mod tests {
         let cash_settle = cash_settle_date(d);
         assert!(step_in > d);
         assert!(cash_settle > step_in);
+    }
+
+    #[test]
+    fn exact_flat_interval_terms_hand_derived_stub_values() {
+        // Stub period: integration on [t1, t2] = [0.5, 1.0], accrual measured from
+        // t0 = t1 - 0.2 = 0.3, r = 0.04, h = 0.06, k = r + h = 0.1.
+        //
+        // Hand derivation:
+        //   exp1 = e^{-0.05} = 0.95122942450071400
+        //   exp2 = e^{-0.10} = 0.90483741803595957
+        //   protection = (h/k)(exp1 - exp2) = 0.6 * 0.04639200646475443
+        //              = 0.02783520387885266
+        //   base accrual (from t1) = h[(exp1 - exp2)/k^2 - (t2 - t1) exp2 / k]
+        //              = 0.06 * (4.639200646475443 - 4.524187090179798)
+        //              = 0.00690081337773873
+        //   offset term = 0.2 * protection = 0.00556704077577053
+        //   accrual = 0.01246785415350926
+        let (accrual, protection) = exact_flat_interval_terms(0.5, 1.0, 0.04, 0.06, 0.2);
+        assert_relative_eq!(protection, 0.02783520387885266, epsilon = 1.0e-12);
+        assert_relative_eq!(accrual, 0.01246785415350926, epsilon = 1.0e-12);
+
+        // Zero offset reproduces the plain (t - t1) accrual integral.
+        let (accrual0, _) = exact_flat_interval_terms(0.5, 1.0, 0.04, 0.06, 0.0);
+        assert_relative_eq!(accrual0, 0.00690081337773873, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn exact_flat_interval_terms_match_numerical_quadrature() {
+        // Independent Simpson quadrature of
+        //   protection = ∫_t1^t2 h e^{-(r+h)t} dt
+        //   accrual    = ∫_t1^t2 (t - t0) h e^{-(r+h)t} dt,  t0 = t1 - offset.
+        let cases = [
+            (0.5_f64, 1.0_f64, 0.04_f64, 0.06_f64, 0.2_f64),
+            (0.008, 0.03, 0.05, 0.0167, 0.233),
+            (1.25, 1.5, 0.0, 0.10, 0.0),
+            (0.0, 0.25, 0.03, 0.02, 0.13),
+        ];
+
+        for &(t1, t2, r, h, offset) in &cases {
+            let (accrual, protection) = exact_flat_interval_terms(t1, t2, r, h, offset);
+
+            let n = 10_000usize;
+            let dt = (t2 - t1) / n as f64;
+            let t0 = t1 - offset;
+            let simpson = |f: &dyn Fn(f64) -> f64| {
+                let mut s = f(t1) + f(t2);
+                for i in 1..n {
+                    let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+                    s += w * f(t1 + i as f64 * dt);
+                }
+                s * dt / 3.0
+            };
+
+            let prot_num = simpson(&|t: f64| h * (-(r + h) * t).exp());
+            let acc_num = simpson(&|t: f64| (t - t0) * h * (-(r + h) * t).exp());
+
+            assert_relative_eq!(
+                protection,
+                prot_num,
+                epsilon = 1.0e-12,
+                max_relative = 1.0e-10
+            );
+            assert_relative_eq!(accrual, acc_num, epsilon = 1.0e-12, max_relative = 1.0e-10);
+        }
+    }
+
+    #[test]
+    fn isda_stub_period_accrues_from_period_start() {
+        // Rebuild the premium and protection legs by numerical quadrature with the
+        // accrual-on-default measured from each period's start date and compare
+        // against price_isda_flat. Valuation falls mid-period so the stub period
+        // has period_start < step_in.
+        let eval = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let hazard = 0.02;
+        let rate = 0.03;
+        let conventions = IsdaConventions::default();
+        let cds = DatedCds::standard_imm(ProtectionSide::Buyer, eval, 5, 10_000_000.0, 0.01, 0.4);
+
+        let result = price_isda_flat(&cds, eval, hazard, rate, conventions);
+
+        let step_in = step_in_date(eval);
+        assert!(
+            cds.issue_date < step_in,
+            "test setup must produce a front stub"
+        );
+
+        let schedule = generate_imm_schedule(
+            cds.issue_date,
+            cds.maturity_date,
+            cds.coupon_interval_months,
+            cds.date_rule,
+        );
+
+        let mut coupon_annuity = 0.0;
+        let mut accrual_on_default = 0.0;
+        let mut protection_term = 0.0;
+        for window in schedule.windows(2) {
+            let period_start = window[0];
+            let period_end = window[1];
+            if period_end <= step_in {
+                continue;
+            }
+
+            let accrual = year_fraction(period_start, period_end, DayCountConvention::Act360);
+            let t_pay = year_fraction(eval, period_end, DayCountConvention::Act360);
+            coupon_annuity += accrual * (-(rate + hazard) * t_pay).exp();
+
+            let default_start = period_start.max(step_in);
+            // Accrual origin: the period start, which may precede the valuation date.
+            let t0 = year_fraction(eval, period_start, DayCountConvention::Act360);
+            let t1 = year_fraction(eval, default_start, DayCountConvention::Act360);
+            let t2 = year_fraction(eval, period_end, DayCountConvention::Act360);
+
+            let n = 10_000usize;
+            let dt = (t2 - t1) / n as f64;
+            let simpson = |f: &dyn Fn(f64) -> f64| {
+                let mut s = f(t1) + f(t2);
+                for i in 1..n {
+                    let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+                    s += w * f(t1 + i as f64 * dt);
+                }
+                s * dt / 3.0
+            };
+            protection_term += simpson(&|t: f64| hazard * (-(rate + hazard) * t).exp());
+            accrual_on_default +=
+                simpson(&|t: f64| (t - t0) * hazard * (-(rate + hazard) * t).exp());
+        }
+
+        let cash_settle = cash_settle_date(eval);
+        let scale =
+            (rate * year_fraction(eval, cash_settle, DayCountConvention::Act360).max(0.0)).exp();
+
+        let premium_expected =
+            cds.notional * cds.running_spread * (coupon_annuity + accrual_on_default) * scale;
+        let protection_expected =
+            cds.notional * (1.0 - cds.recovery_rate) * protection_term * scale;
+
+        assert_relative_eq!(
+            result.premium_leg_pv,
+            premium_expected,
+            max_relative = 1.0e-9
+        );
+        assert_relative_eq!(
+            result.protection_leg_pv,
+            protection_expected,
+            max_relative = 1.0e-9
+        );
     }
 
     #[test]
