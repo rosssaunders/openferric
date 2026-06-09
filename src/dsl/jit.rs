@@ -110,6 +110,10 @@ unsafe extern "C" fn jit_worst_of_perf(
         let init = unsafe { *initial_spots.add(i) };
         if init > 0.0 {
             let perf = unsafe { *spots.add(i) } / init;
+            // NaN-propagating minimum, matching the interpreter backends.
+            if perf.is_nan() {
+                return f64::NAN;
+            }
             if perf < wof {
                 wof = perf;
             }
@@ -135,6 +139,10 @@ unsafe extern "C" fn jit_best_of_perf(
         let init = unsafe { *initial_spots.add(i) };
         if init > 0.0 {
             let perf = unsafe { *spots.add(i) } / init;
+            // NaN-propagating maximum, matching the interpreter backends.
+            if perf.is_nan() {
+                return f64::NAN;
+            }
             if perf > bof {
                 bof = perf;
             }
@@ -485,6 +493,8 @@ fn compile_program(
                     let call = builder.ins().call(log_ref, &[v]);
                     stack.push(builder.inst_results(call)[0]);
                 }
+                // Cranelift fmin/fmax propagate NaN, matching the scalar
+                // interpreter's nan_min/nan_max and the SIMD backends.
                 opcode::MIN => {
                     let rhs = stack.pop();
                     let lhs = stack.pop();
@@ -1330,6 +1340,129 @@ mod tests {
         assert!((locals[1] - 3.0).abs() < 1e-10, "ABS(-3)={}", locals[1]);
         assert!((locals[2] - 2.0).abs() < 1e-10, "MIN(5,2)={}", locals[2]);
         assert!((locals[3] - 5.0).abs() < 1e-10, "MAX(5,2)={}", locals[3]);
+    }
+
+    #[test]
+    fn jit_min_max_propagate_nan() {
+        // min/max must propagate NaN regardless of operand order, matching
+        // the scalar interpreter and SIMD backends.
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0), // NaN
+            inst(opcode::PUSH_CONST, 1), // 5.0
+            inst(opcode::MIN, 0),
+            inst(opcode::STORE_LOCAL, 0),
+            inst(opcode::PUSH_CONST, 1),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::MIN, 0),
+            inst(opcode::STORE_LOCAL, 1),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PUSH_CONST, 1),
+            inst(opcode::MAX, 0),
+            inst(opcode::STORE_LOCAL, 2),
+            inst(opcode::PUSH_CONST, 1),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::MAX, 0),
+            inst(opcode::STORE_LOCAL, 3),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[f64::NAN, 5.0]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(locals[0].is_nan(), "MIN(NaN, 5)={}", locals[0]);
+        assert!(locals[1].is_nan(), "MIN(5, NaN)={}", locals[1]);
+        assert!(locals[2].is_nan(), "MAX(NaN, 5)={}", locals[2]);
+        assert!(locals[3].is_nan(), "MAX(5, NaN)={}", locals[3]);
+    }
+
+    #[test]
+    fn jit_worst_of_propagates_nan() {
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PUSH_CONST, 1), // NaN
+            inst(opcode::PUSH_CONST, 2),
+            inst(opcode::WORST_OF, 3),
+            inst(opcode::STORE_LOCAL, 0),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PUSH_CONST, 1),
+            inst(opcode::PUSH_CONST, 2),
+            inst(opcode::BEST_OF, 3),
+            inst(opcode::STORE_LOCAL, 1),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[5.0, f64::NAN, 8.0]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(locals[0].is_nan(), "WORST_OF with NaN = {}", locals[0]);
+        assert!(locals[1].is_nan(), "BEST_OF with NaN = {}", locals[1]);
+    }
+
+    #[test]
+    fn jit_perf_helpers_propagate_nan() {
+        let code = vec![
+            inst(opcode::WORST_OF_PERF, 0),
+            inst(opcode::STORE_LOCAL, 0),
+            inst(opcode::BEST_OF_PERF, 0),
+            inst(opcode::STORE_LOCAL, 1),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        unsafe {
+            compiled.execute(
+                &[120.0, f64::NAN],
+                &[100.0, 100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(
+            locals[0].is_nan(),
+            "WORST_OF_PERF with NaN spot = {}",
+            locals[0]
+        );
+        assert!(
+            locals[1].is_nan(),
+            "BEST_OF_PERF with NaN spot = {}",
+            locals[1]
+        );
     }
 
     #[test]

@@ -8,15 +8,52 @@ use crate::dsl::error::{DslError, Span};
 use crate::dsl::ir::UnderlyingType;
 use crate::dsl::lexer::{Token, TokenKind};
 
+/// Maximum nesting depth for expressions and statements.
+///
+/// This bounds both parser recursion and the depth of the produced AST
+/// (including left-leaning operator chains built iteratively), which in turn
+/// bounds recursion in the AST compiler, the IR-to-bytecode compiler, and
+/// recursive drop glue. Without it, pathological inputs such as 100k nested
+/// parentheses overflow the stack and abort the process.
+///
+/// The value is sized so that unoptimized (debug) builds stay comfortably
+/// within a 2 MiB thread stack: precedence climbing costs ~9 stack frames
+/// (~12 KiB in debug) per nesting level.
+const MAX_NESTING_DEPTH: usize = 96;
+
 /// Parser state wrapping a token stream.
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Current expression/statement nesting depth (see `MAX_NESTING_DEPTH`).
+    depth: usize,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    /// Enter one nesting level, erroring out when the limit is exceeded.
+    fn enter_nesting(&mut self) -> Result<(), DslError> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err(DslError::ParseError {
+                message: format!("expression nesting too deep (max {MAX_NESTING_DEPTH} levels)"),
+                span: self.current_span(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Leave one nesting level.
+    fn exit_nesting(&mut self) {
+        debug_assert!(self.depth > 0);
+        self.depth -= 1;
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -152,7 +189,19 @@ impl Parser {
 /// Parse a token stream into a `ProductDef` AST.
 pub fn parse(tokens: Vec<Token>) -> Result<ProductDef, DslError> {
     let mut parser = Parser::new(tokens);
-    parse_product(&mut parser)
+    let product = parse_product(&mut parser)?;
+    // Reject leftover tokens after the product block instead of silently
+    // dropping trailing content.
+    if let Some(tok) = parser.peek() {
+        return Err(DslError::ParseError {
+            message: format!(
+                "unexpected content after product definition: {:?}",
+                tok.kind
+            ),
+            span: tok.span,
+        });
+    }
+    Ok(product)
 }
 
 fn parse_product(p: &mut Parser) -> Result<ProductDef, DslError> {
@@ -442,6 +491,13 @@ fn parse_statement(p: &mut Parser) -> Result<AstStatement, DslError> {
 }
 
 fn parse_if_statement(p: &mut Parser) -> Result<AstStatement, DslError> {
+    p.enter_nesting()?;
+    let result = parse_if_statement_inner(p);
+    p.exit_nesting();
+    result
+}
+
+fn parse_if_statement_inner(p: &mut Parser) -> Result<AstStatement, DslError> {
     let span = p.current_span();
     p.expect(&TokenKind::If)?;
     let condition = parse_expr(p)?;
@@ -486,12 +542,19 @@ fn parse_if_statement(p: &mut Parser) -> Result<AstStatement, DslError> {
 // --- Expression parsing (precedence climbing) ---
 
 fn parse_expr(p: &mut Parser) -> Result<AstExpr, DslError> {
-    parse_or_expr(p)
+    p.enter_nesting()?;
+    let result = parse_or_expr(p);
+    p.exit_nesting();
+    result
 }
 
 fn parse_or_expr(p: &mut Parser) -> Result<AstExpr, DslError> {
     let mut left = parse_and_expr(p)?;
+    let mut chain = 0usize;
     while matches!(p.peek_kind(), Some(TokenKind::Or)) {
+        // Each iteration nests `left` one level deeper in the AST.
+        p.enter_nesting()?;
+        chain += 1;
         p.advance();
         let right = parse_and_expr(p)?;
         let span = Span::new(left.span.start, right.span.end);
@@ -504,12 +567,16 @@ fn parse_or_expr(p: &mut Parser) -> Result<AstExpr, DslError> {
             span,
         };
     }
+    p.depth -= chain;
     Ok(left)
 }
 
 fn parse_and_expr(p: &mut Parser) -> Result<AstExpr, DslError> {
     let mut left = parse_not_expr(p)?;
+    let mut chain = 0usize;
     while matches!(p.peek_kind(), Some(TokenKind::And)) {
+        p.enter_nesting()?;
+        chain += 1;
         p.advance();
         let right = parse_not_expr(p)?;
         let span = Span::new(left.span.start, right.span.end);
@@ -522,14 +589,18 @@ fn parse_and_expr(p: &mut Parser) -> Result<AstExpr, DslError> {
             span,
         };
     }
+    p.depth -= chain;
     Ok(left)
 }
 
 fn parse_not_expr(p: &mut Parser) -> Result<AstExpr, DslError> {
     if matches!(p.peek_kind(), Some(TokenKind::Not)) {
+        p.enter_nesting()?;
         let span = p.current_span();
         p.advance();
-        let operand = parse_not_expr(p)?;
+        let operand = parse_not_expr(p);
+        p.exit_nesting();
+        let operand = operand?;
         let end = operand.span.end;
         return Ok(AstExpr {
             kind: AstExprKind::UnaryOp {
@@ -568,12 +639,15 @@ fn parse_comparison(p: &mut Parser) -> Result<AstExpr, DslError> {
 
 fn parse_additive(p: &mut Parser) -> Result<AstExpr, DslError> {
     let mut left = parse_multiplicative(p)?;
+    let mut chain = 0usize;
     loop {
         let op = match p.peek_kind() {
             Some(TokenKind::Plus) => AstBinOp::Add,
             Some(TokenKind::Minus) => AstBinOp::Sub,
             _ => break,
         };
+        p.enter_nesting()?;
+        chain += 1;
         p.advance();
         let right = parse_multiplicative(p)?;
         let span = Span::new(left.span.start, right.span.end);
@@ -586,17 +660,21 @@ fn parse_additive(p: &mut Parser) -> Result<AstExpr, DslError> {
             span,
         };
     }
+    p.depth -= chain;
     Ok(left)
 }
 
 fn parse_multiplicative(p: &mut Parser) -> Result<AstExpr, DslError> {
     let mut left = parse_unary(p)?;
+    let mut chain = 0usize;
     loop {
         let op = match p.peek_kind() {
             Some(TokenKind::Star) => AstBinOp::Mul,
             Some(TokenKind::Slash) => AstBinOp::Div,
             _ => break,
         };
+        p.enter_nesting()?;
+        chain += 1;
         p.advance();
         let right = parse_unary(p)?;
         let span = Span::new(left.span.start, right.span.end);
@@ -609,6 +687,7 @@ fn parse_multiplicative(p: &mut Parser) -> Result<AstExpr, DslError> {
             span,
         };
     }
+    p.depth -= chain;
     Ok(left)
 }
 
@@ -902,6 +981,67 @@ product \"Test\"
             })
             .unwrap();
         assert_eq!(underlyings[0].underlying_type, UnderlyingType::Equity);
+    }
+
+    fn product_with_pay_expr(expr: &str) -> String {
+        format!(
+            "product \"Test\"\n    notional: 100\n    maturity: 1.0\n    schedule annual from 1.0 to 1.0\n        pay {expr}\n"
+        )
+    }
+
+    #[test]
+    fn deeply_nested_parens_error_instead_of_stack_overflow() {
+        let depth = 100_000;
+        let source = product_with_pay_expr(&format!("{}1{}", "(".repeat(depth), ")".repeat(depth)));
+        let err = parse_str(&source).unwrap_err();
+        match err {
+            DslError::ParseError { message, .. } => {
+                assert!(message.contains("nesting too deep"), "got: {message}");
+            }
+            other => panic!("expected ParseError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deep_operator_chain_errors_instead_of_deep_ast() {
+        // Left-leaning `1+1+1+...` chains nest the AST without parser
+        // recursion; the depth budget must still bound them.
+        let source = product_with_pay_expr(&vec!["1"; 100_000].join(" + "));
+        assert!(parse_str(&source).is_err());
+    }
+
+    #[test]
+    fn deep_not_chain_errors() {
+        let source = product_with_pay_expr(&format!("{}1", "not ".repeat(100_000)));
+        assert!(parse_str(&source).is_err());
+    }
+
+    #[test]
+    fn moderate_nesting_is_accepted() {
+        let source = product_with_pay_expr(&format!("{}1{}", "(".repeat(64), ")".repeat(64)));
+        assert!(parse_str(&source).is_ok());
+        let source = product_with_pay_expr(&vec!["1"; 64].join(" + "));
+        assert!(parse_str(&source).is_ok());
+    }
+
+    #[test]
+    fn trailing_content_after_product_is_error() {
+        let source = "\
+product \"Test\"
+    notional: 100
+    maturity: 1.0
+pay 100
+";
+        let err = parse_str(source).unwrap_err();
+        match err {
+            DslError::ParseError { message, .. } => {
+                assert!(
+                    message.contains("unexpected content after product definition"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected ParseError, got {other:?}"),
+        }
     }
 
     #[test]
