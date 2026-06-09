@@ -12,7 +12,9 @@
 use std::f64::consts::PI;
 use std::sync::LazyLock;
 
-use crate::math::fast_norm::{beasley_springer_moro_inv_cdf, fast_norm_pdf, hart_norm_cdf};
+use crate::math::fast_norm::{
+    accurate_norm_cdf, beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_pdf,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 /// Errors returned by iterative/root-finding math helpers.
@@ -37,13 +39,19 @@ pub fn normal_pdf(x: f64) -> f64 {
 }
 
 #[inline(always)]
-/// Branch-free approximation for the standard normal CDF.
+/// Branch-free fast approximation for the standard normal CDF
+/// (A&S 26.2.17, ~7.5e-8 absolute error; not tail-accurate).
 pub fn branch_free_normal_cdf(x: f64) -> f64 {
-    hart_norm_cdf(x)
+    fast_norm_cdf(x)
 }
 
 #[inline(always)]
 /// Standard normal cumulative distribution function `Phi(x)`.
+///
+/// Routes to the Cody-erfc double-precision implementation, which is
+/// relative-accurate in the tails (important for copula uniforms, credit
+/// tail integration, and extreme quantiles). For a faster, absolute-error
+/// approximation use [`branch_free_normal_cdf`] / `fast_norm_cdf` explicitly.
 ///
 /// # Examples
 /// ```rust
@@ -53,7 +61,7 @@ pub fn branch_free_normal_cdf(x: f64) -> f64 {
 /// assert!(normal_cdf(1.0) > 0.84);
 /// ```
 pub fn normal_cdf(x: f64) -> f64 {
-    branch_free_normal_cdf(x)
+    accurate_norm_cdf(x)
 }
 
 /// Inverse of the standard normal CDF.
@@ -377,12 +385,43 @@ pub fn gauss_legendre_nodes_weights(n: usize) -> Result<(Vec<f64>, Vec<f64>), Ma
     Ok((nodes, weights))
 }
 
+/// Cached nodes/weights for commonly requested Gauss-Legendre orders.
+///
+/// `gauss_legendre_nodes_weights` runs Newton iterations to locate Legendre
+/// roots, which is wasteful to repeat per integration call for the standard
+/// orders used throughout the library.
+fn cached_gauss_legendre(n: usize) -> Option<&'static (Vec<f64>, Vec<f64>)> {
+    macro_rules! gl_cache {
+        ($name:ident, $n:expr) => {{
+            static $name: LazyLock<(Vec<f64>, Vec<f64>)> =
+                LazyLock::new(|| gauss_legendre_nodes_weights($n).unwrap());
+            Some(&*$name)
+        }};
+    }
+
+    match n {
+        16 => gl_cache!(GL16, 16),
+        32 => gl_cache!(GL32, 32),
+        64 => gl_cache!(GL64, 64),
+        96 => gl_cache!(GL96_CACHE, 96),
+        128 => gl_cache!(GL128, 128),
+        _ => None,
+    }
+}
+
 #[inline]
 pub fn gauss_legendre_integrate<F>(f: F, a: f64, b: f64, n: usize) -> Result<f64, MathError>
 where
     F: Fn(f64) -> f64,
 {
-    let (nodes, weights) = gauss_legendre_nodes_weights(n)?;
+    let computed;
+    let (nodes, weights) = match cached_gauss_legendre(n) {
+        Some((nodes, weights)) => (nodes.as_slice(), weights.as_slice()),
+        None => {
+            computed = gauss_legendre_nodes_weights(n)?;
+            (computed.0.as_slice(), computed.1.as_slice())
+        }
+    };
     let c1 = 0.5 * (b - a);
     let c2 = 0.5 * (b + a);
 
@@ -467,6 +506,28 @@ mod tests {
 
         let mid = spline.interpolate(1.5);
         assert_relative_eq!(mid, 2.2, epsilon = 0.2);
+    }
+
+    #[test]
+    fn gauss_legendre_cached_orders_match_fresh_computation() {
+        let f = |x: f64| (x * x).cos() * (0.3 * x).exp();
+        let (a, b) = (-0.4_f64, 2.3_f64);
+        for n in [16usize, 32, 64, 96, 128, 20] {
+            let integrated = gauss_legendre_integrate(f, a, b, n).unwrap();
+
+            // Reference: same quadrature computed with freshly generated nodes.
+            let (nodes, weights) = gauss_legendre_nodes_weights(n).unwrap();
+            let c1 = 0.5 * (b - a);
+            let c2 = 0.5 * (b + a);
+            let fresh = c1
+                * nodes
+                    .iter()
+                    .zip(weights.iter())
+                    .map(|(&x, &w)| w * f(c1 * x + c2))
+                    .sum::<f64>();
+
+            assert_eq!(integrated, fresh, "n={n}");
+        }
     }
 
     #[test]

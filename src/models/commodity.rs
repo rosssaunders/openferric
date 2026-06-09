@@ -1077,6 +1077,10 @@ pub struct StorageValuation {
 }
 
 /// Values storage intrinsically and extrinsically via LSM.
+///
+/// Both legs are expressed as of `t = 0`, discounting all decision-date cash
+/// flows (including those at the first decision date) at `risk_free_rate`, so
+/// `extrinsic = lsm_total - intrinsic` compares values in the same convention.
 pub fn value_storage_intrinsic_extrinsic(
     contract: &CommodityStorageContract,
     curve: &CommodityForwardCurve,
@@ -1106,6 +1110,10 @@ pub fn value_storage_intrinsic_extrinsic(
 }
 
 /// Deterministic intrinsic storage value under the forward curve.
+///
+/// The value is expressed as of `t = 0`: cash flows at each decision date are
+/// discounted at `risk_free_rate`, including the discounting from the first
+/// decision date back to today. The LSM valuation uses the same convention.
 pub fn intrinsic_storage_value(
     contract: &CommodityStorageContract,
     curve: &CommodityForwardCurve,
@@ -1172,13 +1180,24 @@ pub fn intrinsic_storage_value(
         next_values = current;
     }
 
-    Ok(interpolate_inventory_value(
-        contract.initial_inventory,
-        &grid,
-        &next_values,
-    ))
+    // Discount from the first decision date back to t = 0.
+    let disc_to_today = (-risk_free_rate * contract.decision_times[0]).exp();
+    Ok(
+        disc_to_today
+            * interpolate_inventory_value(contract.initial_inventory, &grid, &next_values),
+    )
 }
 
+/// Least-squares Monte Carlo storage valuation.
+///
+/// Returns `(total, stderr)` expressed as of `t = 0`: cash flows at each
+/// decision date are discounted at `risk_free_rate`, including the discounting
+/// from the first decision date back to today (the same convention as
+/// [`intrinsic_storage_value`]). The backward recursion keeps path values in
+/// time-`t_i` money (terminal values are undiscounted liquidation values) and
+/// discounts one step at a time; per standard LSM, the action at each decision
+/// is the argmax over regression *estimates* across all feasible actions, and
+/// the path is then assigned the *realized* value of the chosen action.
 fn extrinsic_storage_value_lsm(
     contract: &CommodityStorageContract,
     curve: &CommodityForwardCurve,
@@ -1196,15 +1215,29 @@ fn extrinsic_storage_value_lsm(
 
     let spots = simulate_storage_spot_paths(contract, curve, lsm_config)?;
 
+    // Feasible target-inventory indices per current inventory level are
+    // time-independent: precompute them once.
+    let feasible_next: Vec<Vec<usize>> = grid
+        .iter()
+        .map(|&inv| {
+            let min_next_inv = (inv - contract.max_withdrawal).max(contract.min_inventory);
+            let max_next_inv = (inv + contract.max_injection).min(contract.max_inventory);
+            grid.iter()
+                .enumerate()
+                .filter_map(|(j, &x)| {
+                    (x >= min_next_inv - 1.0e-12 && x <= max_next_inv + 1.0e-12).then_some(j)
+                })
+                .collect()
+        })
+        .collect();
+
+    // Terminal condition: liquidation value at the last decision date, in
+    // time-t_last money (the recursion below applies the step discounts).
     let mut values_next = vec![vec![0.0_f64; n_inv]; lsm_config.num_paths];
-
-    let terminal_time = contract.decision_times[n_t - 1];
-    let terminal_disc = (-risk_free_rate * terminal_time).exp();
-
     for p in 0..lsm_config.num_paths {
         let s_t = spots[p][n_t - 1];
         for (inv_idx, &inv) in grid[..n_inv].iter().enumerate() {
-            let mut terminal = terminal_disc * s_t * inv;
+            let mut terminal = s_t * inv;
             if let Some(target) = contract.terminal_inventory_target {
                 terminal -= 1.0e6 * (inv - target).abs();
             }
@@ -1212,6 +1245,7 @@ fn extrinsic_storage_value_lsm(
         }
     }
 
+    let mut y = vec![0.0_f64; lsm_config.num_paths];
     for ti in (0..n_t).rev() {
         let t = contract.decision_times[ti];
         let dt = if ti + 1 < n_t {
@@ -1221,50 +1255,43 @@ fn extrinsic_storage_value_lsm(
         };
         let disc_step = (-risk_free_rate * dt).exp();
 
+        // Regression abscissa and per-target continuation regressions are
+        // shared across inventory levels: build them once per decision date.
+        let x: Vec<f64> = spots.iter().map(|path| path[ti]).collect();
+        let continuation_models: Vec<[f64; 3]> = (0..n_inv)
+            .map(|next_idx| {
+                for (yp, path_values) in y.iter_mut().zip(values_next.iter()) {
+                    *yp = disc_step * path_values[next_idx];
+                }
+                regress_quadratic(&x, &y)
+            })
+            .collect();
+
         let mut values_cur = vec![vec![f64::NEG_INFINITY; n_inv]; lsm_config.num_paths];
 
         for (inv_idx, &inv) in grid[..n_inv].iter().enumerate() {
-            let min_next_inv = (inv - contract.max_withdrawal).max(contract.min_inventory);
-            let max_next_inv = (inv + contract.max_injection).min(contract.max_inventory);
-
-            let feasible_next: Vec<usize> = grid
-                .iter()
-                .enumerate()
-                .filter_map(|(j, &x)| {
-                    (x >= min_next_inv - 1.0e-12 && x <= max_next_inv + 1.0e-12).then_some(j)
-                })
-                .collect();
-
-            if feasible_next.is_empty() {
+            let feasible = &feasible_next[inv_idx];
+            if feasible.is_empty() {
                 continue;
-            }
-
-            let x: Vec<f64> = spots.iter().map(|path| path[ti]).collect();
-
-            let mut continuation_models = Vec::with_capacity(feasible_next.len());
-            for &next_idx in &feasible_next {
-                let y: Vec<f64> = (0..lsm_config.num_paths)
-                    .map(|p| disc_step * values_next[p][next_idx])
-                    .collect();
-                continuation_models.push(regress_quadratic(&x, &y));
             }
 
             for p in 0..lsm_config.num_paths {
                 let s = spots[p][ti];
-                let mut best = f64::NEG_INFINITY;
-                for (k, &next_idx) in feasible_next.iter().enumerate() {
+                let mut best_estimate = f64::NEG_INFINITY;
+                let mut best_realized = f64::NEG_INFINITY;
+                for &next_idx in feasible {
                     let next_inv = grid[next_idx];
                     let delta = next_inv - inv;
                     let immediate = -delta * s - contract.variable_cost * delta.abs();
 
-                    let cont_est = eval_quadratic(continuation_models[k], s);
-                    let objective_est = immediate + cont_est;
-
-                    if objective_est > best {
-                        best = immediate + disc_step * values_next[p][next_idx];
+                    let objective_est =
+                        immediate + eval_quadratic(continuation_models[next_idx], s);
+                    if objective_est > best_estimate {
+                        best_estimate = objective_est;
+                        best_realized = immediate + disc_step * values_next[p][next_idx];
                     }
                 }
-                values_cur[p][inv_idx] = best;
+                values_cur[p][inv_idx] = best_realized;
             }
         }
 
@@ -1282,7 +1309,9 @@ fn extrinsic_storage_value_lsm(
         0.0
     };
 
-    Ok((mean, stderr))
+    // Discount from the first decision date back to t = 0.
+    let disc_to_today = (-risk_free_rate * contract.decision_times[0]).exp();
+    Ok((disc_to_today * mean, disc_to_today * stderr))
 }
 
 fn simulate_storage_spot_paths(
@@ -1768,6 +1797,100 @@ mod tests {
 
         let v = intrinsic_storage_value(&contract, &curve, 0.03, 21).unwrap();
         assert!(v.is_finite());
+    }
+
+    fn storage_test_curve() -> CommodityForwardCurve {
+        CommodityForwardCurve::from_futures_quotes(&[
+            FuturesQuote {
+                maturity: 0.25,
+                price: 40.0,
+            },
+            FuturesQuote {
+                maturity: 0.5,
+                price: 42.0,
+            },
+            FuturesQuote {
+                maturity: 0.75,
+                price: 45.0,
+            },
+            FuturesQuote {
+                maturity: 1.0,
+                price: 47.0,
+            },
+        ])
+        .unwrap()
+    }
+
+    fn storage_test_contract() -> CommodityStorageContract {
+        CommodityStorageContract {
+            decision_times: vec![0.25, 0.5, 0.75, 1.0],
+            min_inventory: 0.0,
+            max_inventory: 100.0,
+            initial_inventory: 50.0,
+            max_injection: 25.0,
+            max_withdrawal: 25.0,
+            variable_cost: 0.2,
+            terminal_inventory_target: Some(50.0),
+        }
+    }
+
+    /// With zero volatility every path equals the forward curve, so the LSM
+    /// valuation must reduce to the deterministic intrinsic DP (extrinsic ~ 0).
+    #[test]
+    fn zero_volatility_storage_lsm_matches_intrinsic_dp() {
+        let curve = storage_test_curve();
+        let contract = storage_test_contract();
+
+        let config = StorageLsmConfig {
+            num_paths: 64,
+            kappa: 1.5,
+            sigma: 0.0,
+            seed: 13,
+        };
+
+        let valuation =
+            value_storage_intrinsic_extrinsic(&contract, &curve, 0.03, 21, config).unwrap();
+
+        assert!(valuation.intrinsic.is_finite());
+        assert!(
+            valuation.extrinsic.abs() <= 1.0e-6 * valuation.intrinsic.abs().max(1.0),
+            "extrinsic={} intrinsic={}",
+            valuation.extrinsic,
+            valuation.intrinsic
+        );
+        assert!(valuation.stderr.abs() <= 1.0e-9);
+    }
+
+    /// Optionality cannot destroy value: the stochastic LSM value must be at
+    /// least the intrinsic value (up to MC noise) and strictly above it for a
+    /// meaningful volatility level.
+    #[test]
+    fn storage_lsm_value_exceeds_intrinsic_for_positive_vol() {
+        let curve = storage_test_curve();
+        let contract = storage_test_contract();
+
+        let config = StorageLsmConfig {
+            num_paths: 4_000,
+            kappa: 1.5,
+            sigma: 0.5,
+            seed: 13,
+        };
+
+        let valuation =
+            value_storage_intrinsic_extrinsic(&contract, &curve, 0.03, 21, config).unwrap();
+
+        assert!(valuation.total.is_finite() && valuation.stderr.is_finite());
+        assert!(
+            valuation.extrinsic >= -3.0 * valuation.stderr,
+            "extrinsic={} stderr={}",
+            valuation.extrinsic,
+            valuation.stderr
+        );
+        assert!(
+            valuation.extrinsic > 0.0,
+            "expected strictly positive extrinsic value, got {}",
+            valuation.extrinsic
+        );
     }
 
     #[test]

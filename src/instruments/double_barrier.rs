@@ -64,24 +64,24 @@ impl DoubleBarrierOption {
 
     /// Validates instrument fields.
     pub fn validate(&self) -> Result<(), PricingError> {
-        if self.strike <= 0.0 {
+        if !self.strike.is_finite() || self.strike <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "double-barrier strike must be > 0".to_string(),
+                "double-barrier strike must be finite and > 0".to_string(),
             ));
         }
-        if self.expiry < 0.0 {
+        if !self.expiry.is_finite() || self.expiry < 0.0 {
             return Err(PricingError::InvalidInput(
-                "double-barrier expiry must be >= 0".to_string(),
+                "double-barrier expiry must be finite and >= 0".to_string(),
             ));
         }
-        if self.lower_barrier <= 0.0 {
+        if !self.lower_barrier.is_finite() || self.lower_barrier <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "double-barrier lower_barrier must be > 0".to_string(),
+                "double-barrier lower_barrier must be finite and > 0".to_string(),
             ));
         }
-        if self.upper_barrier <= 0.0 {
+        if !self.upper_barrier.is_finite() || self.upper_barrier <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "double-barrier upper_barrier must be > 0".to_string(),
+                "double-barrier upper_barrier must be finite and > 0".to_string(),
             ));
         }
         if self.lower_barrier >= self.upper_barrier {
@@ -89,9 +89,9 @@ impl DoubleBarrierOption {
                 "double-barrier lower_barrier must be < upper_barrier".to_string(),
             ));
         }
-        if self.rebate < 0.0 {
+        if !self.rebate.is_finite() || self.rebate < 0.0 {
             return Err(PricingError::InvalidInput(
-                "double-barrier rebate must be >= 0".to_string(),
+                "double-barrier rebate must be finite and >= 0".to_string(),
             ));
         }
         Ok(())
@@ -101,5 +101,59 @@ impl DoubleBarrierOption {
 impl Instrument for DoubleBarrierOption {
     fn instrument_type(&self) -> &str {
         "DoubleBarrierOption"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_option() -> DoubleBarrierOption {
+        DoubleBarrierOption::new(
+            OptionType::Call,
+            100.0,
+            1.0,
+            80.0,
+            120.0,
+            DoubleBarrierType::KnockOut,
+            0.0,
+        )
+    }
+
+    #[test]
+    fn validate_rejects_nan_fields() {
+        assert!(valid_option().validate().is_ok());
+
+        let cases: Vec<(&str, DoubleBarrierOption)> = vec![
+            ("NaN strike", {
+                let mut o = valid_option();
+                o.strike = f64::NAN;
+                o
+            }),
+            ("NaN expiry", {
+                let mut o = valid_option();
+                o.expiry = f64::NAN;
+                o
+            }),
+            ("NaN lower_barrier", {
+                let mut o = valid_option();
+                o.lower_barrier = f64::NAN;
+                o
+            }),
+            ("NaN upper_barrier", {
+                let mut o = valid_option();
+                o.upper_barrier = f64::NAN;
+                o
+            }),
+            ("NaN rebate", {
+                let mut o = valid_option();
+                o.rebate = f64::NAN;
+                o
+            }),
+        ];
+
+        for (label, option) in cases {
+            assert!(option.validate().is_err(), "{label} must be rejected");
+        }
     }
 }

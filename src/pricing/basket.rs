@@ -11,7 +11,7 @@
 //! - Gentle, J. (1993): higher-moment style refinements.
 //! - Higham, N. (2002): nearest correlation matrix projection.
 
-use crate::core::{OptionType, PricingError, PricingResult};
+use crate::core::{DiagKey, OptionType, PricingError, PricingResult};
 use crate::instruments::{
     BasketOption, BasketType, OutperformanceBasketOption, QuantoBasketOption,
 };
@@ -148,8 +148,11 @@ pub fn price_basket_mc_with_copula(
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("rho", average_off_diagonal(corr_matrix).unwrap_or(0.0));
+    diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(
+        DiagKey::Rho,
+        average_off_diagonal(corr_matrix).unwrap_or(0.0),
+    );
 
     PricingResult {
         price,
@@ -190,8 +193,8 @@ pub fn price_basket_mc_with_factor_model(
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("rho", 0.0);
+    diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(DiagKey::Rho, 0.0);
 
     PricingResult {
         price,
@@ -464,6 +467,10 @@ pub fn basket_sensitivities(
 ) -> Result<BasketSensitivities, PricingError> {
     validate_inputs_matrix(basket, spots, vols, corr_matrix, dividends, n_paths)?;
 
+    // Validation + PSD repair + Cholesky happen once: every spot/vol bump
+    // reuses the factorization, only the correlation bump re-factorizes.
+    let chol = prepare_basket_cholesky(corr_matrix, spots.len())?;
+
     let mut delta = vec![0.0_f64; spots.len()];
     for i in 0..spots.len() {
         let bump = (spots[i].abs() * SPOT_BUMP_REL).max(1.0e-4);
@@ -472,11 +479,11 @@ pub fn basket_sensitivities(
         up_spots[i] += bump;
         dn_spots[i] = (dn_spots[i] - bump).max(1.0e-8);
 
-        let up = simulate_basket_once_matrix(
+        let up = simulate_basket_with_cholesky(
             basket,
             &up_spots,
             vols,
-            corr_matrix,
+            &chol,
             r,
             dividends,
             n_paths,
@@ -484,11 +491,11 @@ pub fn basket_sensitivities(
             BasketCopula::Gaussian,
         )?
         .0;
-        let dn = simulate_basket_once_matrix(
+        let dn = simulate_basket_with_cholesky(
             basket,
             &dn_spots,
             vols,
-            corr_matrix,
+            &chol,
             r,
             dividends,
             n_paths,
@@ -507,11 +514,11 @@ pub fn basket_sensitivities(
         dn_vols[i] = (dn_vols[i] - VOL_BUMP_ABS).max(1.0e-6);
     }
 
-    let vega_up = simulate_basket_once_matrix(
+    let vega_up = simulate_basket_with_cholesky(
         basket,
         spots,
         &up_vols,
-        corr_matrix,
+        &chol,
         r,
         dividends,
         n_paths,
@@ -519,11 +526,11 @@ pub fn basket_sensitivities(
         BasketCopula::Gaussian,
     )?
     .0;
-    let vega_dn = simulate_basket_once_matrix(
+    let vega_dn = simulate_basket_with_cholesky(
         basket,
         spots,
         &dn_vols,
-        corr_matrix,
+        &chol,
         r,
         dividends,
         n_paths,
@@ -562,37 +569,61 @@ fn correlation_sensitivity(
         let up_corr = bump_corr_matrix(corr_matrix, bump);
         let dn_corr = bump_corr_matrix(corr_matrix, -bump);
 
-        let up = simulate_basket_once_matrix(
-            basket,
-            spots,
-            vols,
-            &up_corr,
-            r,
-            dividends,
-            n_paths,
-            MC_SEED,
-            BasketCopula::Gaussian,
-        );
-        let dn = simulate_basket_once_matrix(
-            basket,
-            spots,
-            vols,
-            &dn_corr,
-            r,
-            dividends,
-            n_paths,
-            MC_SEED,
-            BasketCopula::Gaussian,
-        );
+        let up_chol = prepare_basket_cholesky(&up_corr, spots.len());
+        let dn_chol = prepare_basket_cholesky(&dn_corr, spots.len());
 
-        if let (Ok((up_p, _)), Ok((dn_p, _))) = (up, dn) {
-            return (up_p - dn_p) / (2.0 * bump);
+        if let (Ok(up_chol), Ok(dn_chol)) = (up_chol, dn_chol) {
+            let up = simulate_basket_with_cholesky(
+                basket,
+                spots,
+                vols,
+                &up_chol,
+                r,
+                dividends,
+                n_paths,
+                MC_SEED,
+                BasketCopula::Gaussian,
+            );
+            let dn = simulate_basket_with_cholesky(
+                basket,
+                spots,
+                vols,
+                &dn_chol,
+                r,
+                dividends,
+                n_paths,
+                MC_SEED,
+                BasketCopula::Gaussian,
+            );
+
+            if let (Ok((up_p, _)), Ok((dn_p, _))) = (up, dn) {
+                return (up_p - dn_p) / (2.0 * bump);
+            }
         }
 
         bump *= 0.5;
     }
 
     f64::NAN
+}
+
+/// Validates/repairs a correlation matrix and returns its lower Cholesky factor.
+///
+/// Factored out of the per-simulation path so bump-and-reprice loops can do
+/// this once and reuse the factorization across bumps.
+fn prepare_basket_cholesky(
+    corr_matrix: &[Vec<f64>],
+    n_assets: usize,
+) -> Result<Vec<Vec<f64>>, PricingError> {
+    let (corr_matrix, _was_repaired) = validate_or_repair_correlation_matrix(
+        corr_matrix,
+        n_assets,
+        PsdProjectionConfig::default(),
+    )
+    .map_err(PricingError::InvalidInput)?;
+    cholesky_lower_psd(&corr_matrix, 1.0e-12).ok_or_else(|| {
+        PricingError::InvalidInput("basket correlation matrix is not PSD".to_string())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -608,7 +639,26 @@ fn simulate_basket_once_matrix(
     copula: BasketCopula,
 ) -> Result<(f64, f64), PricingError> {
     validate_inputs_matrix(basket, spots, vols, corr_matrix, dividends, n_paths)?;
+    let chol = prepare_basket_cholesky(corr_matrix, spots.len())?;
+    simulate_basket_with_cholesky(
+        basket, spots, vols, &chol, r, dividends, n_paths, seed, copula,
+    )
+}
 
+/// Core basket Monte Carlo loop on pre-validated inputs and a prepared
+/// Cholesky factor.
+#[allow(clippy::too_many_arguments)]
+fn simulate_basket_with_cholesky(
+    basket: &BasketOption,
+    spots: &[f64],
+    vols: &[f64],
+    chol: &[Vec<f64>],
+    r: f64,
+    dividends: &[f64],
+    n_paths: usize,
+    seed: u64,
+    copula: BasketCopula,
+) -> Result<(f64, f64), PricingError> {
     if basket.maturity <= 0.0 {
         let payoff = terminal_payoff(basket, spots, spots);
         return Ok((payoff, 0.0));
@@ -618,15 +668,6 @@ fn simulate_basket_once_matrix(
     let t = basket.maturity;
     let sqrt_t = t.sqrt();
     let discount = (-r * t).exp();
-    let (corr_matrix, _was_repaired) = validate_or_repair_correlation_matrix(
-        corr_matrix,
-        n_assets,
-        PsdProjectionConfig::default(),
-    )
-    .map_err(PricingError::InvalidInput)?;
-    let chol = cholesky_lower_psd(&corr_matrix, 1.0e-12).ok_or_else(|| {
-        PricingError::InvalidInput("basket correlation matrix is not PSD".to_string())
-    })?;
 
     let drift = vols
         .iter()
@@ -650,12 +691,12 @@ fn simulate_basket_once_matrix(
                 for z in &mut indep {
                     *z = sample_standard_normal(&mut rng);
                 }
-                correlate_normals(&chol, &indep, &mut corr);
+                correlate_normals(chol, &indep, &mut corr);
                 normals.copy_from_slice(&corr);
             }
             BasketCopula::StudentT { .. } => {
                 sample_copula_uniforms_from_cholesky(
-                    &chol,
+                    chol,
                     copula.to_core(),
                     &mut rng,
                     &mut uniforms,

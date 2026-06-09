@@ -34,24 +34,24 @@ impl BarrierOption {
 
     /// Validates instrument fields.
     pub fn validate(&self) -> Result<(), PricingError> {
-        if self.strike <= 0.0 {
+        if !self.strike.is_finite() || self.strike <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "barrier strike must be > 0".to_string(),
+                "barrier strike must be finite and > 0".to_string(),
             ));
         }
-        if self.expiry < 0.0 {
+        if !self.expiry.is_finite() || self.expiry < 0.0 {
             return Err(PricingError::InvalidInput(
-                "barrier expiry must be >= 0".to_string(),
+                "barrier expiry must be finite and >= 0".to_string(),
             ));
         }
-        if self.barrier.level <= 0.0 {
+        if !self.barrier.level.is_finite() || self.barrier.level <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "barrier level must be > 0".to_string(),
+                "barrier level must be finite and > 0".to_string(),
             ));
         }
-        if self.barrier.rebate < 0.0 {
+        if !self.barrier.rebate.is_finite() || self.barrier.rebate < 0.0 {
             return Err(PricingError::InvalidInput(
-                "barrier rebate must be >= 0".to_string(),
+                "barrier rebate must be finite and >= 0".to_string(),
             ));
         }
         Ok(())
@@ -174,5 +174,53 @@ impl BarrierOptionBuilder {
         };
         option.validate()?;
         Ok(option)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_option() -> BarrierOption {
+        BarrierOption::builder()
+            .call()
+            .strike(100.0)
+            .expiry(1.0)
+            .up_and_out(120.0)
+            .rebate(1.0)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn validate_rejects_nan_fields() {
+        let cases: Vec<(&str, BarrierOption)> = vec![
+            ("NaN strike", {
+                let mut o = valid_option();
+                o.strike = f64::NAN;
+                o
+            }),
+            ("NaN expiry", {
+                let mut o = valid_option();
+                o.expiry = f64::NAN;
+                o
+            }),
+            ("NaN barrier level", {
+                let mut o = valid_option();
+                o.barrier.level = f64::NAN;
+                o
+            }),
+            ("NaN rebate", {
+                let mut o = valid_option();
+                o.barrier.rebate = f64::NAN;
+                o
+            }),
+        ];
+
+        for (label, option) in cases {
+            assert!(option.validate().is_err(), "{label} must be rejected");
+        }
+
+        assert!(valid_option().validate().is_ok());
     }
 }

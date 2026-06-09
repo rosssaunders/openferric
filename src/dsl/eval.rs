@@ -27,6 +27,38 @@ fn f64_to_bool(v: f64) -> bool {
     v != 0.0
 }
 
+// ── NaN semantics ──────────────────────────────────────────────────
+//
+// min/max/worst_of/best_of are NaN-propagating in every backend (scalar
+// interpreter, AVX2/NEON batch, Cranelift JIT): a NaN operand poisons the
+// result instead of being silently dropped. In a pricing DSL, NaN signals an
+// upstream error (e.g. division by zero) that must surface in the PV.
+//
+// Equality (`==`/`!=`) uses an absolute `f64::EPSILON` tolerance,
+// consistently across all three backends: `a == b` is true iff
+// `|a - b| < f64::EPSILON`. Note this is an *absolute* tolerance, so values
+// that differ by less than ~2.2e-16 compare equal regardless of magnitude.
+
+/// NaN-propagating minimum (unlike `f64::min`, which drops NaN).
+#[inline]
+fn nan_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
+}
+
+/// NaN-propagating maximum (unlike `f64::max`, which drops NaN).
+#[inline]
+fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 // ── Packed instruction format ──────────────────────────────────────
 
 /// A single 4-byte packed VM instruction.
@@ -174,10 +206,23 @@ struct ObservationPoint {
 
 // ── Program builder ────────────────────────────────────────────────
 
+/// Build a `CompileError` for a value that does not fit a u16 operand.
+fn operand_u16(value: usize, what: &str) -> Result<u16, DslError> {
+    u16::try_from(value).map_err(|_| DslError::CompileError {
+        message: format!(
+            "{what} {value} exceeds the bytecode operand limit of {}",
+            u16::MAX
+        ),
+        span: None,
+    })
+}
+
 #[derive(Debug, Default)]
 struct ProgramBuilder {
     code: Vec<Instruction>,
     constants: Vec<f64>,
+    /// f64 bit pattern → constant pool index, for O(1) deduplication.
+    constant_index: std::collections::HashMap<u64, u16>,
     stack_depth: usize,
     max_stack: usize,
 }
@@ -194,24 +239,24 @@ impl ProgramBuilder {
         idx
     }
 
-    fn add_constant(&mut self, value: f64) -> u16 {
+    fn add_constant(&mut self, value: f64) -> Result<u16, DslError> {
         let bits = value.to_bits();
-        for (i, c) in self.constants.iter().enumerate() {
-            if c.to_bits() == bits {
-                return i as u16;
-            }
+        if let Some(&idx) = self.constant_index.get(&bits) {
+            return Ok(idx);
         }
-        let idx = self.constants.len();
+        let idx = operand_u16(self.constants.len(), "constant pool index")?;
         self.constants.push(value);
-        idx as u16
+        self.constant_index.insert(bits, idx);
+        Ok(idx)
     }
 
-    fn patch_jump(&mut self, idx: usize, target: usize) {
+    fn patch_jump(&mut self, idx: usize, target: usize) -> Result<(), DslError> {
         debug_assert!(
             self.code[idx].opcode == opcode::JUMP || self.code[idx].opcode == opcode::JUMP_FALSE,
             "attempted to patch non-jump opcode"
         );
-        self.code[idx].operand = target as u16;
+        self.code[idx].operand = operand_u16(target, "jump target")?;
+        Ok(())
     }
 
     fn build(self) -> Program {
@@ -285,6 +330,16 @@ pub(crate) fn build_execution_plan(
         let num_dates = schedule.dates.len();
         let mut observations = Vec::with_capacity(num_dates);
         for (date_idx, &obs_date) in schedule.dates.iter().enumerate() {
+            // Observation dates beyond maturity cannot be simulated: spots
+            // would be taken from the clamped last step while the discount
+            // factor uses the full observation date. The DSL compiler
+            // truncates such dates; hand-built or deserialized products must
+            // not contain them.
+            if obs_date > maturity + 1e-9 {
+                return Err(DslError::EvalError(format!(
+                    "schedule observation date {obs_date} exceeds product maturity {maturity}"
+                )));
+            }
             let mut step_idx = if maturity > 0.0 {
                 (obs_date * step_scale).round() as usize
             } else {
@@ -329,6 +384,79 @@ pub(crate) fn build_execution_plan(
 
 // ── Public evaluation entry points ─────────────────────────────────
 
+/// Reusable product evaluator holding a compiled execution plan plus scratch
+/// buffers.
+///
+/// Build it once per (product, num_steps, rate) combination and call
+/// [`ProductEvaluator::evaluate`] for each Monte Carlo path. This avoids
+/// rebuilding the execution plan and reallocating scratch (locals, state,
+/// stack, snapshot spots) on every call, which is what the one-shot
+/// [`evaluate_product`] convenience function has to do.
+#[derive(Debug, Clone)]
+pub struct ProductEvaluator {
+    product: CompiledProduct,
+    plan: ProductExecutionPlan,
+    locals: Vec<f64>,
+    state: Vec<f64>,
+    stack: Vec<f64>,
+    observation_spots: Vec<Vec<f64>>,
+}
+
+impl ProductEvaluator {
+    /// Compile the execution plan and allocate reusable scratch buffers.
+    pub fn new(product: &CompiledProduct, num_steps: usize, rate: f64) -> Result<Self, DslError> {
+        let plan = build_execution_plan(product, num_steps, rate)?;
+        let locals = vec![0.0_f64; product.max_local_slots()];
+        let state = vec![0.0_f64; product.state_vars.len()];
+        let stack = vec![0.0_f64; plan.max_stack()];
+        let observation_spots = vec![Vec::new(); plan.snapshot_count()];
+        Ok(Self {
+            product: product.clone(),
+            plan,
+            locals,
+            state,
+            stack,
+            observation_spots,
+        })
+    }
+
+    /// Evaluate one simulated path.
+    ///
+    /// `path_spots[step][asset]` holds the spot of each asset at each time
+    /// step (`num_steps + 1` entries including step 0); `initial_spots` holds
+    /// the time-0 spots used for performance calculations.
+    pub fn evaluate(
+        &mut self,
+        path_spots: &[Vec<f64>],
+        initial_spots: &[f64],
+    ) -> Result<f64, DslError> {
+        for (step_idx, spots) in path_spots.iter().enumerate() {
+            if let Some(snapshot_index) = self.plan.snapshot_index_for_step(step_idx) {
+                // Copy into the reusable buffer instead of cloning the Vec.
+                let dst = &mut self.observation_spots[snapshot_index];
+                dst.clear();
+                dst.extend_from_slice(spots);
+            }
+        }
+
+        evaluate_product_with_plan_in_place(
+            &self.product,
+            &self.plan,
+            &self.observation_spots,
+            initial_spots,
+            &mut self.locals,
+            &mut self.state,
+            &mut self.stack,
+        )
+    }
+}
+
+/// One-shot convenience wrapper: builds a [`ProductEvaluator`] and evaluates
+/// a single path.
+///
+/// For repeated evaluation (e.g. Monte Carlo loops), construct a
+/// [`ProductEvaluator`] once and call `evaluate` per path to reuse the
+/// execution plan and scratch buffers.
 pub fn evaluate_product(
     product: &CompiledProduct,
     path_spots: &[Vec<f64>],
@@ -336,48 +464,8 @@ pub fn evaluate_product(
     num_steps: usize,
     rate: f64,
 ) -> Result<f64, DslError> {
-    let plan = build_execution_plan(product, num_steps, rate)?;
-    let num_locals = product.max_local_slots();
-    let mut locals = vec![0.0_f64; num_locals];
-    let mut state = vec![0.0_f64; product.state_vars.len()];
-    let mut stack = vec![0.0_f64; plan.max_stack()];
-
-    evaluate_product_in_place(
-        product,
-        &plan,
-        path_spots,
-        initial_spots,
-        &mut locals,
-        &mut state,
-        &mut stack,
-    )
-}
-
-pub(crate) fn evaluate_product_in_place(
-    product: &CompiledProduct,
-    plan: &ProductExecutionPlan,
-    path_spots: &[Vec<f64>],
-    initial_spots: &[f64],
-    locals: &mut [f64],
-    state: &mut [f64],
-    stack: &mut [f64],
-) -> Result<f64, DslError> {
-    let mut observation_spots = vec![Vec::new(); plan.snapshot_count()];
-    for (step_idx, spots) in path_spots.iter().enumerate() {
-        if let Some(snapshot_index) = plan.snapshot_index_for_step(step_idx) {
-            observation_spots[snapshot_index] = spots.clone();
-        }
-    }
-
-    evaluate_product_with_plan_in_place(
-        product,
-        plan,
-        &observation_spots,
-        initial_spots,
-        locals,
-        state,
-        stack,
-    )
+    let mut evaluator = ProductEvaluator::new(product, num_steps, rate)?;
+    evaluator.evaluate(path_spots, initial_spots)
 }
 
 pub(crate) fn evaluate_product_with_plan_in_place(
@@ -640,6 +728,40 @@ unsafe fn x86_abs(value: std::arch::x86_64::__m256d) -> std::arch::x86_64::__m25
     unsafe { _mm256_andnot_pd(_mm256_set1_pd(-0.0), value) }
 }
 
+/// NaN-propagating SIMD minimum.
+///
+/// `_mm256_min_pd` returns the second operand when either operand is NaN,
+/// which silently drops NaN depending on operand order. Blend in NaN whenever
+/// either operand is unordered so the scalar/AVX2/NEON/JIT backends agree.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn x86_min_nan_propagating(
+    a: std::arch::x86_64::__m256d,
+    b: std::arch::x86_64::__m256d,
+) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::{_CMP_UNORD_Q, _mm256_blendv_pd, _mm256_cmp_pd, _mm256_min_pd};
+    unsafe {
+        let raw = _mm256_min_pd(a, b);
+        let any_nan = _mm256_cmp_pd(a, b, _CMP_UNORD_Q);
+        _mm256_blendv_pd(raw, x86_splat(f64::NAN), any_nan)
+    }
+}
+
+/// NaN-propagating SIMD maximum (see [`x86_min_nan_propagating`]).
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline]
+unsafe fn x86_max_nan_propagating(
+    a: std::arch::x86_64::__m256d,
+    b: std::arch::x86_64::__m256d,
+) -> std::arch::x86_64::__m256d {
+    use std::arch::x86_64::{_CMP_UNORD_Q, _mm256_blendv_pd, _mm256_cmp_pd, _mm256_max_pd};
+    unsafe {
+        let raw = _mm256_max_pd(a, b);
+        let any_nan = _mm256_cmp_pd(a, b, _CMP_UNORD_Q);
+        _mm256_blendv_pd(raw, x86_splat(f64::NAN), any_nan)
+    }
+}
+
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[inline]
 unsafe fn x86_bool_mask(value: std::arch::x86_64::__m256d) -> std::arch::x86_64::__m256d {
@@ -822,12 +944,12 @@ unsafe fn execute_program_batch_x86_range(
             opcode::MIN => unsafe {
                 let rhs = stack.pop_reg();
                 let lhs = stack.pop_reg();
-                stack.push_reg(_mm256_min_pd(lhs, rhs));
+                stack.push_reg(x86_min_nan_propagating(lhs, rhs));
             },
             opcode::MAX => unsafe {
                 let rhs = stack.pop_reg();
                 let lhs = stack.pop_reg();
-                stack.push_reg(_mm256_max_pd(lhs, rhs));
+                stack.push_reg(x86_max_nan_propagating(lhs, rhs));
             },
 
             opcode::EQ => unsafe {
@@ -898,7 +1020,7 @@ unsafe fn execute_program_batch_x86_range(
                 let arg_count = inst.operand as usize;
                 let mut min_value = x86_splat(f64::INFINITY);
                 for _ in 0..arg_count {
-                    min_value = _mm256_min_pd(min_value, stack.pop_reg());
+                    min_value = x86_min_nan_propagating(min_value, stack.pop_reg());
                 }
                 stack.push_reg(min_value);
             },
@@ -906,7 +1028,7 @@ unsafe fn execute_program_batch_x86_range(
                 let arg_count = inst.operand as usize;
                 let mut max_value = x86_splat(f64::NEG_INFINITY);
                 for _ in 0..arg_count {
-                    max_value = _mm256_max_pd(max_value, stack.pop_reg());
+                    max_value = x86_max_nan_propagating(max_value, stack.pop_reg());
                 }
                 stack.push_reg(max_value);
             },
@@ -1027,7 +1149,7 @@ unsafe fn compute_worst_of_performance_batch_x86(
             let spot = unsafe { load_f64x4(lane_spots, 0) };
             let inv_initial = unsafe { x86_splat(1.0 / initial_spots[asset]) };
             let perf = _mm256_mul_pd(spot, inv_initial);
-            wof = _mm256_min_pd(wof, perf);
+            wof = unsafe { x86_min_nan_propagating(wof, perf) };
         }
     }
     wof
@@ -1047,7 +1169,7 @@ unsafe fn compute_best_of_performance_batch_x86(
             let spot = unsafe { load_f64x4(lane_spots, 0) };
             let inv_initial = unsafe { x86_splat(1.0 / initial_spots[asset]) };
             let perf = _mm256_mul_pd(spot, inv_initial);
-            bof = _mm256_max_pd(bof, perf);
+            bof = unsafe { x86_max_nan_propagating(bof, perf) };
         }
     }
     bof
@@ -1309,6 +1431,8 @@ unsafe fn execute_program_batch_neon_range(
                 let value = stack.pop_reg();
                 stack.push_reg(simd_ln_f64x2(value));
             },
+            // NEON FMIN/FMAX (vminq_f64/vmaxq_f64) propagate NaN natively,
+            // matching the scalar interpreter's nan_min/nan_max semantics.
             opcode::MIN => unsafe {
                 let rhs = stack.pop_reg();
                 let lhs = stack.pop_reg();
@@ -1555,7 +1679,8 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
     match stmt {
         Statement::Let { slot, expr } => {
             compile_expr(expr, builder)?;
-            builder.emit(opcode::STORE_LOCAL, *slot as u16, -1);
+            let slot = operand_u16(*slot, "local slot")?;
+            builder.emit(opcode::STORE_LOCAL, slot, -1);
         }
         Statement::If {
             condition,
@@ -1566,13 +1691,13 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
             let jump_if_false = builder.emit(opcode::JUMP_FALSE, u16::MAX, -1);
             compile_statement_block(then_body, builder)?;
             if else_body.is_empty() {
-                builder.patch_jump(jump_if_false, builder.code.len());
+                builder.patch_jump(jump_if_false, builder.code.len())?;
             } else {
                 let jump_end = builder.emit(opcode::JUMP, u16::MAX, 0);
                 let else_start = builder.code.len();
-                builder.patch_jump(jump_if_false, else_start);
+                builder.patch_jump(jump_if_false, else_start)?;
                 compile_statement_block(else_body, builder)?;
-                builder.patch_jump(jump_end, builder.code.len());
+                builder.patch_jump(jump_end, builder.code.len())?;
             }
         }
         Statement::Pay { amount } => {
@@ -1585,7 +1710,8 @@ fn compile_statement(stmt: &Statement, builder: &mut ProgramBuilder) -> Result<(
         }
         Statement::SetState { slot, expr } => {
             compile_expr(expr, builder)?;
-            builder.emit(opcode::STORE_STATE, *slot as u16, -1);
+            let slot = operand_u16(*slot, "state slot")?;
+            builder.emit(opcode::STORE_STATE, slot, -1);
         }
         Statement::Skip => {
             builder.emit(opcode::SKIP, 0, 0);
@@ -1600,7 +1726,7 @@ fn compile_expr(expr: &Expr, builder: &mut ProgramBuilder) -> Result<(), DslErro
     match expr {
         Expr::Literal(v) => match v {
             Value::F64(x) => {
-                let idx = builder.add_constant(*x);
+                let idx = builder.add_constant(*x)?;
                 builder.emit(opcode::PUSH_CONST, idx, 1);
             }
             Value::Bool(true) => {
@@ -1611,10 +1737,12 @@ fn compile_expr(expr: &Expr, builder: &mut ProgramBuilder) -> Result<(), DslErro
             }
         },
         Expr::LocalVar(slot) => {
-            builder.emit(opcode::PUSH_LOCAL, *slot as u16, 1);
+            let slot = operand_u16(*slot, "local slot")?;
+            builder.emit(opcode::PUSH_LOCAL, slot, 1);
         }
         Expr::StateVar(slot) => {
-            builder.emit(opcode::PUSH_STATE, *slot as u16, 1);
+            let slot = operand_u16(*slot, "state slot")?;
+            builder.emit(opcode::PUSH_STATE, slot, 1);
         }
         Expr::Notional => {
             builder.emit(opcode::PUSH_NOTIONAL, 0, 1);
@@ -1667,7 +1795,8 @@ fn compile_builtin(
                 for arg in args {
                     compile_expr(arg, builder)?;
                 }
-                builder.emit(opcode::WORST_OF, args.len() as u16, 1 - args.len() as isize);
+                let count = operand_u16(args.len(), "worst_of argument count")?;
+                builder.emit(opcode::WORST_OF, count, 1 - args.len() as isize);
             }
         }
         BuiltinFn::BestOf => {
@@ -1685,7 +1814,8 @@ fn compile_builtin(
                 for arg in args {
                     compile_expr(arg, builder)?;
                 }
-                builder.emit(opcode::BEST_OF, args.len() as u16, 1 - args.len() as isize);
+                let count = operand_u16(args.len(), "best_of argument count")?;
+                builder.emit(opcode::BEST_OF, count, 1 - args.len() as isize);
             }
         }
         BuiltinFn::Price => {
@@ -1835,15 +1965,17 @@ fn execute_program(
             opcode::MIN => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(lhs.min(rhs));
+                stack.push(nan_min(lhs, rhs));
             }
             opcode::MAX => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
-                stack.push(lhs.max(rhs));
+                stack.push(nan_max(lhs, rhs));
             }
 
             // ── Comparison / Logic ─────────────────────────────
+            // Equality uses an absolute f64::EPSILON tolerance (see the
+            // "NaN semantics" note at the top of this file).
             opcode::EQ => {
                 let rhs = stack.pop();
                 let lhs = stack.pop();
@@ -1900,10 +2032,7 @@ fn execute_program(
                 let arg_count = inst.operand as usize;
                 let mut min_val = f64::INFINITY;
                 for _ in 0..arg_count {
-                    let v = stack.pop();
-                    if v < min_val {
-                        min_val = v;
-                    }
+                    min_val = nan_min(min_val, stack.pop());
                 }
                 stack.push(min_val);
             }
@@ -1911,10 +2040,7 @@ fn execute_program(
                 let arg_count = inst.operand as usize;
                 let mut max_val = f64::NEG_INFINITY;
                 for _ in 0..arg_count {
-                    let v = stack.pop();
-                    if v > max_val {
-                        max_val = v;
-                    }
+                    max_val = nan_max(max_val, stack.pop());
                 }
                 stack.push(max_val);
             }
@@ -1983,10 +2109,7 @@ fn compute_worst_of_performance(ctx: &EvalContext<'_>) -> f64 {
     let mut wof = f64::INFINITY;
     for (i, &spot) in ctx.spots.iter().enumerate() {
         if i < ctx.initial_spots.len() && ctx.initial_spots[i] > 0.0 {
-            let perf = spot / ctx.initial_spots[i];
-            if perf < wof {
-                wof = perf;
-            }
+            wof = nan_min(wof, spot / ctx.initial_spots[i]);
         }
     }
     wof
@@ -1997,10 +2120,7 @@ fn compute_best_of_performance(ctx: &EvalContext<'_>) -> f64 {
     let mut bof = f64::NEG_INFINITY;
     for (i, &spot) in ctx.spots.iter().enumerate() {
         if i < ctx.initial_spots.len() && ctx.initial_spots[i] > 0.0 {
-            let perf = spot / ctx.initial_spots[i];
-            if perf > bof {
-                bof = perf;
-            }
+            bof = nan_max(bof, spot / ctx.initial_spots[i]);
         }
     }
     bof
@@ -2313,6 +2433,227 @@ mod tests {
         let pv = evaluate_product(&product, &path_spots, &initial_spots, num_steps, 0.0).unwrap();
         // redeem 100 * 0.90 = 90, rate=0 so no discounting
         assert!((pv - 90.0).abs() < 0.01, "expected 90.0, got {pv}");
+    }
+
+    /// Product that redeems `func(1.0/0.0, 5.0)` at t=1.0; the first argument
+    /// evaluates to NaN at runtime, which must propagate through min/max.
+    fn nan_probe_product(func: BuiltinFn, nan_first: bool) -> CompiledProduct {
+        let nan_expr = Expr::BinOp {
+            op: BinOp::Div,
+            lhs: Box::new(Expr::Literal(Value::F64(1.0))),
+            rhs: Box::new(Expr::Literal(Value::F64(0.0))),
+        };
+        let five = Expr::Literal(Value::F64(5.0));
+        let args = if nan_first {
+            vec![nan_expr, five]
+        } else {
+            vec![five, nan_expr]
+        };
+        CompiledProduct {
+            name: "NaN probe".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::Call { func, args },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn scalar_min_max_worst_best_propagate_nan() {
+        let initial_spots = vec![100.0];
+        let path_spots = vec![vec![100.0], vec![100.0]];
+        for func in [
+            BuiltinFn::Min,
+            BuiltinFn::Max,
+            BuiltinFn::WorstOf,
+            BuiltinFn::BestOf,
+        ] {
+            for nan_first in [true, false] {
+                let product = nan_probe_product(func, nan_first);
+                let pv = evaluate_product(&product, &path_spots, &initial_spots, 1, 0.0).unwrap();
+                assert!(
+                    pv.is_nan(),
+                    "{func:?} (nan_first={nan_first}) must propagate NaN, got {pv}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[test]
+    fn batched_x86_min_max_worst_best_propagate_nan() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
+            return;
+        }
+        for func in [
+            BuiltinFn::Min,
+            BuiltinFn::Max,
+            BuiltinFn::WorstOf,
+            BuiltinFn::BestOf,
+        ] {
+            for nan_first in [true, false] {
+                let product = nan_probe_product(func, nan_first);
+                let plan = build_execution_plan(&product, 1, 0.0).unwrap();
+                let observation_spots =
+                    vec![vec![[100.0; SIMD_BATCH_LANES_X86]; 1]; plan.snapshot_count()];
+                let mut locals = vec![[0.0; SIMD_BATCH_LANES_X86]; product.max_local_slots()];
+                let mut state = vec![[0.0; SIMD_BATCH_LANES_X86]; product.state_vars.len()];
+                let mut stack = vec![[0.0; SIMD_BATCH_LANES_X86]; plan.max_stack()];
+                let pv = evaluate_product_with_plan_batch_x86(
+                    &product,
+                    &plan,
+                    &observation_spots,
+                    &[100.0],
+                    &mut locals,
+                    &mut state,
+                    &mut stack,
+                )
+                .unwrap();
+                for (lane, v) in pv.iter().enumerate() {
+                    assert!(
+                        v.is_nan(),
+                        "{func:?} (nan_first={nan_first}) lane {lane} must be NaN, got {v}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    #[test]
+    fn batched_neon_min_max_worst_best_propagate_nan() {
+        for func in [
+            BuiltinFn::Min,
+            BuiltinFn::Max,
+            BuiltinFn::WorstOf,
+            BuiltinFn::BestOf,
+        ] {
+            for nan_first in [true, false] {
+                let product = nan_probe_product(func, nan_first);
+                let plan = build_execution_plan(&product, 1, 0.0).unwrap();
+                let observation_spots =
+                    vec![vec![[100.0; SIMD_BATCH_LANES_NEON]; 1]; plan.snapshot_count()];
+                let mut locals = vec![[0.0; SIMD_BATCH_LANES_NEON]; product.max_local_slots()];
+                let mut state = vec![[0.0; SIMD_BATCH_LANES_NEON]; product.state_vars.len()];
+                let mut stack = vec![[0.0; SIMD_BATCH_LANES_NEON]; plan.max_stack()];
+                let pv = evaluate_product_with_plan_batch_neon(
+                    &product,
+                    &plan,
+                    &observation_spots,
+                    &[100.0],
+                    &mut locals,
+                    &mut state,
+                    &mut stack,
+                )
+                .unwrap();
+                for (lane, v) in pv.iter().enumerate() {
+                    assert!(
+                        v.is_nan(),
+                        "{func:?} (nan_first={nan_first}) lane {lane} must be NaN, got {v}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_rejects_observation_dates_beyond_maturity() {
+        let product = make_simple_autocallable(
+            1_000_000.0,
+            1.0,                 // maturity
+            vec![0.5, 1.0, 2.0], // 2.0 is beyond maturity
+            1.0,
+            0.08,
+            0.60,
+        );
+        let err = build_execution_plan(&product, 4, 0.05).unwrap_err();
+        match err {
+            DslError::EvalError(msg) => {
+                assert!(msg.contains("exceeds product maturity"), "got: {msg}");
+            }
+            other => panic!("expected EvalError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn product_evaluator_reuse_matches_one_shot() {
+        let product = make_simple_autocallable(
+            1_000_000.0,
+            1.5,
+            vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+            1.0,
+            0.08,
+            0.60,
+        );
+        let initial_spots = vec![100.0];
+        let num_steps = 6;
+        let paths: Vec<Vec<Vec<f64>>> = vec![
+            (0..=num_steps).map(|_| vec![105.0]).collect(),
+            (0..=num_steps)
+                .map(|s| vec![100.0 - 8.0 * s as f64])
+                .collect(),
+            (0..=num_steps).map(|_| vec![90.0]).collect(),
+        ];
+
+        let mut evaluator = ProductEvaluator::new(&product, num_steps, 0.05).unwrap();
+        for path in &paths {
+            let reused = evaluator.evaluate(path, &initial_spots).unwrap();
+            let one_shot =
+                evaluate_product(&product, path, &initial_spots, num_steps, 0.05).unwrap();
+            assert!(
+                (reused - one_shot).abs() < 1e-12,
+                "evaluator reuse {reused} != one-shot {one_shot}"
+            );
+        }
+    }
+
+    #[test]
+    fn too_many_local_slots_is_compile_error_not_truncation() {
+        // A Let with slot index beyond u16::MAX must fail to compile.
+        let product = CompiledProduct {
+            name: "Overflow".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Let {
+                    slot: u16::MAX as usize + 1,
+                    expr: Expr::Literal(Value::F64(1.0)),
+                }],
+            }],
+        };
+        let err = build_execution_plan(&product, 1, 0.0).unwrap_err();
+        match err {
+            DslError::CompileError { message, .. } => {
+                assert!(message.contains("operand limit"), "got: {message}");
+            }
+            other => panic!("expected CompileError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_constant_dedupes_and_caps() {
+        let mut builder = ProgramBuilder::default();
+        let a = builder.add_constant(1.5).unwrap();
+        let b = builder.add_constant(1.5).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(builder.constants.len(), 1);
+        // NaN constants dedupe by bit pattern too.
+        let n1 = builder.add_constant(f64::NAN).unwrap();
+        let n2 = builder.add_constant(f64::NAN).unwrap();
+        assert_eq!(n1, n2);
     }
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]

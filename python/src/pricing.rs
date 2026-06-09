@@ -18,7 +18,8 @@ use openferric_core::pricing::asian::{
 };
 use openferric_core::pricing::autocallable::{
     AutocallableSensitivities as CoreAutocallableSensitivities, autocallable_sensitivities,
-    phoenix_autocallable_sensitivities, price_autocallable, price_phoenix_autocallable,
+    phoenix_autocallable_sensitivities, price_autocallable_with_greeks,
+    price_phoenix_autocallable_with_greeks,
 };
 use openferric_core::pricing::barrier::{
     barrier_price_closed_form, barrier_price_closed_form_with_carry_and_rebate, barrier_price_mc,
@@ -1404,7 +1405,7 @@ pub fn py_price_autocallable(
     num_paths: usize,
     num_steps: usize,
 ) -> PricingResult {
-    PricingResult::from_core(price_autocallable(
+    PricingResult::from_core(price_autocallable_with_greeks(
         &autocall.to_core(),
         &spots,
         &vols,
@@ -1454,7 +1455,7 @@ pub fn py_price_phoenix_autocallable(
     num_paths: usize,
     num_steps: usize,
 ) -> PricingResult {
-    PricingResult::from_core(price_phoenix_autocallable(
+    PricingResult::from_core(price_phoenix_autocallable_with_greeks(
         &phoenix.to_core(),
         &spots,
         &vols,

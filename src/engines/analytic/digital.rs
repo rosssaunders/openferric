@@ -110,15 +110,15 @@ fn cash_or_nothing_greeks(
     let delta = sign * cash * df_r * npd2 / (spot * sig_sqrt_t);
     let gamma = -sign * cash * df_r * npd2 * d1 / (spot * spot * vol * vol * expiry);
 
-    // ∂d2/∂σ = -d1/σ, so vega_raw = sign * C·df_r·n(d2)·(-d1/σ)
-    let vega = -sign * cash * df_r * npd2 * d1 / vol / 100.0;
+    // ∂d2/∂σ = -d1/σ, so vega = sign * C·df_r·n(d2)·(-d1/σ) (raw, per unit vol)
+    let vega = -sign * cash * df_r * npd2 * d1 / vol;
 
     // theta = -∂P/∂T, with ∂d2/∂T = (r - q - σ²/2)/(σ√T) - d2/(2T)
     let dd2_dt = (rate - q - 0.5 * vol * vol) / sig_sqrt_t - d2 / (2.0 * expiry);
     let theta = cash * df_r * (rate * nd2_signed - sign * npd2 * dd2_dt);
 
-    // rho = ∂P/∂r = C·df_r·(-T·Nd2_signed + sign·n(d2)·√T/σ), per 1%
-    let rho = cash * df_r * (-expiry * nd2_signed + sign * npd2 * sqrt_t / vol) / 100.0;
+    // rho = ∂P/∂r = C·df_r·(-T·Nd2_signed + sign·n(d2)·√T/σ) (raw, per unit rate)
+    let rho = cash * df_r * (-expiry * nd2_signed + sign * npd2 * sqrt_t / vol);
 
     Greeks {
         delta,
@@ -162,15 +162,15 @@ fn asset_or_nothing_greeks(
     // gamma = -sign·df_q·n(d1)·d2/(S·σ²·T), since ∂d1/∂S = 1/(S·σ·√T)
     let gamma = -sign * df_q * npd1 * d2 / (spot * vol * vol * expiry);
 
-    // vega_raw = -sign·S·df_q·n(d1)·d2/σ (since ∂d1/∂σ = -d2/σ)
-    let vega = -sign * spot * df_q * npd1 * d2 / vol / 100.0;
+    // vega = -sign·S·df_q·n(d1)·d2/σ (since ∂d1/∂σ = -d2/σ; raw, per unit vol)
+    let vega = -sign * spot * df_q * npd1 * d2 / vol;
 
     // theta = -∂P/∂T, with ∂d1/∂T = (r - q + σ²/2)/(σ√T) - d1/(2T)
     let dd1_dt = (rate - q + 0.5 * vol * vol) / sig_sqrt_t - d1 / (2.0 * expiry);
     let theta = spot * df_q * (q * nd1_signed - sign * npd1 * dd1_dt);
 
-    // rho = sign·S·df_q·n(d1)·√T/σ (since ∂d1/∂r = √T/σ), per 1%
-    let rho = sign * spot * df_q * npd1 * sqrt_t / vol / 100.0;
+    // rho = sign·S·df_q·n(d1)·√T/σ (since ∂d1/∂r = √T/σ; raw, per unit rate)
+    let rho = sign * spot * df_q * npd1 * sqrt_t / vol;
 
     Greeks {
         delta,
@@ -554,19 +554,19 @@ mod tests {
         assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
         assert_relative_eq!(g.gamma, fd_gamma, epsilon = 1e-2);
 
-        // Vega (per 1%): bump vol by 0.01 (1%), compare to analytic
+        // Vega (raw, per unit vol)
         let dv = 1e-5;
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv) / 100.0;
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
 
-        // Rho (per 1%)
+        // Rho (raw, per unit rate)
         let dr = 1e-5;
         let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
         let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
-        let fd_rho = (p_rup - p_rdn) / (2.0 * dr) / 100.0;
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-4);
+        let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
+        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
 
         // Theta: bump expiry
         let dt = 1e-5;
@@ -620,14 +620,14 @@ mod tests {
         let dv = 1e-5;
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv) / 100.0;
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
 
         let dr = 1e-5;
         let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
         let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
-        let fd_rho = (p_rup - p_rdn) / (2.0 * dr) / 100.0;
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-4);
+        let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
+        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
 
         let dt = 1e-5;
         let inst_up = AssetOrNothingOption::new(inst.option_type, inst.strike, inst.expiry + dt);
@@ -677,14 +677,14 @@ mod tests {
         let dv = 1e-5;
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv) / 100.0;
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
 
         let dr = 1e-5;
         let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
         let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
-        let fd_rho = (p_rup - p_rdn) / (2.0 * dr) / 100.0;
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-4);
+        let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
+        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
 
         let dt = 1e-5;
         let inst_up = GapOption::new(
@@ -723,8 +723,8 @@ mod tests {
         let dv = 1e-5;
         let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
         let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv) / 100.0;
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-4);
+        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
+        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
     }
 
     // --- Expiry edge case ---

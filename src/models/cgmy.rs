@@ -13,7 +13,7 @@
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
+use rand_distr::{Distribution, Gamma};
 
 use crate::engines::fft::carr_madan::CarrMadanParams;
 use crate::engines::fft::char_fn::{CgmyCharFn, CharacteristicFunction};
@@ -170,14 +170,12 @@ impl Cgmy {
         for _ in 0..num_paths {
             let mut log_s = initial_spot.ln();
             for _ in 0..num_steps {
+                // CGMY is a pure-jump process: the log-increment is the difference of the
+                // positive/negative tempered-stable subordinators (gamma-approximated with
+                // matched first two cumulants), so no Brownian component is sampled.
                 let g_pos = gamma_pos.sample(&mut rng);
                 let g_neg = gamma_neg.sample(&mut rng);
-                let z: f64 = StandardNormal.sample(&mut rng);
-                // X_dt ≈ g_pos - g_neg + sqrt(g_pos + g_neg) * z  (approximate)
                 log_s += drift_dt + g_pos - g_neg;
-                // Add diffusion component scaled by subordinator
-                let _ = z; // In the pure jump CGMY, the BM component is absent
-                // but we keep the drift correction
             }
             out.push(log_s.exp());
         }

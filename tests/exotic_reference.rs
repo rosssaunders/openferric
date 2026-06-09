@@ -185,8 +185,40 @@ fn chooser_option_haug() {
     let reference = 6.1071;
     let err = (price - reference).abs();
     assert!(
-        err < 0.60,
+        err < 1e-3,
         "Chooser option: got {price}, expected {reference}, err={err}"
+    );
+}
+
+// =======================================================================
+// Chooser option: at choose_time == expiry the chooser equals a straddle
+// =======================================================================
+#[test]
+fn chooser_at_expiry_choose_time_equals_straddle() {
+    let market = make_market(50.0, 0.08, 0.03, 0.25);
+    let chooser = ExoticOption::Chooser(ChooserOption {
+        strike: 50.0,
+        expiry: 0.50,
+        choose_time: 0.50,
+    });
+    let price = price_exotic(chooser, &market);
+
+    use openferric::engines::analytic::BlackScholesEngine;
+    use openferric::instruments::VanillaOption;
+    let bs = BlackScholesEngine::new();
+    let call = bs
+        .price(&VanillaOption::european_call(50.0, 0.50), &market)
+        .unwrap()
+        .price;
+    let put = bs
+        .price(&VanillaOption::european_put(50.0, 0.50), &market)
+        .unwrap()
+        .price;
+
+    let straddle = call + put;
+    assert!(
+        (price - straddle).abs() < 1e-9,
+        "Chooser at t1=T2 must equal straddle: got {price}, straddle {straddle}"
     );
 }
 

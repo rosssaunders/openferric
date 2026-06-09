@@ -60,6 +60,9 @@ impl Tarf {
         if !self.downside_leverage.is_finite() || self.downside_leverage <= 0.0 {
             return Err("downside_leverage must be finite and > 0".to_string());
         }
+        if self.ko_barrier.is_nan() || self.ko_barrier <= 0.0 {
+            return Err("ko_barrier must be > 0 and not NaN".to_string());
+        }
         if self.fixing_times.is_empty() {
             return Err("fixing_times must be non-empty".to_string());
         }
@@ -69,6 +72,9 @@ impl Tarf {
             .any(|t| !t.is_finite() || *t <= 0.0)
         {
             return Err("all fixing_times must be finite and > 0".to_string());
+        }
+        if self.fixing_times.windows(2).any(|w| w[1] <= w[0]) {
+            return Err("fixing_times must be strictly increasing".to_string());
         }
         Ok(())
     }
@@ -91,5 +97,89 @@ impl Tarf {
             fixing_times,
             tarf_type: TarfType::Standard,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_tarf() -> Tarf {
+        Tarf::standard(
+            100.0,
+            1000.0,
+            120.0,
+            50_000.0,
+            2.0,
+            vec![0.25, 0.5, 0.75, 1.0],
+        )
+    }
+
+    #[test]
+    fn validate_accepts_valid_tarf() {
+        assert!(valid_tarf().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_unsorted_or_duplicate_fixing_times() {
+        let mut tarf = valid_tarf();
+        tarf.fixing_times = vec![0.5, 0.25, 1.0];
+        assert!(
+            tarf.validate().is_err(),
+            "unsorted fixing times must be rejected"
+        );
+
+        tarf.fixing_times = vec![0.25, 0.25, 0.5];
+        assert!(
+            tarf.validate().is_err(),
+            "duplicate fixing times must be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_nan_inputs() {
+        let cases: Vec<(&str, Tarf)> = vec![
+            ("strike", {
+                let mut t = valid_tarf();
+                t.strike = f64::NAN;
+                t
+            }),
+            ("notional_per_fixing", {
+                let mut t = valid_tarf();
+                t.notional_per_fixing = f64::NAN;
+                t
+            }),
+            ("ko_barrier", {
+                let mut t = valid_tarf();
+                t.ko_barrier = f64::NAN;
+                t
+            }),
+            ("target_profit", {
+                let mut t = valid_tarf();
+                t.target_profit = f64::NAN;
+                t
+            }),
+            ("downside_leverage", {
+                let mut t = valid_tarf();
+                t.downside_leverage = f64::NAN;
+                t
+            }),
+            ("fixing_times", {
+                let mut t = valid_tarf();
+                t.fixing_times[1] = f64::NAN;
+                t
+            }),
+        ];
+
+        for (field, tarf) in cases {
+            assert!(tarf.validate().is_err(), "NaN {field} must be rejected");
+        }
+    }
+
+    #[test]
+    fn validate_allows_infinite_ko_barrier() {
+        let mut tarf = valid_tarf();
+        tarf.ko_barrier = f64::INFINITY;
+        assert!(tarf.validate().is_ok());
     }
 }

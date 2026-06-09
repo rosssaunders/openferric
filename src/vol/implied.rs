@@ -208,10 +208,27 @@ pub fn implied_vol_newton(
         sigma = (sigma - diff / vega).clamp(1e-6, 5.0);
     }
 
-    // Robust fallback: bisection on volatility interval.
+    // Robust fallback: bisection on volatility interval. The Black-Scholes
+    // price is monotone increasing in vol, so the root is bracketed iff
+    // f(lo) <= 0 <= f(hi); otherwise the market price is unattainable on
+    // [lo, hi] (e.g. true vol > 5.0) and returning a midpoint would be
+    // silently wrong.
     let mut lo = 1e-6;
     let mut hi = 5.0;
     let mut flo = black_scholes_price(option_type, s, k, r, lo, t) - market_price;
+    let fhi = black_scholes_price(option_type, s, k, r, hi, t) - market_price;
+
+    if flo == 0.0 {
+        return Ok(lo);
+    }
+    if fhi == 0.0 {
+        return Ok(hi);
+    }
+    if flo * fhi > 0.0 {
+        return Err(format!(
+            "implied vol not bracketed in [{lo}, {hi}]: market_price={market_price} is unattainable"
+        ));
+    }
 
     for _ in 0..200 {
         let mid = 0.5 * (lo + hi);
@@ -265,6 +282,20 @@ mod tests {
         let iv = implied_vol_newton(OptionType::Put, s, k, r, t, price, 1e-11, 100).unwrap();
 
         assert_relative_eq!(iv, sigma, epsilon = 1e-7);
+    }
+
+    #[test]
+    fn implied_vol_newton_errors_when_true_vol_exceeds_bisection_bracket() {
+        // Price generated with sigma = 6.0 > hi = 5.0: the bisection bracket
+        // cannot contain the root, so the solver must error instead of
+        // silently returning a wrong vol near the bracket edge.
+        let s = 100.0;
+        let k = 100.0;
+        let r = 0.0;
+        let t = 1.0;
+        let price = black_scholes_price(OptionType::Call, s, k, r, 6.0, t);
+        let res = implied_vol_newton(OptionType::Call, s, k, r, t, price, 1e-12, 50);
+        assert!(res.is_err(), "expected Err, got {res:?}");
     }
 
     #[test]

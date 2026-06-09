@@ -100,12 +100,12 @@ impl SurvivalCurve {
             return hazard_between(0.0, 1.0, first.0, first.1);
         }
 
-        for window in self.tenors.windows(2) {
-            let left = window[0];
-            let right = window[1];
-            if t <= right.0 {
-                return hazard_between(left.0, left.1, right.0, right.1);
-            }
+        // Binary search for the first node with tenor >= t (t > first.0 here, so idx >= 1).
+        let idx = self.tenors.partition_point(|&(ti, _)| ti < t);
+        if idx < self.tenors.len() {
+            let left = self.tenors[idx - 1];
+            let right = self.tenors[idx];
+            return hazard_between(left.0, left.1, right.0, right.1);
         }
 
         if self.tenors.len() == 1 {
@@ -140,12 +140,13 @@ impl SurvivalCurve {
             return invert_log_linear(0.0, 1.0, first.0, first.1, target);
         }
 
-        for window in self.tenors.windows(2) {
-            let left = window[0];
-            let right = window[1];
-            if target <= left.1 && target >= right.1 {
-                return invert_log_linear(left.0, left.1, right.0, right.1, target);
-            }
+        // Probabilities are non-increasing: binary search for the first node with
+        // probability <= target (target < first.1 here, so idx >= 1).
+        let idx = self.tenors.partition_point(|&(_, pi)| pi > target);
+        if idx < self.tenors.len() {
+            let left = self.tenors[idx - 1];
+            let right = self.tenors[idx];
+            return invert_log_linear(left.0, left.1, right.0, right.1, target);
         }
 
         if self.tenors.len() == 1 {
@@ -179,12 +180,12 @@ fn survival_prob_from_points(points: &[(f64, f64)], t: f64) -> f64 {
         return log_linear_prob(0.0, 1.0, first.0, first.1, t);
     }
 
-    for window in points.windows(2) {
-        let left = window[0];
-        let right = window[1];
-        if t <= right.0 {
-            return log_linear_prob(left.0, left.1, right.0, right.1, t);
-        }
+    // Binary search for the first node with tenor >= t (t > first.0 here, so idx >= 1).
+    let idx = points.partition_point(|&(ti, _)| ti < t);
+    if idx < points.len() {
+        let left = points[idx - 1];
+        let right = points[idx];
+        return log_linear_prob(left.0, left.1, right.0, right.1, t);
     }
 
     if points.len() == 1 {
@@ -295,6 +296,68 @@ mod tests {
             true_curve.survival_prob(6.0),
             epsilon = 2e-3
         );
+    }
+
+    #[test]
+    fn binary_search_lookup_matches_linear_scan_semantics() {
+        // Reference linear-scan implementations of the original windows(2) lookups.
+        fn survival_linear(points: &[(f64, f64)], t: f64) -> f64 {
+            if t <= 0.0 || points.is_empty() {
+                return 1.0;
+            }
+            let first = points[0];
+            if t <= first.0 {
+                return log_linear_prob(0.0, 1.0, first.0, first.1, t);
+            }
+            for w in points.windows(2) {
+                if t <= w[1].0 {
+                    return log_linear_prob(w[0].0, w[0].1, w[1].0, w[1].1, t);
+                }
+            }
+            if points.len() == 1 {
+                let (t1, p1) = points[0];
+                let h = hazard_between(0.0, 1.0, t1, p1);
+                return (-h * t).exp();
+            }
+            let (t_last, p_last) = points[points.len() - 1];
+            let left = points[points.len() - 2];
+            let h_tail = hazard_between(left.0, left.1, t_last, p_last);
+            p_last * (-h_tail * (t - t_last)).exp()
+        }
+
+        let curves = [
+            SurvivalCurve::new(vec![(5.0, 0.85)]),
+            SurvivalCurve::new(vec![(1.0, 0.97), (3.0, 0.90), (5.0, 0.84), (10.0, 0.66)]),
+            SurvivalCurve::from_piecewise_hazard(&[2.0, 5.0, 7.0], &[0.02, 0.05, 0.03]),
+        ];
+
+        for curve in &curves {
+            // Probe exact nodes, midpoints, the origin, and tail extrapolation.
+            let mut probes = vec![0.0, 1.0e-9, 0.5, 50.0];
+            for &(t, _) in &curve.tenors {
+                probes.extend([t - 1.0e-9, t, t + 1.0e-9, t + 0.7]);
+            }
+            for &t in &probes {
+                assert_eq!(
+                    curve.survival_prob(t),
+                    survival_linear(&curve.tenors, t),
+                    "survival_prob mismatch at t={t}"
+                );
+            }
+            // Inverse survival must round-trip through the binary-searched lookup.
+            for &t in &[0.1, 0.9, 2.4, 4.999, 6.0] {
+                let s = curve.survival_prob(t);
+                let t_back = curve.inverse_survival_prob(s);
+                assert_relative_eq!(curve.survival_prob(t_back), s, epsilon = 1.0e-12);
+            }
+        }
+
+        // Piecewise-constant hazard segment selection at and around nodes.
+        let pw = SurvivalCurve::from_piecewise_hazard(&[2.0, 5.0], &[0.02, 0.05]);
+        assert_relative_eq!(pw.hazard_rate(2.0), 0.02, epsilon = 1e-10);
+        assert_relative_eq!(pw.hazard_rate(2.0 + 1e-9), 0.05, epsilon = 1e-6);
+        assert_relative_eq!(pw.hazard_rate(5.0), 0.05, epsilon = 1e-10);
+        assert_relative_eq!(pw.hazard_rate(9.0), 0.05, epsilon = 1e-10);
     }
 
     #[test]

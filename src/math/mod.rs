@@ -32,7 +32,8 @@ pub use approx_tier::AccuracyTier;
 pub use arena::PricingArena;
 pub use correlation::*;
 pub use fast_norm::{
-    beasley_springer_moro_inv_cdf, fast_norm_cdf, fast_norm_inv_cdf, fast_norm_pdf, hart_norm_cdf,
+    accurate_norm_cdf, beasley_springer_moro_inv_cdf, erfc_cody, fast_norm_cdf, fast_norm_inv_cdf,
+    fast_norm_pdf, hart_norm_cdf,
 };
 pub use fast_rng::{FastRng, FastRngKind};
 pub use functions::*;

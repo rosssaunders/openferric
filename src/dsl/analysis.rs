@@ -182,9 +182,43 @@ pub fn parse_and_diagnose(
     };
 
     match compiler::compile(&ast) {
-        Ok(product) => (Some(ast), Some(product), vec![]),
+        Ok(product) => {
+            let warnings = lint_warnings(&ast);
+            (Some(ast), Some(product), warnings)
+        }
         Err(e) => (Some(ast), None, vec![error_to_diagnostic(&e)]),
     }
+}
+
+/// Non-fatal lints on a successfully compiled product.
+fn lint_warnings(ast: &ProductDef) -> Vec<DiagnosticInfo> {
+    let mut warnings = Vec::new();
+
+    // Schedules extending past maturity: the compiler silently truncates
+    // observation dates beyond maturity, so surface that to the user.
+    let maturity = ast.body.iter().find_map(|item| match item {
+        ProductItem::Maturity(v, _) => Some(*v),
+        _ => None,
+    });
+    if let Some(maturity) = maturity {
+        for item in &ast.body {
+            if let ProductItem::Schedule(sched) = item
+                && sched.end > maturity + 1e-9
+            {
+                warnings.push(DiagnosticInfo {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "schedule extends to {} but product maturity is {maturity}; observation dates after maturity are ignored",
+                        sched.end
+                    ),
+                    start: sched.span.start,
+                    end: sched.span.end,
+                });
+            }
+        }
+    }
+
+    warnings
 }
 
 fn error_to_diagnostic(error: &DslError) -> DiagnosticInfo {
@@ -373,8 +407,13 @@ fn walk_statements(
                 else_body,
             } => {
                 walk_expr(condition, scope_decls, refs);
-                walk_statements(then_body, scope_decls, refs, out_decls, scope, source);
-                walk_statements(else_body, scope_decls, refs, out_decls, scope, source);
+                // `let` bindings are scoped to their branch (mirrors the
+                // compiler): locals declared inside a branch are not visible
+                // after the conditional or in the sibling branch.
+                let mut then_scope = scope_decls.clone();
+                walk_statements(then_body, &mut then_scope, refs, out_decls, scope, source);
+                let mut else_scope = scope_decls.clone();
+                walk_statements(else_body, &mut else_scope, refs, out_decls, scope, source);
             }
             AstStatementKind::Pay { amount } => {
                 walk_expr(amount, scope_decls, refs);
@@ -475,8 +514,20 @@ enum Context {
     TypePosition,
 }
 
+/// Clamp a byte offset to the nearest UTF-8 char boundary at or before it.
+///
+/// Offsets coming from LSP/Monaco positions may land in the middle of a
+/// multi-byte character; slicing there would panic.
+fn floor_char_boundary(source: &str, offset: usize) -> usize {
+    let mut offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 fn determine_context(source: &str, offset: usize) -> Context {
-    let before = &source[..offset.min(source.len())];
+    let before = &source[..floor_char_boundary(source, offset)];
 
     let line_start = before.rfind('\n').map_or(0, |nl| nl + 1);
     let line = before[line_start..].trim();
@@ -915,17 +966,118 @@ pub fn offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
     (line, col)
 }
 
-/// Convert (line, col) (both 0-based) to a byte offset.
+/// Convert (line, col) (both 0-based, col in bytes) to a byte offset.
+///
+/// The column is clamped to the end of the line, and the resulting offset is
+/// clamped to a UTF-8 char boundary so callers can safely slice `source` —
+/// a raw `line_start + col` can land in the middle of a multi-byte character.
 pub fn line_col_to_offset(source: &str, line: u32, col: u32) -> usize {
-    let mut current_line = 0u32;
-    for (i, c) in source.char_indices() {
-        if current_line == line {
-            let col_offset = col as usize;
-            return (i + col_offset).min(source.len());
+    // Find the byte offset of the start of the requested line.
+    let mut line_start = 0usize;
+    if line > 0 {
+        let mut newlines_seen = 0u32;
+        let mut found = false;
+        for (i, c) in source.char_indices() {
+            if c == '\n' {
+                newlines_seen += 1;
+                if newlines_seen == line {
+                    line_start = i + 1;
+                    found = true;
+                    break;
+                }
+            }
         }
-        if c == '\n' {
-            current_line += 1;
+        if !found {
+            return source.len();
         }
     }
-    source.len()
+
+    // Clamp the column to the end of this line.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map_or(source.len(), |nl| line_start + nl);
+    let offset = line_start.saturating_add(col as usize).min(line_end);
+    floor_char_boundary(source, offset)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UTF8_SOURCE: &str =
+        "product \"Caf\u{e9} \u{2014} N\u{f8}te\"\n    notional: 100\n    maturity: 1.0\n";
+
+    #[test]
+    fn line_col_to_offset_clamps_to_char_boundary() {
+        // Byte 13 is inside the two-byte 'é' (starts at byte 12).
+        let offset = line_col_to_offset(UTF8_SOURCE, 0, 13);
+        assert!(UTF8_SOURCE.is_char_boundary(offset));
+        // Slicing must not panic.
+        let _ = &UTF8_SOURCE[..offset];
+    }
+
+    #[test]
+    fn line_col_to_offset_clamps_column_to_line_end() {
+        let offset = line_col_to_offset(UTF8_SOURCE, 0, 10_000);
+        assert!(UTF8_SOURCE.is_char_boundary(offset));
+        assert!(offset <= UTF8_SOURCE.find('\n').unwrap());
+    }
+
+    #[test]
+    fn line_col_to_offset_past_last_line_returns_len() {
+        assert_eq!(line_col_to_offset(UTF8_SOURCE, 99, 0), UTF8_SOURCE.len());
+    }
+
+    #[test]
+    fn line_col_to_offset_roundtrips_with_offset_to_line_col() {
+        for (offset, _) in UTF8_SOURCE.char_indices() {
+            let (line, col) = offset_to_line_col(UTF8_SOURCE, offset);
+            assert_eq!(line_col_to_offset(UTF8_SOURCE, line, col), offset);
+        }
+    }
+
+    #[test]
+    fn completions_mid_utf8_char_do_not_panic() {
+        let (ast, _, _) = parse_and_diagnose(UTF8_SOURCE);
+        let symbols = build_symbol_table(&ast.unwrap(), UTF8_SOURCE);
+        // Probe every byte offset, including mid-character ones.
+        for offset in 0..=UTF8_SOURCE.len() + 2 {
+            let _ = completions(UTF8_SOURCE, &symbols, offset);
+            let _ = hover_info(UTF8_SOURCE, &symbols, offset);
+        }
+    }
+
+    #[test]
+    fn schedule_beyond_maturity_produces_warning() {
+        let source = "\
+product \"Test\"
+    notional: 100
+    maturity: 1.0
+    schedule annual from 1.0 to 5.0
+        redeem notional
+";
+        let (_, product, diags) = parse_and_diagnose(source);
+        assert!(product.is_some());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert!(diags[0].message.contains("maturity"));
+    }
+
+    #[test]
+    fn clean_product_has_no_diagnostics() {
+        let source = "\
+product \"Test\"
+    notional: 100
+    maturity: 1.0
+    schedule annual from 1.0 to 1.0
+        redeem notional
+";
+        let (_, product, diags) = parse_and_diagnose(source);
+        assert!(product.is_some());
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
 }

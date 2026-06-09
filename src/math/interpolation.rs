@@ -1052,27 +1052,32 @@ fn ns_basis(t: f64, tau: f64) -> (f64, f64, f64, f64) {
     (f1, f2, df1_dx / tau, df2_dx / tau)
 }
 
+/// Builds the Nelson-Siegel least-squares design matrix for a fixed `tau`.
+fn ns_design_matrix(x: &[f64], tau: f64) -> DMatrix<f64> {
+    let mut a = DMatrix::zeros(x.len(), 3);
+    for (i, t) in x.iter().enumerate() {
+        let (f1, f2, _, _) = ns_basis(*t, tau);
+        a[(i, 0)] = 1.0;
+        a[(i, 1)] = f1;
+        a[(i, 2)] = f2;
+    }
+    a
+}
+
 fn fit_nelson_siegel(x: &[f64], y: &[f64]) -> Result<[f64; 4], InterpolationError> {
     validate_xy(x, y, 3)?;
 
     let taus = logspace(0.05, 40.0, 80);
+    let yv = DVector::from_column_slice(y);
     let mut best = None::<([f64; 4], f64)>;
 
     for tau in taus {
-        let mut a = DMatrix::zeros(x.len(), 3);
-        for (i, t) in x.iter().enumerate() {
-            let (f1, f2, _, _) = ns_basis(*t, tau);
-            a[(i, 0)] = 1.0;
-            a[(i, 1)] = f1;
-            a[(i, 2)] = f2;
-        }
-
-        let yv = DVector::from_column_slice(y);
+        let a = ns_design_matrix(x, tau);
         let Some(beta) = solve_least_squares(&a, &yv) else {
             continue;
         };
 
-        let residual = (&a * &beta - yv.clone()).norm_squared() / x.len() as f64;
+        let residual = (&a * &beta - &yv).norm_squared() / x.len() as f64;
         let candidate = ([beta[0], beta[1], beta[2], tau], residual);
         if best.as_ref().is_none_or(|(_, err)| residual < *err) {
             best = Some(candidate);
@@ -1199,9 +1204,23 @@ impl Interpolator for NelsonSiegelInterpolator {
     }
 
     fn jacobian(&self, xq: f64) -> Result<Vec<f64>, InterpolationError> {
+        // The betas are linear in `y` for a fixed tau, so reuse the fitted tau
+        // and re-solve only the linear least-squares problem per bumped node
+        // instead of repeating the full tau grid search 2n times.
+        let a = ns_design_matrix(&self.x, self.tau);
         finite_difference_jacobian(&self.y, |yb| {
-            NelsonSiegelInterpolator::fit(self.x.clone(), yb.to_vec(), self.extrapolation)?
-                .value(xq)
+            let yv = DVector::from_column_slice(yb);
+            let beta = solve_least_squares(&a, &yv).ok_or(InterpolationError::SingularSystem)?;
+            let bumped = Self {
+                x: self.x.clone(),
+                y: yb.to_vec(),
+                beta0: beta[0],
+                beta1: beta[1],
+                beta2: beta[2],
+                tau: self.tau,
+                extrapolation: self.extrapolation,
+            };
+            bumped.value(xq)
         })
     }
 
@@ -1220,34 +1239,73 @@ fn nss_basis(t: f64, tau1: f64, tau2: f64) -> (f64, f64, f64, f64, f64, f64) {
     (f1, f2, f3, df1, df2, df3)
 }
 
+/// Builds the Nelson-Siegel-Svensson least-squares design matrix for fixed
+/// `(tau1, tau2)`.
+fn nss_design_matrix(x: &[f64], tau1: f64, tau2: f64) -> DMatrix<f64> {
+    let mut a = DMatrix::zeros(x.len(), 4);
+    for (i, t) in x.iter().enumerate() {
+        let (f1, f2, f3, _, _, _) = nss_basis(*t, tau1, tau2);
+        a[(i, 0)] = 1.0;
+        a[(i, 1)] = f1;
+        a[(i, 2)] = f2;
+        a[(i, 3)] = f3;
+    }
+    a
+}
+
 fn fit_nss(x: &[f64], y: &[f64]) -> Result<[f64; 6], InterpolationError> {
     validate_xy(x, y, 4)?;
 
     let taus1 = logspace(0.05, 10.0, 28);
     let taus2 = logspace(0.2, 50.0, 32);
+    let n = x.len();
+    let yv = DVector::from_column_slice(y);
     let mut best = None::<([f64; 6], f64)>;
 
-    for tau1 in &taus1 {
-        for tau2 in &taus2 {
+    // Precompute the tau-dependent basis columns once per tau instead of
+    // re-evaluating exp() for every (tau1, tau2) grid pair.
+    let cols1: Vec<Vec<(f64, f64)>> = taus1
+        .iter()
+        .map(|tau1| {
+            x.iter()
+                .map(|t| {
+                    let (f1, f2, _, _) = ns_basis(*t, *tau1);
+                    (f1, f2)
+                })
+                .collect()
+        })
+        .collect();
+    let cols3: Vec<Vec<f64>> = taus2
+        .iter()
+        .map(|tau2| {
+            x.iter()
+                .map(|t| {
+                    let (_, f3, _, _) = ns_basis(*t, *tau2);
+                    f3
+                })
+                .collect()
+        })
+        .collect();
+
+    let mut a = DMatrix::zeros(n, 4);
+    for (i1, tau1) in taus1.iter().enumerate() {
+        for (i2, tau2) in taus2.iter().enumerate() {
             if tau2 <= tau1 {
                 continue;
             }
 
-            let mut a = DMatrix::zeros(x.len(), 4);
-            for (i, t) in x.iter().enumerate() {
-                let (f1, f2, f3, _, _, _) = nss_basis(*t, *tau1, *tau2);
+            for (i, (&(f1, f2), &f3)) in cols1[i1].iter().zip(cols3[i2].iter()).enumerate() {
                 a[(i, 0)] = 1.0;
                 a[(i, 1)] = f1;
                 a[(i, 2)] = f2;
                 a[(i, 3)] = f3;
             }
 
-            let yv = DVector::from_column_slice(y);
             let Some(beta) = solve_least_squares(&a, &yv) else {
                 continue;
             };
 
-            let residual = (&a * &beta - yv.clone()).norm_squared() / x.len() as f64;
+            let residual = (&a * &beta - &yv).norm_squared() / n as f64;
             let candidate = ([beta[0], beta[1], beta[2], beta[3], *tau1, *tau2], residual);
             if best.as_ref().is_none_or(|(_, err)| residual < *err) {
                 best = Some(candidate);
@@ -1349,9 +1407,25 @@ impl Interpolator for NelsonSiegelSvenssonInterpolator {
     }
 
     fn jacobian(&self, xq: f64) -> Result<Vec<f64>, InterpolationError> {
+        // The betas are linear in `y` for fixed (tau1, tau2), so reuse the
+        // fitted taus and re-solve only the linear least-squares problem per
+        // bumped node instead of repeating the full grid search 2n times.
+        let a = nss_design_matrix(&self.x, self.tau1, self.tau2);
         finite_difference_jacobian(&self.y, |yb| {
-            NelsonSiegelSvenssonInterpolator::fit(self.x.clone(), yb.to_vec(), self.extrapolation)?
-                .value(xq)
+            let yv = DVector::from_column_slice(yb);
+            let beta = solve_least_squares(&a, &yv).ok_or(InterpolationError::SingularSystem)?;
+            let bumped = Self {
+                x: self.x.clone(),
+                y: yb.to_vec(),
+                beta0: beta[0],
+                beta1: beta[1],
+                beta2: beta[2],
+                beta3: beta[3],
+                tau1: self.tau1,
+                tau2: self.tau2,
+                extrapolation: self.extrapolation,
+            };
+            bumped.value(xq)
         })
     }
 
@@ -1787,6 +1861,31 @@ mod tests {
             let err_bp = (fit.value(*ti).unwrap() - yi) * 1.0e4;
             assert!(err_bp.abs() < 2.0);
         }
+    }
+
+    #[test]
+    fn ns_and_nss_jacobians_sum_to_one_inside_range() {
+        // The design matrix has an intercept column, so a uniform +c shift of
+        // all calibration inputs shifts the fitted curve by exactly +c; each
+        // jacobian row must therefore sum to 1. This exercises the
+        // tau-reuse linear re-solve path.
+        let x = vec![0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0];
+        let y = vec![
+            0.012, 0.014, 0.017, 0.019, 0.022, 0.024, 0.026, 0.029, 0.030,
+        ];
+
+        let ns =
+            NelsonSiegelInterpolator::fit(x.clone(), y.clone(), ExtrapolationMode::Linear).unwrap();
+        let j_ns = ns.jacobian(4.0).unwrap();
+        assert_eq!(j_ns.len(), y.len());
+        assert!((j_ns.iter().sum::<f64>() - 1.0).abs() < 1.0e-6);
+
+        let nss =
+            NelsonSiegelSvenssonInterpolator::fit(x.clone(), y.clone(), ExtrapolationMode::Linear)
+                .unwrap();
+        let j_nss = nss.jacobian(4.0).unwrap();
+        assert_eq!(j_nss.len(), y.len());
+        assert!((j_nss.iter().sum::<f64>() - 1.0).abs() < 1.0e-6);
     }
 
     #[test]

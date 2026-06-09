@@ -91,12 +91,51 @@ pub struct MbsCashflow {
 }
 
 impl MbsPassThrough {
+    /// Validates instrument fields.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.original_balance.is_finite() || self.original_balance <= 0.0 {
+            return Err("mbs original_balance must be finite and > 0".to_string());
+        }
+        if !self.coupon_rate.is_finite() || self.coupon_rate < 0.0 {
+            return Err("mbs coupon_rate must be finite and >= 0".to_string());
+        }
+        if !self.servicing_fee.is_finite() || self.servicing_fee < 0.0 {
+            return Err("mbs servicing_fee must be finite and >= 0".to_string());
+        }
+        if self.servicing_fee > self.coupon_rate {
+            return Err("mbs servicing_fee must be <= coupon_rate".to_string());
+        }
+        if self.original_term == 0 {
+            return Err("mbs original_term must be > 0".to_string());
+        }
+        if self.age > self.original_term {
+            return Err("mbs age must be <= original_term".to_string());
+        }
+        match &self.prepayment {
+            PrepaymentModel::Psa(m) => {
+                if !m.psa_speed.is_finite() || m.psa_speed < 0.0 {
+                    return Err("mbs psa_speed must be finite and >= 0".to_string());
+                }
+            }
+            PrepaymentModel::ConstantCpr(m) => {
+                if !m.annual_cpr.is_finite() || !(0.0..=1.0).contains(&m.annual_cpr) {
+                    return Err("mbs annual_cpr must be finite and in [0, 1]".to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Generate the monthly cashflow schedule.
     pub fn cashflows(&self) -> Vec<MbsCashflow> {
+        if self.validate().is_err() {
+            return Vec::new();
+        }
+
         let net_coupon = self.coupon_rate - self.servicing_fee;
         let monthly_net = net_coupon / 12.0;
         let monthly_gross = self.coupon_rate / 12.0;
-        let remaining_term = self.original_term - self.age;
+        let remaining_term = self.original_term.saturating_sub(self.age);
 
         // Compute the current balance after seasoning via standard amortization
         // We need to simulate from the start to get the correct current balance
@@ -146,20 +185,35 @@ impl MbsPassThrough {
         result
     }
 
-    /// Price given a constant discount rate (yield), as a fraction of current balance.
-    pub fn price(&self, yield_rate: f64) -> f64 {
+    /// Present value of a pre-computed cashflow schedule at a flat yield.
+    ///
+    /// The prepayment-driven schedule does not depend on the discount rate,
+    /// so re-discounting a cached schedule avoids rebuilding it in bump and
+    /// root-finding loops.
+    fn pv_of_cashflows(cfs: &[MbsCashflow], yield_rate: f64) -> f64 {
         let monthly_yield = yield_rate / 12.0;
-        let cfs = self.cashflows();
-        let mut pv = 0.0;
-        for cf in &cfs {
-            let df = (1.0 + monthly_yield).powi(-(cf.month as i32));
-            pv += cf.total_cashflow * df;
+        cfs.iter()
+            .map(|cf| cf.total_cashflow * (1.0 + monthly_yield).powi(-(cf.month as i32)))
+            .sum()
+    }
+
+    /// Price given a constant discount rate (yield), as a fraction of current balance.
+    ///
+    /// Returns `NaN` for invalid instrument definitions (see [`Self::validate`]).
+    pub fn price(&self, yield_rate: f64) -> f64 {
+        if self.validate().is_err() {
+            return f64::NAN;
         }
-        pv
+        Self::pv_of_cashflows(&self.cashflows(), yield_rate)
     }
 
     /// Weighted Average Life in years.
+    ///
+    /// Returns `NaN` for invalid instrument definitions.
     pub fn wal(&self) -> f64 {
+        if self.validate().is_err() {
+            return f64::NAN;
+        }
         let cfs = self.cashflows();
         let total_principal: f64 = cfs.iter().map(|c| c.total_principal).sum();
         if total_principal == 0.0 {
@@ -175,17 +229,27 @@ impl MbsPassThrough {
     /// Option-Adjusted Spread via Newton's method.
     /// `market_price` is the dollar price, `base_yields` is a flat or term-structure
     /// of monthly discount rates. For simplicity we use `base_yields[0]` as the flat rate.
+    ///
+    /// Returns `NaN` for invalid instrument definitions.
     pub fn oas(&self, market_price: f64, base_yields: &[f64]) -> f64 {
+        if self.validate().is_err() {
+            return f64::NAN;
+        }
         let base_rate = if base_yields.is_empty() {
             0.0
         } else {
             base_yields[0]
         };
+
+        // The schedule is rate-independent: compute it once and re-discount
+        // inside the Newton iteration instead of rebuilding it per evaluation.
+        let cfs = self.cashflows();
+
         // Find spread s such that price(base_rate + s) = market_price
         let mut spread = 0.01; // initial guess
         for _ in 0..200 {
-            let p = self.price(base_rate + spread);
-            let dp = self.price(base_rate + spread + 0.0001);
+            let p = Self::pv_of_cashflows(&cfs, base_rate + spread);
+            let dp = Self::pv_of_cashflows(&cfs, base_rate + spread + 0.0001);
             let deriv = (dp - p) / 0.0001;
             if deriv.abs() < 1e-20 {
                 break;
@@ -201,11 +265,17 @@ impl MbsPassThrough {
     }
 
     /// Effective duration via numerical bump (parallel shift).
+    ///
+    /// Returns `NaN` for invalid instrument definitions.
     pub fn effective_duration(&self, yield_rate: f64) -> f64 {
+        if self.validate().is_err() {
+            return f64::NAN;
+        }
+        let cfs = self.cashflows();
         let bump = 0.0001; // 1bp
-        let p_up = self.price(yield_rate + bump);
-        let p_down = self.price(yield_rate - bump);
-        let p0 = self.price(yield_rate);
+        let p_up = Self::pv_of_cashflows(&cfs, yield_rate + bump);
+        let p_down = Self::pv_of_cashflows(&cfs, yield_rate - bump);
+        let p0 = Self::pv_of_cashflows(&cfs, yield_rate);
         (p_down - p_up) / (2.0 * bump * p0)
     }
 }
@@ -384,6 +454,60 @@ mod tests {
             d1,
             d3
         );
+    }
+
+    #[test]
+    fn test_validate_rejects_age_beyond_term_without_panicking() {
+        let mut mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 1.0 }));
+        mbs.original_term = 360;
+        mbs.age = 400;
+
+        assert!(mbs.validate().is_err());
+        // Entry points must not panic (previously underflowed u32 in debug)
+        // and must signal the invalid input.
+        assert!(mbs.price(0.05).is_nan());
+        assert!(mbs.wal().is_nan());
+        assert!(mbs.effective_duration(0.05).is_nan());
+        assert!(mbs.oas(100.0, &[0.05]).is_nan());
+        assert!(mbs.cashflows().is_empty());
+    }
+
+    #[test]
+    fn test_validate_rejects_bad_fields() {
+        let base = make_mbs(PrepaymentModel::ConstantCpr(ConstantCpr {
+            annual_cpr: 0.06,
+        }));
+        assert!(base.validate().is_ok());
+
+        let mut bad = base.clone();
+        bad.original_balance = f64::NAN;
+        assert!(bad.validate().is_err());
+
+        let mut bad = base.clone();
+        bad.original_balance = -1.0;
+        assert!(bad.validate().is_err());
+
+        let mut bad = base.clone();
+        bad.coupon_rate = f64::NAN;
+        assert!(bad.validate().is_err());
+
+        let mut bad = base.clone();
+        bad.servicing_fee = bad.coupon_rate + 0.01;
+        assert!(bad.validate().is_err());
+
+        let mut bad = base.clone();
+        bad.original_term = 0;
+        assert!(bad.validate().is_err());
+
+        let mut bad = base.clone();
+        bad.prepayment = PrepaymentModel::ConstantCpr(ConstantCpr { annual_cpr: 1.5 });
+        assert!(bad.validate().is_err());
+
+        let mut bad = base;
+        bad.prepayment = PrepaymentModel::Psa(PsaModel {
+            psa_speed: f64::NAN,
+        });
+        assert!(bad.validate().is_err());
     }
 
     #[test]

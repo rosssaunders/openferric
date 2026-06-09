@@ -712,6 +712,46 @@ pub fn black_scholes_price_greeks_aad(
             },
         );
     }
+    if vol <= 0.0 && vol.is_finite() && spot > 0.0 && strike > 0.0 {
+        // Deterministic (zero-vol) limit with expiry > 0: the option pays the
+        // discounted forward intrinsic e^{-rT} (S e^{(r-q)T} - K)^+ (and the
+        // put analogue), NOT the undiscounted spot intrinsic. Build it on the
+        // tape so first-order Greeks propagate consistently.
+        let mut tape = AadTape::with_capacity(24);
+        let s = tape.variable(spot);
+        let r = tape.variable(rate);
+        let q = tape.variable(dividend_yield);
+        let t = tape.variable(expiry);
+        let k = tape.constant(strike);
+
+        let r_minus_q = tape.sub(r, q);
+        let growth = tape.mul(r_minus_q, t);
+        let growth_factor = tape.exp(growth);
+        let fwd = tape.mul(s, growth_factor);
+        let moneyness = match option_type {
+            OptionType::Call => tape.sub(fwd, k),
+            OptionType::Put => tape.sub(k, fwd),
+        };
+        let payoff = tape.positive_part(moneyness);
+        let rt = tape.mul(r, t);
+        let minus_rt = tape.neg(rt);
+        let df_r = tape.exp(minus_rt);
+        let price_var = tape.mul(df_r, payoff);
+
+        let price = tape.value(price_var);
+        let grads = tape.gradient_vec(price_var, &[s, r, t]);
+        return (
+            price,
+            Greeks {
+                delta: grads[0],
+                // Second derivative of the piecewise-linear limit is zero a.e.
+                gamma: 0.0,
+                vega: 0.0,
+                theta: -grads[2],
+                rho: grads[1],
+            },
+        );
+    }
     if vol <= 0.0 || !vol.is_finite() || spot <= 0.0 || strike <= 0.0 {
         return (
             intrinsic(option_type, spot, strike),
@@ -847,6 +887,48 @@ mod tests {
         let a = tape.variable(4.0);
         let b = tape.sqrt(a);
         assert!((tape.value(b) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn zero_vol_with_positive_expiry_returns_discounted_forward_intrinsic() {
+        let (s, k, r, q, t) = (100.0_f64, 90.0_f64, 0.05_f64, 0.02_f64, 2.0_f64);
+        let fwd = s * ((r - q) * t).exp();
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        // ITM-forward call: V = e^{-rT} (F - K) = S e^{-qT} - K e^{-rT}.
+        let (price, greeks) = black_scholes_price_greeks_aad(OptionType::Call, s, k, r, q, 0.0, t);
+        let expected = df_r * (fwd - k);
+        assert!((price - expected).abs() < 1e-12, "price={price}");
+        assert!(
+            (greeks.delta - df_q).abs() < 1e-12,
+            "delta={}",
+            greeks.delta
+        );
+        assert!((greeks.rho - k * t * df_r).abs() < 1e-12);
+        // theta = -dV/dT = q S e^{-qT} - r K e^{-rT}.
+        let theta_expected = q * s * df_q - r * k * df_r;
+        assert!((greeks.theta - theta_expected).abs() < 1e-12);
+        assert_eq!(greeks.gamma, 0.0);
+        assert_eq!(greeks.vega, 0.0);
+
+        // Must agree with the vol -> 0+ limit of the regular branch.
+        let (limit_price, _) =
+            black_scholes_price_greeks_aad(OptionType::Call, s, k, r, q, 1.0e-9, t);
+        assert!((price - limit_price).abs() < 1e-9);
+
+        // OTM-forward put on the same numbers is worthless in the limit.
+        let (put_price, put_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Put, s, k, r, q, 0.0, t);
+        assert_eq!(put_price, 0.0);
+        assert_eq!(put_greeks.delta, 0.0);
+
+        // ITM-forward put: V = e^{-rT} (K - F).
+        let (put_itm, put_itm_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Put, s, 130.0, r, q, 0.0, t);
+        let put_expected = df_r * (130.0 - fwd);
+        assert!((put_itm - put_expected).abs() < 1e-12);
+        assert!((put_itm_greeks.delta + df_q).abs() < 1e-12);
     }
 
     #[test]

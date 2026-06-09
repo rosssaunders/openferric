@@ -9,7 +9,6 @@
 //! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
 //!
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
-use crate::math::CubicSpline;
 use crate::vol::forward::{
     AtmSkewTermStructure, ForwardVarianceCurve, ForwardVarianceSource, VixSettings, VixStyleIndex,
     vix_style_index_from_surface,
@@ -303,37 +302,37 @@ impl VolSurface {
         })
     }
 
+    /// Total implied variance `w(K, T)`.
+    ///
+    /// Across maturities, total variance is interpolated piecewise-linearly in `T`
+    /// at fixed log-moneyness. Linear interpolation is monotone: if the slice total
+    /// variances at the knots are non-decreasing in `T`, the interpolated value is
+    /// non-decreasing everywhere, so no calendar arbitrage (negative forward
+    /// variance) can be introduced between knots — unlike a natural cubic spline,
+    /// which can overshoot. The query allocates nothing: it does a binary search
+    /// over the expiry grid and evaluates only the two bracketing SVI slices.
     pub fn total_variance(&self, strike: f64, expiry: f64) -> f64 {
-        if self.expiries.len() == 1 {
-            let k = (strike / self.forward).ln();
+        let k = (strike / self.forward).ln();
+        let n = self.expiries.len();
+        if n == 1 {
             return self.slices[0].total_variance(k).max(1e-10);
         }
 
-        let t = expiry.clamp(self.expiries[0], self.expiries[self.expiries.len() - 1]);
-        let k = (strike / self.forward).ln();
+        let t = expiry.clamp(self.expiries[0], self.expiries[n - 1]);
+        let i = match self.expiries.binary_search_by(|e| e.total_cmp(&t)) {
+            // Exact knot: return the slice value unchanged.
+            Ok(j) => return self.slices[j].total_variance(k).max(1e-10),
+            // After clamping, t lies strictly inside (expiries[0], expiries[n-1]),
+            // so the insertion point j is in 1..n and [j-1, j] brackets t.
+            Err(j) => j - 1,
+        };
 
-        let ws: Vec<f64> = self
-            .slices
-            .iter()
-            .map(|p| p.total_variance(k).max(1e-10))
-            .collect();
-
-        if let Ok(spline) = CubicSpline::new(self.expiries.clone(), ws.clone()) {
-            spline.interpolate(t).max(1e-10)
-        } else {
-            // Linear fallback.
-            let i = self
-                .expiries
-                .windows(2)
-                .position(|w| t >= w[0] && t <= w[1])
-                .unwrap_or(self.expiries.len() - 2);
-            let t0 = self.expiries[i];
-            let t1 = self.expiries[i + 1];
-            let w0 = ws[i];
-            let w1 = ws[i + 1];
-            let wt = w0 + (w1 - w0) * (t - t0) / (t1 - t0);
-            wt.max(1e-10)
-        }
+        let t0 = self.expiries[i];
+        let t1 = self.expiries[i + 1];
+        let w0 = self.slices[i].total_variance(k).max(1e-10);
+        let w1 = self.slices[i + 1].total_variance(k).max(1e-10);
+        let wt = w0 + (w1 - w0) * (t - t0) / (t1 - t0);
+        wt.max(1e-10)
     }
 
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {
@@ -539,6 +538,93 @@ mod tests {
                     "Jacobian mismatch at k={k}, param {j}: analytic={}, fd={}, err={err}",
                     analytic[j],
                     fd[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn total_variance_has_no_negative_forward_variance_between_knots() {
+        // Steep term structure: short-dated variance is tiny, the next two knots
+        // jump sharply and then flatten. A natural cubic spline through these
+        // knots overshoots and creates negative forward variance between the
+        // 1.0y and 2.0y knots; piecewise-linear interpolation cannot.
+        let mk = |a: f64| SviParams {
+            a,
+            b: 0.05,
+            rho: -0.3,
+            m: 0.0,
+            sigma: 0.2,
+        };
+        let surface = VolSurface::new(
+            vec![
+                (0.1, mk(0.001)),
+                (0.5, mk(0.09)),
+                (1.0, mk(0.25)),
+                (2.0, mk(0.26)),
+            ],
+            100.0,
+        )
+        .unwrap();
+
+        for &strike in &[70.0, 85.0, 100.0, 115.0, 130.0] {
+            let mut prev_w = 0.0;
+            for i in 0..=400 {
+                let t = 0.1 + i as f64 * (2.0 - 0.1) / 400.0;
+                let w = surface.total_variance(strike, t);
+                assert!(
+                    w >= prev_w - 1e-12,
+                    "negative forward variance at strike={strike}, t={t}: w={w} < prev={prev_w}"
+                );
+                prev_w = w;
+            }
+        }
+    }
+
+    #[test]
+    fn total_variance_matches_slice_values_at_knots() {
+        let p1 = SviParams {
+            a: 0.01,
+            b: 0.15,
+            rho: -0.2,
+            m: 0.0,
+            sigma: 0.25,
+        };
+        let p2 = SviParams {
+            a: 0.05,
+            b: 0.18,
+            rho: -0.25,
+            m: 0.02,
+            sigma: 0.28,
+        };
+        let p3 = SviParams {
+            a: 0.09,
+            b: 0.2,
+            rho: -0.3,
+            m: 0.03,
+            sigma: 0.3,
+        };
+
+        let expiries = [0.25, 1.0, 2.0];
+        let params = [p1, p2, p3];
+        let surface = VolSurface::new(
+            expiries
+                .iter()
+                .copied()
+                .zip(params.iter().copied())
+                .collect(),
+            100.0,
+        )
+        .unwrap();
+
+        for (t, p) in expiries.iter().zip(params.iter()) {
+            for &strike in &[80.0, 100.0, 120.0] {
+                let k = (strike / 100.0_f64).ln();
+                let expected = p.total_variance(k).max(1e-10);
+                let got = surface.total_variance(strike, *t);
+                assert!(
+                    (got - expected).abs() < 1e-14,
+                    "knot value changed at t={t}, strike={strike}: got={got}, expected={expected}"
                 );
             }
         }

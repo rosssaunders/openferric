@@ -109,20 +109,19 @@ fn yield_curve_from_swap_rates_discount_factors() {
         prev_df = df;
     }
 
-    // 1Y swap rate: (1 - DF(1)) / DF(1) ≈ swap_rate for annual frequency
-    // More precisely: par_rate = (1 - DF(N)) / sum(DF(i)) for annual swap
+    // 1Y swap rate: (1 - DF(1)) / DF(1) = swap_rate for annual frequency.
+    // The bootstrap solves each pillar so the par swap reprices exactly.
     let df1 = curve.discount_factor(1.0);
     let implied_1y = (1.0 - df1) / df1;
-    assert_relative_eq!(implied_1y, 0.0500, epsilon = 1.0e-4);
+    assert_relative_eq!(implied_1y, 0.0500, epsilon = 1.0e-10);
 }
 
 /// Verify that bootstrapping from swap rates recovers par rates.
 /// Par rate = (DF_0 - DF_N) / sum(DF_i) for an annual swap.
 ///
-/// Note: For tenors whose intermediate annual points are all pillar points
-/// (e.g. 1Y, 2Y, 3Y), the par rate recovery is exact. For tenors like 5Y
-/// where year 4 is interpolated between 3Y and 5Y pillars, there is a
-/// small interpolation error.
+/// The bootstrap solves each pillar DF with a root-finder so the par swap
+/// reprices exactly under the curve's interpolation, including tenors like
+/// 5Y where year 4 is interpolated between the 3Y and 5Y pillars.
 #[test]
 fn yield_curve_swap_bootstrap_recovers_par_rates() {
     let swap_rates = vec![
@@ -141,7 +140,7 @@ fn yield_curve_swap_bootstrap_recovers_par_rates() {
         let df_n = curve.discount_factor(tenor);
         let par_rate = (1.0 - df_n) / annuity;
 
-        assert_relative_eq!(par_rate, expected_rate, epsilon = 1.0e-4,);
+        assert_relative_eq!(par_rate, expected_rate, epsilon = 1.0e-10,);
     }
 }
 
@@ -272,13 +271,18 @@ fn yield_curve_swap_bootstrap_semiannual() {
         prev_df = df;
     }
 
-    // Verify semi-annual par rate recovery for 1Y.
-    // Note: the bootstrap stores DFs only at pillar tenors (1Y, 2Y, 5Y),
-    // not at the intermediate 0.5Y point, so DF(0.5) is interpolated and
-    // the recovered par rate has a small interpolation error.
-    let df_05 = curve.discount_factor(0.5);
-    let df_10 = curve.discount_factor(1.0);
-    let annuity = 0.5 * df_05 + 0.5 * df_10;
-    let par = (1.0 - df_10) / annuity;
-    assert_relative_eq!(par, 0.050, epsilon = 1.0e-2);
+    // Verify semi-annual par rate recovery for every input tenor.
+    // The bootstrap stores DFs only at pillar tenors (1Y, 2Y, 5Y); the
+    // intermediate coupon DFs (0.5Y, 1.5Y, ...) are interpolated, and each
+    // pillar is solved so the par swap reprices exactly under that same
+    // interpolation.
+    for &(tenor, expected_rate) in &swap_rates {
+        let periods = (tenor * 2.0).round() as usize;
+        let annuity: f64 = (1..=periods)
+            .map(|i| 0.5 * curve.discount_factor(i as f64 * 0.5))
+            .sum();
+        let df_n = curve.discount_factor(tenor);
+        let par = (1.0 - df_n) / annuity;
+        assert_relative_eq!(par, expected_rate, epsilon = 1.0e-10);
+    }
 }

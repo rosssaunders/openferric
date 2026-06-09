@@ -419,28 +419,35 @@ fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
         vol,
         spec.expiry,
     );
-    let put = bs_price_with_dividend(
-        OptionType::Put,
-        market.spot,
-        spec.strike,
-        market.rate,
-        q_expiry,
-        vol,
-        spec.expiry,
-    );
-
     if spec.choose_time <= 0.0 {
+        let put = bs_price_with_dividend(
+            OptionType::Put,
+            market.spot,
+            spec.strike,
+            market.rate,
+            q_expiry,
+            vol,
+            spec.expiry,
+        );
         return call.max(put);
     }
 
-    let tau = (spec.expiry - spec.choose_time).max(0.0);
-    let q_choose = market.effective_dividend_yield(spec.choose_time.max(1.0e-12));
-    let q_tau = market.effective_dividend_yield(tau.max(1.0e-12));
-    let d1_choose = ((market.spot / spec.strike).ln()
-        + (0.5 * vol).mul_add(vol, market.rate - q_choose) * spec.choose_time)
-        / (vol * spec.choose_time.sqrt());
+    // Rubinstein (1991) simple chooser (Haug 2.7):
+    //   V = c(S, K, T2) + K e^{-r T2} N(-y2) - S e^{-q T2} N(-y1)
+    // with y1 = [ln(S/K) + (r - q) T2 + sigma^2 t1 / 2] / (sigma sqrt(t1)),
+    //      y2 = y1 - sigma sqrt(t1).
+    // At t1 = T2 this reduces to call + put (a straddle).
+    let t1 = spec.choose_time.min(spec.expiry);
+    let sig_sqrt_t1 = vol * t1.sqrt();
+    let y1 = ((market.spot / spec.strike).ln()
+        + (market.rate - q_expiry).mul_add(spec.expiry, 0.5 * vol * vol * t1))
+        / sig_sqrt_t1;
+    let y2 = y1 - sig_sqrt_t1;
 
-    put.mul_add((-q_tau * tau).exp() * normal_cdf(-d1_choose), call)
+    (spec.strike * (-market.rate * spec.expiry).exp()).mul_add(
+        normal_cdf(-y2),
+        (-(market.spot * (-q_expiry * spec.expiry).exp())).mul_add(normal_cdf(-y1), call),
+    )
 }
 
 #[inline]

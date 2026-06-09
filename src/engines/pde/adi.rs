@@ -225,6 +225,37 @@ struct SolveCtx<'a> {
     grid: &'a HestonGrid,
 }
 
+/// Reusable per-direction tridiagonal work buffers (allocated once per pricing
+/// call and reused across all time steps and sweeps, mirroring the scratch
+/// pattern in `crank_nicolson`).
+struct TridiagScratch {
+    lower: Vec<f64>,
+    diag: Vec<f64>,
+    upper: Vec<f64>,
+    solve_lower: Vec<f64>,
+    solve_upper: Vec<f64>,
+    rhs: Vec<f64>,
+    c_star: Vec<f64>,
+    d_star: Vec<f64>,
+    interior: Vec<f64>,
+}
+
+impl TridiagScratch {
+    fn new(m: usize) -> Self {
+        Self {
+            lower: vec![0.0; m],
+            diag: vec![0.0; m],
+            upper: vec![0.0; m],
+            solve_lower: vec![0.0; m],
+            solve_upper: vec![0.0; m],
+            rhs: vec![0.0; m],
+            c_star: vec![0.0; m],
+            d_star: vec![0.0; m],
+            interior: vec![0.0; m],
+        }
+    }
+}
+
 fn solve_s_direction(
     rhs_seed: &[f64],
     a1_old: &[f64],
@@ -232,18 +263,21 @@ fn solve_s_direction(
     strike: f64,
     tau: f64,
     ctx: &SolveCtx<'_>,
+    scratch: &mut TridiagScratch,
     out: &mut [f64],
 ) -> Result<(), PricingError> {
     let m = ctx.grid.n_s - 1;
-    let mut lower = vec![0.0_f64; m];
-    let mut diag = vec![0.0_f64; m];
-    let mut upper = vec![0.0_f64; m];
-    let mut solve_lower = vec![0.0_f64; m];
-    let mut solve_upper = vec![0.0_f64; m];
-    let mut rhs = vec![0.0_f64; m];
-    let mut c_star = vec![0.0_f64; m];
-    let mut d_star = vec![0.0_f64; m];
-    let mut interior = vec![0.0_f64; m];
+    let TridiagScratch {
+        lower,
+        diag,
+        upper,
+        solve_lower,
+        solve_upper,
+        rhs,
+        c_star,
+        d_star,
+        interior,
+    } = scratch;
 
     apply_spot_boundaries(
         out,
@@ -283,19 +317,19 @@ fn solve_s_direction(
         rhs[0] -= lower[0] * lo_bv;
         rhs[m - 1] -= upper[m - 1] * hi_bv;
 
-        solve_lower.copy_from_slice(&lower);
-        solve_upper.copy_from_slice(&upper);
+        solve_lower.copy_from_slice(lower);
+        solve_upper.copy_from_slice(upper);
         solve_lower[0] = 0.0;
         solve_upper[m - 1] = 0.0;
 
         solve_tridiagonal_inplace(
-            &solve_lower,
-            &diag,
-            &solve_upper,
-            &rhs,
-            &mut c_star,
-            &mut d_star,
-            &mut interior,
+            solve_lower,
+            diag,
+            solve_upper,
+            rhs,
+            c_star,
+            d_star,
+            interior,
         )?;
 
         for (k, val) in interior[..m].iter().enumerate() {
@@ -323,18 +357,21 @@ fn solve_v_direction(
     strike: f64,
     tau: f64,
     ctx: &SolveCtx<'_>,
+    scratch: &mut TridiagScratch,
     out: &mut [f64],
 ) -> Result<(), PricingError> {
     let m = ctx.grid.n_v - 1;
-    let mut lower = vec![0.0_f64; m];
-    let mut diag = vec![0.0_f64; m];
-    let mut upper = vec![0.0_f64; m];
-    let mut solve_lower = vec![0.0_f64; m];
-    let mut solve_upper = vec![0.0_f64; m];
-    let mut rhs = vec![0.0_f64; m];
-    let mut c_star = vec![0.0_f64; m];
-    let mut d_star = vec![0.0_f64; m];
-    let mut interior = vec![0.0_f64; m];
+    let TridiagScratch {
+        lower,
+        diag,
+        upper,
+        solve_lower,
+        solve_upper,
+        rhs,
+        c_star,
+        d_star,
+        interior,
+    } = scratch;
 
     let dv = ctx.grid.dv;
     let inv_2dv = 0.5 / dv;
@@ -365,19 +402,19 @@ fn solve_v_direction(
         rhs[0] -= lower[0] * lo_bv;
         rhs[m - 1] -= upper[m - 1] * hi_bv;
 
-        solve_lower.copy_from_slice(&lower);
-        solve_upper.copy_from_slice(&upper);
+        solve_lower.copy_from_slice(lower);
+        solve_upper.copy_from_slice(upper);
         solve_lower[0] = 0.0;
         solve_upper[m - 1] = 0.0;
 
         solve_tridiagonal_inplace(
-            &solve_lower,
-            &diag,
-            &solve_upper,
-            &rhs,
-            &mut c_star,
-            &mut d_star,
-            &mut interior,
+            solve_lower,
+            diag,
+            solve_upper,
+            rhs,
+            c_star,
+            d_star,
+            interior,
         )?;
 
         for (k, val) in interior[..m].iter().enumerate() {
@@ -517,6 +554,10 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
             grid: &grid,
         };
 
+        // Reusable tridiagonal scratch buffers shared across all time steps.
+        let mut s_scratch = TridiagScratch::new(grid.n_s - 1);
+        let mut v_scratch = TridiagScratch::new(grid.n_v - 1);
+
         for step in 0..n_t {
             let tau_new = (step + 1) as f64 * dt;
 
@@ -546,6 +587,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
                 instrument.strike,
                 tau_new,
                 &ctx,
+                &mut s_scratch,
                 &mut y1,
             )?;
             solve_v_direction(
@@ -555,6 +597,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
                 instrument.strike,
                 tau_new,
                 &ctx,
+                &mut v_scratch,
                 &mut y2,
             )?;
 
@@ -596,6 +639,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
                         instrument.strike,
                         tau_new,
                         &ctx,
+                        &mut s_scratch,
                         &mut z1,
                     )?;
                     solve_v_direction(
@@ -605,6 +649,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
                         instrument.strike,
                         tau_new,
                         &ctx,
+                        &mut v_scratch,
                         &mut z2,
                     )?;
                     u.copy_from_slice(&z2);

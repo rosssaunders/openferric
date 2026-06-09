@@ -18,7 +18,7 @@
 /// - Henrard, "Interest Rate Modelling in the Multi-Curve Framework" (2014)
 /// - Ametrano, Bianchetti, "Everything You Always Wanted to Know About
 ///   Multiple Interest Rate Curve Bootstrapping" (2013)
-use crate::rates::yield_curve::YieldCurve;
+use crate::rates::yield_curve::{YieldCurve, solve_monotone_root};
 
 /// Multi-curve environment: one discount curve + multiple forwarding curves.
 #[derive(Debug, Clone)]
@@ -94,76 +94,58 @@ pub fn dual_curve_bootstrap(
     let mut fwd_points: Vec<(f64, f64)> = Vec::new();
 
     for &(tenor, par_rate) in &sorted {
-        // PV of fixed leg = par_rate * sum(DF_ois(t_i) * dt)
-        // PV of float leg = sum(f(t_{i-1}, t_i) * DF_ois(t_i) * dt)
-        // At par: fixed PV = float PV + (DF_fwd(0) - DF_fwd(T)) * DF_ois(T)/DF_fwd(T)
+        // Par condition under OIS discounting:
+        //   par_rate * sum_i DF_ois(t_i) * dt = sum_i f(t_{i-1}, t_i) * DF_ois(t_i) * dt
+        // with the simple forward f(t1, t2) = (DF_fwd(t1)/DF_fwd(t2) - 1) / (t2 - t1).
         //
-        // Simplified: solve for DF_fwd(T) such that swap is at par
+        // The pillar DF_fwd(T) is solved with a 1-D root-finder so the swap
+        // reprices exactly: intermediate coupon DFs between the last pillar and
+        // T interpolate against the candidate pillar value.
         let n_periods = (tenor * frequency as f64).round() as usize;
         if n_periods == 0 {
             continue;
         }
+        let t_n = n_periods as f64 * dt;
 
-        let mut annuity = 0.0;
-        let mut float_pv = 0.0;
-
-        for i in 1..n_periods {
-            let t_i = i as f64 * dt;
-            let ois_df = ois_curve.discount_factor(t_i);
-            annuity += ois_df * dt;
-
-            // Use already-bootstrapped forward DFs for intermediate periods
-            if let (Some(fwd_df_prev), Some(fwd_df_curr)) = (
-                interpolate_df(&fwd_points, (i - 1) as f64 * dt),
-                interpolate_df(&fwd_points, t_i),
-            ) {
-                let fwd_rate = (fwd_df_prev / fwd_df_curr - 1.0) / dt;
-                float_pv += fwd_rate * ois_df * dt;
-            }
+        // OIS annuity is independent of the candidate forward curve.
+        let mut fixed_pv = 0.0;
+        let mut ois_dfs = Vec::with_capacity(n_periods);
+        for i in 1..=n_periods {
+            let ois_df = ois_curve.discount_factor(i as f64 * dt);
+            ois_dfs.push(ois_df);
+            fixed_pv += par_rate * ois_df * dt;
         }
 
-        let t_n = n_periods as f64 * dt;
-        let ois_df_n = ois_curve.discount_factor(t_n);
-        annuity += ois_df_n * dt;
+        // Residual of the par equation as a function of the candidate pillar
+        // DF. One candidate curve is built per evaluation (not per coupon).
+        // Raising the pillar DF lowers every projected forward, so the
+        // residual is monotone in the candidate value.
+        let residual = |df_n: f64| {
+            let mut candidate = fwd_points.clone();
+            candidate.push((t_n, df_n));
+            let fwd_curve = YieldCurve::new(candidate);
 
-        // Solve for DF_fwd(T): par_rate * annuity = float_pv + (1 - DF_fwd(T)) * ois_df_n / ...
-        // Simplified: DF_fwd(T) = (1 - par_rate * annuity + float_pv) if float_pv is already computed
-        // More precisely, for the last period:
-        let fwd_df_prev = if fwd_points.is_empty() {
-            1.0
-        } else {
-            interpolate_df(&fwd_points, (n_periods - 1) as f64 * dt).unwrap_or(1.0)
+            let mut float_pv = 0.0;
+            let mut fwd_df_prev = 1.0;
+            for (i, ois_df) in ois_dfs.iter().enumerate() {
+                let t_i = (i + 1) as f64 * dt;
+                let fwd_df_curr = fwd_curve.discount_factor(t_i);
+                let fwd_rate = (fwd_df_prev / fwd_df_curr - 1.0) / dt;
+                float_pv += fwd_rate * ois_df * dt;
+                fwd_df_prev = fwd_df_curr;
+            }
+            Ok(fixed_pv - float_pv)
         };
 
-        // The last forward rate satisfies:
-        // par_rate * annuity = float_pv + fwd_rate_last * ois_df_n * dt
-        // fwd_rate_last = (fwd_df_prev / fwd_df_n - 1) / dt
-        // Solving: fwd_df_n = fwd_df_prev / (1 + (par_rate * annuity - float_pv) / (ois_df_n * dt) * dt)
-        let remaining = par_rate * annuity - float_pv;
-        let implied_fwd_rate = remaining / (ois_df_n * dt);
-        let fwd_df_n = fwd_df_prev / (1.0 + implied_fwd_rate * dt);
-
-        if fwd_df_n > 0.0 && fwd_df_n.is_finite() {
+        if let Ok(fwd_df_n) = solve_monotone_root(residual, 1.0e-10, 4.0)
+            && fwd_df_n > 0.0
+            && fwd_df_n.is_finite()
+        {
             fwd_points.push((t_n, fwd_df_n));
         }
     }
 
     YieldCurve::new(fwd_points)
-}
-
-fn interpolate_df(points: &[(f64, f64)], t: f64) -> Option<f64> {
-    if points.is_empty() || t <= 0.0 {
-        return Some(1.0);
-    }
-    // Simple: use the YieldCurve interpolation
-    if points.len() == 1 {
-        let (t0, df0) = points[0];
-        if t <= t0 {
-            return Some((-(-df0.ln() / t0) * t).exp());
-        }
-    }
-    let curve = YieldCurve::new(points.to_vec());
-    Some(curve.discount_factor(t))
 }
 
 /// Price a vanilla IRS under multi-curve framework.
@@ -254,6 +236,27 @@ mod tests {
         for &(_, df) in &fwd_curve.tenors {
             assert!(df > 0.0);
             assert!(df <= 1.0);
+        }
+    }
+
+    #[test]
+    fn dual_curve_bootstrap_reprices_par_swaps() {
+        // Repricing each input swap with the same conventions the bootstrap
+        // assumes (simple forwards (DF1/DF2 - 1)/dt projected off the forward
+        // curve, OIS discounting) must give NPV ~ 0 at the input par rate.
+        let ois = make_flat_curve(0.03);
+        let swap_rates = vec![(1.0, 0.035), (2.0, 0.036), (3.0, 0.037), (5.0, 0.038)];
+        let fwd_curve = dual_curve_bootstrap(&swap_rates, &ois, 4);
+
+        let mut env = MultiCurveEnvironment::new(make_flat_curve(0.03));
+        env.add_forward_curve("3M", fwd_curve);
+
+        for &(tenor, rate) in &swap_rates {
+            let pv = price_irs_multi_curve(&env, "3M", 1.0, rate, tenor, 4).unwrap();
+            assert!(
+                pv.abs() < 1.0e-10,
+                "swap tenor={tenor} should reprice at par, pv={pv}"
+            );
         }
     }
 

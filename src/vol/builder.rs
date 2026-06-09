@@ -96,7 +96,12 @@ impl BuiltVolSurface {
     }
 
     pub fn local_vol(&self, spot: f64, expiry: f64) -> f64 {
-        DupireLocalVol::new(self.clone(), self.spot).local_vol(spot, expiry)
+        // Borrow the surface (ImpliedVolSurface is implemented for references),
+        // avoiding a deep clone per evaluation. The builder's flat-carry
+        // convention is forward(T) = spot * exp(rate * T) with q = 0.
+        DupireLocalVol::new(self, self.spot)
+            .with_rates(self.rate, 0.0)
+            .local_vol(spot, expiry)
     }
 
     /// Spot used when building the surface.

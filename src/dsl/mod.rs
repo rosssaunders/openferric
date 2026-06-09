@@ -16,6 +16,25 @@
 //! The language uses indentation-based blocks (no braces) and `then` for
 //! conditionals, inspired by F#.
 //!
+//! # Numeric semantics
+//!
+//! - `==` and `!=` compare with an **absolute** `f64::EPSILON` tolerance:
+//!   `a == b` is true iff `|a - b| < f64::EPSILON`. This is consistent across
+//!   the scalar interpreter, the SIMD batch evaluators, and the JIT.
+//! - `min`, `max`, `worst_of`, and `best_of` propagate NaN in all backends:
+//!   a NaN operand (e.g. from division by zero) poisons the result rather
+//!   than being silently dropped.
+//! - Schedule observation dates beyond the product maturity are truncated at
+//!   compile time (the LSP emits a warning); hand-built IR containing such
+//!   dates is rejected when the execution plan is built.
+//!
+//! # Repeated evaluation
+//!
+//! For evaluating many paths against the same product, use
+//! [`eval::ProductEvaluator`], which compiles the execution plan once and
+//! reuses scratch buffers; [`eval::evaluate_product`] is a one-shot
+//! convenience that rebuilds the plan on every call.
+//!
 //! # Quick Start
 //!
 //! ```rust
@@ -55,6 +74,7 @@ pub mod parser;
 pub use compiler::compile;
 pub use engine::{DslMonteCarloEngine, DslProduct};
 pub use error::DslError;
+pub use eval::ProductEvaluator;
 pub use ir::CompiledProduct;
 pub use market::{AssetMarketData, MultiAssetMarket};
 
@@ -225,6 +245,37 @@ product \"Phoenix Memory\"
         assert!(
             result.price > 800_000.0 && result.price < 1_100_000.0,
             "phoenix price {} out of expected range",
+            result.price
+        );
+    }
+
+    #[test]
+    fn end_to_end_underlying_name_and_maturity() {
+        // `SPX` resolves to the asset's spot; `maturity` to the product
+        // maturity constant — in every backend, since both compile to plain
+        // bytecode (PRICE / PUSH_CONST).
+        let source = "\
+product \"UnderlyingRef\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX = asset(0)
+    schedule annual from 1.0 to 1.0
+        pay notional * 0.08 * maturity
+        redeem SPX
+";
+
+        let product = parse_and_compile(source).unwrap();
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.0);
+        let engine = DslMonteCarloEngine::new(50_000, 100, 42);
+        let result = engine.price_multi_asset(&product, &market).unwrap();
+
+        // redeem S(T): discounted forward = S0 = 100 (q=0); coupon = 8 discounted.
+        let expected = 100.0 + 8.0 * (-0.05f64).exp();
+        let rel_err = ((result.price - expected) / expected).abs();
+        assert!(
+            rel_err < 0.02,
+            "expected ~{expected}, got {} (rel_err {rel_err})",
             result.price
         );
     }

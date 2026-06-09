@@ -115,14 +115,17 @@ fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     }
 }
 
-fn path_hits_barrier(path: &[f64], level: f64, direction: BarrierDirection) -> bool {
+/// Index of the first path point that breaches the barrier, if any.
+fn first_barrier_hit_index(path: &[f64], level: f64, direction: BarrierDirection) -> Option<usize> {
     match direction {
-        BarrierDirection::Up => path.iter().any(|&s| s >= level),
-        BarrierDirection::Down => path.iter().any(|&s| s <= level),
+        BarrierDirection::Up => path.iter().position(|&s| s >= level),
+        BarrierDirection::Down => path.iter().position(|&s| s <= level),
     }
 }
 
-fn mean_and_stderr(values: &[f64]) -> (f64, f64) {
+/// Mean and standard error of `scale * values`, computed in a single pass
+/// without materializing the scaled values.
+fn scaled_mean_and_stderr(values: &[f64], scale: f64) -> (f64, f64) {
     let n = values.len() as f64;
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
@@ -132,11 +135,13 @@ fn mean_and_stderr(values: &[f64]) -> (f64, f64) {
     }
     let mean = sum / n;
     let var = if values.len() > 1 {
-        (sum_sq - sum * sum / n) / (n - 1.0)
+        // Clamp to guard against catastrophic cancellation producing a tiny
+        // negative value (and a NaN stderr after sqrt).
+        (sum_sq - sum * sum / n).max(0.0) / (n - 1.0)
     } else {
         0.0
     };
-    (mean, (var / n).sqrt())
+    (scale * mean, scale * (var / n).sqrt())
 }
 
 #[inline]
@@ -342,6 +347,8 @@ impl LongstaffSchwartzEngine {
             exercised_paths: terminal_itm,
         }];
 
+        // Reusable in-the-money index buffer shared across exercise dates.
+        let mut itm: Vec<usize> = Vec::with_capacity(self.num_paths);
         for ti in (1..self.num_steps).rev() {
             for value in &mut values {
                 *value *= disc;
@@ -351,11 +358,10 @@ impl LongstaffSchwartzEngine {
                 continue;
             };
 
-            let itm: Vec<usize> = (0..self.num_paths)
-                .filter(|&idx| {
-                    intrinsic(instrument.option_type, paths[idx * stride + ti], strike) > 0.0
-                })
-                .collect();
+            itm.clear();
+            itm.extend((0..self.num_paths).filter(|&idx| {
+                intrinsic(instrument.option_type, paths[idx * stride + ti], strike) > 0.0
+            }));
 
             if itm.len() < 3 {
                 boundary_rev.push(ExerciseBoundaryPoint {
@@ -389,8 +395,7 @@ impl LongstaffSchwartzEngine {
             });
         }
 
-        let discounted: Vec<f64> = values.into_iter().map(|v| v * disc).collect();
-        let (price, stderr) = mean_and_stderr(&discounted);
+        let (price, stderr) = scaled_mean_and_stderr(&values, disc);
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::NumPaths, self.num_paths as f64);
@@ -539,6 +544,8 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             }
         }
 
+        // Reusable in-the-money index buffer shared across exercise dates.
+        let mut itm: Vec<usize> = Vec::with_capacity(self.num_paths);
         for ti in (1..self.num_steps).rev() {
             for value in &mut values {
                 *value *= disc;
@@ -548,15 +555,14 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 continue;
             }
 
-            let itm: Vec<usize> = (0..self.num_paths)
-                .filter(|&idx| {
-                    intrinsic(
-                        instrument.option_type,
-                        paths[idx * stride + ti],
-                        instrument.strike,
-                    ) > 0.0
-                })
-                .collect();
+            itm.clear();
+            itm.extend((0..self.num_paths).filter(|&idx| {
+                intrinsic(
+                    instrument.option_type,
+                    paths[idx * stride + ti],
+                    instrument.strike,
+                ) > 0.0
+            }));
 
             if itm.len() < 3 {
                 continue;
@@ -591,7 +597,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             let xty = Vector3::new(s_y, s_sy, s_s2y);
             let beta = xtx.lu().solve(&xty).unwrap_or(Vector3::zeros());
 
-            for idx in itm {
+            for &idx in &itm {
                 let s = paths[idx * stride + ti];
                 let continuation = beta[0] + beta[1] * s + beta[2] * s * s;
                 let exercise = intrinsic(instrument.option_type, s, instrument.strike);
@@ -601,8 +607,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             }
         }
 
-        let discounted: Vec<f64> = values.into_iter().map(|v| v * disc).collect();
-        let (price, stderr) = mean_and_stderr(&discounted);
+        let (price, stderr) = scaled_mean_and_stderr(&values, disc);
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("num_paths", self.num_paths as f64);
@@ -698,28 +703,39 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
                 }
             }
 
-            let hit = path_hits_barrier(
+            let hit_idx = first_barrier_hit_index(
                 &path,
                 instrument.barrier.level,
                 instrument.barrier.direction,
             );
             let active = match instrument.barrier.style {
-                BarrierStyle::In => hit,
-                BarrierStyle::Out => !hit,
+                BarrierStyle::In => hit_idx.is_some(),
+                BarrierStyle::Out => hit_idx.is_none(),
             };
-            let payoff = if active {
-                intrinsic(
-                    instrument.option_type,
-                    path[path.len() - 1],
-                    instrument.strike,
-                )
+            let path_pv = if active {
+                discount
+                    * intrinsic(
+                        instrument.option_type,
+                        path[path.len() - 1],
+                        instrument.strike,
+                    )
             } else {
-                instrument.barrier.rebate
+                match instrument.barrier.style {
+                    // Knock-out breached: the rebate is paid at the hit time,
+                    // so discount it from t_hit rather than from expiry.
+                    BarrierStyle::Out => {
+                        let idx = hit_idx.expect("inactive knock-out implies a barrier hit");
+                        let t_hit = dt * idx as f64;
+                        instrument.barrier.rebate * (-market.rate * t_hit).exp()
+                    }
+                    // Knock-in never triggered: rebate is paid at expiry.
+                    BarrierStyle::In => discount * instrument.barrier.rebate,
+                }
             };
-            pv.push(discount * payoff);
+            pv.push(path_pv);
         }
 
-        let (price, stderr) = mean_and_stderr(&pv);
+        let (price, stderr) = scaled_mean_and_stderr(&pv, 1.0);
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("num_paths", self.num_paths as f64);

@@ -42,12 +42,17 @@ fn yield_curve_flat_five_percent_discount_factor() {
 
 #[test]
 fn fixed_rate_bond_flat_curve_prices_at_par() {
+    // Bond cashflows discount with the curve's own discount factors, so the
+    // par identity (coupon bond at face value) holds when the curve DFs embed
+    // the bond's compounding convention: DF(t) = (1 + c/m)^(-m t).
     let r = 0.05_f64;
+    let m = 2.0_f64;
+    let df = |t: f64| (1.0 + r / m).powf(-m * t);
     let curve = YieldCurve::new(vec![
-        (0.5, (-r * 0.5).exp()),
-        (1.0, (-r * 1.0).exp()),
-        (1.5, (-r * 1.5).exp()),
-        (2.0, (-r * 2.0).exp()),
+        (0.5, df(0.5)),
+        (1.0, df(1.0)),
+        (1.5, df(1.5)),
+        (2.0, df(2.0)),
     ]);
 
     let bond = FixedRateBond {

@@ -303,30 +303,30 @@ fn tokenize_content(content: &str, offset: usize, tokens: &mut Vec<Token>) -> Re
 }
 
 fn lex_string(content: &str, start: usize, offset: usize) -> Result<(String, usize), DslError> {
-    let bytes = content.as_bytes();
-    let mut pos = start + 1;
+    // Iterate over chars (not bytes) so multi-byte UTF-8 sequences in string
+    // literals are preserved instead of being mangled byte-by-byte.
     let mut s = String::new();
-    while pos < bytes.len() {
-        if bytes[pos] == b'"' {
-            return Ok((s, offset + pos + 1));
+    let mut chars = content[start + 1..].char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Ok((s, offset + start + 1 + i + 1)),
+            '\\' => match chars.next() {
+                Some((_, esc)) => match esc {
+                    'n' => s.push('\n'),
+                    't' => s.push('\t'),
+                    '"' => s.push('"'),
+                    '\\' => s.push('\\'),
+                    other => s.push(other),
+                },
+                // Trailing backslash: fall through to the unterminated error.
+                None => break,
+            },
+            other => s.push(other),
         }
-        if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
-            pos += 1;
-            match bytes[pos] {
-                b'n' => s.push('\n'),
-                b't' => s.push('\t'),
-                b'"' => s.push('"'),
-                b'\\' => s.push('\\'),
-                _ => s.push(bytes[pos] as char),
-            }
-        } else {
-            s.push(bytes[pos] as char);
-        }
-        pos += 1;
     }
     Err(DslError::LexError {
         message: "unterminated string literal".to_string(),
-        span: Span::new(offset + start, offset + pos),
+        span: Span::new(offset + start, offset + content.len()),
     })
 }
 
@@ -470,6 +470,35 @@ mod tests {
                 &TokenKind::Dedent,
             ]
         );
+    }
+
+    #[test]
+    fn string_literal_preserves_multibyte_utf8() {
+        let tokens =
+            tokenize("product \"Caf\u{e9} \u{fc}n\u{ef}c\u{f8}de \u{2014} note\"").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Product);
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::StringLit("Caf\u{e9} \u{fc}n\u{ef}c\u{f8}de \u{2014} note".to_string())
+        );
+        // Span end must point just past the closing quote (byte offset).
+        let lit_len = "\"Caf\u{e9} \u{fc}n\u{ef}c\u{f8}de \u{2014} note\"".len();
+        assert_eq!(tokens[1].span.end, "product ".len() + lit_len);
+    }
+
+    #[test]
+    fn string_literal_escapes_and_utf8_mix() {
+        let tokens = tokenize("product \"a\\n\u{4e16}\u{754c}\\\"b\"").unwrap();
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::StringLit("a\n\u{4e16}\u{754c}\"b".to_string())
+        );
+    }
+
+    #[test]
+    fn unterminated_string_is_error() {
+        assert!(tokenize("product \"abc").is_err());
+        assert!(tokenize("product \"abc\\").is_err());
     }
 
     #[test]

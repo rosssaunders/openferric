@@ -93,6 +93,8 @@ pub unsafe fn store_f64x8(values: &mut [f64], i: usize, v: __m512d) {
 pub unsafe fn exp_f64x8(x: __m512d) -> __m512d {
     let max_x = _mm512_set1_pd(709.782_712_893_384);
     let min_x = _mm512_set1_pd(-708.396_418_532_264_1);
+    // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
+    let overflow = _mm512_cmp_pd_mask(x, max_x, _CMP_GT_OQ);
     let x = _mm512_max_pd(min_x, _mm512_min_pd(x, max_x));
 
     let log2e = _mm512_set1_pd(std::f64::consts::LOG2_E);
@@ -132,14 +134,22 @@ pub unsafe fn exp_f64x8(x: __m512d) -> __m512d {
     poly = _mm512_fmadd_pd(poly, r, c1);
     poly = _mm512_fmadd_pd(poly, r, c0);
 
-    // Reconstruct 2^n via exponent bit manipulation.
-    // _mm512_cvtpd_epi32 gives __m256i (8 x i32), then widen to __m512i (8 x i64).
+    // Reconstruct 2^n as 2^n1 * 2^n2 (n1 = n/2, n2 = n - n1). A single 2^n
+    // overflows the biased exponent for n = 1024, which round(x*log2e)
+    // produces for x in [~709.44, 709.78] where exp(x) is still finite.
     let n_i32 = _mm512_cvtpd_epi32(n);
     let n_i64 = _mm512_cvtepi32_epi64(n_i32);
-    let exp_bits = _mm512_slli_epi64(_mm512_add_epi64(n_i64, _mm512_set1_epi64(1023)), 52);
-    let two_pow_n = _mm512_castsi512_pd(exp_bits);
+    let n1_i64 = _mm512_srai_epi64(n_i64, 1);
+    let n2_i64 = _mm512_sub_epi64(n_i64, n1_i64);
+    let bias = _mm512_set1_epi64(1023);
+    let e1 = _mm512_slli_epi64(_mm512_add_epi64(n1_i64, bias), 52);
+    let e2 = _mm512_slli_epi64(_mm512_add_epi64(n2_i64, bias), 52);
+    let y = _mm512_mul_pd(
+        _mm512_mul_pd(poly, _mm512_castsi512_pd(e1)),
+        _mm512_castsi512_pd(e2),
+    );
 
-    _mm512_mul_pd(poly, two_pow_n)
+    _mm512_mask_blend_pd(overflow, y, _mm512_set1_pd(f64::INFINITY))
 }
 
 /// Fast exp() with degree-7 minimax polynomial (~2e-10 relative error).
@@ -156,6 +166,7 @@ pub unsafe fn exp_f64x8(x: __m512d) -> __m512d {
 pub unsafe fn fast_exp_f64x8(x: __m512d) -> __m512d {
     let max_x = _mm512_set1_pd(709.782_712_893_384);
     let min_x = _mm512_set1_pd(-708.396_418_532_264_1);
+    let overflow = _mm512_cmp_pd_mask(x, max_x, _CMP_GT_OQ);
     let x = _mm512_max_pd(min_x, _mm512_min_pd(x, max_x));
 
     let log2e = _mm512_set1_pd(std::f64::consts::LOG2_E);
@@ -190,12 +201,20 @@ pub unsafe fn fast_exp_f64x8(x: __m512d) -> __m512d {
     poly = _mm512_fmadd_pd(poly, r, c1);
     poly = _mm512_fmadd_pd(poly, r, c0);
 
+    // Split 2^n into 2^n1 * 2^n2 to avoid biased-exponent overflow at n=1024.
     let n_i32 = _mm512_cvtpd_epi32(n);
     let n_i64 = _mm512_cvtepi32_epi64(n_i32);
-    let exp_bits = _mm512_slli_epi64(_mm512_add_epi64(n_i64, _mm512_set1_epi64(1023)), 52);
-    let two_pow_n = _mm512_castsi512_pd(exp_bits);
+    let n1_i64 = _mm512_srai_epi64(n_i64, 1);
+    let n2_i64 = _mm512_sub_epi64(n_i64, n1_i64);
+    let bias = _mm512_set1_epi64(1023);
+    let e1 = _mm512_slli_epi64(_mm512_add_epi64(n1_i64, bias), 52);
+    let e2 = _mm512_slli_epi64(_mm512_add_epi64(n2_i64, bias), 52);
+    let y = _mm512_mul_pd(
+        _mm512_mul_pd(poly, _mm512_castsi512_pd(e1)),
+        _mm512_castsi512_pd(e2),
+    );
 
-    _mm512_mul_pd(poly, two_pow_n)
+    _mm512_mask_blend_pd(overflow, y, _mm512_set1_pd(f64::INFINITY))
 }
 
 /// AVX-512 natural logarithm for 8 f64 values simultaneously.
@@ -413,7 +432,23 @@ pub unsafe fn inv_norm_cdf_f64x8(p: __m512d) -> __m512d {
     let is_high = _mm512_cmp_pd_mask(p, p_high, _CMP_GT_OQ);
 
     let result = _mm512_mask_blend_pd(is_low, val_central, val_low);
-    _mm512_mask_blend_pd(is_high, result, val_high)
+    let result = _mm512_mask_blend_pd(is_high, result, val_high);
+
+    // -- Domain boundaries: match the scalar contract of
+    // `beasley_springer_moro_inv_cdf` exactly so a value's result does not
+    // depend on whether it lands in the vector body or scalar remainder:
+    //   p == 0 -> -inf, p == 1 -> +inf, p < 0 / p > 1 / NaN -> NaN.
+    let zero = _mm512_setzero_pd();
+    let is_zero = _mm512_cmp_pd_mask(p, zero, _CMP_EQ_OQ);
+    let is_one = _mm512_cmp_pd_mask(p, one, _CMP_EQ_OQ);
+    let below = _mm512_cmp_pd_mask(p, zero, _CMP_LT_OQ);
+    let above = _mm512_cmp_pd_mask(p, one, _CMP_GT_OQ);
+    let unordered = _mm512_cmp_pd_mask(p, p, _CMP_UNORD_Q);
+    let invalid = below | above | unordered;
+
+    let result = _mm512_mask_blend_pd(is_zero, result, _mm512_set1_pd(f64::NEG_INFINITY));
+    let result = _mm512_mask_blend_pd(is_one, result, _mm512_set1_pd(f64::INFINITY));
+    _mm512_mask_blend_pd(invalid, result, _mm512_set1_pd(f64::NAN))
 }
 
 /// Batch inverse normal CDF: processes `uniforms` buffer in-place, writing

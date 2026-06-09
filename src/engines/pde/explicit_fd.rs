@@ -132,7 +132,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
         let dividend_yield = market.effective_dividend_yield(instrument.expiry);
         let (a, b, c) = build_operator_coefficients(&grid, market.rate, dividend_yield, vol);
 
-        let dt_max = explicit_cfl_dt_max(&b, self.cfl_safety_factor)?;
+        let dt_max = explicit_cfl_dt_max(&a, &b, &c, self.cfl_safety_factor)?;
         if self.enforce_cfl && dt > dt_max {
             let min_steps = (instrument.expiry / dt_max).ceil() as usize;
             return Err(PricingError::ConvergenceFailure(format!(

@@ -126,14 +126,15 @@ where
 
     // Terminal payoffs using multiplicative recurrence to eliminate powf().
     // S1 = s1 * d1^steps * (u1/d1)^i, S2 = s2 * d2^steps * (u2/d2)^j
+    // Flat row-major storage with fixed stride n: values[i * n + j].
     let ratio1 = u1 / d1;
     let ratio2 = u2 / d2;
-    let mut values = vec![vec![0.0_f64; n]; n];
+    let mut values = vec![0.0_f64; n * n];
     {
         let mut s1_t = s1 * d1.powi(steps as i32);
-        for value_row in values.iter_mut().take(n) {
+        for value_row in values.chunks_exact_mut(n) {
             let mut s2_t = s2 * d2.powi(steps as i32);
-            for value in value_row.iter_mut().take(n) {
+            for value in value_row.iter_mut() {
                 *value = payoff_fn(s1_t, s2_t);
                 s2_t *= ratio2;
             }
@@ -141,23 +142,29 @@ where
         }
     }
 
-    // Backward induction
+    // Backward induction, in place in the single flat buffer.
+    //
+    // Safety of in-place forward overwrite: the new value at (i, j) reads only
+    // the previous slice at (i, j), (i, j+1), (i+1, j), (i+1, j+1). Iterating
+    // i and j in increasing order, every read position other than (i, j)
+    // itself is lexicographically after (i, j) and therefore not yet
+    // overwritten in this sweep, while (i, j) is read before it is written.
     for step in (0..steps).rev() {
         let m = step + 1;
-        let mut new_values = vec![vec![0.0_f64; m]; m];
         for i in 0..m {
+            let row = i * n;
+            let row_up = (i + 1) * n;
             for j in 0..m {
-                new_values[i][j] = disc
-                    * (p_uu * values[i + 1][j + 1]
-                        + p_ud * values[i + 1][j]
-                        + p_du * values[i][j + 1]
-                        + p_dd * values[i][j]);
+                values[row + j] = disc
+                    * (p_uu * values[row_up + j + 1]
+                        + p_ud * values[row_up + j]
+                        + p_du * values[row + j + 1]
+                        + p_dd * values[row + j]);
             }
         }
-        values = new_values;
     }
 
-    Ok(values[0][0])
+    Ok(values[0])
 }
 
 impl PricingEngine<SpreadOption> for TwoAssetBinomialEngine {

@@ -185,10 +185,28 @@ unsafe fn simulate_chunk_exact_avx2(
 
     let mut remaining = n_paths;
 
+    // Horizontal reduction of vector accumulators into the scalar sums,
+    // performed once per block instead of once per 4 lanes.
+    #[inline(always)]
+    unsafe fn hreduce_block(
+        sum_v: std::arch::x86_64::__m256d,
+        sq_v: std::arch::x86_64::__m256d,
+        sum: &mut f64,
+        sum_sq: &mut f64,
+    ) {
+        let mut lanes = [0.0_f64; 4];
+        unsafe { std::arch::x86_64::_mm256_storeu_pd(lanes.as_mut_ptr(), sum_v) };
+        *sum += lanes[0] + lanes[1] + lanes[2] + lanes[3];
+        unsafe { std::arch::x86_64::_mm256_storeu_pd(lanes.as_mut_ptr(), sq_v) };
+        *sum_sq += lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    }
+
     // Process full blocks of BLOCK paths.
     while remaining >= BLOCK {
         unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals) };
 
+        let mut sum_v = zero_v;
+        let mut sq_v = zero_v;
         let mut j = 0usize;
         while j + 4 <= BLOCK {
             unsafe {
@@ -202,14 +220,13 @@ unsafe fn simulate_chunk_exact_avx2(
                     OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
                 };
 
-                // Extract and accumulate (horizontal reduction every 4 payoffs).
-                let mut pay = [0.0_f64; 4];
-                _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
-                sum += pay[0] + pay[1] + pay[2] + pay[3];
-                sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+                // Keep vector accumulators; reduce once per block below.
+                sum_v = _mm256_add_pd(sum_v, payoff_v);
+                sq_v = _mm256_fmadd_pd(payoff_v, payoff_v, sq_v);
             }
             j += 4;
         }
+        unsafe { hreduce_block(sum_v, sq_v, &mut sum, &mut sum_sq) };
         remaining -= BLOCK;
     }
 
@@ -218,6 +235,8 @@ unsafe fn simulate_chunk_exact_avx2(
         let batch = remaining & !3;
         unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals[..batch]) };
 
+        let mut sum_v = zero_v;
+        let mut sq_v = zero_v;
         let mut j = 0usize;
         while j + 4 <= batch {
             unsafe {
@@ -231,13 +250,12 @@ unsafe fn simulate_chunk_exact_avx2(
                     OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
                 };
 
-                let mut pay = [0.0_f64; 4];
-                _mm256_storeu_pd(pay.as_mut_ptr(), payoff_v);
-                sum += pay[0] + pay[1] + pay[2] + pay[3];
-                sum_sq += pay[0] * pay[0] + pay[1] * pay[1] + pay[2] * pay[2] + pay[3] * pay[3];
+                sum_v = _mm256_add_pd(sum_v, payoff_v);
+                sq_v = _mm256_fmadd_pd(payoff_v, payoff_v, sq_v);
             }
             j += 4;
         }
+        unsafe { hreduce_block(sum_v, sq_v, &mut sum, &mut sum_sq) };
         remaining -= batch;
     }
 

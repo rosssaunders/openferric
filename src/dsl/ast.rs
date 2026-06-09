@@ -75,10 +75,24 @@ impl ScheduleFreq {
     }
 
     /// Generates observation dates from `start` to `end` inclusive.
-    pub fn generate_dates(&self, start: f64, end: f64) -> Vec<f64> {
+    ///
+    /// Fails when the schedule would generate more than
+    /// [`MAX_SCHEDULE_DATES`] dates (e.g. a near-zero custom period over a
+    /// long horizon), or when the bounds/period are not finite.
+    pub fn generate_dates(&self, start: f64, end: f64) -> Result<Vec<f64>, String> {
         let period = self.period();
         if period <= 0.0 {
-            return vec![end];
+            return Ok(vec![end]);
+        }
+        if !period.is_finite() || !start.is_finite() || !end.is_finite() {
+            return Err("schedule period, start, and end must be finite".to_string());
+        }
+        let approx_count = (end - start) / period;
+        if approx_count >= MAX_SCHEDULE_DATES as f64 {
+            return Err(format!(
+                "schedule would generate ~{:.0} observation dates, exceeding the maximum of {MAX_SCHEDULE_DATES}",
+                approx_count + 1.0
+            ));
         }
         let mut dates = Vec::new();
         let mut t = start;
@@ -90,9 +104,12 @@ impl ScheduleFreq {
         if dates.is_empty() || (dates.last().unwrap() - end).abs() > 1e-12 {
             dates.push(end);
         }
-        dates
+        Ok(dates)
     }
 }
+
+/// Maximum number of observation dates a single schedule may generate.
+pub const MAX_SCHEDULE_DATES: usize = 100_000;
 
 /// Expression in the AST.
 #[derive(Debug, Clone, PartialEq)]

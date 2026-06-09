@@ -33,31 +33,61 @@ pub struct CmsConvexityParams {
     pub vol: f64,
 }
 
-/// Hagan-Woodward linear CMS convexity adjustment.
+/// Hull (Ch. 30) CMS convexity adjustment kernel.
 ///
-/// Adjusted CMS rate ≈ S + convexity_adjustment
-/// where the adjustment comes from the correlation between
-/// the swap rate and the discount factor.
-pub fn cms_convexity_adjustment(params: &CmsConvexityParams) -> f64 {
-    if params.expiry <= 0.0 || params.tenor <= 0.0 {
+/// `CA = -0.5 * S^2 * sigma^2 * T * G''(S) / G'(S)`
+///
+/// where `G(y)` is the price of a bond paying annual coupons at the fixed
+/// swap-rate level `S` over the swap tenor of `n` years (the module models the
+/// underlying swap with annual periods, consistent with the `(1+S)^{-n}`
+/// annuity used elsewhere in this file):
+///
+/// `G(y) = S * (1 - (1+y)^{-n}) / y + (1+y)^{-n}`
+///
+/// With `v(y) = (1+y)^{-n}`, `v' = -n (1+y)^{-n-1}`, `v'' = n(n+1)(1+y)^{-n-2}`:
+///
+/// `G'(y)  = S * (-y v' - 1 + v) / y^2 + v'`
+/// `G''(y) = S * (-v'' y^2 + 2 v' y + 2(1 - v)) / y^3 + v''`
+///
+/// evaluated at `y = S`. `G' < 0` and `G'' > 0`, so the adjustment is positive.
+fn hull_cms_convexity_adjustment(swap_rate: f64, tenor: f64, expiry: f64, vol: f64) -> f64 {
+    if expiry <= 0.0 || tenor <= 0.0 {
         return 0.0;
     }
 
-    let s = params.swap_rate;
-    let t = params.expiry;
-    let sigma = params.vol;
+    let s = swap_rate;
+    if s.abs() <= 1e-10 || s <= -1.0 {
+        // CA carries an S^2 prefactor; at S ~ 0 the adjustment vanishes.
+        return 0.0;
+    }
 
-    // Hagan (2003) linear TSR approximation:
-    // CA ≈ S^2 * sigma^2 * T * duration / annuity
-    // where duration ≈ (1 - (1+S)^{-n}) / S for n periods
-    let n = params.tenor;
-    let duration = if s.abs() > 1e-10 {
-        (1.0 - (1.0 + s).powf(-n)) / s
-    } else {
-        n
-    };
+    let n = tenor;
+    let y = s;
+    let one_plus = 1.0 + y;
+    let v = one_plus.powf(-n);
+    let vp = -n * one_plus.powf(-n - 1.0);
+    let vpp = n * (n + 1.0) * one_plus.powf(-n - 2.0);
 
-    s * s * sigma * sigma * t * duration / params.annuity.max(1e-10)
+    let g_prime = s * (-y * vp - 1.0 + v) / (y * y) + vp;
+    let g_double_prime = s * (-vpp * y * y + 2.0 * vp * y + 2.0 * (1.0 - v)) / (y * y * y) + vpp;
+
+    if g_prime.abs() <= 1e-14 {
+        return 0.0;
+    }
+
+    -0.5 * s * s * vol * vol * expiry * g_double_prime / g_prime
+}
+
+/// CMS convexity adjustment (Hull, Ch. 30).
+///
+/// Adjusted CMS rate ≈ S + convexity_adjustment, with
+/// `CA = -0.5 * S^2 * sigma^2 * T * G''(S)/G'(S)` where `G(y)` is the
+/// annuity-based bond-price function of the swap yield (see
+/// [`hull_cms_convexity_adjustment`]). The `annuity` field of
+/// [`CmsConvexityParams`] is retained for API compatibility but is not used by
+/// this formula.
+pub fn cms_convexity_adjustment(params: &CmsConvexityParams) -> f64 {
+    hull_cms_convexity_adjustment(params.swap_rate, params.tenor, params.expiry, params.vol)
 }
 
 /// CMS spread option type.
@@ -182,13 +212,16 @@ pub fn cms_spread_option_mc(
     })
 }
 
-/// SABR-based CMS convexity adjustment (Hagan & Woodward).
+/// SABR-based CMS convexity adjustment.
 ///
-/// Uses SABR parameters to compute a more accurate convexity adjustment
-/// that accounts for smile effects.
+/// Computes the SABR ATM lognormal vol from the SABR parameters and feeds it
+/// into the Hull convexity adjustment
+/// `CA = -0.5 * S^2 * sigma_ATM^2 * T * G''(S)/G'(S)`
+/// (see [`hull_cms_convexity_adjustment`]). The `annuity` argument is retained
+/// for API compatibility but is not used by this formula.
 pub fn sabr_cms_convexity_adjustment(
     swap_rate: f64,
-    annuity: f64,
+    _annuity: f64,
     tenor: f64,
     expiry: f64,
     alpha: f64,
@@ -201,27 +234,20 @@ pub fn sabr_cms_convexity_adjustment(
     }
 
     let s = swap_rate;
-    let n = tenor;
     let t = expiry;
 
-    // Duration
-    let duration = if s.abs() > 1e-10 {
-        (1.0 - (1.0 + s).powf(-n)) / s
-    } else {
-        n
-    };
-
-    // SABR ATM vol approximation
-    let f_beta = s.powf(beta);
-    let atm_vol = alpha / f_beta
+    // SABR ATM vol approximation (Hagan et al. 2002, ATM expansion):
+    // sigma_ATM = alpha / f^(1-beta) * [1 + ((1-beta)^2/24 * alpha^2/f^(2-2beta)
+    //             + rho*beta*nu*alpha/(4 f^(1-beta)) + (2-3rho^2)/24 * nu^2) * T]
+    let f_pow = s.powf(1.0 - beta);
+    let atm_vol = alpha / f_pow
         * (1.0
-            + ((1.0 - beta).powi(2) / 24.0 * alpha * alpha / f_beta.powi(2)
-                + 0.25 * rho * beta * nu * alpha / f_beta
+            + ((1.0 - beta).powi(2) / 24.0 * alpha * alpha / f_pow.powi(2)
+                + 0.25 * rho * beta * nu * alpha / f_pow
                 + (2.0 - 3.0 * rho * rho) / 24.0 * nu * nu)
                 * t);
 
-    // Apply same Hagan formula with SABR vol
-    s * s * atm_vol * atm_vol * t * duration / annuity.max(1e-10)
+    hull_cms_convexity_adjustment(s, tenor, t, atm_vol)
 }
 
 #[cfg(test)]
@@ -242,6 +268,15 @@ mod tests {
         assert!(ca.is_finite());
         // Typical CA is a few bps
         assert!(ca < 0.01);
+        // Hand-computed Hull value for S=4%, sigma=20%, T=1y, 10y annual tenor:
+        // v = 1.04^-10, v' = -10*1.04^-11, v'' = 110*1.04^-12
+        // G'(S)  = S(-S v' - 1 + v)/S^2 + v'  = -8.110896
+        // G''(S) = S(-v'' S^2 + 2 v' S + 2(1-v))/S^3 + v'' = 80.754323
+        // CA = -0.5 * 0.04^2 * 0.20^2 * 1.0 * G''/G' = 3.186008564594e-4 (~3.2bp)
+        assert!(
+            (ca - 3.186008564594e-4).abs() < 1.0e-12,
+            "CA should match hand-computed Hull value, got {ca}"
+        );
     }
 
     #[test]

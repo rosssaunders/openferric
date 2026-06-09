@@ -198,6 +198,59 @@ fn double_no_touch_digital_price(
     (prefactor * sum).clamp(0.0, df_r)
 }
 
+/// Expected discount factor to the first barrier-touch time,
+/// `E[exp(-r*tau) * 1{tau <= T}]`, for a knock-out rebate paid at hit.
+///
+/// Uses the same eigenfunction expansion as `double_no_touch_digital_price`:
+/// the discounted survival probability is `D(t) = sum_n a_n * exp(nu_n * t)`
+/// with `a_n = exp(alpha*x) * b_n * sin(w_n * x)` and
+/// `nu_n = c - 0.5*sigma^2*w_n^2` (where `c` already contains `-r`).
+/// Integrating by parts against the first-passage density gives
+/// `E[e^{-r tau} 1{tau<=T}] = 1 - D(T) - r * sum_n a_n * (exp(nu_n*T) - 1)/nu_n`,
+/// which reduces to `P(tau <= T) = 1 - survival` when `r = 0`.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn double_touch_pay_at_hit_factor(
+    spot: f64,
+    lower: f64,
+    upper: f64,
+    rate: f64,
+    dividend_yield: f64,
+    vol: f64,
+    expiry: f64,
+    series_terms: usize,
+) -> f64 {
+    let vol_sq = vol * vol;
+    let width = (upper / lower).ln();
+    let x = (spot / lower).ln();
+
+    let carry = (-0.5 * vol).mul_add(vol, rate - dividend_yield);
+    let alpha = -carry / vol_sq;
+    let c = (-0.5 * carry).mul_add(carry / vol_sq, -rate);
+    let amp = (alpha * x).exp();
+
+    let mut survival_disc = 0.0;
+    let mut integral_term = 0.0;
+    for n in 1..=series_terms {
+        let w = (n as f64) * PI / width;
+        let b_n = 2.0 / width * exp_sin_integral(-alpha, w, 0.0, width);
+        let a_n = amp * b_n * (w * x).sin();
+        // nu_n < 0 always: c <= -r and the diffusion decay term is negative.
+        let nu_n = c - 0.5 * vol_sq * w * w;
+        let exp_nu_t = (nu_n * expiry).exp();
+        survival_disc += a_n * exp_nu_t;
+        if nu_n.abs() > 1.0e-300 {
+            integral_term += a_n * (exp_nu_t - 1.0) / nu_n;
+        }
+    }
+
+    let df_r = (-rate * expiry).exp();
+    let survival_disc = survival_disc.clamp(0.0, df_r);
+    // Bounds: at least the pay-at-expiry value e^{-rT}*P(touch), at most P(touch).
+    let touch_prob_disc = (df_r - survival_disc).max(0.0);
+    (1.0 - survival_disc - rate * integral_term).clamp(touch_prob_disc, 1.0)
+}
+
 impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
     fn price(
         &self,
@@ -256,7 +309,6 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
         }
         let q = market.effective_dividend_yield(instrument.expiry);
 
-        let df_r = (-market.rate * instrument.expiry).exp();
         let vanilla = bs_price_with_dividend(
             instrument.option_type,
             market.spot,
@@ -296,10 +348,29 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
             (0.0, 0.0)
         };
 
+        // Knock-out rebate is paid at the hit time: weight it by the expected
+        // discount factor to the first touch, E[exp(-r*tau) 1{tau <= T}],
+        // rather than discounting the touch probability from expiry.
         let knock_out_with_rebate = if inside {
-            double_knockout_base + instrument.rebate * (df_r - survival_digital).max(0.0)
+            let pay_at_hit = if instrument.rebate != 0.0 {
+                double_touch_pay_at_hit_factor(
+                    market.spot,
+                    instrument.lower_barrier,
+                    instrument.upper_barrier,
+                    market.rate,
+                    q,
+                    vol,
+                    instrument.expiry,
+                    self.series_terms,
+                )
+            } else {
+                0.0
+            };
+            double_knockout_base + instrument.rebate * pay_at_hit
         } else {
-            instrument.rebate * df_r
+            // Already outside the corridor at inception: knocked out at t = 0,
+            // rebate paid immediately.
+            instrument.rebate
         };
 
         let knock_in_with_rebate = if inside {
@@ -383,6 +454,56 @@ mod tests {
 
         let price = engine.price(&option, &market).unwrap().price;
         assert_relative_eq!(price, 1.3401, epsilon = 2e-4);
+    }
+
+    #[test]
+    fn double_knock_out_rebate_at_hit_exceeds_pay_at_expiry_value() {
+        // High rate, long maturity, tight corridor: the barrier is hit early
+        // with near certainty, so a rebate paid at hit is worth close to its
+        // undiscounted amount, while pay-at-expiry would cap its value at
+        // rebate * exp(-r*T).
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.10)
+            .dividend_yield(0.0)
+            .flat_vol(0.25)
+            .build()
+            .unwrap();
+        let engine = DoubleBarrierAnalyticEngine::new().with_series_terms(20);
+
+        let rebate = 10.0;
+        let no_rebate = DoubleBarrierOption::new(
+            OptionType::Call,
+            100.0,
+            5.0,
+            90.0,
+            110.0,
+            DoubleBarrierType::KnockOut,
+            0.0,
+        );
+        let with_rebate = DoubleBarrierOption::new(
+            OptionType::Call,
+            100.0,
+            5.0,
+            90.0,
+            110.0,
+            DoubleBarrierType::KnockOut,
+            rebate,
+        );
+
+        let p0 = engine.price(&no_rebate, &market).unwrap().price;
+        let p1 = engine.price(&with_rebate, &market).unwrap().price;
+        let rebate_component = p1 - p0;
+
+        let pay_at_expiry_cap = rebate * (-0.10_f64 * 5.0).exp();
+        assert!(
+            rebate_component > pay_at_expiry_cap,
+            "rebate-at-hit component {rebate_component} should exceed pay-at-expiry cap {pay_at_expiry_cap}"
+        );
+        assert!(
+            rebate_component <= rebate + 1.0e-9,
+            "discounted rebate component {rebate_component} cannot exceed undiscounted rebate {rebate}"
+        );
     }
 
     #[test]

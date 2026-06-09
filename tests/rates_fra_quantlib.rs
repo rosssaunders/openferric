@@ -4,8 +4,8 @@
 //! QuantLib — C++ finance library (BSD 3-Clause).
 //! Source: vendor/QuantLib/test-suite/forwardrateagreement.cpp
 //!
-//! Our FRA uses year_fraction(start_date, end_date) to convert dates to
-//! continuous-time tenor, then queries curve.forward_rate(0, tau).
+//! Our FRA anchors curve times at `valuation_date` and projects the simple
+//! (money-market) forward (DF(t1)/DF(t2) - 1)/tau over [start, end].
 
 use approx::assert_relative_eq;
 use chrono::NaiveDate;
@@ -34,10 +34,8 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
 /// On a curve bootstrapped from deposits [0.01, 0.02, 0.03] at 3M, 6M, 9M,
 /// the implied forward rate for a 6M→9M FRA should be ~0.01 (annualized).
 ///
-/// Note: Our FRA computes forward_rate(0, tau) where tau = year_fraction
-/// of the FRA period, which is the zero rate at that tenor, not the
-/// forward rate between start and end. This test verifies the forward_rate
-/// method returns a sensible continuously-compounded rate.
+/// This verifies the forward_rate method returns a sensible simple
+/// forward rate for a spot-starting period.
 #[test]
 fn fra_forward_rate_from_deposit_curve() {
     let deposits = vec![(0.25, 0.01), (0.50, 0.02), (0.75, 0.03)];
@@ -50,6 +48,7 @@ fn fra_forward_rate_from_deposit_curve() {
     let fra = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.02,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
@@ -77,6 +76,7 @@ fn fra_npv_at_par_is_zero() {
     let fra_probe = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.0,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
@@ -108,6 +108,7 @@ fn fra_npv_sign_consistency() {
     let fra_probe = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.0,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
@@ -137,7 +138,7 @@ fn fra_npv_sign_consistency() {
 
 // ── NPV formula verification ────────────────────────────────────────────────
 
-/// Verify NPV = notional * (forward - fixed) * tau * DF(tau)
+/// Verify NPV = notional * (forward - fixed) * tau * DF(t2)
 #[test]
 fn fra_npv_formula_verification() {
     let rate = 0.05;
@@ -150,6 +151,7 @@ fn fra_npv_formula_verification() {
     let fra = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
@@ -176,6 +178,7 @@ fn fra_npv_scales_with_notional() {
     let fra1 = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.04,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
@@ -203,6 +206,7 @@ fn fra_day_count_convention_matters() {
     let fra_act360 = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.04,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act360,
@@ -211,6 +215,7 @@ fn fra_day_count_convention_matters() {
     let fra_act365 = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.04,
+        valuation_date: start,
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
@@ -237,6 +242,7 @@ fn fra_zero_period_returns_zero() {
     let fra = ForwardRateAgreement {
         notional: 1_000_000.0,
         fixed_rate: 0.05,
+        valuation_date: date,
         start_date: date,
         end_date: date,
         day_count: DayCountConvention::Act365Fixed,
@@ -263,6 +269,7 @@ fn fra_multiple_conventions_positive_forward() {
         let fra = ForwardRateAgreement {
             notional: 1_000_000.0,
             fixed_rate: 0.04,
+            valuation_date: start,
             start_date: start,
             end_date: end,
             day_count: conv,
@@ -305,6 +312,7 @@ fn fra_forward_rate_increases_on_upward_sloping_curve() {
         let fra = ForwardRateAgreement {
             notional: 1_000_000.0,
             fixed_rate: 0.0,
+            valuation_date: *start,
             start_date: *start,
             end_date: *end,
             day_count: DayCountConvention::Act365Fixed,
@@ -317,4 +325,39 @@ fn fra_forward_rate_increases_on_upward_sloping_curve() {
         prev_fwd = fwd;
     }
     let _ = base;
+}
+
+// ── Forward-starting FRA ────────────────────────────────────────────────────
+
+/// A 6x12 FRA must project the simple forward over [start, end] measured
+/// from the valuation date, not a spot deposit rate over the accrual length.
+#[test]
+fn fra_forward_starting_projects_period_forward() {
+    let rate = 0.05;
+    let curve = flat_curve(rate, 3.0);
+    let day_count = DayCountConvention::Act365Fixed;
+
+    let valuation = d(2024, 1, 1);
+    let start = d(2024, 7, 1);
+    let end = d(2025, 1, 1);
+
+    let fra = ForwardRateAgreement {
+        notional: 1_000_000.0,
+        fixed_rate: 0.04,
+        valuation_date: valuation,
+        start_date: start,
+        end_date: end,
+        day_count,
+    };
+
+    let tau = openferric::rates::year_fraction(start, end, day_count);
+    let t1 = openferric::rates::year_fraction(valuation, start, day_count);
+    let t2 = t1 + tau;
+
+    // On a flat continuous curve the simple forward is (e^{r*tau} - 1)/tau.
+    let expected_fwd = ((rate * tau).exp() - 1.0) / tau;
+    assert_relative_eq!(fra.forward_rate(&curve), expected_fwd, epsilon = 1.0e-10);
+
+    let expected_npv = 1_000_000.0 * (expected_fwd - 0.04) * tau * curve.discount_factor(t2);
+    assert_relative_eq!(fra.npv(&curve), expected_npv, epsilon = 1.0e-6);
 }

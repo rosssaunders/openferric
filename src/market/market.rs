@@ -110,14 +110,8 @@ impl SampledVolSurface {
             return (last, last, 0.0);
         }
 
-        let mut lo = 0usize;
-        for i in 0..last {
-            if x >= grid[i] && x <= grid[i + 1] {
-                lo = i;
-                break;
-            }
-        }
-
+        // First index with grid value > x, minus one: O(log n) bracket lookup.
+        let lo = grid.partition_point(|g| *g <= x) - 1;
         let hi = lo + 1;
         let w = (x - grid[lo]) / (grid[hi] - grid[lo]);
         (lo, hi, w)
@@ -368,14 +362,24 @@ impl MarketBuilder {
         let spot = self
             .spot
             .ok_or_else(|| PricingError::InvalidInput("market spot is required".to_string()))?;
-        if spot <= 0.0 {
+        if !spot.is_finite() || spot <= 0.0 {
             return Err(PricingError::InvalidInput(
-                "market spot must be > 0".to_string(),
+                "market spot must be finite and > 0".to_string(),
             ));
         }
 
         let rate = self.rate.unwrap_or(0.0);
+        if !rate.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "market rate must be finite".to_string(),
+            ));
+        }
         let dividend_yield = self.dividend_yield.unwrap_or(0.0);
+        if !dividend_yield.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "market dividend_yield must be finite".to_string(),
+            ));
+        }
         let dividend_schedule = self.dividend_schedule.unwrap_or_default();
         dividend_schedule
             .validate()
@@ -395,9 +399,9 @@ impl MarketBuilder {
                     "either market flat_vol or vol_surface is required".to_string(),
                 )
             })?;
-            if flat <= 0.0 {
+            if !flat.is_finite() || flat <= 0.0 {
                 return Err(PricingError::InvalidInput(
-                    "market flat_vol must be > 0".to_string(),
+                    "market flat_vol must be finite and > 0".to_string(),
                 ));
             }
             VolSource::Flat(flat)
@@ -454,5 +458,71 @@ impl MarketSnapshot {
             spot_prices: Vec::new(),
             forward_curves: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_builder_rejects_non_finite_inputs() {
+        let cases: Vec<(&str, MarketBuilder)> = vec![
+            ("NaN spot", Market::builder().spot(f64::NAN).flat_vol(0.2)),
+            (
+                "infinite spot",
+                Market::builder().spot(f64::INFINITY).flat_vol(0.2),
+            ),
+            (
+                "NaN flat_vol",
+                Market::builder().spot(100.0).flat_vol(f64::NAN),
+            ),
+            (
+                "NaN rate",
+                Market::builder().spot(100.0).rate(f64::NAN).flat_vol(0.2),
+            ),
+            (
+                "NaN dividend_yield",
+                Market::builder()
+                    .spot(100.0)
+                    .dividend_yield(f64::NAN)
+                    .flat_vol(0.2),
+            ),
+        ];
+
+        for (label, builder) in cases {
+            assert!(builder.build().is_err(), "{label} must be rejected");
+        }
+    }
+
+    #[test]
+    fn market_builder_accepts_valid_inputs() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .dividend_yield(0.01)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        assert_eq!(market.spot(), 100.0);
+    }
+
+    #[test]
+    fn sampled_surface_locate_bounds_brackets_interior_and_edges() {
+        let grid = [0.1, 0.5, 1.0, 2.0, 5.0];
+
+        // Below and above the grid clamp to the edges.
+        assert_eq!(SampledVolSurface::locate_bounds(&grid, 0.0), (0, 0, 0.0));
+        assert_eq!(SampledVolSurface::locate_bounds(&grid, 9.0), (4, 4, 0.0));
+
+        // Interior points bracket correctly with the right weight.
+        let (lo, hi, w) = SampledVolSurface::locate_bounds(&grid, 0.75);
+        assert_eq!((lo, hi), (1, 2));
+        assert!((w - 0.5).abs() < 1.0e-12);
+
+        // Exact interior grid points land on their own bracket start.
+        let (lo, hi, w) = SampledVolSurface::locate_bounds(&grid, 1.0);
+        assert_eq!((lo, hi), (2, 3));
+        assert!(w.abs() < 1.0e-12);
     }
 }

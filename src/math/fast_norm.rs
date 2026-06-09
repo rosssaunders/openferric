@@ -1,10 +1,10 @@
 //! Module `math::fast_norm`.
 //!
-//! Implements fast norm workflows with concrete routines such as `fast_norm_pdf`, `hart_norm_cdf`, `beasley_springer_moro_inv_cdf`, `fast_norm_cdf`.
+//! Implements fast norm workflows with concrete routines such as `fast_norm_pdf`, `accurate_norm_cdf`, `erfc_cody`, `hart_norm_cdf`, `beasley_springer_moro_inv_cdf`, `fast_norm_cdf`.
 //!
-//! References: Abramowitz and Stegun (1964), Moro (1995), Press et al. (2007), approximation formulas around Eq. (7.1.26).
+//! References: Abramowitz and Stegun (1964), Cody (1969), Moro (1995), West (2005), Press et al. (2007), approximation formulas around Eq. (7.1.26).
 //!
-//! Primary API surface: free functions `fast_norm_pdf`, `hart_norm_cdf`, `beasley_springer_moro_inv_cdf`, `fast_norm_cdf`.
+//! Primary API surface: free functions `fast_norm_pdf`, `accurate_norm_cdf`, `erfc_cody`, `hart_norm_cdf`, `beasley_springer_moro_inv_cdf`, `fast_norm_cdf`.
 //!
 //! Numerical considerations: approximation regions, branch choices, and machine-precision cancellation near boundaries should be validated with high-precision references.
 //!
@@ -18,14 +18,191 @@ pub fn fast_norm_pdf(x: f64) -> f64 {
     INV_SQRT_2PI * ((-0.5_f64) * x * x).exp()
 }
 
-/// Hart-style polynomial approximation for the standard normal CDF.
+/// Complementary error function `erfc(x)`, Cody (1969) rational approximation.
 ///
-/// This form has max absolute error around 7.8e-8.
-/// Uses `mul_add` for fused multiply-add on the Horner polynomial chain,
-/// which maps to hardware FMA on supported architectures and improves both
-/// throughput and accuracy by eliminating intermediate rounding.
-#[inline(always)]
+/// Max relative error is a few ULP (~1e-15) over the full double range,
+/// including the deep tail down to the underflow threshold (`x ~ 26.5`).
+pub fn erfc_cody(x: f64) -> f64 {
+    const A: [f64; 5] = [
+        3.161_123_743_870_565_6,
+        1.138_641_541_510_501_6e2,
+        3.774_852_376_853_02e2,
+        3.209_377_589_138_469_5e3,
+        1.857_777_061_846_031_5e-1,
+    ];
+    const B: [f64; 4] = [
+        2.360_129_095_234_412_1e1,
+        2.440_246_379_344_441_7e2,
+        1.282_616_526_077_372_3e3,
+        2.844_236_833_439_171e3,
+    ];
+    const C: [f64; 9] = [
+        5.641_884_969_886_701e-1,
+        8.883_149_794_388_376,
+        6.611_919_063_714_163e1,
+        2.986_351_381_974_001e2,
+        8.819_522_212_417_69e2,
+        1.712_047_612_634_070_6e3,
+        2.051_078_377_826_071_5e3,
+        1.230_339_354_797_997_2e3,
+        2.153_115_354_744_038_5e-8,
+    ];
+    const D: [f64; 8] = [
+        1.574_492_611_070_983_5e1,
+        1.176_939_508_913_125e2,
+        5.371_811_018_620_099e2,
+        1.621_389_574_566_690_2e3,
+        3.290_799_235_733_459_7e3,
+        4.362_619_090_143_247e3,
+        3.439_367_674_143_721_6e3,
+        1.230_339_354_803_749_4e3,
+    ];
+    const P: [f64; 6] = [
+        3.053_266_349_612_323_4e-1,
+        3.603_448_999_498_044_4e-1,
+        1.257_817_261_112_292_5e-1,
+        1.608_378_514_874_228e-2,
+        6.587_491_615_298_378e-4,
+        1.631_538_713_730_209_8e-2,
+    ];
+    const Q: [f64; 5] = [
+        2.568_520_192_289_822,
+        1.872_952_849_923_460_4,
+        5.279_051_029_514_284e-1,
+        6.051_834_131_244_132e-2,
+        2.335_204_976_268_691_8e-3,
+    ];
+    /// 1/sqrt(pi).
+    const SQRPI: f64 = 5.641_895_835_477_563e-1;
+    const THRESH: f64 = 0.46875;
+    /// erfc underflows to zero beyond this point.
+    const XBIG: f64 = 26.543;
+
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let y = x.abs();
+
+    if y <= THRESH {
+        // Central region via erf(x) = x * R(x^2).
+        let zsq = y * y;
+        let mut xnum = A[4] * zsq;
+        let mut xden = zsq;
+        for i in 0..3 {
+            xnum = (xnum + A[i]) * zsq;
+            xden = (xden + B[i]) * zsq;
+        }
+        return 1.0 - x * (xnum + A[3]) / (xden + B[3]);
+    }
+
+    let result = if y <= 4.0 {
+        let mut xnum = C[8] * y;
+        let mut xden = y;
+        for i in 0..7 {
+            xnum = (xnum + C[i]) * y;
+            xden = (xden + D[i]) * y;
+        }
+        (xnum + C[7]) / (xden + D[7])
+    } else if y < XBIG {
+        let zsq = 1.0 / (y * y);
+        let mut xnum = P[5] * zsq;
+        let mut xden = zsq;
+        for i in 0..4 {
+            xnum = (xnum + P[i]) * zsq;
+            xden = (xden + Q[i]) * zsq;
+        }
+        let r = zsq * (xnum + P[4]) / (xden + Q[4]);
+        (SQRPI - r) / y
+    } else {
+        0.0
+    };
+
+    // exp(-y^2) computed as exp(-ysq^2) * exp(-del) with ysq = trunc(16y)/16,
+    // so the dominant factor has an exactly representable argument. This is
+    // what preserves relative accuracy deep in the tail.
+    let result = if result > 0.0 {
+        let ysq = (y * 16.0).trunc() / 16.0;
+        let del = (y - ysq) * (y + ysq);
+        (-ysq * ysq).exp() * (-del).exp() * result
+    } else {
+        result
+    };
+
+    if x < 0.0 { 2.0 - result } else { result }
+}
+
+/// Tail-accurate standard normal CDF via [`erfc_cody`]:
+/// `Phi(x) = erfc(-x / sqrt(2)) / 2`.
+///
+/// Relative accuracy is close to machine precision over the whole range,
+/// including the deep lower tail (e.g. `Phi(-20) ~ 2.75e-89`), unlike the
+/// absolute-error A&S 26.2.17 approximation kept in [`fast_norm_cdf`].
+/// This backs the default `math::functions::normal_cdf`; use it whenever
+/// tail probabilities matter (copulas, credit, quantiles).
+#[inline]
+pub fn accurate_norm_cdf(x: f64) -> f64 {
+    0.5 * erfc_cody(-x * std::f64::consts::FRAC_1_SQRT_2)
+}
+
+/// Hart (1968) standard normal CDF, as published in West (2005),
+/// *Better approximations to cumulative normal functions*.
+///
+/// Tail-relative accuracy is ~3e-9 (verified against mpmath references) —
+/// far better than the A&S approximation in [`fast_norm_cdf`] but short of
+/// double precision; prefer [`accurate_norm_cdf`] when full tail accuracy is
+/// required.
+#[inline]
 pub fn hart_norm_cdf(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+
+    let z = x.abs();
+    let cum = if z > 37.0 {
+        0.0
+    } else {
+        let e = (-0.5 * z * z).exp();
+        if z < std::f64::consts::SQRT_2 * 5.0 {
+            // Rational approximation for the central region (|x| < 7.07...).
+            let num = 3.526_249_659_989_11e-2_f64
+                .mul_add(z, 0.700_383_064_443_688)
+                .mul_add(z, 6.373_962_203_531_65)
+                .mul_add(z, 33.912_866_078_383)
+                .mul_add(z, 112.079_291_497_871)
+                .mul_add(z, 221.213_596_169_931)
+                .mul_add(z, 220.206_867_912_376);
+            let den = 8.838_834_764_831_84e-2_f64
+                .mul_add(z, 1.755_667_163_182_64)
+                .mul_add(z, 16.064_177_579_207)
+                .mul_add(z, 86.780_732_202_946_1)
+                .mul_add(z, 296.564_248_779_674)
+                .mul_add(z, 637.333_633_378_831)
+                .mul_add(z, 793.826_512_519_948)
+                .mul_add(z, 440.413_735_824_752);
+            e * num / den
+        } else {
+            // Continued-fraction expansion for the far tail.
+            const SQRT_2PI: f64 = 2.506_628_274_631_000_7;
+            let b = z + 0.65;
+            let b = z + 4.0 / b;
+            let b = z + 3.0 / b;
+            let b = z + 2.0 / b;
+            let b = z + 1.0 / b;
+            e / (b * SQRT_2PI)
+        }
+    };
+
+    if x <= 0.0 { cum } else { 1.0 - cum }
+}
+
+/// Fast A&S 26.2.17 5-term polynomial approximation of the normal CDF.
+///
+/// Max ABSOLUTE error around 7.5e-8, which translates into large RELATIVE
+/// error in the tails (~25% at x = -5, ~100% beyond -5.5). Only use this in
+/// hot paths that are insensitive to tail probabilities; the default
+/// `normal_cdf` routes to the tail-accurate [`hart_norm_cdf`].
+#[inline(always)]
+fn abramowitz_stegun_norm_cdf(x: f64) -> f64 {
     const P: f64 = 0.231_641_9;
     const A1: f64 = 0.319_381_530;
     const A2: f64 = -0.356_563_782;
@@ -138,9 +315,14 @@ pub fn beasley_springer_moro_inv_cdf(p: f64) -> f64 {
     }
 }
 
+/// Fast normal CDF approximation (A&S 26.2.17, ~7.5e-8 absolute error).
+///
+/// Not tail-accurate in a relative sense; prefer [`hart_norm_cdf`] (the
+/// default behind `math::functions::normal_cdf`) unless profiling shows this
+/// approximation is needed and tails are irrelevant.
 #[inline]
 pub fn fast_norm_cdf(x: f64) -> f64 {
-    hart_norm_cdf(x)
+    abramowitz_stegun_norm_cdf(x)
 }
 
 #[inline]
@@ -171,24 +353,86 @@ mod tests {
         (8.0, 1.0 - 6.22096057427178e-16),
     ];
 
+    // High-precision lower-tail reference values (mpmath, 40 digits, rounded
+    // to nearest f64).
+    const TAIL_REFERENCE: &[(f64, f64)] = &[
+        (-5.0, 2.866_515_718_791_939e-7),
+        (-6.0, 9.865_876_450_376_98e-10),
+        (-7.0, 1.279_812_543_885_835e-12),
+        (-8.0, 6.220_960_574_271_784e-16),
+        (-10.0, 7.619_853_024_160_525e-24),
+        (-15.0, 3.670_966_199_312_751e-51),
+        (-20.0, 2.753_624_118_606_233_7e-89),
+    ];
+
     #[test]
     fn fast_cdf_matches_reference_table() {
         for &(x, expected) in CDF_REFERENCE {
-            let got = hart_norm_cdf(x);
-            let err = (got - expected).abs();
+            for got in [accurate_norm_cdf(x), hart_norm_cdf(x), fast_norm_cdf(x)] {
+                let err = (got - expected).abs();
+                assert!(
+                    err < 1.0e-7,
+                    "x={x} expected={expected} got={got} err={err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accurate_cdf_is_relative_accurate_in_the_tails() {
+        for &(x, expected) in TAIL_REFERENCE {
+            let got = accurate_norm_cdf(x);
+            let rel = ((got - expected) / expected).abs();
+            let tol = if x >= -8.0 { 1.0e-12 } else { 1.0e-10 };
+            assert!(rel < tol, "x={x} expected={expected} got={got} rel={rel}");
+
+            // Upper tail mirrors via 1 - Phi(-x) up to f64 representation of 1.
+            let upper = accurate_norm_cdf(-x);
             assert!(
-                err < 1.0e-7,
-                "x={x} expected={expected} got={got} err={err}"
+                (upper - (1.0 - expected)).abs() <= f64::EPSILON,
+                "x={} upper={} expected={}",
+                -x,
+                upper,
+                1.0 - expected
             );
         }
+        // Hard cut-off / special-value region.
+        assert_eq!(accurate_norm_cdf(-40.0), 0.0);
+        assert_eq!(accurate_norm_cdf(40.0), 1.0);
+        assert_eq!(accurate_norm_cdf(f64::NEG_INFINITY), 0.0);
+        assert_eq!(accurate_norm_cdf(f64::INFINITY), 1.0);
+        assert!(accurate_norm_cdf(f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn hart_cdf_tail_relative_accuracy_is_at_least_1e8() {
+        // The Hart/West routine is good to ~3e-9 relative in the tails:
+        // orders of magnitude better than A&S, but not double precision.
+        for &(x, expected) in TAIL_REFERENCE {
+            let got = hart_norm_cdf(x);
+            let rel = ((got - expected) / expected).abs();
+            assert!(
+                rel < 1.0e-8,
+                "x={x} expected={expected} got={got} rel={rel}"
+            );
+        }
+        assert_eq!(hart_norm_cdf(-38.0), 0.0);
+        assert_eq!(hart_norm_cdf(38.0), 1.0);
+        assert!(hart_norm_cdf(f64::NAN).is_nan());
     }
 
     #[test]
     fn cdf_symmetry() {
         for i in 0..=80 {
             let x = i as f64 / 10.0;
-            let sum = hart_norm_cdf(x) + hart_norm_cdf(-x);
-            assert!((sum - 1.0).abs() < 1e-12, "x={x} sum={sum}");
+            for f in [
+                accurate_norm_cdf as fn(f64) -> f64,
+                hart_norm_cdf,
+                fast_norm_cdf,
+            ] {
+                let sum = f(x) + f(-x);
+                assert!((sum - 1.0).abs() < 1e-12, "x={x} sum={sum}");
+            }
         }
     }
 
@@ -204,6 +448,21 @@ mod tests {
                 (p_back - p).abs()
             );
         }
+    }
+
+    #[test]
+    fn inv_cdf_handles_extreme_tail_probabilities() {
+        // The copula uniform clamp is [1e-300, 1 - 1e-16]; the inverse CDF
+        // must stay finite there.
+        let lo = beasley_springer_moro_inv_cdf(1.0e-300);
+        assert!(lo.is_finite() && lo < -37.0 && lo > -38.0, "lo={lo}");
+        let hi = beasley_springer_moro_inv_cdf(1.0 - 1.0e-16);
+        assert!(hi.is_finite() && hi > 8.0, "hi={hi}");
+        assert_eq!(beasley_springer_moro_inv_cdf(0.0), f64::NEG_INFINITY);
+        assert_eq!(beasley_springer_moro_inv_cdf(1.0), f64::INFINITY);
+        assert!(beasley_springer_moro_inv_cdf(-0.1).is_nan());
+        assert!(beasley_springer_moro_inv_cdf(1.1).is_nan());
+        assert!(beasley_springer_moro_inv_cdf(f64::NAN).is_nan());
     }
 
     #[test]

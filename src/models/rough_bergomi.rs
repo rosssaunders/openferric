@@ -4,18 +4,30 @@
 //!
 //! References: Bayer, Friz, Gatheral (2016), McCrickerd and Pakkanen (2018), rough-vol covariance formulas around Eq. (2.5).
 //!
+//! The variance process is driven by the Riemann-Liouville Volterra process
+//! `W~_t = sqrt(2H) \int_0^t (t-s)^{H-1/2} dW_s` with exact covariance
+//! `E[W~_s W~_t] = 2H \int_0^{min(s,t)} (s-u)^{H-1/2} (t-u)^{H-1/2} du`
+//! (so `E[W~_t^2] = t^{2H}` on the diagonal), evaluated by Gauss-Legendre
+//! quadrature with an endpoint-singularity substitution. Pricing simulates the
+//! joint Gaussian vector of Brownian increments `dW` and `W~` at the grid times
+//! with the exact cross-covariance
+//! `E[W~_t (W_u - W_v)] = sqrt(2H)/(H+1/2) * [(t-v)^{H+1/2} - (t-u)^{H+1/2}]`
+//! for `v < u <= t`, so the asset shock correlates with the Brownian driver of
+//! the Volterra integral (not with Cholesky innovations of the covariance).
+//!
 //! Key types and purpose: `FbmScheme` define the core data contracts for this module.
 //!
 //! Numerical considerations: parameter admissibility constraints are essential (positivity/integrability/stationarity) to avoid unstable simulation or invalid characteristic functions.
 //!
 //! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
+use std::sync::OnceLock;
+
 use crate::core::{Diagnostics, PricingResult};
 use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::pricing::OptionType;
 use crate::vol::implied::implied_vol;
 
 const DEFAULT_SEED: u64 = 12_345;
-const FBM_HYBRID_SWITCH_STEPS: usize = 128;
 const SURFACE_PATHS: usize = 12_000;
 const SURFACE_STEPS_PER_YEAR: f64 = 128.0;
 
@@ -25,57 +37,7 @@ pub enum FbmScheme {
     Hybrid,
 }
 
-#[derive(Debug, Clone)]
-enum FbmGenerator {
-    Cholesky(CholeskyFbmGenerator),
-    Hybrid(HybridFbmGenerator),
-}
-
-impl FbmGenerator {
-    fn auto(hurst: f64, maturity: f64, n_steps: usize) -> Result<Self, String> {
-        if n_steps <= FBM_HYBRID_SWITCH_STEPS {
-            return Ok(Self::Cholesky(CholeskyFbmGenerator::new(
-                hurst, maturity, n_steps,
-            )?));
-        }
-
-        Ok(Self::Hybrid(HybridFbmGenerator::new(
-            hurst, maturity, n_steps,
-        )?))
-    }
-
-    #[cfg(test)]
-    fn with_scheme(
-        hurst: f64,
-        maturity: f64,
-        n_steps: usize,
-        scheme: FbmScheme,
-    ) -> Result<Self, String> {
-        match scheme {
-            FbmScheme::Cholesky => Ok(Self::Cholesky(CholeskyFbmGenerator::new(
-                hurst, maturity, n_steps,
-            )?)),
-            FbmScheme::Hybrid => Ok(Self::Hybrid(HybridFbmGenerator::new(
-                hurst, maturity, n_steps,
-            )?)),
-        }
-    }
-
-    fn n_steps(&self) -> usize {
-        match self {
-            Self::Cholesky(g) => g.n_steps,
-            Self::Hybrid(g) => g.n_steps,
-        }
-    }
-
-    fn sample_path(&self, backbone_normals: &[f64], correction_normals: &[f64], out: &mut [f64]) {
-        match self {
-            Self::Cholesky(g) => g.sample_path(backbone_normals, out),
-            Self::Hybrid(g) => g.sample_path(backbone_normals, correction_normals, out),
-        }
-    }
-}
-
+/// Exact Cholesky sampler of the Volterra process at the grid times.
 #[derive(Debug, Clone)]
 struct CholeskyFbmGenerator {
     n_steps: usize,
@@ -117,6 +79,11 @@ struct HybridNode {
     residual_std: f64,
 }
 
+/// Approximate standalone Volterra path sampler: exact Cholesky on a coarse
+/// grid, interpolated to the fine grid with a variance-matching residual.
+///
+/// Only used by [`fbm_path_hybrid`]; pricing uses the exact joint generator so
+/// that the spot-vol correlation is not diluted by the residual noise.
 #[derive(Debug, Clone)]
 struct HybridFbmGenerator {
     n_steps: usize,
@@ -178,8 +145,8 @@ impl HybridFbmGenerator {
 
             let tl = left as f64 * coarse_dt;
             let tr = right as f64 * coarse_dt;
-            let var_interp = a * a * tl.powf(2.0 * hurst)
-                + b * b * tr.powf(2.0 * hurst)
+            let var_interp = a * a * fbm_covariance(tl, tl, hurst)
+                + b * b * fbm_covariance(tr, tr, hurst)
                 + 2.0 * a * b * fbm_covariance(tl, tr, hurst);
 
             let target_var = t.powf(2.0 * hurst);
@@ -226,6 +193,83 @@ impl HybridFbmGenerator {
             let coarse_interp = (1.0 - node.alpha) * coarse_path[node.left_idx]
                 + node.alpha * coarse_path[node.right_idx];
             out[i] = coarse_interp + node.residual_std * correction_normals[i - 1];
+        }
+    }
+}
+
+/// Exact joint Gaussian sampler of `[dW_1, ..., dW_n, W~_{t_1}, ..., W~_{t_n}]`
+/// where `dW_i = W_{t_i} - W_{t_{i-1}}` are the increments of the Brownian
+/// motion driving the Volterra integral. Built from the exact auto- and
+/// cross-covariances, so the asset diffusion can be correlated with the true
+/// Brownian driver of the variance process.
+#[derive(Debug, Clone)]
+struct JointVolterraGenerator {
+    n_steps: usize,
+    /// Cholesky factor with the (well-conditioned) `dW` block leading.
+    lower: Vec<Vec<f64>>,
+}
+
+impl JointVolterraGenerator {
+    fn new(hurst: f64, maturity: f64, n_steps: usize) -> Result<Self, String> {
+        validate_fbm_inputs(hurst, maturity, n_steps)?;
+
+        let n = n_steps;
+        let dt = maturity / n as f64;
+        let dim = 2 * n;
+        let mut cov = vec![vec![0.0_f64; dim]; dim];
+
+        // dW block: independent increments with variance dt.
+        for (i, row) in cov.iter_mut().enumerate().take(n) {
+            row[i] = dt;
+        }
+
+        // Cross block: E[W~_{t_i} dW_j] for the aligned grid (zero for j > i).
+        for i in 1..=n {
+            let t_i = i as f64 * dt;
+            for j in 1..=i {
+                let c = volterra_bm_cross_cov(t_i, (j - 1) as f64 * dt, j as f64 * dt, hurst);
+                cov[n + i - 1][j - 1] = c;
+                cov[j - 1][n + i - 1] = c;
+            }
+        }
+
+        // W~ block: exact Volterra covariance.
+        for i in 1..=n {
+            let t_i = i as f64 * dt;
+            for j in 1..=i {
+                let t_j = j as f64 * dt;
+                let c = fbm_covariance(t_j, t_i, hurst);
+                cov[n + i - 1][n + j - 1] = c;
+                cov[n + j - 1][n + i - 1] = c;
+            }
+        }
+
+        let lower = cholesky_lower(&cov)?;
+        Ok(Self { n_steps: n, lower })
+    }
+
+    /// Maps `2 * n_steps` iid standard normals to `(dw, wtilde)`, with
+    /// `wtilde[0] = 0` and `wtilde[i]` the Volterra process at `t_i`.
+    fn sample(&self, normals: &[f64], dw: &mut [f64], wtilde: &mut [f64]) {
+        let n = self.n_steps;
+        assert_eq!(normals.len(), 2 * n);
+        assert_eq!(dw.len(), n);
+        assert_eq!(wtilde.len(), n + 1);
+
+        for (i, dwi) in dw.iter_mut().enumerate() {
+            let mut v = 0.0;
+            for (j, lij) in self.lower[i].iter().enumerate().take(i + 1) {
+                v += *lij * normals[j];
+            }
+            *dwi = v;
+        }
+        wtilde[0] = 0.0;
+        for i in 0..n {
+            let mut v = 0.0;
+            for (j, lij) in self.lower[n + i].iter().enumerate().take(n + i + 1) {
+                v += *lij * normals[j];
+            }
+            wtilde[i + 1] = v;
         }
     }
 }
@@ -293,9 +337,122 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
     Ok(l)
 }
 
+static GL64: OnceLock<(Vec<f64>, Vec<f64>)> = OnceLock::new();
+
+fn gl64() -> &'static (Vec<f64>, Vec<f64>) {
+    GL64.get_or_init(|| gauss_legendre_nodes(64))
+}
+
+/// Gauss-Legendre nodes and weights on `[-1, 1]` via Newton iteration on the
+/// Legendre recurrence (Numerical Recipes `gauleg`).
+fn gauss_legendre_nodes(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut x = vec![0.0_f64; n];
+    let mut w = vec![0.0_f64; n];
+    let m = n.div_ceil(2);
+
+    for i in 0..m {
+        let mut z = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        let mut pp = 0.0;
+        for _ in 0..100 {
+            let mut p1 = 1.0;
+            let mut p2 = 0.0;
+            for j in 0..n {
+                let p3 = p2;
+                p2 = p1;
+                p1 = ((2.0 * j as f64 + 1.0) * z * p2 - j as f64 * p3) / (j as f64 + 1.0);
+            }
+            pp = n as f64 * (z * p1 - p2) / (z * z - 1.0);
+            let z1 = z;
+            z -= p1 / pp;
+            if (z - z1).abs() <= 1.0e-15 {
+                break;
+            }
+        }
+        x[i] = -z;
+        x[n - 1 - i] = z;
+        let weight = 2.0 / ((1.0 - z * z) * pp * pp);
+        w[i] = weight;
+        w[n - 1 - i] = weight;
+    }
+
+    (x, w)
+}
+
+/// Gauss-Legendre quadrature of `f` over `[lo, hi]` with the cached 64-node rule.
+fn gl64_integrate(lo: f64, hi: f64, mut f: impl FnMut(f64) -> f64) -> f64 {
+    if hi <= lo {
+        return 0.0;
+    }
+    let (nodes, weights) = gl64();
+    let half = 0.5 * (hi - lo);
+    let mid = 0.5 * (hi + lo);
+    let mut acc = 0.0;
+    for (&x, &w) in nodes.iter().zip(weights.iter()) {
+        acc += w * f(mid + half * x);
+    }
+    half * acc
+}
+
+/// Exact covariance of the Riemann-Liouville Volterra process driving rough
+/// Bergomi, `W~_t = sqrt(2H) \int_0^t (t-s)^{H-1/2} dW_s`:
+///
+/// `E[W~_s W~_t] = 2H \int_0^{min(s,t)} (s-u)^{H-1/2} (t-u)^{H-1/2} du`
+///
+/// The diagonal is exact: `E[W~_t^2] = t^{2H}`. Off-diagonal values are
+/// computed by Gauss-Legendre quadrature after substitutions that remove the
+/// endpoint singularity: with `w = min - u`, `delta = |t - s|`, the integral
+/// `\int_0^{min} w^{H-1/2} (delta + w)^{H-1/2} dw` is split at `w = delta`;
+/// on `[0, min(delta, min)]` the substitution `w = x^{1/(H+1/2)}` flattens the
+/// `w^{H-1/2}` factor exactly, and on `[delta, min]` the integrand is smooth in
+/// `log w`.
 pub fn fbm_covariance(s: f64, t: f64, hurst: f64) -> f64 {
-    let h2 = 2.0 * hurst;
-    0.5 * (s.powf(h2) + t.powf(h2) - (t - s).abs().powf(h2))
+    let (a, b) = if s <= t { (s, t) } else { (t, s) };
+    if a <= 0.0 {
+        return 0.0;
+    }
+
+    let two_h = 2.0 * hurst;
+    let delta = b - a;
+    if delta <= 0.0 {
+        return a.powf(two_h);
+    }
+
+    let g = hurst - 0.5;
+    let m = 1.0 / (hurst + 0.5);
+
+    // I1: w in [0, min(delta, a)] with w = x^m, so w^g dw = m dx exactly.
+    let c = delta.min(a);
+    let x_hi = c.powf(hurst + 0.5);
+    let i1 = m * gl64_integrate(0.0, x_hi, |x| (delta + x.powf(m)).powf(g));
+
+    // I2: w in [delta, a] (only when a > delta), smooth on a log scale.
+    let i2 = if a > delta {
+        gl64_integrate(delta.ln(), a.ln(), |u| {
+            let w = u.exp();
+            ((g + 1.0) * u).exp() * (delta + w).powf(g)
+        })
+    } else {
+        0.0
+    };
+
+    two_h * (i1 + i2)
+}
+
+/// Exact cross-covariance between the Volterra process and an increment of its
+/// driving Brownian motion: for `v < u` and `t > v`,
+///
+/// `E[W~_t (W_u - W_v)] = sqrt(2H)/(H + 1/2) * [(t - v)^{H+1/2} - (t - max(0, t - u))...]`
+///
+/// i.e. `sqrt(2H)/(H+1/2) * [(t-v)^{H+1/2} - (t-u)^{H+1/2}]` for `u <= t`, with
+/// the integration truncated at `t` when the increment straddles it, and zero
+/// when `v >= t`.
+fn volterra_bm_cross_cov(t: f64, v: f64, u: f64, hurst: f64) -> f64 {
+    if t <= v || u <= v {
+        return 0.0;
+    }
+    let hp = hurst + 0.5;
+    let upper = u.min(t);
+    (2.0 * hurst).sqrt() / hp * ((t - v).powf(hp) - (t - upper).powf(hp))
 }
 
 pub fn fbm_path_cholesky(
@@ -348,25 +505,18 @@ fn sample_fbm_path(
     seed: u64,
     scheme: FbmScheme,
 ) -> Result<Vec<f64>, String> {
-    let generator = FbmGenerator::with_scheme(hurst, maturity, n_steps, scheme)?;
-    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
-    let mut z_backbone = vec![0.0_f64; n_steps];
-    let mut z_correction = vec![0.0_f64; n_steps];
-    let mut path = vec![0.0_f64; n_steps + 1];
-
-    for zi in &mut z_backbone {
-        *zi = sample_standard_normal(&mut rng);
+    match scheme {
+        FbmScheme::Cholesky => fbm_path_cholesky(hurst, maturity, n_steps, seed),
+        FbmScheme::Hybrid => fbm_path_hybrid(hurst, maturity, n_steps, seed),
     }
-    for zi in &mut z_correction {
-        *zi = sample_standard_normal(&mut rng);
-    }
-
-    generator.sample_path(&z_backbone, &z_correction, &mut path);
-    Ok(path)
 }
 
+/// Evolves the asset along one path given the Volterra path `wtilde`, the
+/// Brownian increments `dw` driving it, and independent normals for the
+/// orthogonal component. The asset shock is `rho * dw + sqrt(1-rho^2) * dW_perp`
+/// so the spot correlates with the true Brownian driver of the variance.
 #[allow(clippy::too_many_arguments)]
-fn simulate_terminal_from_normals(
+fn evolve_asset_path(
     spot: f64,
     r: f64,
     q: f64,
@@ -375,26 +525,23 @@ fn simulate_terminal_from_normals(
     eta: f64,
     rho: f64,
     xi0: f64,
-    fbm_generator: &FbmGenerator,
-    backbone_normals: &[f64],
-    correction_normals: &[f64],
-    asset_perp_normals: &[f64],
-    fbm_path: &mut [f64],
+    dw: &[f64],
+    wtilde: &[f64],
+    perp_normals: &[f64],
+    sign: f64,
 ) -> f64 {
-    let n_steps = fbm_generator.n_steps();
+    let n_steps = dw.len();
     let dt = maturity / n_steps as f64;
     let sqrt_dt = dt.sqrt();
     let rho_perp = (1.0 - rho * rho).max(0.0).sqrt();
 
-    fbm_generator.sample_path(backbone_normals, correction_normals, fbm_path);
-
     let mut s = spot;
     for i in 0..n_steps {
         let t = i as f64 * dt;
-        let variance = xi0 * (eta * fbm_path[i] - 0.5 * eta * eta * t.powf(2.0 * hurst)).exp();
-        let zs = rho * backbone_normals[i] + rho_perp * asset_perp_normals[i];
+        let variance = xi0 * (eta * sign * wtilde[i] - 0.5 * eta * eta * t.powf(2.0 * hurst)).exp();
+        let shock = rho * sign * dw[i] + rho_perp * sqrt_dt * sign * perp_normals[i];
 
-        s *= ((r - q - 0.5 * variance) * dt + variance.max(0.0).sqrt() * sqrt_dt * zs).exp();
+        s *= ((r - q - 0.5 * variance) * dt + variance.max(0.0).sqrt() * shock).exp();
         s = s.max(1.0e-12);
     }
 
@@ -415,67 +562,38 @@ fn simulate_terminal_spots(
     n_steps: usize,
     seed: u64,
 ) -> Result<Vec<f64>, String> {
-    let fbm_generator = FbmGenerator::auto(hurst, maturity, n_steps)?;
+    let generator = JointVolterraGenerator::new(hurst, maturity, n_steps)?;
 
     let mut terminals = Vec::with_capacity(n_paths);
-    let mut z_backbone = vec![0.0_f64; n_steps];
-    let mut z_backbone_anti = vec![0.0_f64; n_steps];
-    let mut z_correction = vec![0.0_f64; n_steps];
-    let mut z_correction_anti = vec![0.0_f64; n_steps];
+    let mut z_joint = vec![0.0_f64; 2 * n_steps];
     let mut z_perp = vec![0.0_f64; n_steps];
-    let mut z_perp_anti = vec![0.0_f64; n_steps];
-    let mut fbm_path = vec![0.0_f64; n_steps + 1];
-    let mut fbm_path_anti = vec![0.0_f64; n_steps + 1];
+    let mut dw = vec![0.0_f64; n_steps];
+    let mut wtilde = vec![0.0_f64; n_steps + 1];
+
+    let draw_path = |rng: &mut FastRng, z_joint: &mut [f64], z_perp: &mut [f64]| {
+        for zi in z_joint.iter_mut() {
+            *zi = sample_standard_normal(rng);
+        }
+        for zi in z_perp.iter_mut() {
+            *zi = sample_standard_normal(rng);
+        }
+    };
 
     for pair in 0..(n_paths / 2) {
         let mut rng = FastRng::from_seed(
             FastRngKind::Xoshiro256PlusPlus,
             resolve_stream_seed(seed, pair, true),
         );
+        draw_path(&mut rng, &mut z_joint, &mut z_perp);
+        generator.sample(&z_joint, &mut dw, &mut wtilde);
 
-        for i in 0..n_steps {
-            z_backbone[i] = sample_standard_normal(&mut rng);
-            z_correction[i] = sample_standard_normal(&mut rng);
-            z_perp[i] = sample_standard_normal(&mut rng);
-
-            z_backbone_anti[i] = -z_backbone[i];
-            z_correction_anti[i] = -z_correction[i];
-            z_perp_anti[i] = -z_perp[i];
+        // Antithetic pair: the map normals -> (dw, wtilde) is linear, so the
+        // antithetic path is obtained by flipping the sign of every shock.
+        for &sign in &[1.0, -1.0] {
+            terminals.push(evolve_asset_path(
+                spot, r, q, maturity, hurst, eta, rho, xi0, &dw, &wtilde, &z_perp, sign,
+            ));
         }
-
-        let s_t = simulate_terminal_from_normals(
-            spot,
-            r,
-            q,
-            maturity,
-            hurst,
-            eta,
-            rho,
-            xi0,
-            &fbm_generator,
-            &z_backbone,
-            &z_correction,
-            &z_perp,
-            &mut fbm_path,
-        );
-        let s_t_anti = simulate_terminal_from_normals(
-            spot,
-            r,
-            q,
-            maturity,
-            hurst,
-            eta,
-            rho,
-            xi0,
-            &fbm_generator,
-            &z_backbone_anti,
-            &z_correction_anti,
-            &z_perp_anti,
-            &mut fbm_path_anti,
-        );
-
-        terminals.push(s_t);
-        terminals.push(s_t_anti);
     }
 
     if n_paths % 2 == 1 {
@@ -483,26 +601,10 @@ fn simulate_terminal_spots(
             FastRngKind::Xoshiro256PlusPlus,
             resolve_stream_seed(seed, n_paths / 2, true),
         );
-        for i in 0..n_steps {
-            z_backbone[i] = sample_standard_normal(&mut rng);
-            z_correction[i] = sample_standard_normal(&mut rng);
-            z_perp[i] = sample_standard_normal(&mut rng);
-        }
-
-        terminals.push(simulate_terminal_from_normals(
-            spot,
-            r,
-            q,
-            maturity,
-            hurst,
-            eta,
-            rho,
-            xi0,
-            &fbm_generator,
-            &z_backbone,
-            &z_correction,
-            &z_perp,
-            &mut fbm_path,
+        draw_path(&mut rng, &mut z_joint, &mut z_perp);
+        generator.sample(&z_joint, &mut dw, &mut wtilde);
+        terminals.push(evolve_asset_path(
+            spot, r, q, maturity, hurst, eta, rho, xi0, &dw, &wtilde, &z_perp, 1.0,
         ));
     }
 
@@ -788,6 +890,68 @@ mod tests {
         (mean, var)
     }
 
+    /// Brute-force reference for the Volterra covariance: midpoint rule on the
+    /// singularity-flattening substitution `u = min - w`, `w = x^{1/(H+1/2)}`
+    /// over the full range, with a large number of nodes.
+    fn volterra_cov_reference(s: f64, t: f64, hurst: f64) -> f64 {
+        let (a, b) = if s <= t { (s, t) } else { (t, s) };
+        if a <= 0.0 {
+            return 0.0;
+        }
+        let delta = b - a;
+        let g = hurst - 0.5;
+        let m = 1.0 / (hurst + 0.5);
+        let x_hi = a.powf(hurst + 0.5);
+        let n = 2_000_000;
+        let dx = x_hi / n as f64;
+        let mut acc = 0.0;
+        for k in 0..n {
+            let x = (k as f64 + 0.5) * dx;
+            acc += (delta + x.powf(m)).powf(g);
+        }
+        2.0 * hurst * m * acc * dx
+    }
+
+    #[test]
+    fn volterra_covariance_diagonal_is_exact() {
+        for &hurst in &[0.05, 0.1, 0.3, 0.5, 0.7, 0.9] {
+            for &t in &[0.1, 0.25, 1.0, 2.0, 5.0] {
+                let c = fbm_covariance(t, t, hurst);
+                let expected = t.powf(2.0 * hurst);
+                assert!(
+                    (c - expected).abs() <= 1.0e-14 * expected.max(1.0),
+                    "H={hurst} t={t} got={c} expected={expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volterra_covariance_matches_brute_force_quadrature() {
+        for &hurst in &[0.1, 0.3, 0.7] {
+            for &(s, t) in &[(0.25, 0.5), (0.5, 0.52), (0.1, 2.0), (1.0, 1.015_625)] {
+                let got = fbm_covariance(s, t, hurst);
+                let reference = volterra_cov_reference(s, t, hurst);
+                assert!(
+                    (got - reference).abs() <= 1.0e-7 * reference.abs().max(1.0e-8),
+                    "H={hurst} s={s} t={t} got={got} reference={reference}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volterra_covariance_h_half_is_brownian() {
+        for &(s, t) in &[(0.25, 0.5), (0.5, 0.5), (0.75, 2.0), (1.5, 1.0)] {
+            let c = fbm_covariance(s, t, 0.5);
+            assert!(
+                (c - s.min(t)).abs() <= 1.0e-12,
+                "s={s} t={t} got={c} expected={}",
+                s.min(t)
+            );
+        }
+    }
+
     #[test]
     fn fbm_paths_have_correct_variance() {
         let hurst = 0.1;
@@ -835,10 +999,15 @@ mod tests {
             .sum::<f64>()
             / (n - 1.0);
 
+        // Volterra (non-stationary) increments: Cov(W~_{t1}, W~_{t2} - W~_{t1})
+        // = C(t1, t2) - C(t1, t1).
         let dt = maturity / n_steps as f64;
-        let expected = 0.5 * dt.powf(2.0 * hurst) * (2.0_f64.powf(2.0 * hurst) - 2.0);
+        let expected = fbm_covariance(dt, 2.0 * dt, hurst) - fbm_covariance(dt, dt, hurst);
 
-        assert!((cov - expected).abs() <= expected.abs() * 0.35 + 2.0e-4);
+        assert!(
+            (cov - expected).abs() <= expected.abs() * 0.35 + 2.0e-4,
+            "cov={cov} expected={expected}"
+        );
     }
 
     #[test]
@@ -867,6 +1036,116 @@ mod tests {
 
         let stderr = mc.stderr.unwrap_or(0.0);
         assert!((mc.price - bs).abs() <= 4.0 * stderr + 2.5e-1);
+    }
+
+    /// At `H = 1/2` the Volterra kernel is constant, so `W~ = W` and the model
+    /// degenerates to a standard Bergomi model driven by an ordinary Brownian
+    /// motion. Compare against a direct standard-BM implementation with the
+    /// same Euler scheme, including a non-zero spot-vol correlation.
+    #[test]
+    fn rbergomi_h_half_degenerates_to_standard_bergomi() {
+        let spot = 100.0;
+        let strike = 100.0;
+        let r = 0.0;
+        let q = 0.0;
+        let maturity = 1.0;
+        let hurst = 0.5;
+        let eta = 1.5;
+        let rho = -0.7;
+        let xi0 = 0.04;
+        let n_steps = 64_usize;
+        let n_paths = 40_000_usize;
+
+        let mc = rbergomi_european_mc(
+            spot, strike, r, q, maturity, hurst, eta, rho, xi0, n_paths, n_steps,
+        );
+
+        // Direct standard-BM Bergomi: v_t = xi0 * exp(eta * W_t - eta^2 t / 2),
+        // dS/S = sqrt(v) (rho dW + sqrt(1-rho^2) dW_perp), antithetic pairs.
+        let dt = maturity / n_steps as f64;
+        let sqrt_dt = dt.sqrt();
+        let rho_perp = (1.0 - rho * rho).max(0.0).sqrt();
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        let mut z_w = vec![0.0_f64; n_steps];
+        let mut z_p = vec![0.0_f64; n_steps];
+        for pair in 0..(n_paths / 2) {
+            let mut rng = FastRng::from_seed(
+                FastRngKind::Xoshiro256PlusPlus,
+                resolve_stream_seed(999, pair, true),
+            );
+            for i in 0..n_steps {
+                z_w[i] = sample_standard_normal(&mut rng);
+                z_p[i] = sample_standard_normal(&mut rng);
+            }
+            for sign in [1.0_f64, -1.0] {
+                let mut s = spot;
+                let mut w = 0.0;
+                for i in 0..n_steps {
+                    let t = i as f64 * dt;
+                    let v = xi0 * (eta * w - 0.5 * eta * eta * t).exp();
+                    let shock = rho * sign * z_w[i] * sqrt_dt + rho_perp * sqrt_dt * sign * z_p[i];
+                    s *= ((r - q - 0.5 * v) * dt + v.max(0.0).sqrt() * shock).exp();
+                    s = s.max(1.0e-12);
+                    w += sign * z_w[i] * sqrt_dt;
+                }
+                let payoff = (s - strike).max(0.0_f64);
+                sum += payoff;
+                sum_sq += payoff * payoff;
+            }
+        }
+        let n = (2 * (n_paths / 2)) as f64;
+        let ref_mean = sum / n;
+        let ref_var = (sum_sq - n * ref_mean * ref_mean).max(0.0) / (n - 1.0);
+        let ref_price = ref_mean; // r = 0
+        let ref_stderr = (ref_var / n).sqrt();
+
+        let stderr = mc.stderr.unwrap_or(0.0);
+        let combined = (stderr * stderr + ref_stderr * ref_stderr).sqrt();
+        assert!(
+            (mc.price - ref_price).abs() <= 3.0 * combined + 1.0e-6,
+            "rbergomi={} standard={} combined_stderr={}",
+            mc.price,
+            ref_price,
+            combined
+        );
+    }
+
+    /// Under the risk-neutral simulation the terminal spot must be a
+    /// martingale after deflating by the money-market account:
+    /// `E[S_T] = S_0 * exp((r - q) T)`.
+    #[test]
+    fn rbergomi_terminal_spot_is_martingale_at_h_03() {
+        let spot = 100.0;
+        let r = 0.02;
+        let q = 0.01;
+        let maturity = 1.0;
+        let hurst = 0.3;
+        let eta = 1.5;
+        let rho = -0.6;
+        let xi0 = 0.04;
+        let n_paths = 60_000;
+        let n_steps = 64;
+
+        let terminals = simulate_terminal_spots(
+            spot, r, q, maturity, hurst, eta, rho, xi0, n_paths, n_steps, 4_242,
+        )
+        .unwrap();
+
+        let n = terminals.len() as f64;
+        let mean = terminals.iter().sum::<f64>() / n;
+        let var = terminals
+            .iter()
+            .map(|s| (s - mean) * (s - mean))
+            .sum::<f64>()
+            / (n - 1.0);
+        let stderr = (var / n).sqrt();
+        let forward = spot * ((r - q) * maturity).exp();
+
+        assert!(
+            (mean - forward).abs() <= 3.0 * stderr,
+            "mean={mean} forward={forward} stderr={stderr}"
+        );
     }
 
     #[test]
@@ -969,5 +1248,60 @@ mod tests {
 
         assert_eq!(a.len(), 49);
         assert_eq!(b.len(), 257);
+    }
+
+    /// The joint generator must reproduce the exact cross-covariance between
+    /// the Volterra process and the Brownian increments that drive it.
+    #[test]
+    fn joint_generator_reproduces_cross_covariance() {
+        let hurst = 0.3;
+        let maturity = 1.0;
+        let n_steps = 8;
+        let n_paths = 60_000;
+        let dt = maturity / n_steps as f64;
+
+        let generator = JointVolterraGenerator::new(hurst, maturity, n_steps).unwrap();
+        let mut z = vec![0.0_f64; 2 * n_steps];
+        let mut dw = vec![0.0_f64; n_steps];
+        let mut wtilde = vec![0.0_f64; n_steps + 1];
+
+        // Accumulate E[W~_{t_n} dW_j] and E[W~_{t_n}^2].
+        let mut cross = vec![0.0_f64; n_steps];
+        let mut var_wt = 0.0;
+        for i in 0..n_paths {
+            let mut rng = FastRng::from_seed(
+                FastRngKind::Xoshiro256PlusPlus,
+                resolve_stream_seed(31, i, true),
+            );
+            for zi in &mut z {
+                *zi = sample_standard_normal(&mut rng);
+            }
+            generator.sample(&z, &mut dw, &mut wtilde);
+            let wt = wtilde[n_steps];
+            var_wt += wt * wt;
+            for (j, &dwj) in dw.iter().enumerate() {
+                cross[j] += wt * dwj;
+            }
+        }
+
+        let n = n_paths as f64;
+        var_wt /= n;
+        let expected_var = maturity.powf(2.0 * hurst);
+        assert!(
+            (var_wt - expected_var).abs() <= 0.05 * expected_var,
+            "var={var_wt} expected={expected_var}"
+        );
+
+        for (j, c) in cross.iter().enumerate() {
+            let sample = c / n;
+            let expected =
+                volterra_bm_cross_cov(maturity, j as f64 * dt, (j + 1) as f64 * dt, hurst);
+            // MC noise on each cross moment is ~ sqrt(Var(W~) * dt / n).
+            let noise = 4.0 * (expected_var * dt / n).sqrt();
+            assert!(
+                (sample - expected).abs() <= noise + 0.02 * expected.abs(),
+                "j={j} sample={sample} expected={expected}"
+            );
+        }
     }
 }
