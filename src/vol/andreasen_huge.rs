@@ -10,8 +10,8 @@
 //!
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
 
+use crate::engines::analytic::black_scholes::bs_price;
 use crate::pricing::OptionType;
-use crate::pricing::european::black_scholes_price;
 use crate::vol::jaeckel::implied_vol_jaeckel;
 
 /// Andreasen-Huge arbitrage-free volatility interpolation.
@@ -79,13 +79,18 @@ impl AndreasenHugeInterpolation {
                 .map(|q| (q.0, q.2))
                 .collect();
 
-            // Compute target call prices from market implied vols.
+            // Compute target call prices from market implied vols using the true
+            // dividend-adjusted discounted Black-Scholes price
+            //   C = S e^{-q t} N(d1) - K e^{-r t} N(d2),
+            // consistent with the discounted prices evolved by the forward PDE.
+            // The target is evaluated at the grid-node strike (with the quote's
+            // implied vol) so the node price the calibration matches is
+            // self-consistent with the node it is assigned to.
             let targets: Vec<(usize, f64)> = slice_quotes
                 .iter()
                 .map(|&(k, iv)| {
-                    let price =
-                        black_scholes_price(OptionType::Call, spot, k, rate - dividend, iv, t);
                     let idx = nearest_idx(&grid, k);
+                    let price = bs_price(OptionType::Call, spot, grid[idx], rate, dividend, iv, t);
                     (idx, price)
                 })
                 .collect();
@@ -100,7 +105,8 @@ impl AndreasenHugeInterpolation {
 
             // Levenberg-Marquardt-style calibration loop.
             for _iter in 0..50 {
-                let new_calls = step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend);
+                let new_calls =
+                    step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend, spot, t);
 
                 if targets.is_empty() {
                     break;
@@ -129,8 +135,16 @@ impl AndreasenHugeInterpolation {
                         *sb += bump;
                     }
 
-                    let bumped_calls =
-                        step_implicit(&prev_calls, &grid, &sigma_bumped, dt, rate, dividend);
+                    let bumped_calls = step_implicit(
+                        &prev_calls,
+                        &grid,
+                        &sigma_bumped,
+                        dt,
+                        rate,
+                        dividend,
+                        spot,
+                        t,
+                    );
                     let dc_dsigma = (bumped_calls[idx] - c_model) / bump;
 
                     if dc_dsigma.abs() > 1e-14 {
@@ -154,7 +168,8 @@ impl AndreasenHugeInterpolation {
                 }
             }
 
-            let new_calls = step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend);
+            let new_calls =
+                step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend, spot, t);
             local_vols.push(sigma_loc);
             call_prices.push(new_calls.clone());
             prev_calls = new_calls;
@@ -178,7 +193,10 @@ impl AndreasenHugeInterpolation {
         let fwd = self.spot * ((self.rate - self.dividend) * t).exp();
         let call_price = self.interpolate_call(strike, t);
 
-        match implied_vol_jaeckel(call_price, fwd, strike, t, true) {
+        // The grid stores discounted prices C = e^{-r t} E[(S_t - K)^+]; Jaeckel
+        // expects the undiscounted forward price E[(S_t - K)^+] = C e^{r t}.
+        let undiscounted = call_price * (self.rate * t).exp();
+        match implied_vol_jaeckel(undiscounted, fwd, strike, t, true) {
             Ok(v) => v,
             Err(_) => {
                 // Fallback: Brenner-Subrahmanyam approximation.
@@ -202,16 +220,21 @@ impl AndreasenHugeInterpolation {
             return (self.spot - strike).max(0.0);
         }
 
+        let n = self.grid.len();
         let interp_at = |ei: usize| -> f64 {
-            let gi = nearest_idx(&self.grid, strike);
-            if gi == 0 || gi >= self.grid.len() - 1 {
-                return self.call_prices[ei][gi];
+            let prices = &self.call_prices[ei];
+            if n < 2 || strike <= self.grid[0] {
+                return prices[0];
             }
-            // Linear interpolation between grid points.
+            if strike >= self.grid[n - 1] {
+                return prices[n - 1];
+            }
+            // Lower bracketing index: grid[gi] <= strike < grid[gi + 1].
+            let gi = lower_idx(&self.grid, strike);
             let x0 = self.grid[gi];
             let x1 = self.grid[gi + 1];
-            let y0 = self.call_prices[ei][gi];
-            let y1 = self.call_prices[ei][gi + 1];
+            let y0 = prices[gi];
+            let y1 = prices[gi + 1];
             if (x1 - x0).abs() < 1e-14 {
                 return y0;
             }
@@ -264,8 +287,11 @@ impl AndreasenHugeInterpolation {
 
 /// One implicit FD step for the call price surface in the strike direction.
 ///
-/// Solves the Dupire forward PDE:
+/// Solves the Dupire forward PDE for discounted call prices:
 ///   ∂C/∂T = 0.5 * σ²(K) * K² * ∂²C/∂K² - (r-q) * K * ∂C/∂K - q * C
+///
+/// `t_new` is the absolute maturity after the step; it sets the Dirichlet
+/// boundary values consistently with the discounted-price convention.
 fn step_implicit(
     prev: &[f64],
     grid: &[f64],
@@ -273,6 +299,8 @@ fn step_implicit(
     dt: f64,
     rate: f64,
     dividend: f64,
+    spot: f64,
+    t_new: f64,
 ) -> Vec<f64> {
     let n = prev.len();
     if n < 3 {
@@ -286,7 +314,7 @@ fn step_implicit(
     let mut lower = vec![0.0; n];
     let mut diag = vec![1.0; n];
     let mut upper = vec![0.0; n];
-    let rhs = prev.to_vec();
+    let mut rhs = prev.to_vec();
 
     for j in 1..n - 1 {
         let k = grid[j];
@@ -306,13 +334,15 @@ fn step_implicit(
         diag[j] = 1.0 + a + b + q * dt;
     }
 
-    // Boundary conditions:
-    // At K=K_min (deep ITM call): C ≈ S*exp(-qT) - K*exp(-rT) → linear
+    // Boundary conditions (Dirichlet, discounted prices):
+    // At K=K_min (deep ITM call): C = S*exp(-qT) - K*exp(-rT)
     // At K=K_max (deep OTM call): C ≈ 0
     diag[0] = 1.0;
     upper[0] = 0.0;
+    rhs[0] = (spot * (-q * t_new).exp() - grid[0] * (-r * t_new).exp()).max(0.0);
     diag[n - 1] = 1.0;
     lower[n - 1] = 0.0;
+    rhs[n - 1] = 0.0;
 
     // Solve tridiagonal system via Thomas algorithm.
     let mut c_star = vec![0.0; n];
@@ -344,12 +374,33 @@ fn step_implicit(
     result
 }
 
+/// Nearest index on a uniform grid in O(1).
 fn nearest_idx(grid: &[f64], val: f64) -> usize {
-    grid.iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| (*a - val).abs().total_cmp(&(*b - val).abs()))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+    let n = grid.len();
+    if n < 2 {
+        return 0;
+    }
+    let dk = (grid[n - 1] - grid[0]) / (n - 1) as f64;
+    if dk <= 0.0 || !dk.is_finite() {
+        return 0;
+    }
+    let i = ((val - grid[0]) / dk).round();
+    if i <= 0.0 { 0 } else { (i as usize).min(n - 1) }
+}
+
+/// Lower bracketing index on a uniform grid in O(1):
+/// returns `i` with `grid[i] <= val < grid[i + 1]`, clamped to `[0, n - 2]`.
+fn lower_idx(grid: &[f64], val: f64) -> usize {
+    let n = grid.len();
+    if n < 2 {
+        return 0;
+    }
+    let dk = (grid[n - 1] - grid[0]) / (n - 1) as f64;
+    if dk <= 0.0 || !dk.is_finite() {
+        return 0;
+    }
+    let i = ((val - grid[0]) / dk).floor();
+    if i <= 0.0 { 0 } else { (i as usize).min(n - 2) }
 }
 
 #[cfg(test)]
@@ -391,6 +442,35 @@ mod tests {
 
         assert!(
             max_err < 0.02,
+            "max implied vol error {max_err:.6} exceeds tolerance"
+        );
+    }
+
+    #[test]
+    fn andreasen_huge_flat_vol_roundtrip_with_unequal_rate_and_dividend() {
+        // With r != q the three conventions (target prices, PDE evolution, and
+        // Jaeckel inversion) must agree; the old code carried a net e^{(q-r)t}
+        // bias. A flat 20% smile must be recovered to within the scheme's
+        // discretization error at every quote.
+        let spot = 100.0;
+        let vol = 0.20;
+        let rate = 0.05;
+        let div = 0.02;
+
+        let quotes = synthetic_quotes(spot, vol, rate, div);
+        let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
+
+        let mut max_err = 0.0_f64;
+        for &(k, t, _) in &quotes {
+            let iv = ah.implied_vol(k, t);
+            let err = (iv - vol).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+
+        assert!(
+            max_err < 1.5e-3,
             "max implied vol error {max_err:.6} exceeds tolerance"
         );
     }

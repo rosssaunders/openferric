@@ -6,7 +6,9 @@ use openferric::pricing::european::black_scholes_price;
 use openferric::vol::builder::{MarketOptionQuote, VolSurfaceBuilder};
 use openferric::vol::implied::implied_vol_newton;
 use openferric::vol::mixture::{LognormalMixture, calibrate_lognormal_mixture};
-use openferric::vol::smile::{StickyStrikeSmile, VannaVolgaQuote, vanna_volga_price};
+use openferric::vol::smile::{
+    StickyStrikeSmile, VannaVolgaQuote, vanna_volga_pivot_strikes, vanna_volga_price,
+};
 
 #[test]
 fn sticky_strike_smile_is_monotone_in_equity_skew_wings() {
@@ -50,10 +52,13 @@ fn sticky_strike_smile_is_monotone_in_equity_skew_wings() {
 
 #[test]
 fn vanna_volga_matches_atm_mid_with_zero_adjustment_weight() {
+    // At the ATM pivot strike the pivot market vol equals the base vol, so the
+    // Castagna-Mercurio correction terms vanish and VV == BS(atm vol) exactly.
     let quote = VannaVolgaQuote::new(0.21, 0.03, 0.01);
 
-    let vv = vanna_volga_price(OptionType::Call, 100.0, 100.0, 0.02, 0.0, 1.0, quote);
-    let mid = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.02, 0.21, 1.0);
+    let (_, k_atm, _) = vanna_volga_pivot_strikes(100.0, 0.02, 0.0, 1.0, quote);
+    let vv = vanna_volga_price(OptionType::Call, 100.0, k_atm, 0.02, 0.0, 1.0, quote);
+    let mid = black_scholes_price(OptionType::Call, 100.0, k_atm, 0.02, 0.21, 1.0);
 
     assert!((vv - mid).abs() < 1e-12);
 }

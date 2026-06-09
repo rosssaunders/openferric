@@ -242,21 +242,18 @@ pub fn fit_sabr(
             }
         }
     }
-    starts.sort_by(|a, b| {
-        sabr_objective(*a, forward, strikes, market_vols, t).total_cmp(&sabr_objective(
-            *b,
-            forward,
-            strikes,
-            market_vols,
-            t,
-        ))
-    });
-    starts.truncate(8);
+    // Score each start once (one objective evaluation per candidate) instead of
+    // re-evaluating the full objective inside a sort comparator.
+    let mut scored: Vec<(f64, SabrParams)> = starts
+        .into_iter()
+        .map(|p| (sabr_objective(p, forward, strikes, market_vols, t), p))
+        .collect();
+    scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+    scored.truncate(8);
 
-    let mut best = starts[0];
-    let mut best_obj = sabr_objective(best, forward, strikes, market_vols, t);
+    let (mut best_obj, mut best) = scored[0];
 
-    for start in starts {
+    for &(_, start) in &scored {
         let (p, obj) = lm_refine(start, forward, strikes, market_vols, t);
         if obj < best_obj {
             best = project(p);

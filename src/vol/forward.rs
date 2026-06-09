@@ -333,11 +333,7 @@ impl AtmSkewTermStructure {
 
     /// Linearly interpolated ATM skew at expiry.
     pub fn skew(&self, expiry: f64) -> f64 {
-        interpolate_piecewise(
-            expiry,
-            &self.points.iter().map(|p| p.expiry).collect::<Vec<_>>(),
-            &self.points.iter().map(|p| p.skew).collect::<Vec<_>>(),
-        )
+        interpolate_nodes(expiry, &self.points, |p| p.expiry, |p| p.skew)
     }
 }
 
@@ -384,11 +380,7 @@ impl HestonVolOfVolTermStructure {
 
     /// Interpolated `sigma_v` at expiry.
     pub fn sigma_v(&self, expiry: f64) -> f64 {
-        interpolate_piecewise(
-            expiry,
-            &self.points.iter().map(|p| p.expiry).collect::<Vec<_>>(),
-            &self.points.iter().map(|p| p.sigma_v).collect::<Vec<_>>(),
-        )
+        interpolate_nodes(expiry, &self.points, |p| p.expiry, |p| p.sigma_v)
     }
 }
 
@@ -456,20 +448,12 @@ impl SabrVolOfVolTermStructure {
 
     /// Interpolated SABR alpha at expiry.
     pub fn alpha(&self, expiry: f64) -> f64 {
-        interpolate_piecewise(
-            expiry,
-            &self.points.iter().map(|p| p.expiry).collect::<Vec<_>>(),
-            &self.points.iter().map(|p| p.alpha).collect::<Vec<_>>(),
-        )
+        interpolate_nodes(expiry, &self.points, |p| p.expiry, |p| p.alpha)
     }
 
     /// Interpolated SABR nu at expiry.
     pub fn nu(&self, expiry: f64) -> f64 {
-        interpolate_piecewise(
-            expiry,
-            &self.points.iter().map(|p| p.expiry).collect::<Vec<_>>(),
-            &self.points.iter().map(|p| p.nu).collect::<Vec<_>>(),
-        )
+        interpolate_nodes(expiry, &self.points, |p| p.expiry, |p| p.nu)
     }
 }
 
@@ -659,29 +643,39 @@ fn model_free_variance_for_expiry<S: ForwardVarianceSource>(
     Ok((term1 - term2).max(0.0))
 }
 
-fn interpolate_piecewise(x: f64, xs: &[f64], ys: &[f64]) -> f64 {
-    if xs.is_empty() || ys.is_empty() {
+/// Piecewise-linear interpolation over term-structure nodes without allocating
+/// intermediate coordinate vectors.
+fn interpolate_nodes<P>(
+    x: f64,
+    points: &[P],
+    key: impl Fn(&P) -> f64,
+    value: impl Fn(&P) -> f64,
+) -> f64 {
+    if points.is_empty() {
         return f64::NAN;
     }
-    if xs.len() == 1 || ys.len() == 1 {
-        return ys[0];
+    if points.len() == 1 {
+        return value(&points[0]);
     }
 
-    let x = if x.is_finite() { x } else { xs[0] };
-    if x <= xs[0] {
-        return ys[0];
+    let x = if x.is_finite() { x } else { key(&points[0]) };
+    if x <= key(&points[0]) {
+        return value(&points[0]);
     }
-    if x >= xs[xs.len() - 1] {
-        return ys[ys.len() - 1];
+    let last = points.len() - 1;
+    if x >= key(&points[last]) {
+        return value(&points[last]);
     }
 
-    for i in 0..xs.len() - 1 {
-        if x >= xs[i] && x <= xs[i + 1] {
-            let w = (x - xs[i]) / (xs[i + 1] - xs[i]);
-            return ys[i] + (ys[i + 1] - ys[i]) * w;
+    for i in 0..last {
+        let x0 = key(&points[i]);
+        let x1 = key(&points[i + 1]);
+        if x >= x0 && x <= x1 {
+            let w = (x - x0) / (x1 - x0);
+            return value(&points[i]) + (value(&points[i + 1]) - value(&points[i])) * w;
         }
     }
-    ys[ys.len() - 1]
+    value(&points[last])
 }
 
 #[cfg(test)]

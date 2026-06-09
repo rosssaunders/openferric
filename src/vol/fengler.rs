@@ -123,18 +123,30 @@ impl FenglerSurface {
         self.splines[last].interpolate(log_moneyness).max(1e-10)
     }
 
+    /// Interpolated forward at expiry, without per-call allocation.
+    fn forward_at(&self, t: f64) -> f64 {
+        let ts = &self.expiries;
+        let fs = &self.forwards;
+        if ts.len() == 1 || t <= ts[0] {
+            return fs[0];
+        }
+        let last = ts.len() - 1;
+        if t >= ts[last] {
+            return fs[last];
+        }
+        for i in 0..last {
+            if t >= ts[i] && t <= ts[i + 1] {
+                let w = (t - ts[i]) / (ts[i + 1] - ts[i]);
+                return fs[i] * (1.0 - w) + fs[i + 1] * w;
+            }
+        }
+        fs[last]
+    }
+
     /// Implied vol at (strike, expiry).
     pub fn implied_vol(&self, strike: f64, expiry: f64) -> f64 {
         let t = expiry.max(1e-10);
-        let fwd = interpolate_forward(
-            &self
-                .expiries
-                .iter()
-                .zip(self.forwards.iter())
-                .map(|(&t, &f)| (t, f))
-                .collect::<Vec<_>>(),
-            t,
-        );
+        let fwd = self.forward_at(t);
         let k = (strike / fwd).ln();
         let w = self.total_variance(k, t);
         (w / t).sqrt()
@@ -156,7 +168,8 @@ impl FenglerSurface {
                     let w2 = self.splines[i + 1].interpolate(k);
                     let dw_dt = (w2 - w1) / (t2 - t1);
                     if dw_dt < -1e-8 {
-                        let strike = k.exp(); // approximate
+                        // k is log-moneyness ln(K/F): strike = F * e^k.
+                        let strike = self.forwards[i] * k.exp();
                         violations.push(ArbitrageViolation::Calendar {
                             strike,
                             t1,
@@ -194,7 +207,8 @@ impl FenglerSurface {
                 let g = term1 - term2 + wpp / 2.0;
 
                 if g < -1e-6 {
-                    let strike = (k * self.forwards[slice_idx]).exp();
+                    // k is log-moneyness ln(K/F): strike = F * e^k.
+                    let strike = self.forwards[slice_idx] * k.exp();
                     violations.push(ArbitrageViolation::Butterfly {
                         strike,
                         expiry: t,

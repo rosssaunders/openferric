@@ -234,11 +234,26 @@ fn strike_from_delta_newton(
         strike = next;
     }
 
-    // Bisection fallback.
+    // Bisection fallback. Verify the bracket before iterating: returning an
+    // unbracketed midpoint would silently produce a wrong strike when the
+    // target delta is unattainable on [lo, hi].
     let mut lo = spot * 1e-3;
     let mut hi = spot * 10.0;
     let mut flo =
         bsm_delta(option_type, spot, lo, rate, dividend_yield, sigma, expiry) - target_delta;
+    let fhi = bsm_delta(option_type, spot, hi, rate, dividend_yield, sigma, expiry) - target_delta;
+
+    if flo == 0.0 {
+        return Ok(lo.max(1e-8));
+    }
+    if fhi == 0.0 {
+        return Ok(hi.max(1e-8));
+    }
+    if flo * fhi > 0.0 {
+        return Err(format!(
+            "target delta {target_delta} not bracketed by strikes [{lo}, {hi}]"
+        ));
+    }
 
     for _ in 0..300 {
         let mid = 0.5 * (lo + hi);
@@ -257,7 +272,17 @@ fn strike_from_delta_newton(
         }
     }
 
-    Ok(0.5 * (lo + hi).max(1e-8))
+    // Convergence verification: the bracket is valid, but the residual must be
+    // small before accepting the midpoint.
+    let mid = 0.5 * (lo + hi);
+    let fm = bsm_delta(option_type, spot, mid, rate, dividend_yield, sigma, expiry) - target_delta;
+    if fm.abs() <= 1e-6 {
+        Ok(mid.max(1e-8))
+    } else {
+        Err(format!(
+            "strike-from-delta bisection did not converge: residual {fm} at strike {mid}"
+        ))
+    }
 }
 
 pub fn sabr_alpha_from_atm_vol(
@@ -397,6 +422,88 @@ fn bsm_price_with_dividend(
     }
 }
 
+/// Black-Scholes vega `dV/dsigma` with continuous dividend yield.
+fn bsm_vega(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    sigma: f64,
+    expiry: f64,
+) -> f64 {
+    if spot <= 0.0 || strike <= 0.0 || sigma <= 0.0 || expiry <= 0.0 {
+        return 0.0;
+    }
+    let d1 = d1(spot, strike, rate, dividend_yield, sigma, expiry);
+    spot * (-dividend_yield * expiry).exp() * normal_pdf(d1) * expiry.sqrt()
+}
+
+/// Pivot strikes `(k_25d_put, k_atm, k_25d_call)` used by [`vanna_volga_price`].
+///
+/// Pivot vols follow the module quote convention `vol_25d = atm + bf +/- rr/2`.
+/// The ATM pivot is the delta-neutral straddle strike
+/// `K_atm = S * exp((r - q + sigma_atm^2 / 2) * T)`.
+pub fn vanna_volga_pivot_strikes(
+    spot: f64,
+    rate: f64,
+    dividend_yield: f64,
+    expiry: f64,
+    quote: VannaVolgaQuote,
+) -> (f64, f64, f64) {
+    let atm_vol = quote.atm_vol.max(1e-8);
+    let vol_25c = (atm_vol + quote.bf_25d + 0.5 * quote.rr_25d).max(1e-8);
+    let vol_25p = (atm_vol + quote.bf_25d - 0.5 * quote.rr_25d).max(1e-8);
+
+    let k_atm = spot * ((rate - dividend_yield + 0.5 * atm_vol * atm_vol) * expiry.max(0.0)).exp();
+
+    let k_25c = strike_from_delta_newton(
+        spot,
+        rate,
+        dividend_yield,
+        expiry,
+        0.25,
+        vol_25c,
+        k_atm,
+        1e-12,
+        100,
+    )
+    .ok()
+    .or_else(|| strike_from_delta_analytic(spot, rate, dividend_yield, expiry, vol_25c, 0.25))
+    .unwrap_or(spot);
+
+    let k_25p = strike_from_delta_newton(
+        spot,
+        rate,
+        dividend_yield,
+        expiry,
+        -0.25,
+        vol_25p,
+        k_atm,
+        1e-12,
+        100,
+    )
+    .ok()
+    .or_else(|| strike_from_delta_analytic(spot, rate, dividend_yield, expiry, vol_25p, -0.25))
+    .unwrap_or(spot);
+
+    (k_25p, k_atm, k_25c)
+}
+
+/// Vanna-volga price following Castagna-Mercurio (2007), first-order form:
+///
+/// `VV(K) = BS(K; sigma_atm) + sum_i w_i(K) * [MKT(K_i) - BS(K_i; sigma_atm)]`
+///
+/// with the closed-form logarithmic weights mapped through vega ratios
+///
+/// `w_i(K) = (vega(K) / vega(K_i)) * y_i(K)`,
+/// `y_1(K) = ln(K2/K) ln(K3/K) / (ln(K2/K1) ln(K3/K1))`,
+/// `y_2(K) = ln(K/K1) ln(K3/K) / (ln(K2/K1) ln(K3/K2))`,
+/// `y_3(K) = ln(K/K1) ln(K/K2) / (ln(K3/K1) ln(K3/K2))`,
+///
+/// where `K1 < K2 < K3` are the 25d-put, ATM, and 25d-call pivot strikes.
+/// These weights solve the 3x3 system matching vega, vanna, and volga of the
+/// target option at the base (ATM) vol, so the construction reprices all three
+/// pivots exactly: at `K = K_i` the weights collapse to `w_i = 1`, `w_j = 0`.
 #[allow(clippy::too_many_arguments)]
 pub fn vanna_volga_price(
     option_type: OptionType,
@@ -408,8 +515,8 @@ pub fn vanna_volga_price(
     quote: VannaVolgaQuote,
 ) -> f64 {
     let atm_vol = quote.atm_vol.max(1e-8);
-    let rr = quote.rr_25d;
-    let bf = quote.bf_25d;
+    let vol_25c = (atm_vol + quote.bf_25d + 0.5 * quote.rr_25d).max(1e-8);
+    let vol_25p = (atm_vol + quote.bf_25d - 0.5 * quote.rr_25d).max(1e-8);
 
     let base = bsm_price_with_dividend(
         option_type,
@@ -425,84 +532,57 @@ pub fn vanna_volga_price(
         return base;
     }
 
-    let x = (strike / spot).ln();
-    let scale = (atm_vol * expiry.sqrt()).max(1e-8);
+    let (k1, k2, k3) = vanna_volga_pivot_strikes(spot, rate, dividend_yield, expiry, quote);
+    if !(k1 > 0.0 && k2 > k1 && k3 > k2) {
+        return base;
+    }
 
-    // ATM-neutral weights: exactly zero correction at x=0.
-    let vanna_weight = x / scale;
-    let volga_weight = (x * x) / (scale * scale);
+    // Smile corrections are computed on calls; by put-call parity the
+    // vol-dependent part of call and put prices is identical, so the same
+    // correction applies to the target option regardless of its type.
+    let pivot_vols = [vol_25p, atm_vol, vol_25c];
+    let pivots = [k1, k2, k3];
 
-    let vol_25c = (atm_vol + bf + 0.5 * rr).max(1e-8);
-    let vol_25p = (atm_vol + bf - 0.5 * rr).max(1e-8);
+    let vega_k = bsm_vega(spot, strike, rate, dividend_yield, atm_vol, expiry);
+    let ln = |a: f64, b: f64| (a / b).ln();
+    let y = [
+        ln(k2, strike) * ln(k3, strike) / (ln(k2, k1) * ln(k3, k1)),
+        ln(strike, k1) * ln(k3, strike) / (ln(k2, k1) * ln(k3, k2)),
+        ln(strike, k1) * ln(strike, k2) / (ln(k3, k1) * ln(k3, k2)),
+    ];
 
-    let k_25c = strike_from_delta_newton(
-        spot,
-        rate,
-        dividend_yield,
-        expiry,
-        0.25,
-        vol_25c,
-        spot,
-        1e-12,
-        100,
-    )
-    .unwrap_or(spot);
+    let mut correction = 0.0;
+    for i in 0..3 {
+        let vega_i = bsm_vega(spot, pivots[i], rate, dividend_yield, atm_vol, expiry);
+        if vega_i.abs() < 1e-14 {
+            return base;
+        }
+        let mkt = bsm_price_with_dividend(
+            OptionType::Call,
+            spot,
+            pivots[i],
+            rate,
+            dividend_yield,
+            pivot_vols[i],
+            expiry,
+        );
+        let bs = bsm_price_with_dividend(
+            OptionType::Call,
+            spot,
+            pivots[i],
+            rate,
+            dividend_yield,
+            atm_vol,
+            expiry,
+        );
+        correction += (vega_k / vega_i) * y[i] * (mkt - bs);
+    }
 
-    let k_25p = strike_from_delta_newton(
-        spot,
-        rate,
-        dividend_yield,
-        expiry,
-        -0.25,
-        vol_25p,
-        spot,
-        1e-12,
-        100,
-    )
-    .unwrap_or(spot);
+    if !correction.is_finite() {
+        return base;
+    }
 
-    let call_25c_smile = bsm_price_with_dividend(
-        OptionType::Call,
-        spot,
-        k_25c,
-        rate,
-        dividend_yield,
-        vol_25c,
-        expiry,
-    );
-    let call_25c_atm = bsm_price_with_dividend(
-        OptionType::Call,
-        spot,
-        k_25c,
-        rate,
-        dividend_yield,
-        atm_vol,
-        expiry,
-    );
-
-    let put_25p_smile = bsm_price_with_dividend(
-        OptionType::Put,
-        spot,
-        k_25p,
-        rate,
-        dividend_yield,
-        vol_25p,
-        expiry,
-    );
-    let put_25p_atm = bsm_price_with_dividend(
-        OptionType::Put,
-        spot,
-        k_25p,
-        rate,
-        dividend_yield,
-        atm_vol,
-        expiry,
-    );
-
-    let rr_adjustment = (call_25c_smile - call_25c_atm) - (put_25p_smile - put_25p_atm);
-    let bf_adjustment = 0.5 * ((call_25c_smile - call_25c_atm) + (put_25p_smile - put_25p_atm));
-
-    base + vanna_weight * rr_adjustment + volga_weight * bf_adjustment
+    base + correction
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -650,10 +730,67 @@ mod tests {
 
     #[test]
     fn vanna_volga_is_atm_neutral() {
+        // At the ATM pivot strike the market vol equals the base (ATM) vol, so
+        // every pivot correction term vanishes and VV == BS exactly.
         let quote = VannaVolgaQuote::new(0.2, 0.03, 0.01);
-        let vv = vanna_volga_price(OptionType::Call, 100.0, 100.0, 0.01, 0.0, 1.0, quote);
-        let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.01, 0.2, 1.0);
+        let (_, k_atm, _) = vanna_volga_pivot_strikes(100.0, 0.01, 0.0, 1.0, quote);
+        let vv = vanna_volga_price(OptionType::Call, 100.0, k_atm, 0.01, 0.0, 1.0, quote);
+        let bs = black_scholes_price(OptionType::Call, 100.0, k_atm, 0.01, 0.2, 1.0);
 
         assert_relative_eq!(vv, bs, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn vanna_volga_reprices_its_pivots() {
+        // Castagna-Mercurio weights collapse to w_i = 1, w_j = 0 at K = K_i, so
+        // the VV price at each pivot must equal the BS price computed with that
+        // pivot's market vol (atm + bf +/- rr/2 per the module convention).
+        let spot = 100.0;
+        let rate = 0.02;
+        let q = 0.0;
+        let expiry = 1.0;
+        let quote = VannaVolgaQuote::new(0.2, -0.02, 0.01);
+
+        let atm = quote.atm_vol;
+        let vol_25c = atm + quote.bf_25d + 0.5 * quote.rr_25d;
+        let vol_25p = atm + quote.bf_25d - 0.5 * quote.rr_25d;
+
+        let (k_25p, k_atm, k_25c) = vanna_volga_pivot_strikes(spot, rate, q, expiry, quote);
+        assert!(k_25p < k_atm && k_atm < k_25c);
+
+        for (k, vol) in [(k_25p, vol_25p), (k_atm, atm), (k_25c, vol_25c)] {
+            let vv = vanna_volga_price(OptionType::Call, spot, k, rate, q, expiry, quote);
+            let market = bsm_price_with_dividend(OptionType::Call, spot, k, rate, q, vol, expiry);
+            assert_relative_eq!(vv, market, epsilon = 1e-10);
+
+            // Equivalent statement in vol space: the VV implied vol reproduces
+            // the input pivot vol to high precision.
+            let iv = crate::vol::implied::implied_vol(
+                OptionType::Call,
+                spot,
+                k,
+                rate,
+                expiry,
+                vv,
+                1e-14,
+                64,
+            )
+            .unwrap();
+            assert_relative_eq!(iv, vol, epsilon = 1e-8);
+
+            // Put corrections are identical by put-call parity.
+            let vv_put = vanna_volga_price(OptionType::Put, spot, k, rate, q, expiry, quote);
+            let market_put =
+                bsm_price_with_dividend(OptionType::Put, spot, k, rate, q, vol, expiry);
+            assert_relative_eq!(vv_put, market_put, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn strike_from_delta_newton_errors_on_unattainable_delta() {
+        // With q > 0, call delta is bounded by exp(-q T) < 1; asking for a
+        // larger delta must error rather than silently returning a midpoint.
+        let err = strike_from_delta_newton(100.0, 0.01, 0.05, 1.0, 0.99, 0.2, 100.0, 1e-12, 50);
+        assert!(err.is_err());
     }
 }
