@@ -141,7 +141,8 @@ impl InherentLeverage {
 }
 
 fn margin_scalar(params: &MarginParams) -> f64 {
-    (params.funding_rate_vol * params.time_to_maturity).sqrt()
+    // Diffusive P&L quantiles scale as sigma * sqrt(T).
+    params.funding_rate_vol * params.time_to_maturity.sqrt()
 }
 
 fn adverse_tick_round(rate: f64, position_sign: f64, tick_size: f64) -> f64 {

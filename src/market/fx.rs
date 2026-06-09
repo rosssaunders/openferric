@@ -355,14 +355,17 @@ pub struct FxVolExpiryQuote {
 
 /// Malz-style interpolation helper in delta space.
 ///
-/// RR and BF are linearly interpolated as functions of absolute signed delta
-/// where ATM corresponds to `delta = 0`.
+/// Nodes live on the smile coordinate `x = 0.5 - call_delta` (puts mirrored as
+/// `x = |put_delta| - 0.5`), so ATM sits at `x = 0`, the 25d call at `x = 0.25`,
+/// the 10d call at `x = 0.40`, and put pillars at the negated coordinates.
+/// Vols are interpolated linearly on this axis and extrapolated linearly in the
+/// wings, consistent with [`MalzInterpolator::quadratic_single_pillar`] anchoring
+/// ATM at coordinate 0.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MalzInterpolator {
     atm_vol: f64,
-    abs_deltas: Vec<f64>,
-    rr_nodes: Vec<f64>,
-    bf_nodes: Vec<f64>,
+    smile_coords: Vec<f64>,
+    vols: Vec<f64>,
 }
 
 impl MalzInterpolator {
@@ -384,24 +387,29 @@ impl MalzInterpolator {
             return Err("pillar deltas must be strictly increasing".to_string());
         }
 
-        let mut abs_deltas = Vec::with_capacity(sorted.len() + 1);
-        let mut rr_nodes = Vec::with_capacity(sorted.len() + 1);
-        let mut bf_nodes = Vec::with_capacity(sorted.len() + 1);
-        // ATM anchor in signed-delta space.
-        abs_deltas.push(0.0);
-        rr_nodes.push(0.0);
-        bf_nodes.push(0.0);
-        for p in sorted {
-            abs_deltas.push(p.delta);
-            rr_nodes.push(p.risk_reversal);
-            bf_nodes.push(p.butterfly);
+        let mut smile_coords = Vec::with_capacity(2 * sorted.len() + 1);
+        let mut vols = Vec::with_capacity(2 * sorted.len() + 1);
+        // Put pillars on the negative axis: ascending pillar delta maps to ascending
+        // coordinate -(0.5 - delta), e.g. 10d put at -0.40, 25d put at -0.25.
+        for p in &sorted {
+            let (put_vol, _) = p.put_call_vols(atm_vol);
+            smile_coords.push(-(0.5 - p.delta));
+            vols.push(put_vol);
+        }
+        // ATM anchor at coordinate 0.
+        smile_coords.push(0.0);
+        vols.push(atm_vol);
+        // Call pillars on the positive axis: 25d call at 0.25, 10d call at 0.40.
+        for p in sorted.iter().rev() {
+            let (_, call_vol) = p.put_call_vols(atm_vol);
+            smile_coords.push(0.5 - p.delta);
+            vols.push(call_vol);
         }
 
         Ok(Self {
             atm_vol,
-            abs_deltas,
-            rr_nodes,
-            bf_nodes,
+            smile_coords,
+            vols,
         })
     }
 
@@ -430,14 +438,27 @@ impl MalzInterpolator {
         Ok((atm_vol + a * signed_delta + b * signed_delta * signed_delta).max(1.0e-8))
     }
 
-    /// Volatility at signed delta in `[-0.5, 0.5]`.
+    /// Volatility at an option's signed market delta (calls positive, puts negative).
+    ///
+    /// The delta is converted to the smile coordinate `0.5 - delta` for calls and
+    /// `|delta| - 0.5` for puts. `signed_delta == 0` is treated as the ATM
+    /// (delta-neutral) point.
     pub fn vol_at_signed_delta(&self, signed_delta: f64) -> f64 {
-        let d = signed_delta.clamp(-0.5, 0.5);
-        let abs_delta = d.abs().min(0.5);
-        let rr = linear_interp_with_extrap(&self.abs_deltas, &self.rr_nodes, abs_delta);
-        let bf = linear_interp_with_extrap(&self.abs_deltas, &self.bf_nodes, abs_delta);
-        (self.atm_vol + bf + 0.5 * d.signum() * rr).max(1.0e-8)
+        let x = smile_coordinate(signed_delta);
+        linear_interp_with_extrap(&self.smile_coords, &self.vols, x).max(1.0e-8)
     }
+}
+
+/// Maps a signed market delta to the Malz smile coordinate (ATM at 0).
+///
+/// Calls map to `0.5 - delta`, puts to `|delta| - 0.5`; an exact zero delta is
+/// treated as the ATM point rather than an infinitely-OTM wing.
+fn smile_coordinate(signed_delta: f64) -> f64 {
+    if signed_delta == 0.0 {
+        return 0.0;
+    }
+    let d = signed_delta.clamp(-1.0, 1.0);
+    if d > 0.0 { 0.5 - d } else { -d - 0.5 }
 }
 
 /// One expiry smile with FX market conventions.
@@ -1460,6 +1481,100 @@ mod tests {
             assert_relative_eq!(malz.vol_at_signed_delta(-p.delta), vp, epsilon = 1.0e-12);
         }
         assert_relative_eq!(malz.vol_at_signed_delta(0.0), atm, epsilon = 1.0e-12);
+    }
+
+    fn forward_delta_test_quote() -> FxSmileMarketQuote {
+        FxSmileMarketQuote {
+            atm_vol: 0.10,
+            pillars: vec![
+                FxRrBfPillar {
+                    delta: 0.10,
+                    risk_reversal: 0.016,
+                    butterfly: 0.012,
+                },
+                FxRrBfPillar {
+                    delta: 0.25,
+                    risk_reversal: 0.010,
+                    butterfly: 0.005,
+                },
+            ],
+            atm_convention: FxAtmConvention::DeltaNeutralStraddle,
+            delta_convention: FxDeltaConvention::Forward,
+            premium_currency: PremiumCurrency::Domestic,
+        }
+    }
+
+    #[test]
+    fn vol_at_strike_recovers_atm_vol_at_atm_strike() {
+        let quote = forward_delta_test_quote();
+        let slice = FxSmileSlice::new(1.0, 1.10, 0.03, 0.015, quote.clone()).unwrap();
+
+        let k_atm = slice.atm_strike().unwrap();
+        let vol = slice.vol_at_strike(k_atm).unwrap();
+        assert_relative_eq!(vol, quote.atm_vol, epsilon = 1.0e-10);
+    }
+
+    #[test]
+    fn vol_at_strike_recovers_pillar_vols_at_pivot_strikes() {
+        // The 25d/10d pivot strikes must recover atm + bf + rr/2 (call) and
+        // atm + bf - rr/2 (put) under this module's rr = call - put convention.
+        let quote = forward_delta_test_quote();
+        let slice = FxSmileSlice::new(1.0, 1.10, 0.03, 0.015, quote.clone()).unwrap();
+
+        for (delta, k_put, k_call) in slice.pillar_strikes().unwrap() {
+            let pillar = quote
+                .pillars
+                .iter()
+                .find(|p| (p.delta - delta).abs() < 1.0e-12)
+                .unwrap();
+            let (put_vol, call_vol) = pillar.put_call_vols(quote.atm_vol);
+
+            assert_relative_eq!(
+                slice.vol_at_strike(k_call).unwrap(),
+                call_vol,
+                epsilon = 1.0e-6
+            );
+            assert_relative_eq!(
+                slice.vol_at_strike(k_put).unwrap(),
+                put_vol,
+                epsilon = 1.0e-6
+            );
+        }
+    }
+
+    #[test]
+    fn malz_wings_extrapolate_monotonically_beyond_10d() {
+        let quote = forward_delta_test_quote();
+        let slice = FxSmileSlice::new(1.0, 1.10, 0.03, 0.015, quote.clone()).unwrap();
+
+        let strikes = slice.pillar_strikes().unwrap();
+        // Pillars are sorted by ascending delta, so index 0 is the 10d pillar.
+        let (delta_10d, k_put_10d, k_call_10d) = strikes[0];
+        assert_relative_eq!(delta_10d, 0.10, epsilon = 1.0e-12);
+
+        // Call wing: vols keep rising as strikes move beyond the 10d call,
+        // instead of reverting toward ATM.
+        let mut prev = slice.vol_at_strike(k_call_10d).unwrap();
+        assert!(prev > quote.atm_vol);
+        for mult in [1.02, 1.05, 1.10, 1.20] {
+            let vol = slice.vol_at_strike(k_call_10d * mult).unwrap();
+            assert!(
+                vol > prev,
+                "call wing must extrapolate monotonically: {vol} <= {prev} at mult {mult}"
+            );
+            prev = vol;
+        }
+
+        // Put wing: vols keep rising as strikes move below the 10d put.
+        let mut prev = slice.vol_at_strike(k_put_10d).unwrap();
+        for mult in [0.98, 0.95, 0.90, 0.80] {
+            let vol = slice.vol_at_strike(k_put_10d * mult).unwrap();
+            assert!(
+                vol > prev,
+                "put wing must extrapolate monotonically: {vol} <= {prev} at mult {mult}"
+            );
+            prev = vol;
+        }
     }
 
     #[test]

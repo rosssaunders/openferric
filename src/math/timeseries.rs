@@ -194,9 +194,9 @@ pub fn log_returns(prices: &[f64]) -> Vec<f64> {
 /// Panics if `window == 0` or `window > series.len()` or if non-finite inputs are present.
 pub fn rolling_mean(series: &[f64], window: usize) -> Vec<f64> {
     validate_series_and_window(series, window);
-    series
-        .windows(window)
-        .map(sample_mean)
+    rolling_central_moments(series, window)
+        .into_iter()
+        .map(|(mean, _, _, _)| mean)
         .collect::<Vec<f64>>()
 }
 
@@ -209,9 +209,10 @@ pub fn rolling_mean(series: &[f64], window: usize) -> Vec<f64> {
 pub fn rolling_std_dev(series: &[f64], window: usize) -> Vec<f64> {
     validate_series_and_window(series, window);
     assert!(window >= 2, "window must be >= 2 for standard deviation");
-    series
-        .windows(window)
-        .map(sample_std_dev)
+    let bessel = window as f64 / (window as f64 - 1.0);
+    rolling_central_moments(series, window)
+        .into_iter()
+        .map(|(_, m2, _, _)| (m2 * bessel).max(0.0).sqrt())
         .collect::<Vec<f64>>()
 }
 
@@ -224,10 +225,9 @@ pub fn rolling_std_dev(series: &[f64], window: usize) -> Vec<f64> {
 pub fn rolling_skewness(series: &[f64], window: usize) -> Vec<f64> {
     validate_series_and_window(series, window);
     assert!(window >= 2, "window must be >= 2 for skewness");
-    series
-        .windows(window)
-        .map(|w| {
-            let (_, m2, m3, _) = central_moments(w);
+    rolling_central_moments(series, window)
+        .into_iter()
+        .map(|(_, m2, m3, _)| {
             if m2 <= MIN_STD * MIN_STD {
                 0.0
             } else {
@@ -246,10 +246,9 @@ pub fn rolling_skewness(series: &[f64], window: usize) -> Vec<f64> {
 pub fn rolling_excess_kurtosis(series: &[f64], window: usize) -> Vec<f64> {
     validate_series_and_window(series, window);
     assert!(window >= 2, "window must be >= 2 for kurtosis");
-    series
-        .windows(window)
-        .map(|w| {
-            let (_, m2, _, m4) = central_moments(w);
+    rolling_central_moments(series, window)
+        .into_iter()
+        .map(|(_, m2, _, m4)| {
             if m2 <= MIN_STD * MIN_STD {
                 0.0
             } else {
@@ -456,19 +455,30 @@ pub fn ledoit_wolf_correlation_matrix(
     let mu = trace(&s_pop) / n_assets as f64;
     let f = scaled_identity(n_assets, mu);
 
-    let mut pi_hat = 0.0;
-    let mut t = 0usize;
-    while t < n_obs {
-        let mut outer = vec![vec![0.0; n_assets]; n_assets];
-        for i in 0..n_assets {
-            for j in 0..n_assets {
-                outer[i][j] = centered[i][t] * centered[j][t];
+    // Ledoit-Wolf (2004) pi_hat = (1/T^2) * sum_t || x_t x_t' - S ||_F^2, accumulated
+    // without forming per-observation outer-product matrices via the identity
+    // sum_t sum_ij (c_it c_jt - s_ij)^2 = sum_ij sum_t (c_it c_jt)^2 - T * ||S||_F^2.
+    let t_f = n_obs as f64;
+    let mut sum_sq = 0.0;
+    for i in 0..n_assets {
+        for j in i..n_assets {
+            let mut s = 0.0;
+            let mut t = 0usize;
+            while t < n_obs {
+                let p = centered[i][t] * centered[j][t];
+                s += p * p;
+                t += 1;
             }
+            sum_sq += if i == j { s } else { 2.0 * s };
         }
-        pi_hat += frobenius_norm_sq_diff(&outer, &s_pop);
-        t += 1;
     }
-    pi_hat /= n_obs as f64;
+    let mut s_pop_norm_sq = 0.0;
+    for row in &s_pop {
+        for &v in row {
+            s_pop_norm_sq += v * v;
+        }
+    }
+    let pi_hat = ((sum_sq - t_f * s_pop_norm_sq) / (t_f * t_f)).max(0.0);
 
     let delta_hat = frobenius_norm_sq_diff(&s_pop, &f);
     let shrinkage = if delta_hat <= MIN_STD {
@@ -1001,6 +1011,9 @@ fn sample_std_dev(values: &[f64]) -> f64 {
     sample_variance(values).max(0.0).sqrt()
 }
 
+/// Direct windowed central moments, kept as the reference implementation for the
+/// O(n) rolling variant in tests.
+#[cfg(test)]
 fn central_moments(values: &[f64]) -> (f64, f64, f64, f64) {
     let mean = sample_mean(values);
     let n = values.len() as f64;
@@ -1018,6 +1031,52 @@ fn central_moments(values: &[f64]) -> (f64, f64, f64, f64) {
     }
 
     (mean, m2 / n, m3 / n, m4 / n)
+}
+
+/// Rolling central moments `(mean, m2, m3, m4)` over fixed-size windows in O(n).
+///
+/// Maintains running power sums of observations shifted by the global sample mean,
+/// which keeps the raw-moment expansion well conditioned for typical return series.
+fn rolling_central_moments(series: &[f64], window: usize) -> Vec<(f64, f64, f64, f64)> {
+    let shift = sample_mean(series);
+    let n = window as f64;
+
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+    let mut s4 = 0.0;
+    for &x in &series[..window] {
+        let d = x - shift;
+        let d2 = d * d;
+        s1 += d;
+        s2 += d2;
+        s3 += d2 * d;
+        s4 += d2 * d2;
+    }
+
+    let moments = |s1: f64, s2: f64, s3: f64, s4: f64| {
+        let m1 = s1 / n;
+        let m1_sq = m1 * m1;
+        let m2 = (s2 / n - m1_sq).max(0.0);
+        let m3 = s3 / n - 3.0 * m1 * s2 / n + 2.0 * m1_sq * m1;
+        let m4 = (s4 / n - 4.0 * m1 * s3 / n + 6.0 * m1_sq * s2 / n - 3.0 * m1_sq * m1_sq).max(0.0);
+        (shift + m1, m2, m3, m4)
+    };
+
+    let mut out = Vec::with_capacity(series.len() - window + 1);
+    out.push(moments(s1, s2, s3, s4));
+    for t in window..series.len() {
+        let d_new = series[t] - shift;
+        let d_old = series[t - window] - shift;
+        let d_new2 = d_new * d_new;
+        let d_old2 = d_old * d_old;
+        s1 += d_new - d_old;
+        s2 += d_new2 - d_old2;
+        s3 += d_new2 * d_new - d_old2 * d_old;
+        s4 += d_new2 * d_new2 - d_old2 * d_old2;
+        out.push(moments(s1, s2, s3, s4));
+    }
+    out
 }
 
 fn covariance_from_centered(centered: &[Vec<f64>], denom: f64) -> Vec<Vec<f64>> {
@@ -1110,57 +1169,108 @@ fn frobenius_norm_sq_diff(a: &[Vec<f64>], b: &[Vec<f64>]) -> f64 {
     s
 }
 
-fn student_t_log_likelihood(values: &[f64], mu: f64, scale: f64, nu: f64) -> f64 {
-    values
-        .iter()
-        .map(|&x| student_t_log_pdf(x, mu, scale, nu))
-        .sum::<f64>()
+/// Precomputed constants for the Student-t log-density at fixed `(mu, scale, nu)`.
+///
+/// Grid searches evaluate the same parameter set against every observation, so the
+/// `ln_gamma`/`ln` normalization terms are hoisted out of the per-observation path.
+struct StudentTLogPdf {
+    mu: f64,
+    inv_scale: f64,
+    inv_nu: f64,
+    log_norm: f64,
+    exponent: f64,
 }
 
-fn student_t_log_pdf(x: f64, mu: f64, scale: f64, nu: f64) -> f64 {
-    let z = (x - mu) / scale;
-    let a = ln_gamma((nu + 1.0) * 0.5) - ln_gamma(nu * 0.5);
-    let b = -0.5 * (nu * PI).ln() - scale.ln();
-    let c = -0.5 * (nu + 1.0) * (1.0 + (z * z) / nu).ln();
-    a + b + c
+impl StudentTLogPdf {
+    fn new(mu: f64, scale: f64, nu: f64) -> Self {
+        Self {
+            mu,
+            inv_scale: 1.0 / scale,
+            inv_nu: 1.0 / nu,
+            log_norm: ln_gamma((nu + 1.0) * 0.5)
+                - ln_gamma(nu * 0.5)
+                - 0.5 * (nu * PI).ln()
+                - scale.ln(),
+            exponent: -0.5 * (nu + 1.0),
+        }
+    }
+
+    #[inline]
+    fn log_pdf(&self, x: f64) -> f64 {
+        let z = (x - self.mu) * self.inv_scale;
+        self.log_norm + self.exponent * (1.0 + z * z * self.inv_nu).ln()
+    }
+}
+
+fn student_t_log_likelihood(values: &[f64], mu: f64, scale: f64, nu: f64) -> f64 {
+    let pdf = StudentTLogPdf::new(mu, scale, nu);
+    values.iter().map(|&x| pdf.log_pdf(x)).sum::<f64>()
+}
+
+/// Precomputed constants for Hansen's skewed Student-t log-density at fixed
+/// `(mu, scale, nu, lambda)`.
+struct SkewTLogPdf {
+    mu: f64,
+    inv_scale: f64,
+    a: f64,
+    b: f64,
+    threshold: f64,
+    inv_denom_left: f64,
+    inv_denom_right: f64,
+    inv_nu_m2: f64,
+    log_norm: f64,
+    exponent: f64,
+    degenerate: bool,
+}
+
+impl SkewTLogPdf {
+    fn new(mu: f64, scale: f64, nu: f64, lambda: f64) -> Self {
+        let c =
+            (ln_gamma((nu + 1.0) * 0.5) - ln_gamma(nu * 0.5)).exp() / ((PI * (nu - 2.0)).sqrt());
+        let a = 4.0 * lambda * c * ((nu - 2.0) / (nu - 1.0));
+        let b_sq = 1.0 + 3.0 * lambda * lambda - a * a;
+        let denom_left = 1.0 - lambda;
+        let denom_right = 1.0 + lambda;
+        let degenerate = b_sq <= MIN_STD || denom_left <= MIN_STD || denom_right <= MIN_STD;
+        let b = b_sq.max(MIN_STD).sqrt();
+        Self {
+            mu,
+            inv_scale: 1.0 / scale,
+            a,
+            b,
+            threshold: -a / b,
+            inv_denom_left: 1.0 / denom_left,
+            inv_denom_right: 1.0 / denom_right,
+            inv_nu_m2: 1.0 / (nu - 2.0),
+            log_norm: (b * c).ln() - scale.ln(),
+            exponent: -0.5 * (nu + 1.0),
+            degenerate,
+        }
+    }
+
+    #[inline]
+    fn log_pdf(&self, x: f64) -> f64 {
+        if self.degenerate {
+            return -1.0e12;
+        }
+        let y = (x - self.mu) * self.inv_scale;
+        let inv_denom = if y < self.threshold {
+            self.inv_denom_left
+        } else {
+            self.inv_denom_right
+        };
+        let z = (self.b * y + self.a) * inv_denom;
+        let core = 1.0 + z * z * self.inv_nu_m2;
+        if core <= 0.0 {
+            return -1.0e12;
+        }
+        self.log_norm + self.exponent * core.ln()
+    }
 }
 
 fn skew_t_log_likelihood(values: &[f64], mu: f64, scale: f64, nu: f64, lambda: f64) -> f64 {
-    values
-        .iter()
-        .map(|&x| skew_t_log_pdf(x, mu, scale, nu, lambda))
-        .sum::<f64>()
-}
-
-fn skew_t_log_pdf(x: f64, mu: f64, scale: f64, nu: f64, lambda: f64) -> f64 {
-    let y = (x - mu) / scale;
-
-    let c = (ln_gamma((nu + 1.0) * 0.5) - ln_gamma(nu * 0.5)).exp() / ((PI * (nu - 2.0)).sqrt());
-    let a = 4.0 * lambda * c * ((nu - 2.0) / (nu - 1.0));
-    let b_sq = 1.0 + 3.0 * lambda * lambda - a * a;
-    if b_sq <= MIN_STD {
-        return -1.0e12;
-    }
-    let b = b_sq.sqrt();
-
-    let threshold = -a / b;
-    let denom = if y < threshold {
-        1.0 - lambda
-    } else {
-        1.0 + lambda
-    };
-
-    if denom <= MIN_STD {
-        return -1.0e12;
-    }
-
-    let z = (b * y + a) / denom;
-    let core = 1.0 + z * z / (nu - 2.0);
-    if core <= 0.0 {
-        return -1.0e12;
-    }
-
-    (b * c).ln() - scale.ln() - 0.5 * (nu + 1.0) * core.ln()
+    let pdf = SkewTLogPdf::new(mu, scale, nu, lambda);
+    values.iter().map(|&x| pdf.log_pdf(x)).sum::<f64>()
 }
 
 fn safe_prob(num: usize, den: usize) -> f64 {
@@ -1229,6 +1339,26 @@ mod tests {
     }
 
     #[test]
+    fn rolling_moments_match_direct_windowed_computation() {
+        let base = ar1_series(0.4, 400, 99);
+        let s = base.iter().map(|x| x * 0.01 + 0.05).collect::<Vec<_>>();
+        let window = 25;
+
+        let means = rolling_mean(&s, window);
+        let stds = rolling_std_dev(&s, window);
+        let skews = rolling_skewness(&s, window);
+        let kurts = rolling_excess_kurtosis(&s, window);
+
+        for (i, w) in s.windows(window).enumerate() {
+            let (mean, m2, m3, m4) = central_moments(w);
+            assert_relative_eq!(means[i], mean, epsilon = 1.0e-12);
+            assert_relative_eq!(stds[i], sample_std_dev(w), epsilon = 1.0e-12);
+            assert_relative_eq!(skews[i], m3 / m2.powf(1.5), epsilon = 1.0e-8);
+            assert_relative_eq!(kurts[i], m4 / (m2 * m2) - 3.0, epsilon = 1.0e-8);
+        }
+    }
+
+    #[test]
     fn ewma_matches_manual_recursion() {
         let r = vec![0.01, -0.02, 0.015, -0.005, 0.03];
         let lambda = 0.94;
@@ -1293,6 +1423,47 @@ mod tests {
 
         assert!(lw.shrinkage >= 0.0 && lw.shrinkage <= 1.0);
         assert!(cond_lw <= cond_sample + 1.0e-10);
+    }
+
+    #[test]
+    fn ledoit_wolf_shrinkage_decreases_with_sample_size() {
+        // For data drawn from a fixed covariance, the Ledoit-Wolf intensity must
+        // vanish as T grows (the old 1/T pi_hat scaling clamped it at 1 regardless).
+        fn make_panel(n_obs: usize, seed: u64) -> Vec<Vec<f64>> {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut a1 = vec![0.0; n_obs];
+            let mut a2 = vec![0.0; n_obs];
+            let mut a3 = vec![0.0; n_obs];
+            for t in 0..n_obs {
+                let e1: f64 = StandardNormal.sample(&mut rng);
+                let e2: f64 = StandardNormal.sample(&mut rng);
+                let e3: f64 = StandardNormal.sample(&mut rng);
+                a1[t] = e1;
+                a2[t] = 0.5 * e1 + 2.0 * e2;
+                a3[t] = -0.3 * e1 + 0.4 * e2 + 3.0 * e3;
+            }
+            vec![a1, a2, a3]
+        }
+
+        let lw_small = ledoit_wolf_correlation_matrix(&make_panel(50, 11)).unwrap();
+        let lw_large = ledoit_wolf_correlation_matrix(&make_panel(5000, 11)).unwrap();
+
+        assert!(
+            lw_small.shrinkage < 1.0,
+            "small-sample shrinkage should not saturate at 1, got {}",
+            lw_small.shrinkage
+        );
+        assert!(
+            lw_large.shrinkage < lw_small.shrinkage,
+            "shrinkage should decrease with T: T=50 -> {}, T=5000 -> {}",
+            lw_small.shrinkage,
+            lw_large.shrinkage
+        );
+        assert!(
+            lw_large.shrinkage < 0.05,
+            "shrinkage should tend to 0 for large T, got {}",
+            lw_large.shrinkage
+        );
     }
 
     #[test]

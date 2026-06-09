@@ -19,6 +19,8 @@
 //! - Hull and White (2012), CVA with wrong-way risk modeling ideas.
 //! - Basel Committee, SA-CVA/IMM discussions and supervisory alpha practice.
 
+use crate::math::normal_inv_cdf;
+
 /// Result of a wrong-way risk calculation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WwrResult {
@@ -69,8 +71,13 @@ impl AlphaWWR {
 /// Gaussian copula wrong-way risk model.
 ///
 /// Models joint distribution of exposure and default time using a Gaussian copula
-/// with correlation ρ. Default times are generated via correlated normals:
+/// with correlation ρ. Exposure paths are ranked by their (discounted, positive)
+/// exposure metric and mapped to Gaussian quantiles, so a sampled path carries a
+/// systematic factor `Z_exposure`. Default times are generated via correlated normals:
 ///   Z_default = ρ * Z_exposure + √(1-ρ²) * Z_idio
+///
+/// Larger `Z_default` maps to earlier default, so ρ > 0 makes high-exposure paths
+/// default earlier (wrong-way risk) and ρ < 0 produces right-way risk.
 pub struct CopulaWWR {
     /// Correlation between exposure driver and default driver (-1 to 1).
     pub correlation: f64,
@@ -123,6 +130,25 @@ impl CopulaWWR {
         let lgd = 1.0 - recovery;
         let n_source = exposure_paths.len();
 
+        // Rank exposure paths by a discounted positive-exposure metric and map each rank
+        // to a Gaussian quantile. The resulting latent variable is the systematic factor
+        // shared between the exposure realization and the default driver.
+        let metrics = exposure_paths
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .zip(time_grid.iter())
+                    .map(|(&e, &t)| (-risk_free_rate * t).exp() * e.max(0.0))
+                    .sum::<f64>()
+            })
+            .collect::<Vec<_>>();
+        let mut order: Vec<usize> = (0..n_source).collect();
+        order.sort_by(|&a, &b| metrics[a].total_cmp(&metrics[b]));
+        let mut z_path = vec![0.0; n_source];
+        for (rank, &idx) in order.iter().enumerate() {
+            z_path[idx] = normal_inv_cdf((rank as f64 + 0.5) / n_source as f64);
+        }
+
         // Simple LCG-based RNG for reproducibility without external deps
         let mut rng = LcgRng::new(self.seed);
 
@@ -134,16 +160,16 @@ impl CopulaWWR {
             let path_idx = (rng.next_u64() as usize) % n_source;
             let exposure = &exposure_paths[path_idx];
 
-            // Generate Z_exposure from the exposure path (use a standard normal)
-            let z_exposure = rng.next_normal();
+            // Systematic factor implied by the sampled exposure path's rank
+            let z_exposure = z_path[path_idx];
             let z_idio = rng.next_normal();
 
             // Correlated default normal
             let z_default = self.correlation * z_exposure
                 + (1.0 - self.correlation * self.correlation).sqrt() * z_idio;
 
-            // Independent default normal (uncorrelated)
-            let z_default_indep = z_idio; // independent draw
+            // Independent default normal (uncorrelated with the exposure factor)
+            let z_default_indep = z_idio;
 
             // Map to default time via survival: τ = -ln(Φ(Z)) / λ
             let u_wwr = normal_cdf(z_default);
@@ -161,15 +187,9 @@ impl CopulaWWR {
                 -u_indep.ln() / hazard_rate
             };
 
-            // Map exposure at default time via piecewise-constant interpolation
-            // Scale exposure by z_exposure to introduce correlation
-            let scale = (z_exposure * exposure_paths[0].iter().sum::<f64>().signum()).exp();
-
             // CVA contribution: LGD * DF(τ) * E(τ)
-            cva_wwr_sum +=
-                cva_contribution(exposure, time_grid, tau_wwr, lgd, risk_free_rate, scale);
-            cva_indep_sum +=
-                cva_contribution(exposure, time_grid, tau_indep, lgd, risk_free_rate, 1.0);
+            cva_wwr_sum += cva_contribution(exposure, time_grid, tau_wwr, lgd, risk_free_rate);
+            cva_indep_sum += cva_contribution(exposure, time_grid, tau_indep, lgd, risk_free_rate);
         }
 
         let cva_wwr = cva_wwr_sum / self.num_paths as f64;
@@ -195,7 +215,6 @@ fn cva_contribution(
     tau: f64,
     lgd: f64,
     risk_free_rate: f64,
-    _scale: f64,
 ) -> f64 {
     // Find the time bucket where default occurs
     let max_t = *time_grid.last().unwrap();
@@ -487,22 +506,100 @@ mod tests {
         );
     }
 
+    // Helper: exposure paths whose overall magnitude varies across paths so the
+    // exposure/default coupling has something to act on.
+    fn varied_exposure_paths(time_grid: &[f64], n_paths: usize) -> Vec<Vec<f64>> {
+        (0..n_paths)
+            .map(|k| {
+                let peak = 200_000.0 + 1_600_000.0 * k as f64 / (n_paths - 1) as f64;
+                simple_exposure_profile(time_grid, peak)
+            })
+            .collect()
+    }
+
     #[test]
     fn test_copula_zero_correlation() {
-        // With ρ=0, the WWR and independent CVAs should be similar (within MC noise).
-        // We use a large number of paths to reduce noise.
+        // With ρ=0 the default driver collapses to the idiosyncratic normal, so the
+        // WWR and independent CVAs must coincide path by path.
         let time_grid: Vec<f64> = (1..=10).map(|i| i as f64 * 0.5).collect();
-        let exposure = simple_exposure_profile(&time_grid, 1_000_000.0);
-        let exposure_paths: Vec<Vec<f64>> = (0..100).map(|_| exposure.clone()).collect();
+        let exposure_paths = varied_exposure_paths(&time_grid, 100);
 
         let copula = CopulaWWR::new(0.0, 50_000, 12345);
         let result = copula.cva_with_wwr(&exposure_paths, &time_grid, 0.02, 0.4, 0.03);
 
-        // With zero correlation, ratio should be near 1.0 (within MC noise)
         assert!(
-            (result.wwr_ratio - 1.0).abs() < 0.15,
-            "zero correlation should give ratio ≈ 1, got {}",
+            (result.wwr_ratio - 1.0).abs() < 1e-12,
+            "zero correlation should give ratio = 1, got {}",
             result.wwr_ratio
+        );
+    }
+
+    #[test]
+    fn test_copula_positive_correlation_increases_cva() {
+        // ρ > 0: high-exposure paths default earlier → CVA strictly above independent,
+        // well beyond MC noise.
+        let time_grid: Vec<f64> = (1..=10).map(|i| i as f64 * 0.5).collect();
+        let exposure_paths = varied_exposure_paths(&time_grid, 200);
+
+        let zero = CopulaWWR::new(0.0, 50_000, 777).cva_with_wwr(
+            &exposure_paths,
+            &time_grid,
+            0.02,
+            0.4,
+            0.03,
+        );
+        let pos = CopulaWWR::new(0.7, 50_000, 777).cva_with_wwr(
+            &exposure_paths,
+            &time_grid,
+            0.02,
+            0.4,
+            0.03,
+        );
+
+        assert!(
+            pos.wwr_ratio > 1.15,
+            "positive correlation should give WWR ratio well above 1, got {}",
+            pos.wwr_ratio
+        );
+        assert!(
+            pos.cva_wwr > 1.15 * zero.cva_wwr,
+            "ρ=0.7 CVA {} should exceed ρ=0 CVA {} well beyond MC noise",
+            pos.cva_wwr,
+            zero.cva_wwr
+        );
+    }
+
+    #[test]
+    fn test_copula_negative_correlation_decreases_cva() {
+        // ρ < 0: high-exposure paths default later (right-way risk) → CVA below independent.
+        let time_grid: Vec<f64> = (1..=10).map(|i| i as f64 * 0.5).collect();
+        let exposure_paths = varied_exposure_paths(&time_grid, 200);
+
+        let zero = CopulaWWR::new(0.0, 50_000, 777).cva_with_wwr(
+            &exposure_paths,
+            &time_grid,
+            0.02,
+            0.4,
+            0.03,
+        );
+        let neg = CopulaWWR::new(-0.7, 50_000, 777).cva_with_wwr(
+            &exposure_paths,
+            &time_grid,
+            0.02,
+            0.4,
+            0.03,
+        );
+
+        assert!(
+            neg.wwr_ratio < 0.85,
+            "negative correlation should give RWR ratio well below 1, got {}",
+            neg.wwr_ratio
+        );
+        assert!(
+            neg.cva_wwr < 0.85 * zero.cva_wwr,
+            "ρ=-0.7 CVA {} should be below ρ=0 CVA {} well beyond MC noise",
+            neg.cva_wwr,
+            zero.cva_wwr
         );
     }
 
