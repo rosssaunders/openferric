@@ -226,9 +226,16 @@ pub fn rolling_historical_var_from_prices(
         "window must be < number of returns for out-of-sample backtest"
     );
 
+    // Reuse one loss buffer and select the two quantile ranks per window
+    // (O(n*w)) instead of allocating and fully sorting every window
+    // (O(n*w*log w)). Matches historical_var's interpolated quantile exactly.
+    let mut losses = vec![0.0; window];
     let mut forecasts = Vec::with_capacity(returns.len() - window);
     for i in window..returns.len() {
-        forecasts.push(historical_var(&returns[(i - window)..i], confidence));
+        for (loss, r) in losses.iter_mut().zip(&returns[(i - window)..i]) {
+            *loss = -r;
+        }
+        forecasts.push(empirical_quantile_select(&mut losses, confidence).max(0.0));
     }
     forecasts
 }
@@ -277,6 +284,33 @@ fn validate_params(confidence: f64, annual_volatility: f64, horizon_days: f64) {
         horizon_days.is_finite() && horizon_days > 0.0,
         "horizon_days must be finite and > 0"
     );
+}
+
+/// Interpolated empirical quantile via selection instead of a full sort;
+/// identical to `empirical_quantile` for any input.
+fn empirical_quantile_select(sample: &mut [f64], p: f64) -> f64 {
+    let n = sample.len();
+    if n == 1 {
+        return sample[0];
+    }
+
+    let rank = p * (n as f64 - 1.0);
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    let (_, lo_val, above) = sample.select_nth_unstable_by(lo, |a, b| a.total_cmp(b));
+    let lo_val = *lo_val;
+    if lo == hi {
+        return lo_val;
+    }
+
+    // sorted[lo + 1] is the minimum of the partition above the lo-th element.
+    let hi_val = above
+        .iter()
+        .copied()
+        .min_by(|a, b| a.total_cmp(b))
+        .expect("hi rank exists when lo < hi");
+    let w = rank - lo as f64;
+    lo_val + w * (hi_val - lo_val)
 }
 
 fn empirical_quantile(sample: &mut [f64], p: f64) -> f64 {
@@ -330,6 +364,34 @@ fn sample_moments(values: &[f64]) -> (f64, f64, f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quantile_select_matches_full_sort_quantile() {
+        // Deterministic LCG sample with ties and negatives.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut sample: Vec<f64> = (0..257)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (((state >> 33) % 1000) as f64 - 500.0) / 100.0
+            })
+            .collect();
+        for p in [0.0, 0.01, 0.25, 0.5, 0.95, 0.99, 0.999] {
+            let mut a = sample.clone();
+            let mut b = sample.clone();
+            let q_sort = super::empirical_quantile(&mut a, p);
+            let q_sel = super::empirical_quantile_select(&mut b, p);
+            assert_eq!(q_sort, q_sel, "p={p}");
+        }
+        sample.truncate(1);
+        let mut a = sample.clone();
+        let mut b = sample;
+        assert_eq!(
+            super::empirical_quantile(&mut a, 0.5),
+            super::empirical_quantile_select(&mut b, 0.5)
+        );
+    }
+
     use approx::assert_relative_eq;
     use rand::SeedableRng;
     use rand::rngs::StdRng;

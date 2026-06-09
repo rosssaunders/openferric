@@ -113,7 +113,7 @@ pub struct FundingRateCurve {
     anchor_timestamp: Option<DateTime<Utc>>,
     nodes: Vec<(f64, f64)>,
     interpolation_mode: FundingRateInterpolation,
-    interpolator: Option<Box<dyn Interpolator + Send + Sync>>,
+    interpolator: Option<std::sync::Arc<dyn Interpolator + Send + Sync>>,
 }
 
 impl std::fmt::Debug for FundingRateCurve {
@@ -130,7 +130,16 @@ impl std::fmt::Debug for FundingRateCurve {
 
 impl Clone for FundingRateCurve {
     fn clone(&self) -> Self {
-        Self::new_with_interpolation(self.snapshots.clone(), self.interpolation_mode)
+        // All fields are immutable after construction; the interpolator is
+        // shared via Arc rather than rebuilt (clones sit on bump-and-reprice
+        // paths such as parallel_shifted/volatility_shifted).
+        Self {
+            snapshots: self.snapshots.clone(),
+            anchor_timestamp: self.anchor_timestamp,
+            nodes: self.nodes.clone(),
+            interpolation_mode: self.interpolation_mode,
+            interpolator: self.interpolator.clone(),
+        }
     }
 }
 
@@ -440,7 +449,7 @@ fn build_nodes(
 fn build_interpolator(
     nodes: &[(f64, f64)],
     mode: FundingRateInterpolation,
-) -> Option<Box<dyn Interpolator + Send + Sync>> {
+) -> Option<std::sync::Arc<dyn Interpolator + Send + Sync>> {
     if nodes.len() < 2 {
         return None;
     }
@@ -450,11 +459,11 @@ fn build_interpolator(
     match mode {
         FundingRateInterpolation::Linear => LinearInterpolator::new(x, y, ExtrapolationMode::Flat)
             .ok()
-            .map(|i| Box::new(i) as Box<dyn Interpolator + Send + Sync>),
+            .map(|i| std::sync::Arc::new(i) as std::sync::Arc<dyn Interpolator + Send + Sync>),
         FundingRateInterpolation::PiecewiseConstant => {
             PiecewiseConstantInterpolator::new(x, y, ExtrapolationMode::Flat)
                 .ok()
-                .map(|i| Box::new(i) as Box<dyn Interpolator + Send + Sync>)
+                .map(|i| std::sync::Arc::new(i) as std::sync::Arc<dyn Interpolator + Send + Sync>)
         }
     }
 }
