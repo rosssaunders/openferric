@@ -551,7 +551,9 @@ fn simulate_autocallable_paths(
 
         if !called {
             let redemption = if ki_breached {
-                prepared.notional * (worst_final / prepared.ki_strike)
+                // Knock-in put: holder bears downside but redemption is capped at par
+                // even if the worst-of recovers above the KI strike by maturity.
+                prepared.notional * (worst_final / prepared.ki_strike).min(1.0)
             } else if prepared.coupon_barrier.is_none() {
                 prepared.notional * (1.0 + prepared.coupon_rate * prepared.maturity)
             } else {
@@ -728,6 +730,36 @@ mod tests {
             ki_strike: 1.0,
             maturity: 1.0,
         }
+    }
+
+    #[test]
+    fn knock_in_redemption_capped_at_par() {
+        // KI barrier above all paths (always breached), autocall barrier never hit,
+        // zero coupon, zero rate: redemption is min(worst/ki_strike, 1)*notional,
+        // so the price can never exceed par even when worst recovers above ki_strike.
+        let note = Autocallable {
+            underlyings: vec![0, 1],
+            notional: 100.0,
+            autocall_dates: vec![0.25, 0.5, 0.75, 1.0],
+            autocall_barrier: 10.0,
+            coupon_rate: 0.0,
+            ki_barrier: 5.0,
+            ki_strike: 0.5,
+            maturity: 1.0,
+        };
+        let spots = [100.0, 100.0];
+        let vols = [0.20, 0.20];
+        let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
+
+        let (price, stderr) =
+            price_standard_for_inputs(&note, &spots, &vols, &corr, 0.0, 0.0, 16_000, 64, MC_SEED)
+                .unwrap();
+
+        assert!(
+            price <= note.notional + 3.0 * stderr,
+            "KI redemption must be capped at par: price={price} stderr={stderr}"
+        );
+        assert!(price > 0.5 * note.notional, "sanity: price={price}");
     }
 
     #[test]

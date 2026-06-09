@@ -139,11 +139,11 @@ impl Nig {
         let dt = horizon / num_steps as f64;
         let drift_dt = (rate - dividend_yield + omega) * dt;
 
-        // Inverse Gaussian subordinator: IG(delta*dt, delta^2*dt)
-        // rand_distr::InverseGaussian(mean, shape) where mean = delta*dt/gamma_bar, shape = delta^2*dt
+        // Inverse Gaussian subordinator over dt: IG(mean = delta*dt/gamma_bar, shape = (delta*dt)^2),
+        // so that Var(I_dt) = mean^3/shape = delta*dt/gamma_bar^3 scales linearly in dt.
         let gb = self.gamma_bar();
         let ig_mean = self.delta * dt / gb;
-        let ig_shape = self.delta * self.delta * dt;
+        let ig_shape = (self.delta * dt) * (self.delta * dt);
 
         let ig_dist = InverseGaussian::new(ig_mean, ig_shape)
             .map_err(|e| format!("InverseGaussian distribution: {e}"))?;
@@ -229,6 +229,36 @@ mod tests {
             .unwrap();
         assert_eq!(spots.len(), 200);
         assert!(spots.iter().all(|s| s.is_finite() && *s > 0.0));
+    }
+
+    #[test]
+    fn nig_mc_variance_matches_analytic_with_many_steps() {
+        // Var(X_T) = delta*T*alpha^2/gamma^3 with gamma = sqrt(alpha^2 - beta^2).
+        // With the wrong IG shape (delta^2*dt instead of (delta*dt)^2) the
+        // beta^2*Var(I) contribution vanishes as steps grow (~11% low here).
+        let nig = Nig {
+            alpha: 15.0,
+            beta: -5.0,
+            delta: 0.5,
+        };
+        let (alpha, beta, delta) = (nig.alpha, nig.beta, nig.delta);
+        let gamma = (alpha * alpha - beta * beta).sqrt();
+        let horizon = 1.0;
+        let var_analytic = delta * horizon * alpha * alpha / gamma.powi(3);
+
+        let spots = nig
+            .simulate_terminal_spots(100.0, 0.0, 0.0, horizon, 64, 40_000, 7)
+            .unwrap();
+        let logs: Vec<f64> = spots.iter().map(|s| (s / 100.0).ln()).collect();
+        let mean = logs.iter().sum::<f64>() / logs.len() as f64;
+        let var_mc =
+            logs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (logs.len() - 1) as f64;
+
+        let rel_err = (var_mc - var_analytic).abs() / var_analytic;
+        assert!(
+            rel_err < 0.06,
+            "MC variance {var_mc} vs analytic {var_analytic} (rel err {rel_err})"
+        );
     }
 
     #[test]
