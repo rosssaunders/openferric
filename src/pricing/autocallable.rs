@@ -33,7 +33,13 @@ pub struct AutocallableSensitivities {
 
 #[derive(Debug, Clone)]
 struct PreparedAutocallable {
-    initial_spots: Vec<f64>,
+    /// Simulation start values (pricing spots). Spot bumps for delta apply
+    /// here only.
+    pricing_spots: Vec<f64>,
+    /// Initial fixings: performance denominator and barrier reference. These
+    /// stay fixed under spot bumps because barriers/strikes are struck at the
+    /// initial fixing, not at the pricing spot.
+    initial_fixings: Vec<f64>,
     vols: Vec<f64>,
     corr_matrix: Vec<Vec<f64>>,
     /// Lower Cholesky factor of `corr_matrix`, computed once at preparation
@@ -358,10 +364,10 @@ fn prepare_common(
         ));
     }
 
-    let mut initial_spots = Vec::with_capacity(underlyings.len());
+    let mut selected_spots = Vec::with_capacity(underlyings.len());
     let mut selected_vols = Vec::with_capacity(underlyings.len());
     for &idx in underlyings {
-        initial_spots.push(spots[idx]);
+        selected_spots.push(spots[idx]);
         selected_vols.push(vols[idx]);
     }
 
@@ -382,7 +388,8 @@ fn prepare_common(
     })?;
 
     Ok(PreparedAutocallable {
-        initial_spots,
+        pricing_spots: selected_spots.clone(),
+        initial_fixings: selected_spots,
         vols: selected_vols,
         corr_matrix: selected_corr,
         chol,
@@ -410,15 +417,17 @@ fn bump_and_reprice_sensitivities(
     n_steps: usize,
     seed: u64,
 ) -> Result<AutocallableSensitivities, PricingError> {
-    let n_assets = prepared.initial_spots.len();
+    let n_assets = prepared.pricing_spots.len();
 
     let mut delta = Vec::with_capacity(n_assets);
     for k in 0..n_assets {
-        let bump = (prepared.initial_spots[k].abs() * SPOT_BUMP_REL).max(1.0e-4);
+        let bump = (prepared.pricing_spots[k].abs() * SPOT_BUMP_REL).max(1.0e-4);
+        // Bump the pricing spot only: barriers and performance ratios remain
+        // struck at the original initial fixings.
         let mut up = prepared.clone();
-        up.initial_spots[k] += bump;
+        up.pricing_spots[k] += bump;
         let mut dn = prepared.clone();
-        dn.initial_spots[k] = (dn.initial_spots[k] - bump).max(1.0e-8);
+        dn.pricing_spots[k] = (dn.pricing_spots[k] - bump).max(1.0e-8);
 
         let up_p = simulate_autocallable_paths(&up, r, q, n_paths, n_steps, seed)?.0;
         let dn_p = simulate_autocallable_paths(&dn, r, q, n_paths, n_steps, seed)?.0;
@@ -481,7 +490,7 @@ fn simulate_autocallable_paths(
         ));
     }
 
-    let n_assets = prepared.initial_spots.len();
+    let n_assets = prepared.pricing_spots.len();
     let dt = prepared.maturity / n_steps as f64;
     let sqrt_dt = dt.sqrt();
 
@@ -501,11 +510,11 @@ fn simulate_autocallable_paths(
     let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
     let mut indep = vec![0.0_f64; n_assets];
     let mut corr = vec![0.0_f64; n_assets];
-    let mut state = prepared.initial_spots.clone();
+    let mut state = prepared.pricing_spots.clone();
     let mut discounted_payoffs = Vec::with_capacity(n_paths);
 
     for _ in 0..n_paths {
-        state.copy_from_slice(&prepared.initial_spots);
+        state.copy_from_slice(&prepared.pricing_spots);
 
         let mut obs_idx = 0usize;
         let mut called = false;
@@ -528,7 +537,7 @@ fn simulate_autocallable_paths(
                 state[i] = state[i].max(1.0e-12);
             }
 
-            let worst_ratio = worst_of_ratio(&state, &prepared.initial_spots);
+            let worst_ratio = worst_of_ratio(&state, &prepared.initial_fixings);
             worst_final = worst_ratio;
             if worst_ratio <= prepared.ki_barrier {
                 ki_breached = true;
@@ -930,6 +939,79 @@ mod tests {
             "single={} indexed={}",
             single,
             indexed
+        );
+    }
+
+    #[test]
+    fn deep_ki_worst_of_delta_is_significantly_positive() {
+        // KI barrier far above any path (breach is certain), autocall barrier
+        // unreachable, zero coupon, zero rates: the payoff is effectively
+        // notional * min(worst_T / ki_strike, 1). Bumping the pricing spots up
+        // raises worst_T while the initial fixings (performance denominator)
+        // stay struck, so delta must be significantly positive. A structurally
+        // zero delta (the old bug, where bumps scaled numerator and
+        // denominator identically) fails this test.
+        let note = Autocallable {
+            underlyings: vec![0, 1],
+            notional: 100.0,
+            autocall_dates: vec![0.25, 0.5, 0.75, 1.0],
+            autocall_barrier: 10.0,
+            coupon_rate: 0.0,
+            ki_barrier: 5.0,
+            ki_strike: 1.0,
+            maturity: 1.0,
+        };
+        let spots = [100.0, 100.0];
+        let vols = [0.20, 0.20];
+        let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
+
+        let sens =
+            autocallable_sensitivities(&note, &spots, &vols, &corr, 0.0, 0.0, 16_000, 64).unwrap();
+
+        let delta_sum: f64 = sens.delta.iter().sum();
+        // 0.1 * notional / spot scale = 0.1 * 100 / 100. Common random
+        // numbers make the bump estimator far more accurate than this bound.
+        assert!(
+            delta_sum > 0.1,
+            "deep-KI worst-of delta must be strongly positive: deltas={:?}",
+            sens.delta
+        );
+        for (k, d) in sens.delta.iter().enumerate() {
+            assert!(d.is_finite(), "delta[{k}] must be finite: {d}");
+        }
+    }
+
+    #[test]
+    fn deep_ki_phoenix_delta_is_significantly_positive() {
+        // Same construction as the standard deep-KI note, phoenix variant:
+        // coupon barrier unreachable so the payoff reduces to the knock-in
+        // redemption leg, which is monotone in the pricing spots.
+        let phoenix = PhoenixAutocallable {
+            underlyings: vec![0, 1],
+            notional: 100.0,
+            autocall_dates: vec![0.25, 0.5, 0.75, 1.0],
+            autocall_barrier: 10.0,
+            coupon_barrier: 10.0,
+            coupon_rate: 0.08,
+            memory: false,
+            ki_barrier: 5.0,
+            ki_strike: 1.0,
+            maturity: 1.0,
+        };
+        let spots = [100.0, 100.0];
+        let vols = [0.20, 0.20];
+        let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
+
+        let sens = phoenix_autocallable_sensitivities(
+            &phoenix, &spots, &vols, &corr, 0.0, 0.0, 16_000, 64,
+        )
+        .unwrap();
+
+        let delta_sum: f64 = sens.delta.iter().sum();
+        assert!(
+            delta_sum > 0.1,
+            "deep-KI phoenix delta must be strongly positive: deltas={:?}",
+            sens.delta
         );
     }
 
