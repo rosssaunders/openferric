@@ -384,6 +384,16 @@ fn curve_state(curve: &YieldCurve, mode: CurveBumpMode) -> Vec<f64> {
     }
 }
 
+/// Rebuilds a curve from bumped nodes, preserving the template's
+/// interpolation settings. Mixing the base price (priced on the original
+/// settings) with bumped prices rebuilt under default settings biases first
+/// derivatives and produces garbage second derivatives (the interpolation
+/// mismatch is amplified by `1/h^2`).
+fn rebuild_with_template_settings(template: &YieldCurve, points: Vec<(f64, f64)>) -> YieldCurve {
+    YieldCurve::new_with_settings(points.clone(), template.interpolation_settings())
+        .unwrap_or_else(|_| YieldCurve::new(points))
+}
+
 fn curve_from_state(template: &YieldCurve, mode: CurveBumpMode, state: &[f64]) -> YieldCurve {
     assert_eq!(template.tenors.len(), state.len());
 
@@ -395,7 +405,7 @@ fn curve_from_state(template: &YieldCurve, mode: CurveBumpMode, state: &[f64]) -
                 .zip(state.iter())
                 .map(|((t, _), z)| (*t, (-(z.max(-5.0)) * *t).exp().max(1.0e-12)))
                 .collect();
-            YieldCurve::new(points)
+            rebuild_with_template_settings(template, points)
         }
         CurveBumpMode::ParRate => par_rates_to_curve(template, state),
         CurveBumpMode::LogDiscount => {
@@ -405,7 +415,7 @@ fn curve_from_state(template: &YieldCurve, mode: CurveBumpMode, state: &[f64]) -
                 .zip(state.iter())
                 .map(|((t, _), ldf)| (*t, ldf.exp().max(1.0e-12)))
                 .collect();
-            YieldCurve::new(points)
+            rebuild_with_template_settings(template, points)
         }
     }
 }
@@ -447,7 +457,7 @@ fn par_rates_to_curve(template: &YieldCurve, par_rates: &[f64]) -> YieldCurve {
         prev_t = *t;
     }
 
-    YieldCurve::new(points)
+    rebuild_with_template_settings(template, points)
 }
 
 /// Parallel DV01 (flat curve bump) under the selected curve bump mode.
@@ -1518,6 +1528,43 @@ mod tests {
 
         let cg = cross_gamma(&curve, cfg, 0, 1, pricer);
         assert_relative_eq!(cg, 1.0, epsilon = 1.0e-6);
+    }
+
+    #[test]
+    fn gamma_ladder_preserves_interpolation_settings_of_template_curve() {
+        // Regression: curve_from_state used to rebuild bumped curves with
+        // default (log-linear) interpolation while the base price came from
+        // the original settings; the mismatch is amplified by 1/h^2 in gamma.
+        // For an interpolating method the curve reproduces its nodes, so for
+        // the PV of a single cashflow at a pillar T the analytic gamma wrt
+        // the pillar zero rate is T^2 * exp(-z_T * T).
+        use crate::rates::{YieldCurveInterpolationMethod, YieldCurveInterpolationSettings};
+
+        let z = [0.02_f64, 0.025, 0.03];
+        let settings = YieldCurveInterpolationSettings {
+            method: YieldCurveInterpolationMethod::MonotoneConvex,
+            ..YieldCurveInterpolationSettings::default()
+        };
+        let curve = YieldCurve::new_with_settings(
+            vec![
+                (1.0, (-z[0]).exp()),
+                (2.0, (-z[1] * 2.0).exp()),
+                (5.0, (-z[2] * 5.0).exp()),
+            ],
+            settings,
+        )
+        .unwrap();
+
+        let cfg = CurveBumpConfig::default();
+        let pricer = |c: &YieldCurve| c.discount_factor(5.0);
+        let gamma = gamma_ladder(&curve, cfg, pricer);
+
+        let analytic = 25.0 * (-z[2] * 5.0_f64).exp();
+        assert_relative_eq!(gamma[2].gamma, analytic, max_relative = 1.0e-4);
+        // The cashflow pillar value is node-reproducing, so other pillars
+        // carry (numerically) no convexity.
+        assert!(gamma[0].gamma.abs() < 1.0e-4 * analytic);
+        assert!(gamma[1].gamma.abs() < 1.0e-4 * analytic);
     }
 
     #[test]

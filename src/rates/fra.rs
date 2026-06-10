@@ -18,6 +18,15 @@ use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 /// `valuation_date` anchors the curve's time axis so forward-starting FRAs
 /// (e.g. a 3x6) project the forward over `[start, end]` rather than treating
 /// the accrual period as starting today.
+///
+/// # Scope: seasoned FRAs
+///
+/// Valuation assumes `start_date >= valuation_date`. Seasoned FRAs (periods
+/// whose rate has already fixed, i.e. `start_date < valuation_date`) are out
+/// of scope: the start time is clamped to 0 while the full accrual `tau` is
+/// kept, so a full-period forward is projected from today instead of using
+/// the historical fixing. Fully expired FRAs (`end_date <= valuation_date`)
+/// return an NPV of 0.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForwardRateAgreement {
     pub notional: f64,
@@ -47,7 +56,13 @@ impl ForwardRateAgreement {
     }
 
     /// FRA PV: (forward - fixed) accrued over the period, discounted from period end.
+    ///
+    /// Assumes `start_date >= valuation_date` (see the type-level note on
+    /// seasoned FRAs). Returns 0 once the accrual period has fully expired.
     pub fn npv(&self, curve: &YieldCurve) -> f64 {
+        if self.end_date <= self.valuation_date {
+            return 0.0;
+        }
         let (_, t2, tau) = self.period_times();
         if tau <= 0.0 {
             return 0.0;

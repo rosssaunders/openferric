@@ -227,7 +227,19 @@ impl LmmModel {
             // measure. Forwards freeze at their reset dates during evolution,
             // so `forwards[k]` holds F_k(T_k) for expired forwards.
             let bank = rolling_bank_account_to(&forwards, &self.params.tenors, expiry);
-            let deflated = notional * annuity * intrinsic / bank;
+            // The annuity from swap_rate_annuity_from_forwards is expressed in
+            // time-T_start money (its discounting is anchored at start_idx).
+            // For forward-start swaptions (swap_start > expiry) the payoff is
+            // observed at T_e, so bring the annuity back from T_start to T_e
+            // with the pathwise discount built from the forwards seen at T_e.
+            // The swap rate itself needs no adjustment: its anchor cancels.
+            let stub_df = pathwise_discount_between(
+                &forwards,
+                &self.params.tenors,
+                expiry,
+                self.params.tenors[start_idx],
+            );
+            let deflated = notional * annuity * stub_df * intrinsic / bank;
             payoff_sum += deflated;
             payoff_sq_sum += deflated * deflated;
         }
@@ -453,6 +465,31 @@ fn rolling_bank_account_to(forwards: &[f64], tenors: &[f64], t: f64) -> f64 {
     bank
 }
 
+/// Pathwise discount factor `P(t0, t1)` built from the forwards observed at
+/// `t0` (`forwards[k]` is frozen at `F_k(T_k)` for expired forwards). Mirrors
+/// the convention of [`rolling_bank_account_to`]: a period straddling `t0`
+/// accrues over `(t0, T_{k+1}]` at its frozen reset rate, and fully contained
+/// periods discount at the full period rate. Returns 1 when `t1 <= t0`.
+fn pathwise_discount_between(forwards: &[f64], tenors: &[f64], t0: f64, t1: f64) -> f64 {
+    if t1 <= t0 + 1.0e-12 {
+        return 1.0;
+    }
+    let mut df = 1.0;
+    for k in 0..forwards.len() {
+        let t_start = tenors[k];
+        let t_end = tenors[k + 1];
+        if t_end <= t0 + 1.0e-12 {
+            continue;
+        }
+        if t_start >= t1 - 1.0e-12 {
+            break;
+        }
+        let accrual_start = t_start.max(t0);
+        df /= 1.0 + (t_end - accrual_start) * forwards[k];
+    }
+    df
+}
+
 fn correlate_normals(chol: &[Vec<f64>], indep: &[f64], out: &mut [f64]) {
     for i in 0..chol.len() {
         let mut v = 0.0;
@@ -497,6 +534,8 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
 
     /// A one-period swaption is a caplet, which is priced exactly by Black-76
@@ -563,6 +602,59 @@ mod tests {
             (mc - black).abs() <= 3.0 * stderr,
             "mc={mc} black={black} stderr={stderr}"
         );
+    }
+
+    /// With all volatilities zero the simulation is deterministic: forwards
+    /// stay at their initial values, the payoff is the intrinsic value, and
+    /// the price must equal the time-0 annuity-discounted intrinsic exactly.
+    /// This pins down the pathwise discounting of forward-start swaptions
+    /// (swap_start > expiry): without the (T_e, T_start] stub discount the
+    /// price overstates by 1 / P(T_e, T_start).
+    #[test]
+    fn lmm_forward_start_swaption_zero_vol_matches_closed_form() {
+        let tenors = (0..=6).map(|i| i as f64 * 0.5).collect::<Vec<_>>();
+        let n = tenors.len() - 1;
+        let corr = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| if i == j { 1.0 } else { 0.5 })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let params = LmmParams {
+            volatilities: vec![0.0; n],
+            correlation: corr,
+            tenors: tenors.clone(),
+        };
+        let model = LmmModel::new(params).unwrap();
+
+        let initial_forwards = vec![0.05; n];
+        let notional = 1_000_000.0;
+        let strike = 0.04; // in the money for a payer
+        let expiry = 1.0;
+        let swap_start = 2.0;
+        let swap_end = 3.0;
+
+        let mc = model
+            .price_european_swaption_mc(
+                &initial_forwards,
+                strike,
+                expiry,
+                swap_start,
+                swap_end,
+                true,
+                notional,
+                16,
+                8,
+                3,
+            )
+            .unwrap();
+
+        let (forward_swap_rate, annuity0) =
+            initial_swap_rate_annuity(&initial_forwards, &tenors, swap_start, swap_end).unwrap();
+        let expected = notional * annuity0 * (forward_swap_rate - strike).max(0.0);
+
+        assert_relative_eq!(mc, expected, epsilon = 1.0e-10 * expected.abs().max(1.0));
     }
 
     #[test]

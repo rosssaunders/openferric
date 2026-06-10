@@ -215,6 +215,10 @@ pub fn rolling_historical_var_from_prices(
     confidence: f64,
     use_log_returns: bool,
 ) -> Vec<f64> {
+    assert!(
+        (0.0..1.0).contains(&confidence),
+        "confidence must be in (0,1)"
+    );
     let returns = if use_log_returns {
         log_returns(prices)
     } else {
@@ -247,6 +251,10 @@ pub fn backtest_historical_var_from_prices(
     confidence: f64,
     use_log_returns: bool,
 ) -> VarBacktestResult {
+    assert!(
+        (0.0..1.0).contains(&confidence),
+        "confidence must be in (0,1)"
+    );
     let returns = if use_log_returns {
         log_returns(prices)
     } else {

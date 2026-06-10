@@ -137,7 +137,10 @@ pub fn dual_curve_bootstrap(
             Ok(fixed_pv - float_pv)
         };
 
-        if let Ok(fwd_df_n) = solve_monotone_root(residual, 1.0e-10, 4.0)
+        // Quotes whose residual cannot be bracketed (`Ok(None)`) or whose
+        // candidate curve fails to build (`Err`) are skipped: storing a
+        // bracket endpoint would put a nonsense pillar on the curve.
+        if let Ok(Some(fwd_df_n)) = solve_monotone_root(residual, 1.0e-10, 4.0)
             && fwd_df_n > 0.0
             && fwd_df_n.is_finite()
         {

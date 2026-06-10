@@ -200,7 +200,7 @@ pub fn hart_norm_cdf(x: f64) -> f64 {
 /// Max ABSOLUTE error around 7.5e-8, which translates into large RELATIVE
 /// error in the tails (~25% at x = -5, ~100% beyond -5.5). Only use this in
 /// hot paths that are insensitive to tail probabilities; the default
-/// `normal_cdf` routes to the tail-accurate [`hart_norm_cdf`].
+/// `normal_cdf` routes to the tail-accurate [`accurate_norm_cdf`] (Cody).
 #[inline(always)]
 fn abramowitz_stegun_norm_cdf(x: f64) -> f64 {
     const P: f64 = 0.231_641_9;
@@ -315,11 +315,13 @@ pub fn beasley_springer_moro_inv_cdf(p: f64) -> f64 {
     }
 }
 
-/// Fast normal CDF approximation (A&S 26.2.17, ~7.5e-8 absolute error).
+/// Fast normal CDF approximation (Abramowitz & Stegun 26.2.17, ~7.5e-8
+/// absolute error).
 ///
-/// Not tail-accurate in a relative sense; prefer [`hart_norm_cdf`] (the
-/// default behind `math::functions::normal_cdf`) unless profiling shows this
-/// approximation is needed and tails are irrelevant.
+/// Not tail-accurate in a relative sense; prefer [`accurate_norm_cdf`]
+/// (Cody, the default behind `math::functions::normal_cdf`) or the cheaper
+/// [`hart_norm_cdf`] unless profiling shows this approximation is needed and
+/// tails are irrelevant.
 #[inline]
 pub fn fast_norm_cdf(x: f64) -> f64 {
     abramowitz_stegun_norm_cdf(x)
