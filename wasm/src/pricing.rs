@@ -113,11 +113,31 @@ fn black76_greeks_7(
     [delta, gamma, vega, theta, rho, vanna, volga]
 }
 
+/// Validate that every batch input slice matches the primary slice length.
+///
+/// Returns the error message as a `String` so it can be unit-tested on
+/// non-wasm targets; callers convert it to a `JsValue` at the boundary.
+fn batch_length_error(n: usize, others: &[(&str, usize)]) -> Result<(), String> {
+    for (name, len) in others {
+        if *len != n {
+            return Err(format!(
+                "batch input length mismatch: `{name}` has {len} entries, expected {n}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_batch_lengths(n: usize, others: &[(&str, usize)]) -> Result<(), JsValue> {
+    batch_length_error(n, others).map_err(|message| JsValue::from_str(&message))
+}
+
 /// Batch Black-Scholes pricing: one WASM call for N options.
 ///
 /// All input slices must have the same length.  `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
-/// Returns a `Vec<f64>` of prices in the same order.
+/// Returns a `Vec<f64>` of prices in the same order, or throws on
+/// mismatched input lengths.
 #[wasm_bindgen]
 pub fn bs_price_batch_wasm(
     spots: &[f64],
@@ -127,16 +147,19 @@ pub fn bs_price_batch_wasm(
     vols: &[f64],
     maturities: &[f64],
     is_calls: &[u8],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, JsValue> {
     let n = spots.len();
-    debug_assert!(
-        n == strikes.len()
-            && n == rates.len()
-            && n == div_yields.len()
-            && n == vols.len()
-            && n == maturities.len()
-            && n == is_calls.len()
-    );
+    check_batch_lengths(
+        n,
+        &[
+            ("strikes", strikes.len()),
+            ("rates", rates.len()),
+            ("div_yields", div_yields.len()),
+            ("vols", vols.len()),
+            ("maturities", maturities.len()),
+            ("is_calls", is_calls.len()),
+        ],
+    )?;
 
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -155,14 +178,15 @@ pub fn bs_price_batch_wasm(
             maturities[i],
         ));
     }
-    out
+    Ok(out)
 }
 
 /// Batch Black-76 pricing: one WASM call for N options.
 ///
 /// All input slices must have the same length. `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
-/// Returns a `Vec<f64>` of prices in the same order.
+/// Returns a `Vec<f64>` of prices in the same order, or throws on
+/// mismatched input lengths.
 #[wasm_bindgen]
 pub fn black76_price_batch_wasm(
     forwards: &[f64],
@@ -171,15 +195,18 @@ pub fn black76_price_batch_wasm(
     vols: &[f64],
     maturities: &[f64],
     is_calls: &[u8],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, JsValue> {
     let n = forwards.len();
-    debug_assert!(
-        n == strikes.len()
-            && n == rates.len()
-            && n == vols.len()
-            && n == maturities.len()
-            && n == is_calls.len()
-    );
+    check_batch_lengths(
+        n,
+        &[
+            ("strikes", strikes.len()),
+            ("rates", rates.len()),
+            ("vols", vols.len()),
+            ("maturities", maturities.len()),
+            ("is_calls", is_calls.len()),
+        ],
+    )?;
 
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -197,7 +224,7 @@ pub fn black76_price_batch_wasm(
             maturities[i],
         ));
     }
-    out
+    Ok(out)
 }
 
 /// Batch BSM Greeks: one WASM call for N options.
@@ -205,7 +232,8 @@ pub fn black76_price_batch_wasm(
 /// All input slices must have the same length.  `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
 /// Returns a flat `Vec<f64>` of 7 values per option:
-/// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times.
+/// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times, or
+/// throws on mismatched input lengths.
 #[wasm_bindgen]
 pub fn bsm_greeks_batch_wasm(
     spots: &[f64],
@@ -215,16 +243,19 @@ pub fn bsm_greeks_batch_wasm(
     vols: &[f64],
     expiries: &[f64],
     is_calls: &[u8],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, JsValue> {
     let n = spots.len();
-    debug_assert!(
-        n == strikes.len()
-            && n == rates.len()
-            && n == div_yields.len()
-            && n == vols.len()
-            && n == expiries.len()
-            && n == is_calls.len()
-    );
+    check_batch_lengths(
+        n,
+        &[
+            ("strikes", strikes.len()),
+            ("rates", rates.len()),
+            ("div_yields", div_yields.len()),
+            ("vols", vols.len()),
+            ("expiries", expiries.len()),
+            ("is_calls", is_calls.len()),
+        ],
+    )?;
 
     let mut out = Vec::with_capacity(n * 7);
     for i in 0..n {
@@ -250,7 +281,7 @@ pub fn bsm_greeks_batch_wasm(
         out.push(g.vanna);
         out.push(g.volga);
     }
-    out
+    Ok(out)
 }
 
 /// Batch Black-76 Greeks: one WASM call for N options.
@@ -261,6 +292,8 @@ pub fn bsm_greeks_batch_wasm(
 /// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times.
 ///
 /// `delta` is forward delta (`dV/dF`), consistent with Deribit convention.
+///
+/// Throws on mismatched input lengths.
 #[wasm_bindgen]
 pub fn black76_greeks_batch_wasm(
     forwards: &[f64],
@@ -269,15 +302,18 @@ pub fn black76_greeks_batch_wasm(
     vols: &[f64],
     expiries: &[f64],
     is_calls: &[u8],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, JsValue> {
     let n = forwards.len();
-    debug_assert!(
-        n == strikes.len()
-            && n == rates.len()
-            && n == vols.len()
-            && n == expiries.len()
-            && n == is_calls.len()
-    );
+    check_batch_lengths(
+        n,
+        &[
+            ("strikes", strikes.len()),
+            ("rates", rates.len()),
+            ("vols", vols.len()),
+            ("expiries", expiries.len()),
+            ("is_calls", is_calls.len()),
+        ],
+    )?;
 
     let mut out = Vec::with_capacity(n * 7);
     for i in 0..n {
@@ -289,7 +325,7 @@ pub fn black76_greeks_batch_wasm(
         let g = black76_greeks_7(ot, forwards[i], strikes[i], rates[i], vols[i], expiries[i]);
         out.extend_from_slice(&g);
     }
-    out
+    Ok(out)
 }
 
 /// Barrier option price (closed-form).
@@ -453,12 +489,22 @@ mod tests {
         let vols = [0.20, 0.20];
         let mats = [1.0, 1.0];
         let calls = [1u8, 0u8];
-        let batch = bs_price_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &mats, &calls);
+        let batch =
+            bs_price_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &mats, &calls).unwrap();
         assert_eq!(batch.len(), 2);
         let p1 = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
         let p2 = bs_price(100.0, 110.0, 0.05, 0.0, 0.20, 1.0, false);
         assert!((batch[0] - p1).abs() < TOL);
         assert!((batch[1] - p2).abs() < TOL);
+    }
+
+    #[test]
+    fn batch_length_mismatch_is_rejected() {
+        // Tested via the String-level helper because constructing a JsValue
+        // is not supported on non-wasm test targets.
+        let err = batch_length_error(2, &[("strikes", 1)]).unwrap_err();
+        assert!(err.contains("strikes"));
+        assert!(batch_length_error(2, &[("strikes", 2), ("vols", 2)]).is_ok());
     }
 
     // -- bsm_greeks_batch_wasm --
@@ -473,7 +519,8 @@ mod tests {
         let expiries = [1.0];
         let calls = [1u8];
         let batch =
-            bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls);
+            bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls)
+                .unwrap();
         let single = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
         assert_eq!(batch.len(), 7);
         for i in 0..7 {
@@ -492,8 +539,10 @@ mod tests {
         let mats = [1.0, 0.75];
         let calls = [1u8, 0u8];
 
-        let black = black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls);
-        let bsm = bs_price_batch_wasm(&forwards, &strikes, &rates, &rates, &vols, &mats, &calls);
+        let black =
+            black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls).unwrap();
+        let bsm =
+            bs_price_batch_wasm(&forwards, &strikes, &rates, &rates, &vols, &mats, &calls).unwrap();
 
         assert_eq!(black.len(), bsm.len());
         for i in 0..black.len() {
@@ -513,10 +562,12 @@ mod tests {
         let calls = [1u8];
 
         let black =
-            black76_greeks_batch_wasm(&forwards, &strikes, &rates, &vols, &expiries, &calls);
+            black76_greeks_batch_wasm(&forwards, &strikes, &rates, &vols, &expiries, &calls)
+                .unwrap();
         let bsm = bsm_greeks_batch_wasm(
             &forwards, &strikes, &rates, &rates, &vols, &expiries, &calls,
-        );
+        )
+        .unwrap();
 
         assert_eq!(black.len(), 7);
         assert_eq!(bsm.len(), 7);

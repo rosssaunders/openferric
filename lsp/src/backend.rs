@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use openferric::dsl::ast::ProductDef;
 use openferric::dsl::engine::DslMonteCarloEngine;
@@ -35,7 +35,16 @@ pub struct Backend {
     pricing_enabled: Mutex<bool>,
     pricing_config: Mutex<PricingConfig>,
     market_config: Mutex<Option<serde_json::Value>>,
+    /// Last code lenses computed by the background pricing task, per document.
+    /// `code_lens` serves from this cache so the request path never runs
+    /// Monte Carlo pricing inline.
+    lens_cache: Arc<Mutex<HashMap<Url, Vec<CodeLens>>>>,
 }
+
+/// Bounds applied to the `numPaths` value coming from client configuration so
+/// a misconfigured client cannot stall the server with huge simulations.
+const MIN_NUM_PATHS: u64 = 1_000;
+const MAX_NUM_PATHS: u64 = 200_000;
 
 #[derive(Clone)]
 pub struct PricingConfig {
@@ -62,6 +71,7 @@ impl Backend {
             pricing_enabled: Mutex::new(true),
             pricing_config: Mutex::new(PricingConfig::default()),
             market_config: Mutex::new(None),
+            lens_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -88,7 +98,9 @@ impl Backend {
         self.send_pricing_notification();
     }
 
-    /// Spawn a background task to compute pricing and send a notification.
+    /// Spawn a background task to compute pricing, refresh the code lens
+    /// cache, and send a pricing notification. All Monte Carlo work runs on
+    /// the blocking thread pool so the request path stays responsive.
     fn send_pricing_notification(&self) {
         let enabled = *self.pricing_enabled.lock().unwrap();
         if !enabled {
@@ -98,19 +110,46 @@ impl Backend {
         // Extract compiled product data under the lock.
         let product_data = {
             let docs = self.documents.lock().unwrap();
-            docs.values().find_map(|state| state.product.clone())
+            docs.iter().find_map(|(uri, state)| {
+                let product = state.product.clone()?;
+                let span_start = state.ast.as_ref().map(|a| a.span.start).unwrap_or(0);
+                Some((uri.clone(), product, span_start, state.source.clone()))
+            })
         };
-        let Some(product) = product_data else { return };
+        let Some((uri, product, product_span_start, source)) = product_data else {
+            return;
+        };
 
         let pricing_cfg = self.pricing_config.lock().unwrap().clone();
         let market_cfg = self.market_config.lock().unwrap().clone();
         let client = self.client.clone();
+        let lens_cache = Arc::clone(&self.lens_cache);
 
         tokio::spawn(async move {
-            let payload = compute_pricing_payload(&product, &pricing_cfg, market_cfg.as_ref());
+            let computed = tokio::task::spawn_blocking(move || {
+                let payload = compute_pricing_payload(&product, &pricing_cfg, market_cfg.as_ref());
+                let lenses = codelens::code_lenses(
+                    &product,
+                    product_span_start,
+                    &source,
+                    &pricing_cfg,
+                    market_cfg.as_ref(),
+                );
+                (payload, lenses)
+            })
+            .await;
+
+            let Ok((payload, lenses)) = computed else {
+                return;
+            };
+
+            lens_cache.lock().unwrap().insert(uri, lenses);
             client
                 .send_notification::<notification::PricingNotification>(payload)
                 .await;
+            // Ask the client to re-request code lenses now that the cache is
+            // fresh; ignore errors from clients without refresh support.
+            let _ = client.code_lens_refresh().await;
         });
     }
 }
@@ -123,10 +162,12 @@ impl LanguageServer for Backend {
             if let Some(pricing) = opts.get("pricing") {
                 let mut cfg = self.pricing_config.lock().unwrap();
                 if let Some(v) = pricing.get("numPaths").and_then(|v| v.as_u64()) {
-                    cfg.num_paths = v as u32;
+                    // Clamp user-controlled path counts so a misconfigured
+                    // client cannot stall the server.
+                    cfg.num_paths = v.clamp(MIN_NUM_PATHS, MAX_NUM_PATHS) as u32;
                 }
                 if let Some(v) = pricing.get("numSteps").and_then(|v| v.as_u64()) {
-                    cfg.num_steps = v as u32;
+                    cfg.num_steps = v.clamp(1, 10_000) as u32;
                 }
                 if let Some(v) = pricing.get("seed").and_then(|v| v.as_u64()) {
                     cfg.seed = v;
@@ -195,6 +236,7 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents.lock().unwrap().remove(&uri);
+        self.lens_cache.lock().unwrap().remove(&uri);
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
@@ -250,28 +292,38 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
         let uri = &params.text_document.uri;
-        // Extract data under the lock, then release before pricing.
-        let code_lens_input = {
+
+        // Never price inline on the request path: serve the last result
+        // computed by the background pricing task (kicked off by
+        // didOpen/didChange/updateMarket), which also requests a code lens
+        // refresh once fresh data is available.
+        if let Some(lenses) = self.lens_cache.lock().unwrap().get(uri) {
+            return Ok(Some(lenses.clone()));
+        }
+
+        // No cached result yet: show a placeholder lens at the product
+        // definition while the background task finishes.
+        let placeholder = {
             let docs = self.documents.lock().unwrap();
             docs.get(uri).and_then(|state| {
-                let product = state.product.clone()?;
-                let product_span_start = state.ast.as_ref().map(|a| a.span.start).unwrap_or(0);
-                let source = state.source.clone();
-                Some((product, product_span_start, source))
+                state.product.as_ref()?;
+                let span_start = state.ast.as_ref().map(|a| a.span.start).unwrap_or(0);
+                let pos = diagnostics::offset_to_position(&state.source, span_start);
+                Some(vec![CodeLens {
+                    range: Range {
+                        start: pos,
+                        end: pos,
+                    },
+                    command: Some(Command {
+                        title: "Pricing...".to_string(),
+                        command: String::new(),
+                        arguments: None,
+                    }),
+                    data: None,
+                }])
             })
         };
-        let Some((product, product_span_start, source)) = code_lens_input else {
-            return Ok(None);
-        };
-        let pricing_cfg = self.pricing_config.lock().unwrap().clone();
-        let market_cfg = self.market_config.lock().unwrap().clone();
-        Ok(Some(codelens::code_lenses(
-            &product,
-            product_span_start,
-            &source,
-            &pricing_cfg,
-            market_cfg.as_ref(),
-        )))
+        Ok(placeholder)
     }
 
     async fn semantic_tokens_full(
@@ -289,6 +341,15 @@ impl LanguageServer for Backend {
     }
 }
 
+/// Dividend (or carry-equivalent) yield for the market snapshot shown in the
+/// pricing panel. Only equity assets carry an explicit dividend yield.
+fn asset_dividend_yield(asset: &openferric::dsl::market::AssetMarketData) -> f64 {
+    match asset {
+        openferric::dsl::market::AssetMarketData::Equity { dividend_yield, .. } => *dividend_yield,
+        _ => 0.0,
+    }
+}
+
 /// Compute pricing payload in a blocking context (called from spawned task).
 fn compute_pricing_payload(
     product: &CompiledProduct,
@@ -299,19 +360,19 @@ fn compute_pricing_payload(
         product.underlyings.iter().map(|u| u.name.clone()).collect();
 
     let market = match codelens::build_market(product.num_underlyings, market_json) {
-        Some(m) => m,
-        None => {
+        Ok(m) => m,
+        Err(e) => {
             return PricingResultPayload {
                 product_name: product.name.clone(),
                 notional: product.notional,
                 maturity: product.maturity,
                 underlyings: underlying_names,
-                price: 0.0,
+                price: f64::NAN,
                 stderr: None,
                 greeks: vec![],
                 cross_greeks: vec![],
                 payoff_profile: vec![],
-                error: Some("Failed to build market data".into()),
+                error: Some(format!("Failed to build market data: {e}")),
                 market: None,
             };
         }
@@ -409,7 +470,7 @@ fn compute_pricing_payload(
                     name: u.name.clone(),
                     spot: a.initial_value(),
                     vol: a.vol(),
-                    dividend_yield: 0.0,
+                    dividend_yield: asset_dividend_yield(a),
                 }
             })
             .collect(),

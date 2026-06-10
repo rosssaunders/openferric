@@ -5,6 +5,8 @@ import math
 import pytest
 from conftest import ABS_TOL, REL_TOL, is_nan
 from openferric import (
+    AnalyticEngine,
+    Autocallable,
     py_american_price,
     py_barrier_price,
     py_bs_greeks,
@@ -14,6 +16,7 @@ from openferric import (
     py_heston_price,
     py_lookback_fixed,
     py_lookback_floating,
+    py_price_autocallable,
     py_spread_price,
 )
 
@@ -424,3 +427,89 @@ class TestLookbackFixed:
 
     def test_invalid_option_type(self):
         assert is_nan(py_lookback_fixed(100.0, 100.0, 1.0, 0.20, 0.05, 0.0, "xxx", 0.0))
+
+
+# =========================================================================
+# Digital greeks: vega/rho are RAW units (per unit vol / per unit rate)
+# =========================================================================
+
+
+class TestDigitalGreeksRawUnits:
+    @pytest.fixture
+    def params(self):
+        return dict(
+            option_type="call",
+            spot=100.0,
+            strike=100.0,
+            cash=10.0,
+            expiry=1.0,
+            rate=0.05,
+            dividend_yield=0.02,
+            vol=0.20,
+        )
+
+    def test_vega_matches_finite_difference(self, params):
+        """Analytic vega must match a central FD bump of the RAW vol."""
+        greeks = AnalyticEngine.digital_cash_price(**params).greeks
+        assert greeks is not None
+
+        dv = 1e-5
+        up = AnalyticEngine.digital_cash_price(**{**params, "vol": params["vol"] + dv}).price
+        dn = AnalyticEngine.digital_cash_price(**{**params, "vol": params["vol"] - dv}).price
+        fd_vega = (up - dn) / (2.0 * dv)
+        assert greeks.vega == pytest.approx(fd_vega, rel=1e-4, abs=1e-9)
+
+    def test_rho_matches_finite_difference(self, params):
+        """Analytic rho must match a central FD bump of the RAW rate."""
+        greeks = AnalyticEngine.digital_cash_price(**params).greeks
+        assert greeks is not None
+
+        dr = 1e-5
+        up = AnalyticEngine.digital_cash_price(**{**params, "rate": params["rate"] + dr}).price
+        dn = AnalyticEngine.digital_cash_price(**{**params, "rate": params["rate"] - dr}).price
+        fd_rho = (up - dn) / (2.0 * dr)
+        assert greeks.rho == pytest.approx(fd_rho, rel=1e-4, abs=1e-9)
+
+
+# =========================================================================
+# py_price_autocallable
+# =========================================================================
+
+
+class TestPriceAutocallable:
+    @pytest.fixture
+    def autocall(self):
+        return Autocallable(
+            underlyings=[0],
+            notional=1.0,
+            autocall_dates=[0.5, 1.0],
+            autocall_barrier=1.0,
+            coupon_rate=0.05,
+            ki_barrier=0.6,
+            ki_strike=1.0,
+            maturity=1.0,
+        )
+
+    @pytest.fixture
+    def market_args(self):
+        return dict(
+            spots=[100.0],
+            vols=[0.20],
+            corr_matrix=[[1.0]],
+            rate=0.03,
+            div_yield=0.0,
+            num_paths=2_000,
+            num_steps=50,
+        )
+
+    def test_price_is_finite(self, autocall, market_args):
+        result = py_price_autocallable(autocall, **market_args)
+        assert math.isfinite(result.price)
+        # Default does not compute greeks.
+        assert result.greeks is None
+
+    def test_with_greeks_returns_greeks(self, autocall, market_args):
+        result = py_price_autocallable(autocall, **market_args, with_greeks=True)
+        assert math.isfinite(result.price)
+        assert result.greeks is not None
+        assert math.isfinite(result.greeks.delta)

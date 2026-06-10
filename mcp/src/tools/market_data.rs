@@ -256,7 +256,15 @@ fn get_vol_index(args: &Value) -> ToolCallResult {
 }
 
 fn fetch_json(url: &str) -> Result<Value, String> {
-    let mut response = ureq::get(url)
+    // Bound the whole request at ~10s so a stalled upstream cannot hang the
+    // MCP server's request thread indefinitely.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .into();
+
+    let mut response = agent
+        .get(url)
         .call()
         .map_err(|e| format!("request failed for `{url}`: {e}"))?;
 

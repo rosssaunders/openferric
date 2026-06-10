@@ -65,16 +65,17 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
-  // Start client and listen for pricing notifications.
-  void (async () => {
-    await client.start();
-    client.onNotification(
-      "openferric/pricingResult",
-      (result: PricingResult) => {
-        pricingProvider.update(result);
-      }
-    );
-  })();
+  // Register the notification handler BEFORE starting the client so pricing
+  // results triggered by the initial didOpen are not dropped.
+  client.onNotification(
+    "openferric/pricingResult",
+    (result: PricingResult) => {
+      pricingProvider.update(result);
+    }
+  );
+
+  // Start client.
+  void client.start();
 
   context.subscriptions.push({
     dispose: () => {

@@ -1522,7 +1522,7 @@ pub fn calibrate_leverage_surface_py(
     n_steps: usize,
 ) -> PyResult<LeverageSurface> {
     let market = build_market(spot, rate, dividend_yield, vol)
-        .ok_or_else(|| PyValueError::new_err("failed to build market"))?;
+        .map_err(|e| PyValueError::new_err(format!("failed to build market: {e}")))?;
     Ok(LeverageSurface {
         inner: calibrate_leverage_surface(
             &market,
@@ -1551,7 +1551,7 @@ pub fn slv_mc_price_py(
     n_steps: usize,
 ) -> PyResult<Py<PyDict>> {
     let market = build_market(spot, rate, dividend_yield, vol)
-        .ok_or_else(|| PyValueError::new_err("failed to build market"))?;
+        .map_err(|e| PyValueError::new_err(format!("failed to build market: {e}")))?;
     let instrument = build_vanilla_option(option_type, strike, expiry)?;
     pricing_result_to_dict(
         py,
@@ -1575,7 +1575,7 @@ pub fn slv_mc_price_checked_py(
     n_steps: usize,
 ) -> PyResult<Py<PyDict>> {
     let market = build_market(spot, rate, dividend_yield, vol)
-        .ok_or_else(|| PyValueError::new_err("failed to build market"))?;
+        .map_err(|e| PyValueError::new_err(format!("failed to build market: {e}")))?;
     let instrument = build_vanilla_option(option_type, strike, expiry)?;
     let result = slv_mc_price_checked(&instrument, &market, params.to_core(), n_particles, n_steps)
         .map_err(string_err)?;
