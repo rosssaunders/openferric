@@ -376,6 +376,14 @@ pub struct FundingRateSwap {
 
 impl FundingRateSwap {
     fn to_core(&self) -> Result<CoreFundingRateSwap, JsValue> {
+        if !self.settlement_interval_hours.is_finite() || self.settlement_interval_hours < 1.0 {
+            return Err(js_error(
+                "settlement_interval_hours must be finite and >= 1",
+            ));
+        }
+        if self.settlement_interval_hours > u32::MAX as f64 {
+            return Err(js_error("settlement_interval_hours is out of range"));
+        }
         let mut swap = CoreFundingRateSwap::new(
             self.notional,
             self.fixed_rate,
@@ -385,6 +393,13 @@ impl FundingRateSwap {
             self.asset.clone(),
         );
         swap.settlement_interval_hours = self.settlement_interval_hours as u32;
+        Ok(swap)
+    }
+
+    /// Convert to the core swap and run core validation, mapping errors to JS.
+    fn to_core_validated(&self) -> Result<CoreFundingRateSwap, JsValue> {
+        let swap = self.to_core()?;
+        swap.validate().map_err(|err| js_error(err.to_string()))?;
         Ok(swap)
     }
 }
@@ -476,7 +491,7 @@ pub fn funding_rate_swap_mtm(
     discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_mtm(
-        &swap.to_core()?,
+        &swap.to_core_validated()?,
         &curve.inner,
         discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
@@ -491,7 +506,7 @@ pub fn funding_rate_swap_dv01(
     discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_dv01(
-        &swap.to_core()?,
+        &swap.to_core_validated()?,
         &curve.inner,
         discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
@@ -506,7 +521,7 @@ pub fn funding_rate_swap_discount_dv01(
     discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_discount_dv01(
-        &swap.to_core()?,
+        &swap.to_core_validated()?,
         &curve.inner,
         discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
@@ -521,7 +536,7 @@ pub fn funding_rate_swap_theta(
     discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_theta(
-        &swap.to_core()?,
+        &swap.to_core_validated()?,
         &curve.inner,
         discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
@@ -536,7 +551,7 @@ pub fn funding_rate_swap_vega(
     discount_curve: Option<YieldCurve>,
 ) -> Result<f64, JsValue> {
     Ok(core_vega(
-        &swap.to_core()?,
+        &swap.to_core_validated()?,
         &curve.inner,
         discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,
@@ -551,7 +566,7 @@ pub fn funding_rate_swap_risks(
     discount_curve: Option<YieldCurve>,
 ) -> Result<FundingRateSwapRisks, JsValue> {
     Ok(FundingRateSwapRisks::from_core(core_risks(
-        &swap.to_core()?,
+        &swap.to_core_validated()?,
         &curve.inner,
         discount_curve.as_ref().map(|curve| &curve.inner),
         parse_timestamp_ms(as_of_timestamp_ms)?,

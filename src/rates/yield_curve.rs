@@ -372,10 +372,16 @@ impl YieldCurveBuilder {
     ///
     /// `coupon * sum_{i=1..N} DF(t_i) + DF(T) = 1`  (with `t_N = T`).
     ///
-    /// Each pillar DF is solved with a 1-D bisection so the par condition holds
-    /// exactly under the configured interpolation: interior coupon DFs between
-    /// the previous pillar and the new pillar are interpolated against the
-    /// candidate pillar value during the solve.
+    /// Each pillar DF is solved with a 1-D bisection; every cashflow,
+    /// including the final one at the pillar tenor, is priced off the
+    /// candidate curve during the solve. For interpolating methods
+    /// (log-linear, linear zero, monotone-convex, splines, Smith-Wilson) the
+    /// inputs reprice exactly after the Gauss-Seidel sweeps; parametric
+    /// least-squares families (Nelson-Siegel, Svensson) reprice only
+    /// approximately since the fitted curve need not pass through its nodes.
+    /// Quotes whose par residual cannot be bracketed (degenerate inputs such
+    /// as `rate * tenor > 1`) are skipped rather than stored as nonsense
+    /// pillars.
     pub fn from_swap_rates_with_settings(
         swap_rates: &[(f64, f64)],
         frequency: usize,
@@ -418,19 +424,28 @@ impl YieldCurveBuilder {
             for i in 1..periods {
                 annuity += curve.try_discount_factor(i as f64 * dt)?;
             }
-            // Final fixed payment occurs at the pillar tenor.
-            Ok(coupon * (annuity + df) + df - 1.0)
+            // Final fixed payment and notional both occur at the pillar tenor;
+            // price them off the candidate curve itself rather than the raw
+            // solver variable `df`, so parametric families (Nelson-Siegel et
+            // al.) that do not interpolate their nodes still reprice at the
+            // solved root. For interpolating methods the two coincide.
+            let df_final = curve.try_discount_factor(tenor)?;
+            Ok(coupon * (annuity + df_final) + df_final - 1.0)
         };
 
         // Sequential pass: solve each pillar against the pillars known so far.
+        // Unbracketable quotes are skipped (documented above).
+        let mut solved: Vec<(f64, usize, f64)> = Vec::with_capacity(instruments.len());
         let mut points: Vec<(f64, f64)> = Vec::with_capacity(instruments.len());
         for &(tenor, periods, coupon) in &instruments {
-            let df = solve_monotone_root(
+            if let Some(df) = solve_monotone_root(
                 |df| par_residual(&points, tenor, periods, coupon, df),
                 1.0e-10,
                 4.0,
-            )?;
-            points.push((tenor, df.max(1.0e-12)));
+            )? {
+                solved.push((tenor, periods, coupon));
+                points.push((tenor, df.max(1.0e-12)));
+            }
         }
 
         // Gauss-Seidel sweeps: nonlocal interpolation methods (monotone-convex,
@@ -438,24 +453,43 @@ impl YieldCurveBuilder {
         // pillars are added, so re-solve each pillar with the others fixed
         // until the curve reprices every input swap simultaneously. Local
         // methods (log-linear, linear zero) converge after the first sweep.
+        let mut last_max_change: f64 = 0.0;
         for _ in 0..25 {
             let mut max_change: f64 = 0.0;
-            for (k, &(tenor, periods, coupon)) in instruments.iter().enumerate() {
+            for (k, &(tenor, periods, coupon)) in solved.iter().enumerate() {
                 let mut base = points.clone();
                 base.remove(k);
-                let df = solve_monotone_root(
+                let Some(df) = solve_monotone_root(
                     |df| par_residual(&base, tenor, periods, coupon, df),
                     1.0e-10,
                     4.0,
                 )?
-                .max(1.0e-12);
+                else {
+                    continue;
+                };
+                let df = df.max(1.0e-12);
                 max_change = max_change.max((df - points[k].1).abs());
                 points[k].1 = df;
             }
+            last_max_change = max_change;
             if max_change < 1.0e-15 {
                 break;
             }
         }
+        // Diagnostic: interpolating methods converge well within the sweep
+        // budget; parametric least-squares families may legitimately stop
+        // short of exact repricing (see the docstring), so only flag the
+        // interpolating methods in debug builds.
+        debug_assert!(
+            last_max_change < 1.0e-9
+                || matches!(
+                    settings.method,
+                    YieldCurveInterpolationMethod::NelsonSiegel
+                        | YieldCurveInterpolationMethod::NelsonSiegelSvensson
+                ),
+            "swap-rate bootstrap Gauss-Seidel sweeps exited unconverged \
+             (last sweep moved a pillar by {last_max_change:e})"
+        );
 
         YieldCurve::new_with_settings(points, settings)
     }
@@ -727,13 +761,14 @@ fn discount_factor_one_point(t1: f64, df1: f64, t: f64, extrapolation: Extrapola
 ///
 /// Used by curve bootstrap routines to solve a pillar discount factor so the
 /// corresponding instrument reprices exactly. If the residual does not change
-/// sign over the bracket, the endpoint with the smaller absolute residual is
-/// returned (degenerate inputs such as `rate * tenor > 1`).
+/// sign over the bracket (degenerate inputs such as `rate * tenor > 1`),
+/// `Ok(None)` is returned and callers are expected to skip the offending
+/// quote instead of storing a bracket endpoint as a pillar.
 pub(crate) fn solve_monotone_root<F>(
     mut f: F,
     mut lo: f64,
     mut hi: f64,
-) -> Result<f64, InterpolationError>
+) -> Result<Option<f64>, InterpolationError>
 where
     F: FnMut(f64) -> Result<f64, InterpolationError>,
 {
@@ -741,20 +776,20 @@ where
     let f_hi = f(hi)?;
 
     if f_lo == 0.0 {
-        return Ok(lo);
+        return Ok(Some(lo));
     }
     if f_hi == 0.0 {
-        return Ok(hi);
+        return Ok(Some(hi));
     }
     if f_lo.signum() == f_hi.signum() {
-        return Ok(if f_lo.abs() <= f_hi.abs() { lo } else { hi });
+        return Ok(None);
     }
 
     for _ in 0..200 {
         let mid = 0.5 * (lo + hi);
         let f_mid = f(mid)?;
         if f_mid == 0.0 || (hi - lo) <= 1.0e-16 * mid.abs().max(1.0) {
-            return Ok(mid);
+            return Ok(Some(mid));
         }
         if f_mid.signum() == f_lo.signum() {
             lo = mid;
@@ -764,7 +799,7 @@ where
         }
     }
 
-    Ok(0.5 * (lo + hi))
+    Ok(Some(0.5 * (lo + hi)))
 }
 
 #[cfg(test)]
@@ -855,6 +890,25 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn swap_bootstrap_skips_unbracketable_quotes() {
+        // A 500% par rate at the 2y tenor keeps the par residual positive over
+        // the whole DF bracket: the quote must be skipped, not stored as a
+        // bracket endpoint (1e-12 or 4.0) pillar.
+        let swap_rates = vec![(1.0, 0.05), (2.0, 5.0), (3.0, 0.055)];
+        let curve = YieldCurveBuilder::from_swap_rates(&swap_rates, 1);
+
+        assert_eq!(curve.tenors.len(), 2);
+        assert!(
+            curve.tenors.iter().all(|&(t, _)| (t - 2.0).abs() > 1.0e-9),
+            "degenerate 2y quote should not produce a pillar: {:?}",
+            curve.tenors
+        );
+        for &(_, df) in &curve.tenors {
+            assert!(df > 0.5 && df <= 1.0, "df={df}");
         }
     }
 

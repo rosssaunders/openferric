@@ -57,14 +57,24 @@ pub(crate) fn parse_spread_method(value: &str) -> Option<SpreadMethod> {
     }
 }
 
-pub(crate) fn build_market(spot: f64, rate: f64, div_yield: f64, vol: f64) -> Option<Market> {
+/// Build a flat market, propagating the builder's validation error.
+///
+/// The vol is passed through unmodified: clamping (e.g. `.max(1e-8)`) would
+/// silently turn NaN or negative vols into a confident price instead of
+/// surfacing the invalid input to the caller.
+pub(crate) fn build_market(
+    spot: f64,
+    rate: f64,
+    div_yield: f64,
+    vol: f64,
+) -> Result<Market, String> {
     Market::builder()
         .spot(spot)
         .rate(rate)
         .dividend_yield(div_yield)
-        .flat_vol(vol.max(1e-8))
+        .flat_vol(vol)
         .build()
-        .ok()
+        .map_err(|e| e.to_string())
 }
 
 pub(crate) fn tenor_grid(maturity: f64, payment_freq: usize) -> Vec<f64> {

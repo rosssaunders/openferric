@@ -322,10 +322,13 @@ export class PricingPanelProvider implements vscode.WebviewViewProvider {
       if (!currentMarket) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        // Convert camelCase back to snake_case for the LSP
+        // Convert camelCase back to snake_case for the LSP.
+        // "type" is the serde tag on AssetMarketData; without it the LSP
+        // cannot deserialize the market and would reject the update.
         const payload = {
           rate: currentMarket.rate,
           assets: currentMarket.assets.map(a => ({
+            type: 'Equity',
             spot: a.spot,
             vol: a.vol,
             dividend_yield: a.dividendYield,

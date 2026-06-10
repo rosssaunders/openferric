@@ -86,6 +86,12 @@ impl AndreasenHugeInterpolation {
             // The target is evaluated at the grid-node strike (with the quote's
             // implied vol) so the node price the calibration matches is
             // self-consistent with the node it is assigned to.
+            //
+            // Strike snapping: each quote is assigned to the NEAREST grid
+            // node, i.e. its strike may shift by up to dk/2 (dk = grid
+            // spacing, here ~(hi-lo)/200). Quotes closer than dk to each
+            // other can collide on the same node; the later quote's target
+            // then effectively overwrites the earlier one in the calibration.
             let targets: Vec<(usize, f64)> = slice_quotes
                 .iter()
                 .map(|&(k, iv)| {

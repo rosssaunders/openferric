@@ -541,9 +541,20 @@ mod neon_tests {
             return;
         }
 
-        // ln(negative) = NaN, ln(+-0) = -inf, ln(+inf) = +inf, mirroring the
-        // AVX2/AVX512 special-value blending and scalar f64::ln.
-        let xs = [-1.0, -0.5, 0.0, -0.0, 1.0, 2.5, f64::INFINITY, 4.0];
+        // ln(negative) = NaN, ln(+-0) = -inf, ln(+inf) = +inf, ln(NaN) = NaN,
+        // mirroring the AVX2/AVX512 special-value blending and scalar f64::ln.
+        let xs = [
+            -1.0,
+            -0.5,
+            0.0,
+            -0.0,
+            1.0,
+            2.5,
+            f64::INFINITY,
+            4.0,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
         let got = unsafe { neon_ln_batch(&xs) };
         for (x, y) in xs.iter().zip(got.iter()) {
             let expected = x.ln();
@@ -586,6 +597,54 @@ mod neon_tests {
             let expected = x.exp();
             if expected.is_infinite() {
                 assert_eq!(*y, f64::INFINITY, "x={x}");
+            } else {
+                let rel = ((y - expected) / expected).abs();
+                assert!(
+                    rel <= 1.0e-10,
+                    "x={x} neon={y} expected={expected} rel={rel}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn neon_exp_special_values_match_std() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+
+        // Underflow (x below the ~-708.4 clamp threshold, incl. -inf) must
+        // flush to 0.0 instead of exp(min_x) ~ 2.2e-308; NaN must propagate
+        // instead of being clamped into exp(max_x); overflow stays +inf.
+        // Even length so every special value (incl. the NaN) goes through the
+        // 2-lane SIMD body rather than the scalar remainder.
+        let xs = [
+            f64::NEG_INFINITY,
+            -1e308,
+            -710.0,
+            -708.5,
+            0.0,
+            709.5,
+            709.9,
+            f64::INFINITY,
+            f64::NAN,
+            1.0,
+        ];
+        let got = unsafe { neon_exp_batch(&xs) };
+        for (x, y) in xs.iter().zip(got.iter()) {
+            let expected = x.exp();
+            if expected.is_nan() {
+                assert!(y.is_nan(), "x={x} neon={y} expected NaN");
+            } else if expected.is_infinite() {
+                assert_eq!(*y, expected, "x={x} neon={y} expected={expected}");
+            } else if expected < f64::MIN_POSITIVE {
+                // std may return a subnormal here; the SIMD kernel flushes
+                // to +0.0 below the clamp threshold.
+                assert!(
+                    *y >= 0.0 && *y <= f64::MIN_POSITIVE,
+                    "x={x} neon={y} expected ~0 (std: {expected})"
+                );
             } else {
                 let rel = ((y - expected) / expected).abs();
                 assert!(

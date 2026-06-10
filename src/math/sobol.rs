@@ -15,8 +15,17 @@
 //! structure; seed 0 yields the canonical unscrambled Joe-Kuo Sobol sequence.
 //!
 //! When to use: use these low-level routines in performance-sensitive calibration/pricing loops; use higher-level modules when model semantics matter more than raw numerics.
-const INV_U64_RANGE: f64 = 1.0 / 18_446_744_073_709_551_616.0;
-const HALF_INV_U64: f64 = 0.5 * INV_U64_RANGE;
+/// `2^-52` scale used to map the top 52 Sobol bits to the open unit interval.
+///
+/// Points are mapped as `((x >> 12) as f64 + 0.5) * 2^-52`: with `k = x >> 12
+/// < 2^52`, both `k as f64` and `k + 0.5` are exactly representable and the
+/// power-of-two scaling is exact, so the result lies strictly inside
+/// `(0, 1)` for every 64-bit input — including digitally-shifted (scrambled)
+/// values whose low bits are arbitrary. The previous `x * 2^-64 + 2^-65`
+/// mapping rounded to exactly 1.0 for the top ~2^11 inputs. (A 53-bit
+/// variant `((x >> 11) + 0.5) * 2^-53` is not exact either: at
+/// `k = 2^53 - 1` the addition ties-to-even up to `2^53` and yields 1.0.)
+const SOBOL_POINT_SCALE: f64 = 1.0 / 4_503_599_627_370_496.0;
 
 /// Maximum number of supported dimensions: dimension 0 (van der Corput) plus the
 /// embedded Joe-Kuo `new-joe-kuo-6` table entries for dimensions 2..=360
@@ -460,7 +469,7 @@ impl SobolSequence {
         for (dim, out_dim) in out.iter_mut().enumerate().take(self.dimensions) {
             self.x[dim] ^= self.directions[dim][c];
             let scrambled = self.x[dim] ^ self.scramblers[dim];
-            *out_dim = (scrambled as f64).mul_add(INV_U64_RANGE, HALF_INV_U64);
+            *out_dim = ((scrambled >> 12) as f64 + 0.5) * SOBOL_POINT_SCALE;
         }
 
         true
@@ -569,6 +578,17 @@ mod tests {
                 assert!(u > 0.0 && u < 1.0, "u={u}");
             }
         }
+    }
+
+    #[test]
+    fn point_mapping_is_exact_and_strictly_inside_unit_interval() {
+        // Pin the rounding behavior of the u64 -> f64 mapping at the extremes:
+        // the all-ones input (worst case under digital-shift scrambling) must
+        // stay strictly below 1.0, and the zero input strictly above 0.0.
+        let map = |x: u64| ((x >> 12) as f64 + 0.5) * SOBOL_POINT_SCALE;
+        assert!(map(u64::MAX) < 1.0, "max input maps to {}", map(u64::MAX));
+        assert!(map(0) > 0.0);
+        assert_eq!(map(1_u64 << 63), 0.5 + 0.5 * SOBOL_POINT_SCALE);
     }
 
     #[test]

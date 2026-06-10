@@ -134,7 +134,10 @@ lto = "fat"
 codegen-units = 1
 opt-level = 3
 strip = "symbols"
-panic = "abort"
+# NOTE: do not set `panic = "abort"` here. The python/wasm bindings rely on
+# `std::panic::catch_unwind` to convert panics from core pricing code into
+# Python exceptions / JS errors; with abort, a single panicking input would
+# kill the whole Python interpreter, MCP server, or LSP process.
 overflow-checks = false
 
 [profile.bench]

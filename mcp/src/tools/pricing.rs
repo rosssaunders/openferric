@@ -22,6 +22,43 @@ use super::{
     parse_option_type, req_array_f64, req_bool, req_f64, req_matrix_f64, req_str,
 };
 
+/// Upper bound for user-controlled Monte Carlo path counts.
+pub(crate) const MAX_NUM_PATHS: usize = 2_000_000;
+/// Upper bound for user-controlled step/fixing counts.
+pub(crate) const MAX_STEPS: usize = 100_000;
+
+/// Read an optional path count and validate it is within `[1, MAX_NUM_PATHS]`.
+pub(crate) fn opt_num_paths(args: &Value, key: &str, default: usize) -> Result<usize, String> {
+    let value = opt_usize(args, key, default)?;
+    if !(1..=MAX_NUM_PATHS).contains(&value) {
+        return Err(format!(
+            "parameter `{key}` must be between 1 and {MAX_NUM_PATHS} (got {value})"
+        ));
+    }
+    Ok(value)
+}
+
+/// Read an optional step/fixing count and validate it is within `[1, MAX_STEPS]`.
+pub(crate) fn opt_steps(args: &Value, key: &str, default: usize) -> Result<usize, String> {
+    let value = opt_usize(args, key, default)?;
+    if !(1..=MAX_STEPS).contains(&value) {
+        return Err(format!(
+            "parameter `{key}` must be between 1 and {MAX_STEPS} (got {value})"
+        ));
+    }
+    Ok(value)
+}
+
+/// Reject non-finite prices coming back from core so callers get a proper
+/// tool error instead of `"price": null` in the JSON payload.
+pub(crate) fn ensure_finite_price(price: f64) -> Result<f64, String> {
+    if price.is_finite() {
+        Ok(price)
+    } else {
+        Err("pricing produced a non-finite price; check that the inputs are valid".to_string())
+    }
+}
+
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
@@ -52,7 +89,7 @@ pub fn specs() -> Vec<ToolSpec> {
                     "vol": {"type": "number"},
                     "time": {"type": "number"},
                     "is_call": {"type": "boolean"},
-                    "steps": {"type": "integer", "minimum": 1}
+                    "steps": {"type": "integer", "minimum": 1, "maximum": 100000}
                 },
                 "required": ["spot", "strike", "rate", "vol", "time", "is_call"]
             }),
@@ -70,7 +107,7 @@ pub fn specs() -> Vec<ToolSpec> {
                     "time": {"type": "number"},
                     "is_call": {"type": "boolean"},
                     "fixing_freq": {"type": "string"},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
                 "required": ["spot", "strike", "rate", "vol", "time", "is_call", "fixing_freq"]
             }),
@@ -89,28 +126,30 @@ pub fn specs() -> Vec<ToolSpec> {
                     "time": {"type": "number"},
                     "is_call": {"type": "boolean"},
                     "barrier_type": {"type": "string"},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
                 "required": ["spot", "strike", "barrier", "rate", "vol", "time", "is_call", "barrier_type"]
             }),
         },
         ToolSpec {
             name: "price_autocallable",
-            description: "Single-underlying worst-of autocallable pricing.",
+            description: "Single-underlying autocallable pricing. `autocall_barrier` is the \
+                          barrier (as a fraction of spot) that triggers early redemption plus \
+                          coupon on each observation date.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "spot": {"type": "number"},
-                    "coupon_barrier": {"type": "number"},
+                    "autocall_barrier": {"type": "number"},
                     "ki_barrier": {"type": "number"},
                     "coupon_rate": {"type": "number"},
                     "time": {"type": "number"},
                     "freq": {"type": ["string", "integer"]},
                     "rate": {"type": "number"},
                     "vol": {"type": "number"},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
-                "required": ["spot", "coupon_barrier", "ki_barrier", "coupon_rate", "time", "freq", "rate", "vol"]
+                "required": ["spot", "autocall_barrier", "ki_barrier", "coupon_rate", "time", "freq", "rate", "vol"]
             }),
         },
         ToolSpec {
@@ -126,7 +165,7 @@ pub fn specs() -> Vec<ToolSpec> {
                     "time": {"type": "number"},
                     "rate": {"type": "number"},
                     "is_call": {"type": "boolean"},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
                 "required": ["spots", "vols", "correlation", "strike", "time", "rate", "is_call"]
             }),
@@ -144,7 +183,7 @@ pub fn specs() -> Vec<ToolSpec> {
                     "time": {"type": "number"},
                     "is_call": {"type": "boolean"},
                     "exercise_dates": {"type": "array", "items": {"type": "number"}},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
                 "required": ["spot", "strike", "rate", "vol", "time", "is_call", "exercise_dates"]
             }),
@@ -178,7 +217,7 @@ pub fn specs() -> Vec<ToolSpec> {
                     "vol": {"type": "number"},
                     "time": {"type": "number"},
                     "coupon": {"type": "number"},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
                 "required": ["spot", "lower", "upper", "rate", "vol", "time", "coupon"]
             }),
@@ -196,8 +235,8 @@ pub fn specs() -> Vec<ToolSpec> {
                     "time": {"type": "number"},
                     "leverage": {"type": "number"},
                     "ki_barrier": {"type": "number"},
-                    "num_fixings": {"type": "integer", "minimum": 1},
-                    "num_paths": {"type": "integer", "minimum": 1}
+                    "num_fixings": {"type": "integer", "minimum": 1, "maximum": 100000},
+                    "num_paths": {"type": "integer", "minimum": 1, "maximum": 2000000}
                 },
                 "required": ["spot", "strike", "rate", "vol", "time", "leverage", "ki_barrier", "num_fixings"]
             }),
@@ -230,7 +269,14 @@ fn price_european(args: &Value) -> ToolCallResult {
     let is_call = req_bool(args, "is_call")?;
     let option_type = parse_option_type(is_call);
 
-    let price = black_scholes_price(option_type, spot, strike, rate, vol, time);
+    let price = ensure_finite_price(black_scholes_price(
+        option_type,
+        spot,
+        strike,
+        rate,
+        vol,
+        time,
+    ))?;
     let greeks = black_scholes_greeks(option_type, spot, strike, rate, vol, time);
 
     Ok(json!({
@@ -250,7 +296,7 @@ fn price_american(args: &Value) -> ToolCallResult {
     let vol = req_f64(args, "vol")?;
     let time = req_f64(args, "time")?;
     let is_call = req_bool(args, "is_call")?;
-    let steps = opt_usize(args, "steps", 400)?;
+    let steps = opt_steps(args, "steps", 400)?;
 
     let option_type = parse_option_type(is_call);
 
@@ -258,7 +304,7 @@ fn price_american(args: &Value) -> ToolCallResult {
         crr_binomial_american(option_type, s, k, r, v, t.max(1.0e-8), steps)
     };
 
-    let price = price_fn(spot, strike, rate, vol, time);
+    let price = ensure_finite_price(price_fn(spot, strike, rate, vol, time))?;
 
     let ds = (0.01 * spot.abs()).max(1.0e-6);
     let dv = 0.01;
@@ -301,11 +347,11 @@ fn price_asian(args: &Value) -> ToolCallResult {
     let time = req_f64(args, "time")?;
     let is_call = req_bool(args, "is_call")?;
     let fixing_freq = req_str(args, "fixing_freq")?;
-    let num_paths = opt_usize(args, "num_paths", 50_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 50_000)?;
 
     let option_type = parse_option_type(is_call);
     let per_year = parse_fixing_frequency_per_year(fixing_freq)?;
-    let steps = ((time.max(1.0e-6) * per_year as f64).round() as usize).max(1);
+    let steps = ((time.max(1.0e-6) * per_year as f64).round() as usize).clamp(1, MAX_STEPS);
 
     let (price, stderr) = arithmetic_asian_price_mc(
         option_type,
@@ -319,7 +365,7 @@ fn price_asian(args: &Value) -> ToolCallResult {
         42,
     );
 
-    Ok(json!({ "price": price, "stderr": stderr }))
+    Ok(json!({ "price": ensure_finite_price(price)?, "stderr": stderr }))
 }
 
 fn price_barrier(args: &Value) -> ToolCallResult {
@@ -331,11 +377,11 @@ fn price_barrier(args: &Value) -> ToolCallResult {
     let time = req_f64(args, "time")?;
     let is_call = req_bool(args, "is_call")?;
     let barrier_type = req_str(args, "barrier_type")?;
-    let num_paths = opt_usize(args, "num_paths", 50_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 50_000)?;
 
     let option_type = parse_option_type(is_call);
     let (style, direction) = parse_barrier_type(barrier_type)?;
-    let steps = ((time.max(1.0e-6) * 252.0).round() as usize).max(8);
+    let steps = ((time.max(1.0e-6) * 252.0).round() as usize).clamp(8, MAX_STEPS);
 
     let (price, stderr) = barrier_price_mc(
         option_type,
@@ -352,18 +398,18 @@ fn price_barrier(args: &Value) -> ToolCallResult {
         42,
     );
 
-    Ok(json!({ "price": price, "stderr": stderr }))
+    Ok(json!({ "price": ensure_finite_price(price)?, "stderr": stderr }))
 }
 
 fn price_autocallable_tool(args: &Value) -> ToolCallResult {
     let spot = req_f64(args, "spot")?;
-    let coupon_barrier = req_f64(args, "coupon_barrier")?;
+    let autocall_barrier = req_f64(args, "autocall_barrier")?;
     let ki_barrier = req_f64(args, "ki_barrier")?;
     let coupon_rate = req_f64(args, "coupon_rate")?;
     let time = req_f64(args, "time")?;
     let rate = req_f64(args, "rate")?;
     let vol = req_f64(args, "vol")?;
-    let num_paths = opt_usize(args, "num_paths", 40_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 40_000)?;
 
     let freq_per_year = parse_freq_per_year(args)?;
     let dates = schedule_times(time, freq_per_year);
@@ -372,7 +418,7 @@ fn price_autocallable_tool(args: &Value) -> ToolCallResult {
         underlyings: vec![0],
         notional: 1.0,
         autocall_dates: dates,
-        autocall_barrier: coupon_barrier,
+        autocall_barrier,
         coupon_rate,
         ki_barrier,
         ki_strike: 1.0,
@@ -380,7 +426,7 @@ fn price_autocallable_tool(args: &Value) -> ToolCallResult {
     };
 
     let corr = vec![vec![1.0]];
-    let n_steps = ((time.max(1.0e-6) * 252.0).round() as usize).max(8);
+    let n_steps = ((time.max(1.0e-6) * 252.0).round() as usize).clamp(8, MAX_STEPS);
     let priced = price_autocallable(
         &instrument,
         &[spot],
@@ -392,7 +438,7 @@ fn price_autocallable_tool(args: &Value) -> ToolCallResult {
         n_steps,
     );
 
-    Ok(json!({ "price": priced.price }))
+    Ok(json!({ "price": ensure_finite_price(priced.price)? }))
 }
 
 fn price_basket_tool(args: &Value) -> ToolCallResult {
@@ -403,7 +449,7 @@ fn price_basket_tool(args: &Value) -> ToolCallResult {
     let time = req_f64(args, "time")?;
     let rate = req_f64(args, "rate")?;
     let is_call = req_bool(args, "is_call")?;
-    let num_paths = opt_usize(args, "num_paths", 60_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 60_000)?;
 
     if spots.len() != vols.len() {
         return Err("spots and vols length mismatch".to_string());
@@ -435,7 +481,7 @@ fn price_basket_tool(args: &Value) -> ToolCallResult {
         num_paths,
     );
 
-    Ok(json!({ "price": priced.price, "stderr": priced.stderr }))
+    Ok(json!({ "price": ensure_finite_price(priced.price)?, "stderr": priced.stderr }))
 }
 
 fn price_bermudan_tool(args: &Value) -> ToolCallResult {
@@ -446,10 +492,10 @@ fn price_bermudan_tool(args: &Value) -> ToolCallResult {
     let time = req_f64(args, "time")?;
     let is_call = req_bool(args, "is_call")?;
     let exercise_dates = req_array_f64(args, "exercise_dates")?;
-    let num_paths = opt_usize(args, "num_paths", 50_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 50_000)?;
 
     let option_type = parse_option_type(is_call);
-    let steps = ((time.max(1.0e-6) * 252.0).round() as usize).max(16);
+    let steps = ((time.max(1.0e-6) * 252.0).round() as usize).clamp(16, MAX_STEPS);
 
     let exercise_steps = exercise_dates
         .iter()
@@ -469,7 +515,7 @@ fn price_bermudan_tool(args: &Value) -> ToolCallResult {
         42,
     );
 
-    Ok(json!({ "price": price }))
+    Ok(json!({ "price": ensure_finite_price(price)? }))
 }
 
 fn price_digital_tool(args: &Value) -> ToolCallResult {
@@ -493,7 +539,7 @@ fn price_digital_tool(args: &Value) -> ToolCallResult {
         .price(&instrument, &market)
         .map_err(|e| e.to_string())?;
 
-    Ok(json!({ "price": result.price }))
+    Ok(json!({ "price": ensure_finite_price(result.price)? }))
 }
 
 fn price_range_accrual_tool(args: &Value) -> ToolCallResult {
@@ -504,9 +550,9 @@ fn price_range_accrual_tool(args: &Value) -> ToolCallResult {
     let vol = req_f64(args, "vol")?;
     let time = req_f64(args, "time")?;
     let coupon = req_f64(args, "coupon")?;
-    let num_paths = opt_usize(args, "num_paths", 20_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 20_000)?;
 
-    let fixings = ((time * 252.0).round() as usize).max(1);
+    let fixings = ((time * 252.0).round() as usize).clamp(1, MAX_STEPS);
     let fixing_times = (1..=fixings)
         .map(|i| i as f64 * time / fixings as f64)
         .collect::<Vec<_>>();
@@ -523,7 +569,7 @@ fn price_range_accrual_tool(args: &Value) -> ToolCallResult {
     let result = range_accrual_mc_price(&instrument, spot, 1.0, spot, vol, rate, num_paths, 42)
         .map_err(|e| e.to_string())?;
 
-    Ok(json!({ "price": result.price, "stderr": result.std_error }))
+    Ok(json!({ "price": ensure_finite_price(result.price)?, "stderr": result.std_error }))
 }
 
 fn price_tarf_tool(args: &Value) -> ToolCallResult {
@@ -534,8 +580,8 @@ fn price_tarf_tool(args: &Value) -> ToolCallResult {
     let time = req_f64(args, "time")?;
     let leverage = req_f64(args, "leverage")?;
     let ki_barrier = req_f64(args, "ki_barrier")?;
-    let num_fixings = opt_usize(args, "num_fixings", 52)?;
-    let num_paths = opt_usize(args, "num_paths", 20_000)?;
+    let num_fixings = opt_steps(args, "num_fixings", 52)?;
+    let num_paths = opt_num_paths(args, "num_paths", 20_000)?;
 
     let fixing_times = (1..=num_fixings)
         .map(|i| i as f64 * time / num_fixings as f64)
@@ -553,7 +599,7 @@ fn price_tarf_tool(args: &Value) -> ToolCallResult {
     let result =
         tarf_mc_price(&tarf, spot, rate, 0.0, vol, num_paths, 42).map_err(|e| e.to_string())?;
 
-    Ok(json!({ "price": result.price, "stderr": result.std_error }))
+    Ok(json!({ "price": ensure_finite_price(result.price)?, "stderr": result.std_error }))
 }
 
 fn parse_barrier_type(value: &str) -> Result<(BarrierStyle, BarrierDirection), String> {

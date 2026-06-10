@@ -18,8 +18,8 @@ use openferric_core::pricing::asian::{
 };
 use openferric_core::pricing::autocallable::{
     AutocallableSensitivities as CoreAutocallableSensitivities, autocallable_sensitivities,
-    phoenix_autocallable_sensitivities, price_autocallable_with_greeks,
-    price_phoenix_autocallable_with_greeks,
+    phoenix_autocallable_sensitivities, price_autocallable, price_autocallable_with_greeks,
+    price_phoenix_autocallable, price_phoenix_autocallable_with_greeks,
 };
 use openferric_core::pricing::barrier::{
     barrier_price_closed_form, barrier_price_closed_form_with_carry_and_rebate, barrier_price_mc,
@@ -1128,7 +1128,7 @@ pub fn py_fx_price(
         maturity,
     );
 
-    let Some(market) = build_market(spot_fx, domestic_rate, foreign_rate, vol) else {
+    let Ok(market) = build_market(spot_fx, domestic_rate, foreign_rate, vol) else {
         return f64::NAN;
     };
 
@@ -1158,7 +1158,7 @@ pub fn py_digital_price(
         return f64::NAN;
     };
 
-    let Some(market) = build_market(spot, rate, div_yield, vol) else {
+    let Ok(market) = build_market(spot, rate, div_yield, vol) else {
         return f64::NAN;
     };
 
@@ -1248,7 +1248,7 @@ pub fn py_lookback_floating(
         observed_extreme,
     });
 
-    let Some(market) = build_market(spot, rate, div_yield, vol) else {
+    let Ok(market) = build_market(spot, rate, div_yield, vol) else {
         return f64::NAN;
     };
 
@@ -1287,7 +1287,7 @@ pub fn py_lookback_fixed(
         observed_extreme,
     });
 
-    let Some(market) = build_market(spot, rate, div_yield, vol) else {
+    let Ok(market) = build_market(spot, rate, div_yield, vol) else {
         return f64::NAN;
     };
 
@@ -1395,6 +1395,7 @@ pub fn py_geometric_asian_price_mc(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (autocall, spots, vols, corr_matrix, rate, div_yield, num_paths, num_steps, with_greeks=false))]
 pub fn py_price_autocallable(
     autocall: &Autocallable,
     spots: Vec<f64>,
@@ -1404,17 +1405,38 @@ pub fn py_price_autocallable(
     div_yield: f64,
     num_paths: usize,
     num_steps: usize,
-) -> PricingResult {
-    PricingResult::from_core(price_autocallable_with_greeks(
-        &autocall.to_core(),
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        div_yield,
-        num_paths,
-        num_steps,
-    ))
+    with_greeks: bool,
+) -> PyResult<PricingResult> {
+    let core = autocall.to_core();
+    let result = if with_greeks {
+        price_autocallable_with_greeks(
+            &core,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            div_yield,
+            num_paths,
+            num_steps,
+        )
+    } else {
+        price_autocallable(
+            &core,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            div_yield,
+            num_paths,
+            num_steps,
+        )
+    };
+    if !result.price.is_finite() {
+        return Err(PyValueError::new_err(
+            "autocallable pricing failed: invalid inputs produced a non-finite price",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]
@@ -1445,6 +1467,7 @@ pub fn py_autocallable_sensitivities(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (phoenix, spots, vols, corr_matrix, rate, div_yield, num_paths, num_steps, with_greeks=false))]
 pub fn py_price_phoenix_autocallable(
     phoenix: &PhoenixAutocallable,
     spots: Vec<f64>,
@@ -1454,17 +1477,38 @@ pub fn py_price_phoenix_autocallable(
     div_yield: f64,
     num_paths: usize,
     num_steps: usize,
-) -> PricingResult {
-    PricingResult::from_core(price_phoenix_autocallable_with_greeks(
-        &phoenix.to_core(),
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        div_yield,
-        num_paths,
-        num_steps,
-    ))
+    with_greeks: bool,
+) -> PyResult<PricingResult> {
+    let core = phoenix.to_core();
+    let result = if with_greeks {
+        price_phoenix_autocallable_with_greeks(
+            &core,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            div_yield,
+            num_paths,
+            num_steps,
+        )
+    } else {
+        price_phoenix_autocallable(
+            &core,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            div_yield,
+            num_paths,
+            num_steps,
+        )
+    };
+    if !result.price.is_finite() {
+        return Err(PyValueError::new_err(
+            "phoenix autocallable pricing failed: invalid inputs produced a non-finite price",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]

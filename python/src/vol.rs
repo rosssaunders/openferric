@@ -26,7 +26,7 @@ use openferric_core::vol::implied::{
 use openferric_core::vol::jaeckel::{
     implied_vol_jaeckel, implied_vol_jaeckel_normalized, normalized_black,
 };
-use openferric_core::vol::local_vol::{DupireLocalVol as CoreDupireLocalVol, dupire_local_vol};
+use openferric_core::vol::local_vol::DupireLocalVol as CoreDupireLocalVol;
 use openferric_core::vol::mixture::{
     LognormalMixture as CoreLognormalMixture, calibrate_lognormal_mixture,
 };
@@ -1744,9 +1744,24 @@ pub fn py_strike_from_delta_analytic(
     strike_from_delta_analytic(spot, rate, dividend_yield, expiry, vol, delta)
 }
 
+/// Dupire local volatility extracted from an implied-vol surface.
+///
+/// `rate` and `dividend` are continuously compounded and default to 0, in
+/// which case the zero-carry Dupire relation is used. When provided, the
+/// maturity-T forward `F(T) = forward * exp((rate - dividend) * T)` is used.
 #[pyfunction]
-pub fn py_dupire_local_vol(surface: &VolSurface, forward: f64, spot: f64, expiry: f64) -> f64 {
-    dupire_local_vol(surface.inner.clone(), forward, spot, expiry)
+#[pyo3(signature = (surface, forward, spot, expiry, rate=0.0, dividend=0.0))]
+pub fn py_dupire_local_vol(
+    surface: &VolSurface,
+    forward: f64,
+    spot: f64,
+    expiry: f64,
+    rate: f64,
+    dividend: f64,
+) -> f64 {
+    CoreDupireLocalVol::new(surface.inner.clone(), forward)
+        .with_rates(rate, dividend)
+        .local_vol(spot, expiry)
 }
 
 #[pyfunction]

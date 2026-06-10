@@ -170,6 +170,9 @@ pub(crate) struct ProductExecutionPlan {
     schedules: Vec<ScheduleExecutionPlan>,
     snapshot_count: usize,
     max_stack: usize,
+    /// Highest path step that must provide an observation snapshot, or
+    /// `None` when the plan has no observations.
+    max_snapshot_step: Option<usize>,
 }
 
 impl ProductExecutionPlan {
@@ -187,6 +190,11 @@ impl ProductExecutionPlan {
     #[inline]
     pub(crate) fn max_stack(&self) -> usize {
         self.max_stack
+    }
+
+    #[inline]
+    pub(crate) fn max_snapshot_step(&self) -> Option<usize> {
+        self.max_snapshot_step
     }
 }
 
@@ -325,6 +333,7 @@ pub(crate) fn build_execution_plan(
     let mut schedules = Vec::with_capacity(product.schedules.len());
     let mut snapshot_count = 0usize;
     let mut max_stack = 0usize;
+    let mut max_snapshot_step: Option<usize> = None;
 
     for schedule in &product.schedules {
         let num_dates = schedule.dates.len();
@@ -346,6 +355,7 @@ pub(crate) fn build_execution_plan(
                 0
             };
             step_idx = step_idx.min(num_steps);
+            max_snapshot_step = Some(max_snapshot_step.map_or(step_idx, |m| m.max(step_idx)));
 
             let snapshot_index = if step_to_snapshot[step_idx] == usize::MAX {
                 let idx = snapshot_count;
@@ -379,6 +389,7 @@ pub(crate) fn build_execution_plan(
         schedules,
         snapshot_count,
         max_stack,
+        max_snapshot_step,
     })
 }
 
@@ -430,6 +441,21 @@ impl ProductEvaluator {
         path_spots: &[Vec<f64>],
         initial_spots: &[f64],
     ) -> Result<f64, DslError> {
+        // A path shorter than the plan's highest snapshot step would leave
+        // some snapshot buffers unwritten: empty on the first call (worst_of/
+        // best_of would silently return +-inf) and stale from the previous
+        // path on later calls. Reject it up front.
+        if let Some(max_step) = self.plan.max_snapshot_step()
+            && path_spots.len() <= max_step
+        {
+            return Err(DslError::EvalError(format!(
+                "path_spots covers {} steps but the execution plan requires an \
+                 observation snapshot at step {max_step} ({} steps including step 0)",
+                path_spots.len(),
+                max_step + 1
+            )));
+        }
+
         for (step_idx, spots) in path_spots.iter().enumerate() {
             if let Some(snapshot_index) = self.plan.snapshot_index_for_step(step_idx) {
                 // Copy into the reusable buffer instead of cloning the Vec.
@@ -765,8 +791,12 @@ unsafe fn x86_max_nan_propagating(
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[inline]
 unsafe fn x86_bool_mask(value: std::arch::x86_64::__m256d) -> std::arch::x86_64::__m256d {
-    use std::arch::x86_64::{_CMP_NEQ_OQ, _mm256_cmp_pd, _mm256_setzero_pd};
-    unsafe { _mm256_cmp_pd(value, _mm256_setzero_pd(), _CMP_NEQ_OQ) }
+    use std::arch::x86_64::{_CMP_NEQ_UQ, _mm256_cmp_pd, _mm256_setzero_pd};
+    // Unordered-or-not-equal: NaN lanes are truthy, matching the scalar
+    // interpreter (`v != 0.0`), the NEON backend (NOT(v == 0)), and the JIT
+    // (FloatCC::NotEqual is unordered). An ordered NEQ would silently treat
+    // NaN as false in `and`/`or`.
+    unsafe { _mm256_cmp_pd(value, _mm256_setzero_pd(), _CMP_NEQ_UQ) }
 }
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -1036,14 +1066,16 @@ unsafe fn execute_program_batch_x86_range(
                 let idxs = stack.pop_array();
                 let mut values = [0.0; SIMD_BATCH_LANES_X86];
                 for lane in 0..SIMD_BATCH_LANES_X86 {
-                    let idx = idxs[lane] as usize;
-                    if idx >= ctx.spots.len() {
+                    // `as usize` saturates: negative/NaN indices must error
+                    // like out-of-range ones instead of reading asset 0.
+                    let raw = idxs[lane];
+                    if !(raw.is_finite() && raw >= 0.0) || raw as usize >= ctx.spots.len() {
                         return Err(DslError::EvalError(format!(
-                            "asset index {idx} out of range (have {} assets)",
+                            "asset index {raw} out of range (have {} assets)",
                             ctx.spots.len()
                         )));
                     }
-                    values[lane] = ctx.spots[idx][lane];
+                    values[lane] = ctx.spots[raw as usize][lane];
                 }
                 stack.push_array(values);
             }
@@ -1527,14 +1559,16 @@ unsafe fn execute_program_batch_neon_range(
                 let idxs = stack.pop_array();
                 let mut values = [0.0; SIMD_BATCH_LANES_NEON];
                 for lane in 0..SIMD_BATCH_LANES_NEON {
-                    let idx = idxs[lane] as usize;
-                    if idx >= ctx.spots.len() {
+                    // `as usize` saturates: negative/NaN indices must error
+                    // like out-of-range ones instead of reading asset 0.
+                    let raw = idxs[lane];
+                    if !(raw.is_finite() && raw >= 0.0) || raw as usize >= ctx.spots.len() {
                         return Err(DslError::EvalError(format!(
-                            "asset index {idx} out of range (have {} assets)",
+                            "asset index {raw} out of range (have {} assets)",
                             ctx.spots.len()
                         )));
                     }
-                    values[lane] = ctx.spots[idx][lane];
+                    values[lane] = ctx.spots[raw as usize][lane];
                 }
                 stack.push_array(values);
             }
@@ -2045,14 +2079,16 @@ fn execute_program(
                 stack.push(max_val);
             }
             opcode::PRICE => {
-                let idx = stack.pop() as usize;
-                if idx >= ctx.spots.len() {
+                // `as usize` saturates, so a negative or NaN index would
+                // silently read asset 0; treat it like an out-of-range index.
+                let raw = stack.pop();
+                if !(raw.is_finite() && raw >= 0.0) || raw as usize >= ctx.spots.len() {
                     return Err(DslError::EvalError(format!(
-                        "asset index {idx} out of range (have {} assets)",
+                        "asset index {raw} out of range (have {} assets)",
                         ctx.spots.len()
                     )));
                 }
-                stack.push(ctx.spots[idx]);
+                stack.push(ctx.spots[raw as usize]);
             }
 
             // ── Store ──────────────────────────────────────────
@@ -2561,6 +2597,214 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Product that redeems `(1.0/0.0) <op> rhs` at t=1.0; the left operand
+    /// evaluates to NaN at runtime, which every backend must treat as truthy.
+    fn nan_truthiness_product(op: BinOp, rhs: f64) -> CompiledProduct {
+        let nan_expr = Expr::BinOp {
+            op: BinOp::Div,
+            lhs: Box::new(Expr::Literal(Value::F64(1.0))),
+            rhs: Box::new(Expr::Literal(Value::F64(0.0))),
+        };
+        CompiledProduct {
+            name: "NaN truthiness".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::BinOp {
+                        op,
+                        lhs: Box::new(nan_expr),
+                        rhs: Box::new(Expr::Literal(Value::F64(rhs))),
+                    },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn scalar_nan_is_truthy_in_and_or() {
+        let path_spots = vec![vec![100.0], vec![100.0]];
+        for (op, rhs) in [(BinOp::And, 1.0), (BinOp::Or, 0.0)] {
+            let product = nan_truthiness_product(op, rhs);
+            let pv = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0).unwrap();
+            assert!(
+                (pv - 1.0).abs() < 1e-12,
+                "{op:?}: NaN operand must be truthy, got {pv}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[test]
+    fn batched_x86_nan_is_truthy_in_and_or_matches_scalar() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
+            return;
+        }
+        let path_spots = vec![vec![100.0], vec![100.0]];
+        for (op, rhs) in [(BinOp::And, 1.0), (BinOp::Or, 0.0)] {
+            let product = nan_truthiness_product(op, rhs);
+            let scalar = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0).unwrap();
+            let plan = build_execution_plan(&product, 1, 0.0).unwrap();
+            let observation_spots =
+                vec![vec![[100.0; SIMD_BATCH_LANES_X86]; 1]; plan.snapshot_count()];
+            let mut locals = vec![[0.0; SIMD_BATCH_LANES_X86]; product.max_local_slots()];
+            let mut state = vec![[0.0; SIMD_BATCH_LANES_X86]; product.state_vars.len()];
+            let mut stack = vec![[0.0; SIMD_BATCH_LANES_X86]; plan.max_stack()];
+            let pv = evaluate_product_with_plan_batch_x86(
+                &product,
+                &plan,
+                &observation_spots,
+                &[100.0],
+                &mut locals,
+                &mut state,
+                &mut stack,
+            )
+            .unwrap();
+            for (lane, v) in pv.iter().enumerate() {
+                assert!(
+                    (v - scalar).abs() < 1e-12,
+                    "{op:?} lane {lane}: batched {v} != scalar {scalar}"
+                );
+            }
+            assert!((scalar - 1.0).abs() < 1e-12, "{op:?}: scalar PV {scalar}");
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    #[test]
+    fn batched_neon_nan_is_truthy_in_and_or_matches_scalar() {
+        let path_spots = vec![vec![100.0], vec![100.0]];
+        for (op, rhs) in [(BinOp::And, 1.0), (BinOp::Or, 0.0)] {
+            let product = nan_truthiness_product(op, rhs);
+            let scalar = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0).unwrap();
+            let plan = build_execution_plan(&product, 1, 0.0).unwrap();
+            let observation_spots =
+                vec![vec![[100.0; SIMD_BATCH_LANES_NEON]; 1]; plan.snapshot_count()];
+            let mut locals = vec![[0.0; SIMD_BATCH_LANES_NEON]; product.max_local_slots()];
+            let mut state = vec![[0.0; SIMD_BATCH_LANES_NEON]; product.state_vars.len()];
+            let mut stack = vec![[0.0; SIMD_BATCH_LANES_NEON]; plan.max_stack()];
+            let pv = evaluate_product_with_plan_batch_neon(
+                &product,
+                &plan,
+                &observation_spots,
+                &[100.0],
+                &mut locals,
+                &mut state,
+                &mut stack,
+            )
+            .unwrap();
+            for (lane, v) in pv.iter().enumerate() {
+                assert!(
+                    (v - scalar).abs() < 1e-12,
+                    "{op:?} lane {lane}: batched {v} != scalar {scalar}"
+                );
+            }
+            assert!((scalar - 1.0).abs() < 1e-12, "{op:?}: scalar PV {scalar}");
+        }
+    }
+
+    /// Product that redeems `price(<idx_expr>)` at t=1.0.
+    fn price_product(idx_expr: Expr) -> CompiledProduct {
+        CompiledProduct {
+            name: "Price probe".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::Call {
+                        func: BuiltinFn::Price,
+                        args: vec![idx_expr],
+                    },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn scalar_price_rejects_negative_and_nan_index() {
+        let path_spots = vec![vec![100.0], vec![105.0]];
+        let nan_idx = Expr::BinOp {
+            op: BinOp::Div,
+            lhs: Box::new(Expr::Literal(Value::F64(0.0))),
+            rhs: Box::new(Expr::Literal(Value::F64(0.0))),
+        };
+        for idx_expr in [Expr::Literal(Value::F64(-1.0)), nan_idx] {
+            let product = price_product(idx_expr);
+            let err = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0).unwrap_err();
+            match err {
+                DslError::EvalError(msg) => {
+                    assert!(msg.contains("asset index"), "got: {msg}");
+                }
+                other => panic!("expected EvalError, got {other:?}"),
+            }
+        }
+
+        // Sanity: a valid index still resolves to the observed spot.
+        let product = price_product(Expr::Literal(Value::F64(0.0)));
+        let pv = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0).unwrap();
+        assert!((pv - 105.0).abs() < 1e-12, "price(0.0) PV {pv}");
+    }
+
+    #[test]
+    fn evaluator_rejects_short_path_on_first_call() {
+        let product = make_simple_autocallable(
+            1_000_000.0,
+            1.5,
+            vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+            1.0,
+            0.08,
+            0.60,
+        );
+        let mut evaluator = ProductEvaluator::new(&product, 6, 0.05).unwrap();
+        // The plan needs snapshots up to step 6 but only 3 steps are given.
+        let short: Vec<Vec<f64>> = (0..3).map(|_| vec![105.0]).collect();
+        let err = evaluator.evaluate(&short, &[100.0]).unwrap_err();
+        match err {
+            DslError::EvalError(msg) => {
+                assert!(msg.contains("observation snapshot at step"), "got: {msg}");
+            }
+            other => panic!("expected EvalError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluator_rejects_short_path_after_long_path() {
+        let product = make_simple_autocallable(
+            1_000_000.0,
+            1.5,
+            vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+            1.0,
+            0.08,
+            0.60,
+        );
+        let mut evaluator = ProductEvaluator::new(&product, 6, 0.05).unwrap();
+
+        // A full-length path succeeds and fills every snapshot buffer.
+        let full: Vec<Vec<f64>> = (0..=6).map(|_| vec![90.0]).collect();
+        evaluator.evaluate(&full, &[100.0]).unwrap();
+
+        // A subsequent short path must error instead of silently reusing the
+        // previous path's snapshots for the missing steps.
+        let short: Vec<Vec<f64>> = (0..3).map(|_| vec![105.0]).collect();
+        let err = evaluator.evaluate(&short, &[100.0]).unwrap_err();
+        match err {
+            DslError::EvalError(msg) => {
+                assert!(msg.contains("observation snapshot at step"), "got: {msg}");
+            }
+            other => panic!("expected EvalError, got {other:?}"),
         }
     }
 

@@ -314,7 +314,13 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
     }
 
     let mut l = vec![vec![0.0_f64; n]; n];
-    let tol = 1.0e-12;
+    // Scale the PSD rejection threshold with the running diagonal magnitude:
+    // an absolute cutoff is dimension- and scale-blind (slightly negative
+    // pivots of order eps * max diag are routine round-off for large joint
+    // covariance matrices, e.g. 1024x1024 hybrid-scheme grids). Tiny negative
+    // pivots within tolerance are clamped to zero; only materially negative
+    // pivots are treated as a hard PSD failure.
+    let mut diag_max = 0.0_f64;
 
     for i in 0..n {
         for j in 0..=i {
@@ -323,12 +329,15 @@ fn cholesky_lower(matrix: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
                 sum -= lik * ljk;
             }
 
+            let tol = 1.0e-12 * diag_max.max(1.0);
             if i == j {
                 if sum < -tol {
                     return Err("covariance matrix is not positive semidefinite".to_string());
                 }
-                l[i][j] = sum.max(tol).sqrt();
-            } else if l[j][j] > tol {
+                let pivot = sum.max(0.0);
+                diag_max = diag_max.max(pivot);
+                l[i][j] = pivot.sqrt();
+            } else if l[j][j] * l[j][j] > tol {
                 l[i][j] = sum / l[j][j];
             }
         }

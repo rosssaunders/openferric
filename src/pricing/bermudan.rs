@@ -22,6 +22,11 @@ fn intrinsic(option_type: OptionType, s: f64, k: f64) -> f64 {
     }
 }
 
+/// Prices a Bermudan option with the Longstaff-Schwartz Monte Carlo method.
+///
+/// Returns `f64::NAN` (instead of panicking) when `steps <= 1` or
+/// `num_paths <= 2`, so invalid user-controlled input from bindings cannot
+/// abort the host process.
 #[allow(clippy::too_many_arguments)]
 pub fn longstaff_schwartz_bermudan(
     option_type: OptionType,
@@ -35,8 +40,9 @@ pub fn longstaff_schwartz_bermudan(
     num_paths: usize,
     seed: u64,
 ) -> f64 {
-    assert!(steps > 1);
-    assert!(num_paths > 2);
+    if steps <= 1 || num_paths <= 2 {
+        return f64::NAN;
+    }
 
     let dt = t / steps as f64;
     let drift = (r - 0.5 * sigma * sigma) * dt;
@@ -156,5 +162,38 @@ mod tests {
 
         assert!(berm >= eur - 0.2);
         assert!(berm <= am + 0.3);
+    }
+
+    #[test]
+    fn bermudan_invalid_inputs_return_nan_without_panicking() {
+        let exercise_steps = vec![1];
+        // steps <= 1
+        let px = longstaff_schwartz_bermudan(
+            OptionType::Put,
+            100.0,
+            100.0,
+            0.05,
+            0.2,
+            1.0,
+            1,
+            &exercise_steps,
+            1_000,
+            99,
+        );
+        assert!(px.is_nan());
+        // num_paths <= 2
+        let px = longstaff_schwartz_bermudan(
+            OptionType::Put,
+            100.0,
+            100.0,
+            0.05,
+            0.2,
+            1.0,
+            52,
+            &exercise_steps,
+            2,
+            99,
+        );
+        assert!(px.is_nan());
     }
 }

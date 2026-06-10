@@ -50,7 +50,12 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     let max_x = vdupq_n_f64(709.782_712_893_384);
     let min_x = vdupq_n_f64(-708.396_418_532_264_1);
     // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
+    // Inputs below the clamp threshold (incl. -inf) must flush to 0.0 instead
+    // of returning exp(min_x) ~ 2.2e-308, and NaN must propagate.
+    // vceqq_f64(x, x) is false only for NaN lanes.
     let overflow = vcgtq_f64(x, max_x);
+    let underflow = vcltq_f64(x, min_x);
+    let nan_mask = veorq_u64(vceqq_f64(x, x), vdupq_n_u64(u64::MAX));
     let x = vmaxq_f64(min_x, vminq_f64(x, max_x));
 
     // Range reduction: x = n*ln(2) + r, |r| <= ln(2)/2
@@ -104,7 +109,9 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
         vreinterpretq_f64_s64(e2),
     );
 
-    vbslq_f64(overflow, vdupq_n_f64(f64::INFINITY), y)
+    let y = vbslq_f64(overflow, vdupq_n_f64(f64::INFINITY), y);
+    let y = vbslq_f64(underflow, vdupq_n_f64(0.0), y);
+    vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y)
 }
 
 /// Vectorized ln(x) for NEON f64x2 using fdlibm kernel with IEEE 754 bit extraction.
@@ -177,17 +184,22 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     y = vfmaq_f64(y, k, ln2_lo);
 
     // Special values, mirroring the AVX2/AVX512 implementations:
-    // ln(0) = -inf, ln(negative) = NaN, ln(+inf) = +inf. The exponent mask
-    // above drops the sign bit, so without these blends ln(-x) would
-    // silently return ln(|x|) and ln(0) a finite ~-709.
+    // ln(0) = -inf, ln(negative) = NaN, ln(+inf) = +inf, ln(NaN) = NaN. The
+    // exponent mask above drops the sign bit, so without these blends ln(-x)
+    // would silently return ln(|x|) and ln(0) a finite ~-709. The ordered
+    // compares are all false for NaN input, so NaN needs its own check
+    // (vceqq_f64(x, x) is false only for NaN lanes) or it would fall through
+    // to finite garbage.
     let zero = vdupq_n_f64(0.0);
     let neg = vcltq_f64(x, zero);
     let eq_zero = vceqq_f64(x, zero);
     let is_inf = vceqq_f64(x, vdupq_n_f64(f64::INFINITY));
+    let nan_mask = veorq_u64(vceqq_f64(x, x), vdupq_n_u64(u64::MAX));
 
     y = vbslq_f64(eq_zero, vdupq_n_f64(f64::NEG_INFINITY), y);
     y = vbslq_f64(neg, vdupq_n_f64(f64::NAN), y);
-    vbslq_f64(is_inf, vdupq_n_f64(f64::INFINITY), y)
+    y = vbslq_f64(is_inf, vdupq_n_f64(f64::INFINITY), y);
+    vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y)
 }
 
 #[inline]
@@ -344,4 +356,100 @@ pub unsafe fn bs_price_neon_batch(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Special inputs covering underflow, overflow, infinities and NaN.
+    const EXP_LN_SPECIALS: [f64; 9] = [
+        f64::NEG_INFINITY,
+        -1e308,
+        -710.0,
+        -708.5,
+        0.0,
+        709.5,
+        709.9,
+        f64::INFINITY,
+        f64::NAN,
+    ];
+
+    /// Compare a SIMD exp result against `std::f64::exp`. Below the kernel's
+    /// clamp threshold (~-708.4) std may return a subnormal while the SIMD
+    /// path flushes to +0.0; both count as zero at working precision.
+    fn check_exp_special(x: f64, got: f64) {
+        let expected = x.exp();
+        if expected.is_nan() {
+            assert!(got.is_nan(), "exp({x}) = {got}, expected NaN");
+        } else if expected.is_infinite() {
+            assert_eq!(got, expected, "exp({x}) = {got}, expected {expected}");
+        } else if expected < f64::MIN_POSITIVE {
+            assert!(
+                got >= 0.0 && got <= f64::MIN_POSITIVE,
+                "exp({x}) = {got}, expected ~0 (std: {expected})"
+            );
+        } else {
+            let rel = ((got - expected) / expected).abs();
+            assert!(
+                rel <= 1e-10,
+                "exp({x}) = {got}, expected {expected}, rel={rel}"
+            );
+        }
+    }
+
+    fn check_ln_special(x: f64, got: f64) {
+        let expected = x.ln();
+        if expected.is_nan() {
+            assert!(got.is_nan(), "ln({x}) = {got}, expected NaN");
+        } else if expected.is_infinite() {
+            assert_eq!(got, expected, "ln({x}) = {got}, expected {expected}");
+        } else {
+            let abs_err = (got - expected).abs();
+            assert!(
+                abs_err <= 1e-9,
+                "ln({x}) = {got}, expected {expected}, abs_err={abs_err}"
+            );
+        }
+    }
+
+    #[test]
+    fn simd_exp_f64x2_special_values_match_std() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+        for chunk in EXP_LN_SPECIALS.chunks(2) {
+            let mut input = [0.0_f64; 2];
+            input[..chunk.len()].copy_from_slice(chunk);
+            let mut out = [0.0_f64; 2];
+            // SAFETY: runtime feature check above; buffers hold 2 lanes.
+            unsafe {
+                let x = load_f64x2(&input, 0);
+                store_f64x2(&mut out, 0, simd_exp_f64x2(x));
+            }
+            for (i, &x) in chunk.iter().enumerate() {
+                check_exp_special(x, out[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn simd_ln_f64x2_special_values_match_std() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+        for chunk in EXP_LN_SPECIALS.chunks(2) {
+            let mut input = [1.0_f64; 2];
+            input[..chunk.len()].copy_from_slice(chunk);
+            let mut out = [0.0_f64; 2];
+            // SAFETY: runtime feature check above; buffers hold 2 lanes.
+            unsafe {
+                let x = load_f64x2(&input, 0);
+                store_f64x2(&mut out, 0, simd_ln_f64x2(x));
+            }
+            for (i, &x) in chunk.iter().enumerate() {
+                check_ln_special(x, out[i]);
+            }
+        }
+    }
 }

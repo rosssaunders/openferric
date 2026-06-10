@@ -15,6 +15,10 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
 
+/// Prices an American option on a CRR binomial tree.
+///
+/// Returns `f64::NAN` (instead of panicking) when `steps == 0`, so invalid
+/// user-controlled input from bindings cannot abort the host process.
 pub fn crr_binomial_american(
     option_type: OptionType,
     s0: f64,
@@ -24,7 +28,9 @@ pub fn crr_binomial_american(
     t: f64,
     steps: usize,
 ) -> f64 {
-    assert!(steps > 0);
+    if steps == 0 {
+        return f64::NAN;
+    }
 
     let dt = t / steps as f64;
     let u = (sigma * dt.sqrt()).exp();
@@ -56,6 +62,11 @@ pub fn crr_binomial_american(
     values[0]
 }
 
+/// Prices an American put with the Longstaff-Schwartz Monte Carlo method.
+///
+/// Returns `f64::NAN` (instead of panicking) when `steps <= 1` or
+/// `paths <= 2`, so invalid user-controlled input from bindings cannot abort
+/// the host process.
 #[allow(clippy::too_many_arguments)]
 pub fn longstaff_schwartz_american_put(
     s0: f64,
@@ -67,8 +78,9 @@ pub fn longstaff_schwartz_american_put(
     paths: usize,
     seed: u64,
 ) -> f64 {
-    assert!(steps > 1);
-    assert!(paths > 2);
+    if steps <= 1 || paths <= 2 {
+        return f64::NAN;
+    }
 
     let dt = t / steps as f64;
     let drift = (r - 0.5 * sigma * sigma) * dt;
@@ -169,5 +181,23 @@ mod tests {
         let tree = crr_binomial_american(OptionType::Put, s0, k, r, sigma, t, 800);
 
         assert!((lsm - tree).abs() < 0.5);
+    }
+
+    #[test]
+    fn crr_binomial_zero_steps_returns_nan_without_panicking() {
+        let px = crr_binomial_american(OptionType::Put, 100.0, 100.0, 0.05, 0.2, 1.0, 0);
+        assert!(px.is_nan());
+    }
+
+    #[test]
+    fn longstaff_schwartz_invalid_inputs_return_nan_without_panicking() {
+        // steps <= 1
+        let px = longstaff_schwartz_american_put(100.0, 100.0, 0.05, 0.2, 1.0, 0, 1_000, 7);
+        assert!(px.is_nan());
+        let px = longstaff_schwartz_american_put(100.0, 100.0, 0.05, 0.2, 1.0, 1, 1_000, 7);
+        assert!(px.is_nan());
+        // paths <= 2
+        let px = longstaff_schwartz_american_put(100.0, 100.0, 0.05, 0.2, 1.0, 50, 2, 7);
+        assert!(px.is_nan());
     }
 }

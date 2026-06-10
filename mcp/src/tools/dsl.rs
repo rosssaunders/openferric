@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use openferric::dsl::{DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
 use serde_json::{Value, json};
 
+use super::pricing::{ensure_finite_price, opt_num_paths};
 use super::{ToolCallResult, ToolSpec, obj, opt_usize, req_str};
 
 pub fn specs() -> Vec<ToolSpec> {
@@ -34,7 +35,7 @@ pub fn specs() -> Vec<ToolSpec> {
                             "rate": { "type": "number" }
                         }
                     },
-                    "num_paths": { "type": "integer", "minimum": 1 },
+                    "num_paths": { "type": "integer", "minimum": 1, "maximum": 2000000 },
                     "seed": { "type": "integer", "minimum": 0 }
                 },
                 "required": ["source"]
@@ -49,7 +50,7 @@ pub fn specs() -> Vec<ToolSpec> {
                     "source": { "type": "string" },
                     "market": { "type": "object" },
                     "asset_index": { "type": "integer", "minimum": 0 },
-                    "num_paths": { "type": "integer", "minimum": 1 },
+                    "num_paths": { "type": "integer", "minimum": 1, "maximum": 2000000 },
                     "seed": { "type": "integer", "minimum": 0 }
                 },
                 "required": ["source"]
@@ -89,13 +90,14 @@ fn dsl_price(args: &Value) -> ToolCallResult {
     let product = parse_and_compile(source).map_err(|e| e.to_string())?;
 
     let market = parse_market(args)?;
-    let num_paths = opt_usize(args, "num_paths", 20_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 20_000)?;
     let seed = opt_usize(args, "seed", 42)? as u64;
 
     let engine = DslMonteCarloEngine::new(num_paths, 252, seed);
     let price = engine
         .price_multi_asset(&product, &market)
         .map_err(|e| e.to_string())?;
+    ensure_finite_price(price.price)?;
 
     let greeks = engine
         .greeks_multi_asset(&product, &market, 0)
@@ -123,7 +125,7 @@ fn dsl_greeks(args: &Value) -> ToolCallResult {
 
     let market = parse_market(args)?;
     let asset_index = opt_usize(args, "asset_index", 0)?;
-    let num_paths = opt_usize(args, "num_paths", 20_000)?;
+    let num_paths = opt_num_paths(args, "num_paths", 20_000)?;
     let seed = opt_usize(args, "seed", 42)? as u64;
 
     let engine = DslMonteCarloEngine::new(num_paths, 252, seed);

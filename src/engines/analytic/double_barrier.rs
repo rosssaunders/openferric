@@ -239,16 +239,28 @@ fn double_touch_pay_at_hit_factor(
         let nu_n = c - 0.5 * vol_sq * w * w;
         let exp_nu_t = (nu_n * expiry).exp();
         survival_disc += a_n * exp_nu_t;
-        if nu_n.abs() > 1.0e-300 {
-            integral_term += a_n * (exp_nu_t - 1.0) / nu_n;
-        }
+        // (exp(nu*T) - 1)/nu via exp_m1 stays accurate for small |nu| and has
+        // the exact limit a_n * T as nu -> 0 (reachable only for r < 0, where
+        // the diffusion decay can cancel against c = -carry^2/(2 sigma^2) - r).
+        integral_term += if nu_n == 0.0 {
+            a_n * expiry
+        } else {
+            a_n * (nu_n * expiry).exp_m1() / nu_n
+        };
     }
 
     let df_r = (-rate * expiry).exp();
+    // survival_disc = e^{-rT} * P(no touch by T), so it lies in [0, df_r] for
+    // any sign of r, and the undiscounted touch probability follows exactly.
     let survival_disc = survival_disc.clamp(0.0, df_r);
-    // Bounds: at least the pay-at-expiry value e^{-rT}*P(touch), at most P(touch).
-    let touch_prob_disc = (df_r - survival_disc).max(0.0);
-    (1.0 - survival_disc - rate * integral_term).clamp(touch_prob_disc, 1.0)
+    let touch_prob = (1.0 - survival_disc / df_r).clamp(0.0, 1.0);
+    // Model-free bounds: on {tau <= T}, e^{-r tau} lies between min(1, e^{-rT})
+    // and max(1, e^{-rT}) (the order flips for r < 0, where e^{-r t} grows in
+    // t), hence E[e^{-r tau} 1{tau <= T}] is bracketed by those endpoints
+    // scaled by P(touch). At r = 0 both bounds collapse to 1 - survival.
+    let lo = touch_prob * df_r.min(1.0);
+    let hi = touch_prob * df_r.max(1.0);
+    (1.0 - survival_disc - rate * integral_term).clamp(lo, hi)
 }
 
 impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
@@ -504,6 +516,68 @@ mod tests {
             rebate_component <= rebate + 1.0e-9,
             "discounted rebate component {rebate_component} cannot exceed undiscounted rebate {rebate}"
         );
+    }
+
+    #[test]
+    fn double_touch_pay_at_hit_factor_handles_negative_rates() {
+        // r < 0: e^{-rT} > 1, so the old clamp(touch_prob_disc, 1.0) had an
+        // inverted (panicking) bracket. The factor must satisfy the model-free
+        // bounds P(touch) <= E[e^{-r tau} 1{tau<=T}] <= e^{-rT} * P(touch).
+        let (rate, q, vol, expiry) = (-0.02_f64, 0.0, 0.25, 5.0);
+        let factor = double_touch_pay_at_hit_factor(100.0, 90.0, 110.0, rate, q, vol, expiry, 20);
+
+        let df_r = (-rate * expiry).exp();
+        // Undiscounted touch probability from the r = 0 series.
+        let touch_prob_r0 =
+            1.0 - double_no_touch_digital_price(100.0, 90.0, 110.0, 0.0, q - rate, vol, expiry, 20);
+        assert!(factor.is_finite());
+        assert!(
+            factor >= touch_prob_r0 - 1.0e-9 && factor <= df_r * touch_prob_r0 + 1.0e-9,
+            "factor {factor} outside [{touch_prob_r0}, {}]",
+            df_r * touch_prob_r0
+        );
+
+        // Tight corridor over 5y: the barrier is hit almost surely, so the
+        // factor should be close to E[e^{-r tau}] >= 1 for r < 0.
+        assert!(factor > 0.99, "factor {factor} should be near or above 1");
+    }
+
+    #[test]
+    fn double_knock_out_with_rebate_does_not_panic_for_negative_rates() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(-0.02)
+            .dividend_yield(0.0)
+            .flat_vol(0.25)
+            .build()
+            .unwrap();
+        let engine = DoubleBarrierAnalyticEngine::new().with_series_terms(20);
+        let option = DoubleBarrierOption::new(
+            OptionType::Call,
+            100.0,
+            5.0,
+            90.0,
+            110.0,
+            DoubleBarrierType::KnockOut,
+            10.0,
+        );
+
+        let price = engine.price(&option, &market).unwrap().price;
+        assert!(price.is_finite() && price >= 0.0);
+        // With r < 0 the rebate component may exceed the undiscounted rebate
+        // (paid-at-hit cash is reinvested at a negative rate relative to par),
+        // but never beyond rebate * e^{-rT}.
+        let cap = 10.0 * (0.02_f64 * 5.0).exp() + 10.0;
+        assert!(price <= cap, "price {price} above cap {cap}");
+    }
+
+    #[test]
+    fn pay_at_hit_factor_reduces_to_touch_probability_at_zero_rate() {
+        let (q, vol, expiry) = (0.0, 0.25, 2.0);
+        let factor = double_touch_pay_at_hit_factor(100.0, 85.0, 115.0, 0.0, q, vol, expiry, 20);
+        let touch_prob =
+            1.0 - double_no_touch_digital_price(100.0, 85.0, 115.0, 0.0, q, vol, expiry, 20);
+        assert_relative_eq!(factor, touch_prob, epsilon = 1.0e-12);
     }
 
     #[test]

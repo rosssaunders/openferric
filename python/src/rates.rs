@@ -1542,6 +1542,13 @@ impl ForwardRateAgreement {
 
 #[pymethods]
 impl ForwardRateAgreement {
+    /// Create a forward rate agreement over `[start_date, end_date]`.
+    ///
+    /// `valuation_date` anchors the curve's time axis so forward-starting
+    /// FRAs (e.g. a 3x6) project the forward over `[start, end]`. If
+    /// `valuation_date` is omitted it defaults to `start_date`, i.e. the FRA
+    /// is treated as spot-started: valuation is anchored at the accrual start
+    /// and the forward period begins at time zero on the curve.
     #[new]
     #[pyo3(signature = (notional, fixed_rate, start_date, end_date, day_count, valuation_date=None))]
     fn new(
@@ -1608,11 +1615,12 @@ impl ForwardRateAgreement {
 
     fn __repr__(&self) -> String {
         format!(
-            "ForwardRateAgreement(notional={}, fixed_rate={}, start_date='{}', end_date='{}')",
+            "ForwardRateAgreement(notional={}, fixed_rate={}, start_date='{}', end_date='{}', valuation_date='{}')",
             self.inner.notional,
             self.inner.fixed_rate,
             format_date(self.inner.start_date),
-            format_date(self.inner.end_date)
+            format_date(self.inner.end_date),
+            format_date(self.inner.valuation_date)
         )
     }
 }

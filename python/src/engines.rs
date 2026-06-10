@@ -51,11 +51,12 @@ fn exercise_style_from_inputs(
 }
 
 fn build_market_checked(spot: f64, rate: f64, div_yield: f64, vol: f64) -> PyResult<Market> {
-    build_market(spot, rate, div_yield, vol).ok_or_else(|| py_value_error("invalid market inputs"))
+    build_market(spot, rate, div_yield, vol)
+        .map_err(|err| py_value_error(format!("invalid market inputs: {err}")))
 }
 
 fn map_pricing_err<T>(result: Result<T, openferric_core::core::PricingError>) -> PyResult<T> {
-    result.map_err(|err| py_value_error(format!("{err:?}")))
+    result.map_err(|err| py_value_error(err.to_string()))
 }
 
 fn quotes_from_tuples(quotes: Vec<(f64, f64, f64)>) -> Vec<VarianceOptionQuote> {

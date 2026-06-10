@@ -267,7 +267,14 @@ pub fn dsl_price_full(
                 pad_market(&mut m, product.num_underlyings);
                 m
             }
-            Err(_) => build_default_market(product.num_underlyings),
+            Err(e) => {
+                // Surface the parse error instead of silently pricing on the
+                // default market (mirrors `dsl_price`).
+                return serde_json::to_string(
+                    &serde_json::json!({"error": format!("invalid market JSON: {e}")}),
+                )
+                .unwrap();
+            }
         }
     };
 
@@ -276,10 +283,11 @@ pub fn dsl_price_full(
 
     let engine = DslMonteCarloEngine::new(num_paths as usize, num_steps as usize, seed);
 
-    // Price
+    // Price. On error, report NaN (serialized as JSON null) rather than a
+    // misleading 0.0 alongside the error message.
     let (price, stderr, error) = match engine.price_multi_asset(&product, &market) {
         Ok(result) => (result.price, result.stderr, None),
-        Err(e) => (0.0, None, Some(format!("{e}"))),
+        Err(e) => (f64::NAN, None, Some(format!("{e}"))),
     };
 
     // Extended greeks per underlying
@@ -415,8 +423,31 @@ fn pad_market(market: &mut MultiAssetMarket, num_underlyings: usize) {
     }
     let n = market.assets.len();
     if market.correlation.len() < n {
-        market.correlation = identity_correlation(n);
+        // Pad rather than reset: preserve the user-provided top-left block
+        // and fill new entries with identity (1 diagonal, 0 elsewhere).
+        market.correlation = padded_correlation(&market.correlation, n);
     }
+}
+
+/// Expand `existing` into an `n x n` correlation matrix, preserving the
+/// existing top-left block and using identity values elsewhere.
+fn padded_correlation(existing: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
+    (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| match existing.get(i).and_then(|row| row.get(j)) {
+                    Some(&v) => v,
+                    None => {
+                        if i == j {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn identity_correlation(n: usize) -> Vec<Vec<f64>> {
