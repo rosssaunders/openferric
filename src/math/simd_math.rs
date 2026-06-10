@@ -52,7 +52,12 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
     let max_x = _mm256_set1_pd(709.782_712_893_384);
     let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
     // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
+    // Inputs below the clamp threshold (incl. -inf) must flush to 0.0 instead
+    // of returning exp(min_x) ~ 2.2e-308, and NaN must propagate instead of
+    // being clamped into exp(max_x).
     let overflow = _mm256_cmp_pd(x, max_x, _CMP_GT_OQ);
+    let underflow = _mm256_cmp_pd(x, min_x, _CMP_LT_OQ);
+    let nan_mask = _mm256_cmp_pd(x, x, _CMP_UNORD_Q);
     let x = _mm256_max_pd(min_x, _mm256_min_pd(x, max_x));
 
     let log2e = _mm256_set1_pd(std::f64::consts::LOG2_E);
@@ -105,7 +110,9 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
         _mm256_castsi256_pd(e2),
     );
 
-    _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), overflow)
+    let y = _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), overflow);
+    let y = _mm256_blendv_pd(y, _mm256_setzero_pd(), underflow);
+    _mm256_blendv_pd(y, _mm256_set1_pd(f64::NAN), nan_mask)
 }
 
 /// Fast exp() with degree-7 minimax polynomial (~2e-10 relative error).
@@ -120,7 +127,11 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
 pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
     let max_x = _mm256_set1_pd(709.782_712_893_384);
     let min_x = _mm256_set1_pd(-708.396_418_532_264_1);
+    // Special values as in `exp_f64x4`: overflow -> +inf, underflow -> 0.0,
+    // NaN propagates.
     let overflow = _mm256_cmp_pd(x, max_x, _CMP_GT_OQ);
+    let underflow = _mm256_cmp_pd(x, min_x, _CMP_LT_OQ);
+    let nan_mask = _mm256_cmp_pd(x, x, _CMP_UNORD_Q);
     let x = _mm256_max_pd(min_x, _mm256_min_pd(x, max_x));
 
     let log2e = _mm256_set1_pd(std::f64::consts::LOG2_E);
@@ -167,7 +178,9 @@ pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
         _mm256_castsi256_pd(e2),
     );
 
-    _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), overflow)
+    let y = _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), overflow);
+    let y = _mm256_blendv_pd(y, _mm256_setzero_pd(), underflow);
+    _mm256_blendv_pd(y, _mm256_set1_pd(f64::NAN), nan_mask)
 }
 
 #[inline]
@@ -241,15 +254,19 @@ pub unsafe fn ln_f64x4(x: __m256d) -> __m256d {
     let mut y = _mm256_fmadd_pd(k, _mm256_set1_pd(LN_2_HI), ln_m);
     y = _mm256_fmadd_pd(k, _mm256_set1_pd(LN_2_LO), y);
 
-    // Special values: ln(0)=-inf, ln(neg)=NaN, ln(+inf)=+inf.
+    // Special values: ln(0)=-inf, ln(neg)=NaN, ln(+inf)=+inf, ln(NaN)=NaN.
+    // The ordered compares below are all false for NaN input, so NaN needs
+    // its own unordered check or it would fall through to finite garbage.
     let zero = _mm256_setzero_pd();
     let neg = _mm256_cmp_pd(x, zero, _CMP_LT_OQ);
     let eq_zero = _mm256_cmp_pd(x, zero, _CMP_EQ_OQ);
     let is_inf = _mm256_cmp_pd(x, _mm256_set1_pd(f64::INFINITY), _CMP_EQ_OQ);
+    let nan_mask = _mm256_cmp_pd(x, x, _CMP_UNORD_Q);
 
     y = _mm256_blendv_pd(y, _mm256_set1_pd(f64::NEG_INFINITY), eq_zero);
     y = _mm256_blendv_pd(y, _mm256_set1_pd(f64::NAN), neg);
-    _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), is_inf)
+    y = _mm256_blendv_pd(y, _mm256_set1_pd(f64::INFINITY), is_inf);
+    _mm256_blendv_pd(y, _mm256_set1_pd(f64::NAN), nan_mask)
 }
 
 #[inline]
@@ -481,4 +498,103 @@ pub unsafe fn fill_normals_simd(
     }
     // Step 2: Batch inverse CDF transform via AVX2.
     unsafe { inv_norm_cdf_batch_avx2(buf) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Special inputs covering underflow, overflow, infinities and NaN.
+    const EXP_LN_SPECIALS: [f64; 9] = [
+        f64::NEG_INFINITY,
+        -1e308,
+        -710.0,
+        -708.5,
+        0.0,
+        709.5,
+        709.9,
+        f64::INFINITY,
+        f64::NAN,
+    ];
+
+    /// Compare a SIMD exp result against `std::f64::exp`. Below the kernels'
+    /// clamp threshold (~-708.4) std may return a subnormal while the SIMD
+    /// path flushes to +0.0; both count as zero at working precision.
+    fn check_exp_special(x: f64, got: f64, tol: f64) {
+        let expected = x.exp();
+        if expected.is_nan() {
+            assert!(got.is_nan(), "exp({x}) = {got}, expected NaN");
+        } else if expected.is_infinite() {
+            assert_eq!(got, expected, "exp({x}) = {got}, expected {expected}");
+        } else if expected < f64::MIN_POSITIVE {
+            assert!(
+                got >= 0.0 && got <= f64::MIN_POSITIVE,
+                "exp({x}) = {got}, expected ~0 (std: {expected})"
+            );
+        } else {
+            let rel = ((got - expected) / expected).abs();
+            assert!(
+                rel <= tol,
+                "exp({x}) = {got}, expected {expected}, rel={rel}"
+            );
+        }
+    }
+
+    fn check_ln_special(x: f64, got: f64) {
+        let expected = x.ln();
+        if expected.is_nan() {
+            assert!(got.is_nan(), "ln({x}) = {got}, expected NaN");
+        } else if expected.is_infinite() {
+            assert_eq!(got, expected, "ln({x}) = {got}, expected {expected}");
+        } else {
+            let abs_err = (got - expected).abs();
+            assert!(
+                abs_err <= 1e-9,
+                "ln({x}) = {got}, expected {expected}, abs_err={abs_err}"
+            );
+        }
+    }
+
+    #[test]
+    fn exp_f64x4_special_values_match_std() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
+            return;
+        }
+        for chunk in EXP_LN_SPECIALS.chunks(4) {
+            let mut input = [0.0_f64; 4];
+            input[..chunk.len()].copy_from_slice(chunk);
+            let mut exact = [0.0_f64; 4];
+            let mut fast = [0.0_f64; 4];
+            // SAFETY: runtime feature check above; buffers hold 4 lanes.
+            unsafe {
+                let x = load_f64x4(&input, 0);
+                store_f64x4(&mut exact, 0, exp_f64x4(x));
+                store_f64x4(&mut fast, 0, fast_exp_f64x4(x));
+            }
+            for (i, &x) in chunk.iter().enumerate() {
+                check_exp_special(x, exact[i], 1e-10);
+                check_exp_special(x, fast[i], 5e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn ln_f64x4_special_values_match_std() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
+            return;
+        }
+        for chunk in EXP_LN_SPECIALS.chunks(4) {
+            let mut input = [1.0_f64; 4];
+            input[..chunk.len()].copy_from_slice(chunk);
+            let mut out = [0.0_f64; 4];
+            // SAFETY: runtime feature check above; buffers hold 4 lanes.
+            unsafe {
+                let x = load_f64x4(&input, 0);
+                store_f64x4(&mut out, 0, ln_f64x4(x));
+            }
+            for (i, &x) in chunk.iter().enumerate() {
+                check_ln_special(x, out[i]);
+            }
+        }
+    }
 }

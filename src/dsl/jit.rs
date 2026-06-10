@@ -643,6 +643,13 @@ fn compile_program(
                     // produce NaN, which propagates to the PV and matches the
                     // interpreter's error contract of never reading out of
                     // bounds.
+                    //
+                    // Backend contract: the interpreters (scalar and SIMD
+                    // batch) report invalid indices -- negative, NaN, or
+                    // >= num_assets -- as `DslError::EvalError`. The JIT has
+                    // no error channel, so its contract is NaN-for-invalid
+                    // instead; callers comparing backends must treat an
+                    // interpreter error and a JIT NaN as the same condition.
                     let idx_f64 = stack.pop();
                     let num_assets = builder.use_var(var_num_assets);
                     let num_assets_f64 = builder.ins().fcvt_from_uint(F64, num_assets);
@@ -759,6 +766,11 @@ fn compile_program(
             pc += 1;
         }
 
+        // If the program ends with JUMP_FALSE, its fall-through block (pc+1 ==
+        // instructions.len()) *is* the end block from the block map and is the
+        // current block here; the fall-through jump below already terminates
+        // it, so the end-block epilogue must not fill it a second time.
+        let last_block = builder.current_block();
         if !block_terminated {
             builder.ins().jump(return_continue_block, &[]);
         }
@@ -766,8 +778,10 @@ fn compile_program(
         // A jump may target the end of the program (pc == instructions.len(),
         // e.g. the exit of an if/else); that block was created in the block
         // map but never lowered, so terminate it with a fall-through to
-        // Continue.
-        if let Some(&end_block) = block_map.get(&instructions.len()) {
+        // Continue -- unless it was already filled above.
+        if let Some(&end_block) = block_map.get(&instructions.len())
+            && Some(end_block) != last_block
+        {
             builder.switch_to_block(end_block);
             builder.ins().jump(return_continue_block, &[]);
         }
@@ -1297,6 +1311,119 @@ mod tests {
             locals[1]
         );
         assert!(locals[2].abs() < 1e-10, "NOT(T)={}, want 0.0", locals[2]);
+    }
+
+    #[test]
+    fn jit_nan_is_truthy_in_and_or() {
+        // NaN produced at runtime (0/0) must be truthy in AND/OR, matching
+        // the scalar interpreter (`v != 0.0`) and the AVX2/NEON batch
+        // backends. FloatCC::NotEqual is unordered, so NaN != 0 is true.
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0), // 0.0
+            inst(opcode::PUSH_CONST, 0), // 0.0
+            inst(opcode::DIV, 0),        // NaN at runtime
+            inst(opcode::PUSH_CONST, 1), // 1.0
+            inst(opcode::AND, 0),
+            inst(opcode::STORE_LOCAL, 0),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::DIV, 0), // NaN at runtime
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::OR, 0),
+            inst(opcode::STORE_LOCAL, 1),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[0.0, 1.0]).unwrap();
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        // Scalar semantics: f64_to_bool(NaN) is true, so both are 1.0.
+        assert!(
+            (locals[0] - 1.0).abs() < 1e-10,
+            "AND(NaN, 1.0)={}, want 1.0 (scalar treats NaN as truthy)",
+            locals[0]
+        );
+        assert!(
+            (locals[1] - 1.0).abs() < 1e-10,
+            "OR(NaN, 0.0)={}, want 1.0 (scalar treats NaN as truthy)",
+            locals[1]
+        );
+    }
+
+    #[test]
+    fn jit_program_ending_with_jump_false_compiles() {
+        // Hand-built bytecode may end with JUMP_FALSE whose fall-through
+        // (pc+1) and target are the end of the program. The fall-through
+        // block then *is* the end block; previously the epilogue terminated
+        // it twice and panicked inside Cranelift's FunctionBuilder.
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PAY, 0),
+            inst(opcode::PUSH_TRUE, 0),
+            inst(opcode::JUMP_FALSE, 4),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[25.0])
+            .expect("bytecode ending with JUMP_FALSE must compile");
+
+        let mut locals = vec![0.0; 4];
+        let mut state = vec![0.0; 4];
+        let mut pv = 0.0;
+
+        let result = unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert!((pv - 25.0).abs() < 1e-10, "expected 25.0, got {pv}");
+
+        // Same shape with a false condition: jumps straight to the end.
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PAY, 0),
+            inst(opcode::PUSH_FALSE, 0),
+            inst(opcode::JUMP_FALSE, 4),
+        ];
+        let compiled = JitCompiledProgram::compile(&code, &[25.0])
+            .expect("bytecode ending with JUMP_FALSE must compile");
+        let mut pv = 0.0;
+        let result = unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert!((pv - 25.0).abs() < 1e-10, "expected 25.0, got {pv}");
     }
 
     #[test]
