@@ -1,17 +1,25 @@
 use wasm_bindgen::prelude::*;
 
+use crate::error::{require_finite, require_non_negative, require_positive, require_probability};
+
 /// Approximate CDS fair spread from flat hazard rate and flat discount rate.
 #[wasm_bindgen]
 pub fn cds_fair_spread(
-    _notional: f64,
+    notional: f64,
     maturity: f64,
     recovery_rate: f64,
     hazard_rate: f64,
     discount_rate: f64,
-) -> f64 {
+) -> Result<f64, JsValue> {
     use openferric::credit::Cds;
     use openferric::credit::survival_curve::SurvivalCurve;
     use openferric::rates::YieldCurve;
+
+    require_positive("notional", notional)?;
+    require_positive("maturity", maturity)?;
+    require_probability("recovery_rate", recovery_rate)?;
+    require_non_negative("hazard_rate", hazard_rate)?;
+    require_finite("discount_rate", discount_rate)?;
 
     let tenors: Vec<(f64, f64)> = (1..=((maturity * 4.0).ceil() as u32))
         .map(|i| {
@@ -30,13 +38,13 @@ pub fn cds_fair_spread(
     let survival_curve = SurvivalCurve::new(surv_nodes);
 
     let cds = Cds {
-        notional: 1.0,
+        notional,
         spread: 0.01, // dummy
         maturity,
         recovery_rate,
         payment_freq: 4,
     };
-    cds.fair_spread(&discount_curve, &survival_curve)
+    Ok(cds.fair_spread(&discount_curve, &survival_curve))
 }
 
 #[cfg(test)]
@@ -45,7 +53,7 @@ mod tests {
 
     #[test]
     fn cds_fair_spread_positive() {
-        let spread = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.02, 0.03);
+        let spread = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.02, 0.03).unwrap();
         assert!(spread > 0.0);
     }
 
@@ -54,23 +62,23 @@ mod tests {
         // Fair spread ≈ (1-R)*λ for flat curves
         let hazard = 0.02;
         let recovery = 0.40;
-        let spread = cds_fair_spread(1_000_000.0, 5.0, recovery, hazard, 0.03);
+        let spread = cds_fair_spread(1_000_000.0, 5.0, recovery, hazard, 0.03).unwrap();
         let approx = (1.0 - recovery) * hazard;
         assert!((spread - approx).abs() < 0.005);
     }
 
     #[test]
     fn cds_fair_spread_higher_hazard() {
-        let spread_low = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.01, 0.03);
-        let spread_high = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.05, 0.03);
+        let spread_low = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.01, 0.03).unwrap();
+        let spread_high = cds_fair_spread(1_000_000.0, 5.0, 0.40, 0.05, 0.03).unwrap();
         assert!(spread_high > spread_low);
     }
 
     #[test]
     fn cds_fair_spread_lower_recovery() {
         // Lower recovery → higher spread
-        let spread_high_r = cds_fair_spread(1_000_000.0, 5.0, 0.60, 0.02, 0.03);
-        let spread_low_r = cds_fair_spread(1_000_000.0, 5.0, 0.20, 0.02, 0.03);
+        let spread_high_r = cds_fair_spread(1_000_000.0, 5.0, 0.60, 0.02, 0.03).unwrap();
+        let spread_low_r = cds_fair_spread(1_000_000.0, 5.0, 0.20, 0.02, 0.03).unwrap();
         assert!(spread_low_r > spread_high_r);
     }
 }

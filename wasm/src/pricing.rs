@@ -1,5 +1,8 @@
 use wasm_bindgen::prelude::*;
 
+use crate::error::{
+    check_batch_lengths, js_error, require_finite, require_non_negative, require_positive,
+};
 use openferric::core::types::{BarrierDirection, BarrierStyle, OptionType};
 use openferric::greeks::black_scholes_merton_greeks;
 use openferric::math::{normal_cdf, normal_pdf};
@@ -17,7 +20,14 @@ pub fn bs_price(
     vol: f64,
     maturity: f64,
     is_call: bool,
-) -> f64 {
+) -> Result<f64, JsValue> {
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("maturity", maturity)?;
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+
     let ot = if is_call {
         OptionType::Call
     } else {
@@ -25,7 +35,7 @@ pub fn bs_price(
     };
     // Adjust for continuous dividend yield: S_adj = S * e^{-q*T}
     let s_adj = spot * (-div_yield * maturity).exp();
-    black_scholes_price(ot, s_adj, strike, rate, vol, maturity)
+    Ok(black_scholes_price(ot, s_adj, strike, rate, vol, maturity))
 }
 
 /// Black-Scholes implied volatility.
@@ -38,14 +48,22 @@ pub fn bs_implied_vol(
     div_yield: f64,
     maturity: f64,
     is_call: bool,
-) -> f64 {
+) -> Result<f64, JsValue> {
+    require_finite("price", price)?;
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_positive("maturity", maturity)?;
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+
     let ot = if is_call {
         OptionType::Call
     } else {
         OptionType::Put
     };
     let s_adj = spot * (-div_yield * maturity).exp();
-    implied_vol(ot, s_adj, strike, rate, maturity, price, 1e-12, 64).unwrap_or(f64::NAN)
+    implied_vol(ot, s_adj, strike, rate, maturity, price, 1e-12, 64)
+        .map_err(|e| js_error(format!("implied volatility solve failed: {e}")))
 }
 
 /// BSM Greeks: returns [delta, gamma, vega, theta, rho, vanna, volga].
@@ -58,14 +76,23 @@ pub fn bsm_greeks_wasm(
     vol: f64,
     expiry: f64,
     is_call: bool,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, JsValue> {
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+
     let option_type = if is_call {
         OptionType::Call
     } else {
         OptionType::Put
     };
     let g = black_scholes_merton_greeks(option_type, spot, strike, rate, div_yield, vol, expiry);
-    vec![g.delta, g.gamma, g.vega, g.theta, g.rho, g.vanna, g.volga]
+    Ok(vec![
+        g.delta, g.gamma, g.vega, g.theta, g.rho, g.vanna, g.volga,
+    ])
 }
 
 #[inline]
@@ -113,25 +140,6 @@ fn black76_greeks_7(
     [delta, gamma, vega, theta, rho, vanna, volga]
 }
 
-/// Validate that every batch input slice matches the primary slice length.
-///
-/// Returns the error message as a `String` so it can be unit-tested on
-/// non-wasm targets; callers convert it to a `JsValue` at the boundary.
-fn batch_length_error(n: usize, others: &[(&str, usize)]) -> Result<(), String> {
-    for (name, len) in others {
-        if *len != n {
-            return Err(format!(
-                "batch input length mismatch: `{name}` has {len} entries, expected {n}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn check_batch_lengths(n: usize, others: &[(&str, usize)]) -> Result<(), JsValue> {
-    batch_length_error(n, others).map_err(|message| JsValue::from_str(&message))
-}
-
 /// Batch Black-Scholes pricing: one WASM call for N options.
 ///
 /// All input slices must have the same length.  `is_calls` uses `1` = call,
@@ -150,6 +158,7 @@ pub fn bs_price_batch_wasm(
 ) -> Result<Vec<f64>, JsValue> {
     let n = spots.len();
     check_batch_lengths(
+        "spots",
         n,
         &[
             ("strikes", strikes.len()),
@@ -198,6 +207,7 @@ pub fn black76_price_batch_wasm(
 ) -> Result<Vec<f64>, JsValue> {
     let n = forwards.len();
     check_batch_lengths(
+        "forwards",
         n,
         &[
             ("strikes", strikes.len()),
@@ -246,6 +256,7 @@ pub fn bsm_greeks_batch_wasm(
 ) -> Result<Vec<f64>, JsValue> {
     let n = spots.len();
     check_batch_lengths(
+        "spots",
         n,
         &[
             ("strikes", strikes.len()),
@@ -305,6 +316,7 @@ pub fn black76_greeks_batch_wasm(
 ) -> Result<Vec<f64>, JsValue> {
     let n = forwards.len();
     check_batch_lengths(
+        "forwards",
         n,
         &[
             ("strikes", strikes.len()),
@@ -342,7 +354,15 @@ pub fn barrier_price(
     maturity: f64,
     barrier_type: &str,
     is_call: bool,
-) -> f64 {
+) -> Result<f64, JsValue> {
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_positive("barrier", barrier)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("maturity", maturity)?;
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+
     let ot = if is_call {
         OptionType::Call
     } else {
@@ -353,11 +373,15 @@ pub fn barrier_price(
         "up-out" => (BarrierDirection::Up, BarrierStyle::Out),
         "down-in" => (BarrierDirection::Down, BarrierStyle::In),
         "down-out" => (BarrierDirection::Down, BarrierStyle::Out),
-        _ => return f64::NAN,
+        _ => {
+            return Err(js_error(
+                "`barrier_type` must be one of up-in, up-out, down-in, down-out",
+            ));
+        }
     };
-    barrier_price_closed_form_with_carry_and_rebate(
+    Ok(barrier_price_closed_form_with_carry_and_rebate(
         ot, style, direction, spot, strike, barrier, rate, div_yield, vol, maturity, 0.0,
-    )
+    ))
 }
 
 /// Simple fixed-rate bond dirty price using flat yield discounting.
@@ -368,9 +392,13 @@ pub fn bond_price(
     maturity_years: f64,
     yield_rate: f64,
     frequency: u32,
-) -> f64 {
-    if frequency == 0 || maturity_years <= 0.0 {
-        return f64::NAN;
+) -> Result<f64, JsValue> {
+    require_positive("face_value", face_value)?;
+    require_non_negative("coupon_rate", coupon_rate)?;
+    require_positive("maturity_years", maturity_years)?;
+    require_finite("yield_rate", yield_rate)?;
+    if frequency == 0 {
+        return Err(js_error("`frequency` must be positive"));
     }
     let freq = frequency as f64;
     let coupon = face_value * coupon_rate / freq;
@@ -383,7 +411,7 @@ pub fn bond_price(
         pv += coupon * df;
     }
     pv += face_value * (1.0 + r_per).powi(-(n_periods as i32));
-    pv
+    Ok(pv)
 }
 
 #[cfg(test)]
@@ -396,13 +424,13 @@ mod tests {
 
     #[test]
     fn bs_price_atm_call() {
-        let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert!((price - 10.4506).abs() < 0.01);
     }
 
     #[test]
     fn bs_price_atm_put() {
-        let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false);
+        let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false).unwrap();
         assert!((price - 5.5735).abs() < 0.01);
     }
 
@@ -413,8 +441,8 @@ mod tests {
         let r = 0.05;
         let q = 0.0;
         let t = 1.0;
-        let call = bs_price(s, k, r, q, 0.20, t, true);
-        let put = bs_price(s, k, r, q, 0.20, t, false);
+        let call = bs_price(s, k, r, q, 0.20, t, true).unwrap();
+        let put = bs_price(s, k, r, q, 0.20, t, false).unwrap();
         let s_adj = s * (-q * t).exp();
         let parity = call - put - (s_adj - k * (-r * t).exp());
         assert!(parity.abs() < 1e-8);
@@ -422,8 +450,8 @@ mod tests {
 
     #[test]
     fn bs_price_with_dividend() {
-        let no_div = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
-        let with_div = bs_price(100.0, 100.0, 0.05, 0.03, 0.20, 1.0, true);
+        let no_div = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
+        let with_div = bs_price(100.0, 100.0, 0.05, 0.03, 0.20, 1.0, true).unwrap();
         assert!(with_div < no_div);
     }
 
@@ -432,16 +460,16 @@ mod tests {
     #[test]
     fn bs_implied_vol_round_trip() {
         let vol = 0.25;
-        let price = bs_price(100.0, 100.0, 0.05, 0.0, vol, 1.0, true);
-        let recovered = bs_implied_vol(price, 100.0, 100.0, 0.05, 0.0, 1.0, true);
+        let price = bs_price(100.0, 100.0, 0.05, 0.0, vol, 1.0, true).unwrap();
+        let recovered = bs_implied_vol(price, 100.0, 100.0, 0.05, 0.0, 1.0, true).unwrap();
         assert!((recovered - vol).abs() < 1e-4);
     }
 
     #[test]
     fn bs_implied_vol_put_round_trip() {
         let vol = 0.30;
-        let price = bs_price(100.0, 110.0, 0.03, 0.0, vol, 0.5, false);
-        let recovered = bs_implied_vol(price, 100.0, 110.0, 0.03, 0.0, 0.5, false);
+        let price = bs_price(100.0, 110.0, 0.03, 0.0, vol, 0.5, false).unwrap();
+        let recovered = bs_implied_vol(price, 100.0, 110.0, 0.03, 0.0, 0.5, false).unwrap();
         assert!((recovered - vol).abs() < 1e-3);
     }
 
@@ -449,32 +477,32 @@ mod tests {
 
     #[test]
     fn bsm_greeks_call_has_7_values() {
-        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert_eq!(g.len(), 7);
     }
 
     #[test]
     fn bsm_greeks_call_delta_range() {
-        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         let delta = g[0];
         assert!(delta > 0.0 && delta < 1.0);
     }
 
     #[test]
     fn bsm_greeks_put_delta_negative() {
-        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false);
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false).unwrap();
         assert!(g[0] < 0.0);
     }
 
     #[test]
     fn bsm_greeks_gamma_positive() {
-        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert!(g[1] > 0.0);
     }
 
     #[test]
     fn bsm_greeks_vega_positive() {
-        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert!(g[2] > 0.0);
     }
 
@@ -492,19 +520,19 @@ mod tests {
         let batch =
             bs_price_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &mats, &calls).unwrap();
         assert_eq!(batch.len(), 2);
-        let p1 = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
-        let p2 = bs_price(100.0, 110.0, 0.05, 0.0, 0.20, 1.0, false);
+        let p1 = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
+        let p2 = bs_price(100.0, 110.0, 0.05, 0.0, 0.20, 1.0, false).unwrap();
         assert!((batch[0] - p1).abs() < TOL);
         assert!((batch[1] - p2).abs() < TOL);
     }
 
     #[test]
     fn batch_length_mismatch_is_rejected() {
-        // Tested via the String-level helper because constructing a JsValue
-        // is not supported on non-wasm test targets.
-        let err = batch_length_error(2, &[("strikes", 1)]).unwrap_err();
+        let err = crate::error::batch_length_error("spots", 2, &[("strikes", 1)]).unwrap_err();
         assert!(err.contains("strikes"));
-        assert!(batch_length_error(2, &[("strikes", 2), ("vols", 2)]).is_ok());
+        assert!(
+            crate::error::batch_length_error("spots", 2, &[("strikes", 2), ("vols", 2)]).is_ok()
+        );
     }
 
     // -- bsm_greeks_batch_wasm --
@@ -521,7 +549,7 @@ mod tests {
         let batch =
             bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls)
                 .unwrap();
-        let single = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let single = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert_eq!(batch.len(), 7);
         for i in 0..7 {
             assert!((batch[i] - single[i]).abs() < TOL);
@@ -584,29 +612,24 @@ mod tests {
 
     #[test]
     fn barrier_up_out_call_less_than_vanilla() {
-        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
-        let bp = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true);
+        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
+        let bp = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true).unwrap();
         assert!(bp > 0.0 && bp < vanilla);
     }
 
     #[test]
     fn barrier_in_plus_out_equals_vanilla() {
-        let in_p = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-in", true);
-        let out_p = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true);
-        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true);
+        let in_p = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-in", true).unwrap();
+        let out_p =
+            barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true).unwrap();
+        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert!((in_p + out_p - vanilla).abs() < 1e-3);
     }
 
     #[test]
-    fn barrier_invalid_type_returns_nan() {
-        assert!(
-            barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "sideways", true).is_nan()
-        );
-    }
-
-    #[test]
     fn barrier_down_in_put() {
-        let price = barrier_price(100.0, 100.0, 80.0, 0.05, 0.0, 0.20, 1.0, "down-in", false);
+        let price =
+            barrier_price(100.0, 100.0, 80.0, 0.05, 0.0, 0.20, 1.0, "down-in", false).unwrap();
         assert!(price > 0.0);
     }
 
@@ -615,31 +638,21 @@ mod tests {
     #[test]
     fn bond_price_par() {
         // When coupon rate == yield rate, bond price ≈ face value
-        let price = bond_price(1000.0, 0.05, 10.0, 0.05, 2);
+        let price = bond_price(1000.0, 0.05, 10.0, 0.05, 2).unwrap();
         assert!((price - 1000.0).abs() < 0.01);
     }
 
     #[test]
     fn bond_price_premium() {
         // Coupon > yield → premium
-        let price = bond_price(1000.0, 0.08, 10.0, 0.05, 2);
+        let price = bond_price(1000.0, 0.08, 10.0, 0.05, 2).unwrap();
         assert!(price > 1000.0);
     }
 
     #[test]
     fn bond_price_discount() {
         // Coupon < yield → discount
-        let price = bond_price(1000.0, 0.03, 10.0, 0.05, 2);
+        let price = bond_price(1000.0, 0.03, 10.0, 0.05, 2).unwrap();
         assert!(price < 1000.0);
-    }
-
-    #[test]
-    fn bond_price_zero_freq_nan() {
-        assert!(bond_price(1000.0, 0.05, 10.0, 0.05, 0).is_nan());
-    }
-
-    #[test]
-    fn bond_price_negative_maturity_nan() {
-        assert!(bond_price(1000.0, 0.05, -1.0, 0.05, 2).is_nan());
     }
 }
