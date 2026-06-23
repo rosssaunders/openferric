@@ -134,6 +134,7 @@ WASM build:
 
 ```bash
 wasm-pack build wasm --target web --out-dir ../www/pkg
+wasm-pack test --node wasm
 ```
 
 Coverage helpers:

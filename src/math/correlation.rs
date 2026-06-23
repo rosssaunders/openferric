@@ -726,8 +726,8 @@ mod tests {
         for i in 0..n {
             for j in 0..n {
                 let mut acc = 0.0;
-                for k in 0..n {
-                    acc += l[i][k] * l[j][k];
+                for (&left, &right) in l[i].iter().zip(&l[j]) {
+                    acc += left * right;
                 }
                 assert!(
                     (acc - 1.0).abs() < 1.0e-12,

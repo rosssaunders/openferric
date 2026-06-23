@@ -153,3 +153,9 @@ jobs:
 
       - name: Build WASM
         run: wasm-pack build wasm --target web --out-dir ../www/pkg
+
+      - name: Test WASM bindings
+        run: wasm-pack test --node wasm
+
+      - name: Check WASM size budget
+        run: test "$(wc -c < www/pkg/openferric_wasm_bg.wasm)" -le 1200000

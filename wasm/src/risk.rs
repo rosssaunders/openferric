@@ -1,14 +1,16 @@
 use wasm_bindgen::prelude::*;
 
+use crate::error::{js_error, require_open_probability};
 use openferric::risk::var::historical_var;
 
 /// Historical Value-at-Risk from a flat array of P&L returns.
 #[wasm_bindgen]
-pub fn var_historical(returns_flat: &[f64], confidence: f64) -> f64 {
+pub fn var_historical(returns_flat: &[f64], confidence: f64) -> Result<f64, JsValue> {
     if returns_flat.is_empty() {
-        return f64::NAN;
+        return Err(js_error("`returns_flat` must not be empty"));
     }
-    historical_var(returns_flat, confidence)
+    require_open_probability("confidence", confidence)?;
+    Ok(historical_var(returns_flat, confidence))
 }
 
 #[cfg(test)]
@@ -20,7 +22,7 @@ mod tests {
         let returns = [
             -0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05,
         ];
-        let var = var_historical(&returns, 0.95);
+        let var = var_historical(&returns, 0.95).unwrap();
         assert!(var > 0.0);
     }
 
@@ -29,20 +31,15 @@ mod tests {
         let returns = [
             -0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05,
         ];
-        let var_90 = var_historical(&returns, 0.90);
-        let var_99 = var_historical(&returns, 0.99);
+        let var_90 = var_historical(&returns, 0.90).unwrap();
+        let var_99 = var_historical(&returns, 0.99).unwrap();
         assert!(var_99 >= var_90);
-    }
-
-    #[test]
-    fn var_historical_empty_returns_nan() {
-        assert!(var_historical(&[], 0.95).is_nan());
     }
 
     #[test]
     fn var_historical_all_positive() {
         let returns = [0.01, 0.02, 0.03, 0.04, 0.05];
-        let var = var_historical(&returns, 0.95);
+        let var = var_historical(&returns, 0.95).unwrap();
         assert!(var <= 0.01);
     }
 }

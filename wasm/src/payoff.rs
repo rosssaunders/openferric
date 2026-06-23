@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+use crate::error::check_batch_lengths;
+
 /// Strategy intrinsic PnL at expiry for a set of option legs across a spot axis.
 #[wasm_bindgen]
 pub fn strategy_intrinsic_pnl_wasm(
@@ -8,10 +10,19 @@ pub fn strategy_intrinsic_pnl_wasm(
     quantities: &[f64],
     is_calls: &[u8],
     total_cost: f64,
-) -> Vec<f64> {
-    openferric::pricing::payoff::strategy_intrinsic_pnl(
+) -> Result<Vec<f64>, JsValue> {
+    check_batch_lengths(
+        "strikes",
+        strikes.len(),
+        &[
+            ("quantities", quantities.len()),
+            ("is_calls", is_calls.len()),
+        ],
+    )?;
+
+    Ok(openferric::pricing::payoff::strategy_intrinsic_pnl(
         spot_axis, strikes, quantities, is_calls, total_cost,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -22,7 +33,7 @@ mod tests {
     fn long_call_pnl() {
         // Long 1 call at K=100, cost=5
         let spots = [80.0, 90.0, 100.0, 110.0, 120.0];
-        let pnl = strategy_intrinsic_pnl_wasm(&spots, &[100.0], &[1.0], &[1u8], 5.0);
+        let pnl = strategy_intrinsic_pnl_wasm(&spots, &[100.0], &[1.0], &[1u8], 5.0).unwrap();
         assert_eq!(pnl.len(), 5);
         // Below strike: PnL = -cost
         assert!((pnl[0] - (-5.0)).abs() < 1e-10);
@@ -37,7 +48,7 @@ mod tests {
     fn long_put_pnl() {
         // Long 1 put at K=100, cost=5
         let spots = [80.0, 90.0, 100.0, 110.0, 120.0];
-        let pnl = strategy_intrinsic_pnl_wasm(&spots, &[100.0], &[1.0], &[0u8], 5.0);
+        let pnl = strategy_intrinsic_pnl_wasm(&spots, &[100.0], &[1.0], &[0u8], 5.0).unwrap();
         assert_eq!(pnl.len(), 5);
         assert!((pnl[0] - 15.0).abs() < 1e-10); // 100-80-5
         assert!((pnl[1] - 5.0).abs() < 1e-10); // 100-90-5
@@ -50,7 +61,8 @@ mod tests {
         // Long call K=100, short call K=110, net debit=3
         let spots = [90.0, 100.0, 105.0, 110.0, 120.0];
         let pnl =
-            strategy_intrinsic_pnl_wasm(&spots, &[100.0, 110.0], &[1.0, -1.0], &[1u8, 1u8], 3.0);
+            strategy_intrinsic_pnl_wasm(&spots, &[100.0, 110.0], &[1.0, -1.0], &[1u8, 1u8], 3.0)
+                .unwrap();
         assert_eq!(pnl.len(), 5);
         // Below both strikes: max loss = -cost
         assert!((pnl[0] - (-3.0)).abs() < 1e-10);
@@ -62,7 +74,7 @@ mod tests {
 
     #[test]
     fn empty_spot_axis() {
-        let pnl = strategy_intrinsic_pnl_wasm(&[], &[100.0], &[1.0], &[1u8], 5.0);
+        let pnl = strategy_intrinsic_pnl_wasm(&[], &[100.0], &[1.0], &[1u8], 5.0).unwrap();
         assert!(pnl.is_empty());
     }
 }

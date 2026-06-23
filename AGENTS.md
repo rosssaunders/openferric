@@ -64,6 +64,7 @@ pytest python/tests -v
 
 ```bash
 wasm-pack build wasm --target web --out-dir ../www/pkg
+wasm-pack test --node wasm
 ```
 
 ### TypeScript
@@ -83,6 +84,8 @@ Current CI in `.github/workflows/ci.yml` runs:
 4. ARM64 NEON SIMD regression tests on `ubuntu-24.04-arm`
 5. Python wheel build plus `pytest python/tests -v`
 6. `wasm-pack build wasm --target web --out-dir ../www/pkg`
+7. `wasm-pack test --node wasm`
+8. WASM binary size budget check for `www/pkg/openferric_wasm_bg.wasm`
 
 Prefer validating the narrowest relevant subset locally, but make sure changes are consistent with the CI commands above before opening a PR.
 
