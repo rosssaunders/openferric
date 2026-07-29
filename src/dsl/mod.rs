@@ -64,7 +64,7 @@ pub mod engine;
 pub mod error;
 pub mod eval;
 pub mod ir;
-#[cfg(feature = "jit")]
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
 pub mod jit;
 pub mod lexer;
 pub mod market;
@@ -76,6 +76,8 @@ pub use engine::{DslMonteCarloEngine, DslProduct};
 pub use error::DslError;
 pub use eval::ProductEvaluator;
 pub use ir::CompiledProduct;
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+pub use jit::{JitEvaluationScratch, JitProductEvaluator};
 pub use market::{AssetMarketData, MultiAssetMarket};
 
 /// Parse and compile a DSL source string into a `CompiledProduct`.

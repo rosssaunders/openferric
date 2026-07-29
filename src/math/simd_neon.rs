@@ -44,6 +44,8 @@ pub unsafe fn store_f64x2(values: &mut [f64], i: usize, v: float64x2_t) {
 /// Vectorized exp(x) for NEON f64x2 using degree-11 Taylor with range reduction.
 ///
 /// Matches the AVX2 `exp_f64x4` algorithm from `simd_math.rs`, ported to 2-lane NEON.
+/// Dense differential tests bound relative error by `2e-14` over the practical
+/// finite range `[-700, 700]`.
 #[inline]
 pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     // Clamp to avoid overflow/underflow
@@ -98,6 +100,66 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     // A single 2^n overflows the biased exponent for n = 1024, which
     // round(x*log2e) produces for x in [~709.44, 709.78] where exp(x) is
     // still finite.
+    let n_i64 = vcvtq_s64_f64(n_f64);
+    let n1_i64 = vshrq_n_s64(n_i64, 1);
+    let n2_i64 = vsubq_s64(n_i64, n1_i64);
+    let bias = vdupq_n_s64(1023);
+    let e1 = vshlq_n_s64(vaddq_s64(n1_i64, bias), 52);
+    let e2 = vshlq_n_s64(vaddq_s64(n2_i64, bias), 52);
+    let y = vmulq_f64(
+        vmulq_f64(poly, vreinterpretq_f64_s64(e1)),
+        vreinterpretq_f64_s64(e2),
+    );
+
+    let y = vbslq_f64(overflow, vdupq_n_f64(f64::INFINITY), y);
+    let y = vbslq_f64(underflow, vdupq_n_f64(0.0), y);
+    vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y)
+}
+
+/// Faster vectorized exp(x) for NEON f64x2 using a degree-7 polynomial.
+///
+/// Saves four fused multiply-add operations versus [`simd_exp_f64x2`]. Dense
+/// differential tests bound relative error by `8e-9` over the practical finite
+/// range `[-700, 700]`.
+///
+/// # Safety
+/// The caller must ensure NEON is available; it is part of the AArch64 baseline.
+#[inline]
+pub unsafe fn fast_exp_f64x2(x: float64x2_t) -> float64x2_t {
+    let max_x = vdupq_n_f64(709.782_712_893_384);
+    let min_x = vdupq_n_f64(-708.396_418_532_264_1);
+    let overflow = vcgtq_f64(x, max_x);
+    let underflow = vcltq_f64(x, min_x);
+    let nan_mask = veorq_u64(vceqq_f64(x, x), vdupq_n_u64(u64::MAX));
+    let x = vmaxq_f64(min_x, vminq_f64(x, max_x));
+
+    let log2e = vdupq_n_f64(std::f64::consts::LOG2_E);
+    let n_f64 = vrndnq_f64(vmulq_f64(x, log2e));
+
+    let ln2_hi = vdupq_n_f64(6.931_471_803_691_238e-1);
+    let ln2_lo = vdupq_n_f64(1.908_214_929_270_587_7e-10);
+    let r = vsubq_f64(x, vmulq_f64(n_f64, ln2_hi));
+    let r = vsubq_f64(r, vmulq_f64(n_f64, ln2_lo));
+
+    // Taylor-like coefficients rounded near reciprocal factorials. This is
+    // intentionally the same degree-7 approximation as the x86 kernels.
+    let c7 = vdupq_n_f64(1.984_126_984_12e-4);
+    let c6 = vdupq_n_f64(1.388_888_889_0e-3);
+    let c5 = vdupq_n_f64(8.333_333_333_3e-3);
+    let c4 = vdupq_n_f64(4.166_666_666_67e-2);
+    let c3 = vdupq_n_f64(1.666_666_666_666_67e-1);
+    let c2 = vdupq_n_f64(0.5);
+    let one = vdupq_n_f64(1.0);
+
+    let mut poly = c7;
+    poly = vfmaq_f64(c6, poly, r);
+    poly = vfmaq_f64(c5, poly, r);
+    poly = vfmaq_f64(c4, poly, r);
+    poly = vfmaq_f64(c3, poly, r);
+    poly = vfmaq_f64(c2, poly, r);
+    poly = vfmaq_f64(one, poly, r);
+    poly = vfmaq_f64(one, poly, r);
+
     let n_i64 = vcvtq_s64_f64(n_f64);
     let n1_i64 = vshrq_n_s64(n_i64, 1);
     let n2_i64 = vsubq_s64(n_i64, n1_i64);
@@ -263,12 +325,20 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
         };
     }
 
+    let df_r = (-r * t).exp();
+    let df_q = (-q * t).exp();
+    if vol <= 0.0 {
+        return if is_call {
+            (spot * df_q - strike * df_r).max(0.0)
+        } else {
+            (strike * df_r - spot * df_q).max(0.0)
+        };
+    }
+
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 = ((spot / strike).ln() + (r - q + 0.5 * vol * vol) * t) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
 
     if is_call {
         spot * df_q * normal_cdf_scalar(d1) - strike * df_r * normal_cdf_scalar(d2)
@@ -294,12 +364,39 @@ pub unsafe fn bs_price_neon_batch(
     );
 
     let mut out = vec![0.0_f64; spots.len()];
+    unsafe {
+        bs_price_neon_batch_into(spots, strikes, r, q, vol, t, is_call, &mut out);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn bs_price_neon_batch_into(
+    spots: &[f64],
+    strikes: &[f64],
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+    out: &mut [f64],
+) {
+    assert_eq!(
+        spots.len(),
+        strikes.len(),
+        "spots and strikes must have identical lengths",
+    );
+    assert_eq!(
+        spots.len(),
+        out.len(),
+        "output and input slices must have identical lengths",
+    );
 
     if t <= 0.0 || vol <= 0.0 {
         for i in 0..spots.len() {
             out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
         }
-        return out;
+        return;
     }
 
     let sqrt_t = t.sqrt();
@@ -346,7 +443,7 @@ pub unsafe fn bs_price_neon_batch(
         );
 
         // SAFETY: loop condition guarantees in-bounds 2-lane stores.
-        unsafe { store_f64x2(&mut out, i, if is_call { call } else { put }) };
+        unsafe { store_f64x2(out, i, if is_call { call } else { put }) };
         i += 2;
     }
 
@@ -354,13 +451,14 @@ pub unsafe fn bs_price_neon_batch(
         out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
         i += 1;
     }
-
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HIGH_EXP_RELATIVE_ERROR_BOUND: f64 = 2e-14;
+    const FAST_EXP_RELATIVE_ERROR_BOUND: f64 = 8e-9;
 
     /// Special inputs covering underflow, overflow, infinities and NaN.
     const EXP_LN_SPECIALS: [f64; 9] = [
@@ -378,7 +476,7 @@ mod tests {
     /// Compare a SIMD exp result against `std::f64::exp`. Below the kernel's
     /// clamp threshold (~-708.4) std may return a subnormal while the SIMD
     /// path flushes to +0.0; both count as zero at working precision.
-    fn check_exp_special(x: f64, got: f64) {
+    fn check_exp_special(x: f64, got: f64, tolerance: f64) {
         let expected = x.exp();
         if expected.is_nan() {
             assert!(got.is_nan(), "exp({x}) = {got}, expected NaN");
@@ -386,13 +484,13 @@ mod tests {
             assert_eq!(got, expected, "exp({x}) = {got}, expected {expected}");
         } else if expected < f64::MIN_POSITIVE {
             assert!(
-                got >= 0.0 && got <= f64::MIN_POSITIVE,
+                (0.0..=f64::MIN_POSITIVE).contains(&got),
                 "exp({x}) = {got}, expected ~0 (std: {expected})"
             );
         } else {
             let rel = ((got - expected) / expected).abs();
             assert!(
-                rel <= 1e-10,
+                rel <= tolerance,
                 "exp({x}) = {got}, expected {expected}, rel={rel}"
             );
         }
@@ -413,6 +511,69 @@ mod tests {
         }
     }
 
+    fn assert_dense_exp_accuracy(start: f64, end: f64, samples: usize) {
+        let mut max_high = (0.0_f64, 0.0_f64);
+        let mut max_fast = (0.0_f64, 0.0_f64);
+        let denominator = (samples - 1) as f64;
+
+        for base in (0..samples).step_by(2) {
+            let mut input = [0.0_f64; 2];
+            let valid_lanes = (samples - base).min(2);
+            for (lane, value) in input.iter_mut().take(valid_lanes).enumerate() {
+                let sample = (base + lane) as f64;
+                *value = (end - start).mul_add(sample / denominator, start);
+            }
+
+            let mut high = [0.0_f64; 2];
+            let mut fast = [0.0_f64; 2];
+            // SAFETY: AArch64 guarantees NEON and all arrays contain two lanes.
+            unsafe {
+                let x = load_f64x2(&input, 0);
+                store_f64x2(&mut high, 0, simd_exp_f64x2(x));
+                store_f64x2(&mut fast, 0, fast_exp_f64x2(x));
+            }
+
+            for lane in 0..valid_lanes {
+                let x = input[lane];
+                let expected = x.exp();
+                let high_error = ((high[lane] - expected) / expected).abs();
+                let fast_error = ((fast[lane] - expected) / expected).abs();
+                if high_error > max_high.0 {
+                    max_high = (high_error, x);
+                }
+                if fast_error > max_fast.0 {
+                    max_fast = (fast_error, x);
+                }
+            }
+        }
+
+        assert!(
+            max_high.0 <= HIGH_EXP_RELATIVE_ERROR_BOUND,
+            "degree-11 exp max relative error {} at x={} exceeds {}",
+            max_high.0,
+            max_high.1,
+            HIGH_EXP_RELATIVE_ERROR_BOUND
+        );
+        assert!(
+            max_fast.0 <= FAST_EXP_RELATIVE_ERROR_BOUND,
+            "degree-7 exp max relative error {} at x={} exceeds {}",
+            max_fast.0,
+            max_fast.1,
+            FAST_EXP_RELATIVE_ERROR_BOUND
+        );
+    }
+
+    #[test]
+    fn simd_exp_f64x2_dense_accuracy_bounds() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+
+        let half_ln_2 = std::f64::consts::LN_2 * 0.5;
+        assert_dense_exp_accuracy(-half_ln_2, half_ln_2, 16_385);
+        assert_dense_exp_accuracy(-700.0, 700.0, 65_537);
+    }
+
     #[test]
     fn simd_exp_f64x2_special_values_match_std() {
         if !std::arch::is_aarch64_feature_detected!("neon") {
@@ -421,14 +582,17 @@ mod tests {
         for chunk in EXP_LN_SPECIALS.chunks(2) {
             let mut input = [0.0_f64; 2];
             input[..chunk.len()].copy_from_slice(chunk);
-            let mut out = [0.0_f64; 2];
+            let mut high = [0.0_f64; 2];
+            let mut fast = [0.0_f64; 2];
             // SAFETY: runtime feature check above; buffers hold 2 lanes.
             unsafe {
                 let x = load_f64x2(&input, 0);
-                store_f64x2(&mut out, 0, simd_exp_f64x2(x));
+                store_f64x2(&mut high, 0, simd_exp_f64x2(x));
+                store_f64x2(&mut fast, 0, fast_exp_f64x2(x));
             }
             for (i, &x) in chunk.iter().enumerate() {
-                check_exp_special(x, out[i]);
+                check_exp_special(x, high[i], HIGH_EXP_RELATIVE_ERROR_BOUND);
+                check_exp_special(x, fast[i], FAST_EXP_RELATIVE_ERROR_BOUND);
             }
         }
     }

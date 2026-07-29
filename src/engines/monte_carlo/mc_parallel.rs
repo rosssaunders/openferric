@@ -11,7 +11,7 @@
 //! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
 use rayon::prelude::*;
 
-use crate::core::{ExerciseStyle, OptionType, PricingResult};
+use crate::core::{DiagKey, ExecutionBackend, ExerciseStyle, OptionType, PricingResult};
 use crate::engines::analytic::black_scholes::{bs_delta, bs_gamma, bs_vega};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
@@ -32,17 +32,6 @@ fn payoff(option_type: OptionType, spot: f64, strike: f64) -> f64 {
         OptionType::Call => (spot - strike).max(0.0),
         OptionType::Put => (strike - spot).max(0.0),
     }
-}
-
-#[inline]
-fn split_paths(n_paths: usize, n_chunks: usize) -> Vec<usize> {
-    let chunks = n_chunks.max(1);
-    let base = n_paths / chunks;
-    let rem = n_paths % chunks;
-    (0..chunks)
-        .map(|i| if i < rem { base + 1 } else { base })
-        .filter(|&n| n > 0)
-        .collect()
 }
 
 /// Exact single-step GBM chunk for European vanilla options.
@@ -71,6 +60,22 @@ fn simulate_chunk_exact(
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             return unsafe {
                 simulate_chunk_exact_avx2(
+                    option_type,
+                    strike,
+                    spot0,
+                    total_drift,
+                    total_diffusion,
+                    n_paths,
+                    chunk_seed,
+                )
+            };
+        }
+    }
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe {
+                simulate_chunk_exact_neon(
                     option_type,
                     strike,
                     spot0,
@@ -150,6 +155,71 @@ fn simulate_chunk_exact_scalar(
     }
 
     (sum, sum_sq, n_paths)
+}
+
+const DETERMINISTIC_CHUNK_PATHS: usize = 4_096;
+const DETERMINISTIC_BASE_SEED: u64 = 0xDEAD_BEEF_CAFE_BABE;
+const CHUNK_SEED_STRIDE: u64 = 6_364_136_223_846_793_005;
+
+#[inline]
+fn exact_chunk_vector_width(n_paths: usize) -> usize {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        return if n_paths >= 4 { 4 } else { 1 };
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    if std::arch::is_aarch64_feature_detected!("neon") {
+        return if n_paths >= 2 { 2 } else { 1 };
+    }
+
+    let _ = n_paths;
+    1
+}
+
+#[allow(clippy::too_many_arguments)]
+fn simulate_fixed_chunks(
+    option_type: OptionType,
+    strike: f64,
+    spot0: f64,
+    total_drift: f64,
+    total_diffusion: f64,
+    n_paths: usize,
+    parallel: bool,
+) -> (f64, f64, usize) {
+    let chunk_count = n_paths.div_ceil(DETERMINISTIC_CHUNK_PATHS);
+    let simulate = |chunk_index: usize| {
+        let start = chunk_index * DETERMINISTIC_CHUNK_PATHS;
+        let chunk_paths = (n_paths - start).min(DETERMINISTIC_CHUNK_PATHS);
+        let chunk_seed = DETERMINISTIC_BASE_SEED
+            .wrapping_add((chunk_index as u64).wrapping_mul(CHUNK_SEED_STRIDE));
+        simulate_chunk_exact(
+            option_type,
+            strike,
+            spot0,
+            total_drift,
+            total_diffusion,
+            chunk_paths,
+            chunk_seed,
+        )
+    };
+
+    let partials = if parallel {
+        (0..chunk_count)
+            .into_par_iter()
+            .map(simulate)
+            .collect::<Vec<_>>()
+    } else {
+        (0..chunk_count).map(simulate).collect::<Vec<_>>()
+    };
+
+    // `collect` preserves indexed order, and reduction happens in that fixed
+    // order. Results therefore do not depend on Rayon scheduling or pool size.
+    partials
+        .into_iter()
+        .fold((0.0_f64, 0.0_f64, 0_usize), |lhs, rhs| {
+            (lhs.0 + rhs.0, lhs.1 + rhs.1, lhs.2 + rhs.2)
+        })
 }
 
 /// AVX2+FMA accelerated chunk simulation with batch inverse CDF.
@@ -275,6 +345,62 @@ unsafe fn simulate_chunk_exact_avx2(
     (sum, sum_sq, n_paths)
 }
 
+/// AArch64 NEON exact-terminal chunk processing two paths per vector.
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments, unsafe_op_in_unsafe_fn)]
+unsafe fn simulate_chunk_exact_neon(
+    option_type: OptionType,
+    strike: f64,
+    spot0: f64,
+    total_drift: f64,
+    total_diffusion: f64,
+    n_paths: usize,
+    chunk_seed: u64,
+) -> (f64, f64, usize) {
+    use crate::math::simd_neon::simd_exp_f64x2;
+    use std::arch::aarch64::*;
+
+    let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, chunk_seed);
+    let spot = vdupq_n_f64(spot0);
+    let strike_v = vdupq_n_f64(strike);
+    let drift = vdupq_n_f64(total_drift);
+    let diffusion = vdupq_n_f64(total_diffusion);
+    let zero = vdupq_n_f64(0.0);
+    let mut sum = 0.0_f64;
+    let mut sum_sq = 0.0_f64;
+    let mut i = 0usize;
+
+    while i + 2 <= n_paths {
+        let normals = [
+            sample_standard_normal(&mut rng),
+            sample_standard_normal(&mut rng),
+        ];
+        let z = vld1q_f64(normals.as_ptr());
+        let exponent = vfmaq_f64(drift, diffusion, z);
+        let terminal = vmulq_f64(spot, simd_exp_f64x2(exponent));
+        let payoff = match option_type {
+            OptionType::Call => vmaxq_f64(vsubq_f64(terminal, strike_v), zero),
+            OptionType::Put => vmaxq_f64(vsubq_f64(strike_v, terminal), zero),
+        };
+        let mut values = [0.0_f64; 2];
+        vst1q_f64(values.as_mut_ptr(), payoff);
+        sum += values[0] + values[1];
+        sum_sq += values[0] * values[0] + values[1] * values[1];
+        i += 2;
+    }
+
+    if i < n_paths {
+        let z = sample_standard_normal(&mut rng);
+        let terminal = spot0 * total_diffusion.mul_add(z, total_drift).exp();
+        let value = payoff(option_type, terminal, strike);
+        sum += value;
+        sum_sq += value * value;
+    }
+
+    (sum, sum_sq, n_paths)
+}
+
 /// Parallel Monte Carlo pricer for European vanilla options.
 ///
 /// Uses exact single-step GBM simulation — one exp() per path, not per step.
@@ -329,42 +455,38 @@ pub fn mc_european_parallel(
     let total_diffusion = vol * t.sqrt();
     let discount = (-market.rate * t).exp();
 
-    let chunks = split_paths(n_paths, rayon::current_num_threads());
-    let base_seed: u64 = 0xDEAD_BEEF_CAFE_BABE;
-    let (sum, sum_sq, total_paths) = chunks
-        .par_iter()
-        .enumerate()
-        .map(|(i, &chunk)| {
-            let chunk_seed =
-                base_seed.wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
-            simulate_chunk_exact(
-                instrument.option_type,
-                instrument.strike,
-                market.spot,
-                total_drift,
-                total_diffusion,
-                chunk,
-                chunk_seed,
-            )
-        })
-        .reduce(
-            || (0.0_f64, 0.0_f64, 0_usize),
-            |lhs, rhs| (lhs.0 + rhs.0, lhs.1 + rhs.1, lhs.2 + rhs.2),
-        );
+    let (sum, sum_sq, total_paths) = simulate_fixed_chunks(
+        instrument.option_type,
+        instrument.strike,
+        market.spot,
+        total_drift,
+        total_diffusion,
+        n_paths,
+        true,
+    );
 
     let n = total_paths as f64;
     let mean = sum / n;
     let variance = if total_paths > 1 {
-        ((sum_sq - sum * sum / n) / (n - 1.0)).max(0.0)
+        let estimate = (sum_sq - sum * sum / n) / (n - 1.0);
+        if estimate < 0.0 { 0.0 } else { estimate }
     } else {
         0.0
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", 1.0);
-    diagnostics.insert("num_threads", rayon::current_num_threads() as f64);
-    diagnostics.insert("vol", vol);
+    diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(DiagKey::NumSteps, 1.0);
+    diagnostics.insert_key(DiagKey::NumThreads, rayon::current_num_threads() as f64);
+    diagnostics.insert_key(
+        DiagKey::ExecutionBackend,
+        ExecutionBackend::Parallel.diagnostic_code(),
+    );
+    diagnostics.insert_key(
+        DiagKey::VectorWidth,
+        exact_chunk_vector_width(n_paths) as f64,
+    );
+    diagnostics.insert_key(DiagKey::Vol, vol);
 
     PricingResult {
         price: discount * mean,
@@ -421,27 +543,37 @@ pub fn mc_european_sequential(
     let total_diffusion = vol * t.sqrt();
     let discount = (-market.rate * t).exp();
 
-    let (sum, sum_sq, total_paths) = simulate_chunk_exact(
+    let (sum, sum_sq, total_paths) = simulate_fixed_chunks(
         instrument.option_type,
         instrument.strike,
         market.spot,
         total_drift,
         total_diffusion,
         n_paths,
-        0xDEAD_BEEF_CAFE_BABE,
+        false,
     );
     let n = total_paths as f64;
     let mean = sum / n;
     let variance = if total_paths > 1 {
-        ((sum_sq - sum * sum / n) / (n - 1.0)).max(0.0)
+        let estimate = (sum_sq - sum * sum / n) / (n - 1.0);
+        if estimate < 0.0 { 0.0 } else { estimate }
     } else {
         0.0
     };
 
     let mut diagnostics = crate::core::Diagnostics::new();
-    diagnostics.insert("num_paths", n_paths as f64);
-    diagnostics.insert("num_steps", 1.0);
-    diagnostics.insert("vol", vol);
+    diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
+    diagnostics.insert_key(DiagKey::NumSteps, 1.0);
+    diagnostics.insert_key(DiagKey::NumThreads, 1.0);
+    let vector_width = exact_chunk_vector_width(n_paths);
+    let backend = if vector_width > 1 {
+        ExecutionBackend::Simd
+    } else {
+        ExecutionBackend::Scalar
+    };
+    diagnostics.insert_key(DiagKey::ExecutionBackend, backend.diagnostic_code());
+    diagnostics.insert_key(DiagKey::VectorWidth, vector_width as f64);
+    diagnostics.insert_key(DiagKey::Vol, vol);
 
     PricingResult {
         price: discount * mean,
@@ -519,4 +651,35 @@ pub fn mc_greeks_grid_parallel(
             greeks_grid_point(option_type, spot, strike, rate, dividend_yield, vol, expiry)
         })
         .collect()
+}
+
+#[cfg(all(test, feature = "simd", target_arch = "aarch64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neon_exact_chunk_matches_scalar_stream_and_reports_two_lanes() {
+        let args = (
+            OptionType::Call,
+            100.0,
+            103.0,
+            0.0125,
+            0.31,
+            17,
+            0x1234_5678_9abc_def0,
+        );
+        let scalar =
+            simulate_chunk_exact_scalar(args.0, args.1, args.2, args.3, args.4, args.5, args.6);
+        let neon = unsafe {
+            simulate_chunk_exact_neon(args.0, args.1, args.2, args.3, args.4, args.5, args.6)
+        };
+
+        let sum_tolerance = scalar.0.abs().max(1.0) * 1.0e-11;
+        let sum_sq_tolerance = scalar.1.abs().max(1.0) * 1.0e-11;
+        assert!((neon.0 - scalar.0).abs() <= sum_tolerance);
+        assert!((neon.1 - scalar.1).abs() <= sum_sq_tolerance);
+        assert_eq!(neon.2, scalar.2);
+        assert_eq!(exact_chunk_vector_width(args.5), 2);
+        assert_eq!(exact_chunk_vector_width(1), 1);
+    }
 }

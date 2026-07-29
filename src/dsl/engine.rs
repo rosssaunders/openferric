@@ -3,7 +3,8 @@
 //! Generates correlated GBM paths and evaluates compiled products.
 
 use crate::core::{
-    DiagKey, Diagnostics, Greeks, Instrument, PricingEngine, PricingError, PricingResult,
+    DiagKey, Diagnostics, ExecutionBackend, ExecutionPolicy, Greeks, Instrument, PricingEngine,
+    PricingError, PricingResult,
 };
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 use crate::dsl::eval::evaluate_product_with_plan_batch_neon;
@@ -13,6 +14,8 @@ use crate::dsl::eval::{
     ProductExecutionPlan, build_execution_plan, evaluate_product_with_plan_in_place,
 };
 use crate::dsl::ir::CompiledProduct;
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+use crate::dsl::jit::{JitEvaluationScratch, JitProductEvaluator};
 use crate::dsl::market::{AssetMarketData, MultiAssetMarket};
 use crate::engines::monte_carlo::correlated_mc::{
     cholesky_for_correlation, sample_correlated_normals_cholesky_with_scratch,
@@ -25,6 +28,8 @@ use crate::math::simd_math::{fast_exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
 use crate::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f64x2};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Per-asset stepping strategy for path generation.
 ///
@@ -241,6 +246,66 @@ pub struct DslMonteCarloEngine {
     pub rng_kind: FastRngKind,
 }
 
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+const MIN_AUTO_JIT_PATHS: usize = 4_096;
+
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+struct CachedJitEvaluator {
+    product: CompiledProduct,
+    num_steps: usize,
+    rate_bits: u64,
+    evaluator: Arc<JitProductEvaluator>,
+}
+
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+fn cached_jit_evaluator(
+    product: &CompiledProduct,
+    num_steps: usize,
+    rate: f64,
+) -> Result<Arc<JitProductEvaluator>, PricingError> {
+    static CACHE: OnceLock<Mutex<Option<CachedJitEvaluator>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let rate_bits = rate.to_bits();
+
+    {
+        let guard = cache.lock().map_err(|_| {
+            PricingError::NumericalError("DSL JIT evaluator cache lock is poisoned".to_string())
+        })?;
+        if let Some(entry) = guard.as_ref()
+            && entry.num_steps == num_steps
+            && entry.rate_bits == rate_bits
+            && &entry.product == product
+        {
+            return Ok(Arc::clone(&entry.evaluator));
+        }
+    }
+
+    // Compile outside the lock: executable-code generation can be relatively
+    // expensive, and unrelated pricing calls should not be blocked by it.
+    let compiled = Arc::new(
+        JitProductEvaluator::compile(product, num_steps, rate)
+            .map_err(|error| PricingError::NumericalError(error.to_string()))?,
+    );
+
+    let mut guard = cache.lock().map_err(|_| {
+        PricingError::NumericalError("DSL JIT evaluator cache lock is poisoned".to_string())
+    })?;
+    if let Some(entry) = guard.as_ref()
+        && entry.num_steps == num_steps
+        && entry.rate_bits == rate_bits
+        && &entry.product == product
+    {
+        return Ok(Arc::clone(&entry.evaluator));
+    }
+    *guard = Some(CachedJitEvaluator {
+        product: product.clone(),
+        num_steps,
+        rate_bits,
+        evaluator: Arc::clone(&compiled),
+    });
+    Ok(compiled)
+}
+
 impl DslMonteCarloEngine {
     pub fn new(num_paths: usize, num_steps: usize, seed: u64) -> Self {
         Self {
@@ -251,11 +316,116 @@ impl DslMonteCarloEngine {
         }
     }
 
+    /// Resolve a requested policy to the backend that will execute.
+    pub fn resolve_execution_backend(
+        &self,
+        execution_policy: ExecutionPolicy,
+    ) -> Result<ExecutionBackend, PricingError> {
+        let simd_available =
+            simd_runtime_available() && should_simd_path_batch(self.num_paths, simd_path_lanes());
+
+        match execution_policy {
+            ExecutionPolicy::Scalar => Ok(ExecutionBackend::Scalar),
+            ExecutionPolicy::Simd if simd_available => Ok(ExecutionBackend::Simd),
+            ExecutionPolicy::Simd => Err(PricingError::InvalidInput(
+                "SIMD execution is unavailable for this build, CPU, or path count".to_string(),
+            )),
+            ExecutionPolicy::Parallel => {
+                #[cfg(feature = "parallel")]
+                {
+                    Ok(ExecutionBackend::Parallel)
+                }
+                #[cfg(not(feature = "parallel"))]
+                {
+                    Err(PricingError::InvalidInput(
+                        "parallel execution requires the `parallel` feature".to_string(),
+                    ))
+                }
+            }
+            ExecutionPolicy::Gpu => Err(PricingError::InvalidInput(
+                "GPU execution is not implemented by DslMonteCarloEngine".to_string(),
+            )),
+            ExecutionPolicy::Jit => {
+                #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+                {
+                    Ok(ExecutionBackend::Jit)
+                }
+                #[cfg(not(all(feature = "jit", not(target_family = "wasm"))))]
+                {
+                    Err(PricingError::InvalidInput(
+                        "JIT execution requires the native `jit` feature".to_string(),
+                    ))
+                }
+            }
+            ExecutionPolicy::Auto => {
+                // The current SIMD evaluator handles four/two paths together
+                // and is preferable to scalar JIT code when available. On a
+                // non-SIMD build, JIT compilation is amortized only for a
+                // sufficiently large path count.
+                #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+                if !simd_available && self.num_paths >= MIN_AUTO_JIT_PATHS {
+                    return Ok(ExecutionBackend::Jit);
+                }
+
+                #[cfg(feature = "parallel")]
+                if should_parallelize_paths(self.num_paths) {
+                    return Ok(ExecutionBackend::Parallel);
+                }
+
+                if simd_available {
+                    Ok(ExecutionBackend::Simd)
+                } else {
+                    Ok(ExecutionBackend::Scalar)
+                }
+            }
+        }
+    }
+
+    fn execution_thread_count(&self, backend: ExecutionBackend) -> usize {
+        #[cfg(feature = "parallel")]
+        if matches!(backend, ExecutionBackend::Parallel)
+            || (matches!(backend, ExecutionBackend::Jit) && should_parallelize_jit(self.num_paths))
+        {
+            return rayon::current_num_threads();
+        }
+        #[cfg(not(feature = "parallel"))]
+        let _ = backend;
+        1
+    }
+
+    fn execution_vector_width(&self, backend: ExecutionBackend) -> usize {
+        match backend {
+            ExecutionBackend::Simd => simd_path_lanes(),
+            ExecutionBackend::Parallel => {
+                let lanes = simd_path_lanes();
+                if simd_runtime_available() && should_simd_path_batch(self.num_paths, lanes) {
+                    lanes
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        }
+    }
+
     /// Price a DSL product under a multi-asset market.
     pub fn price_multi_asset(
         &self,
         product: &CompiledProduct,
         market: &MultiAssetMarket,
+    ) -> Result<PricingResult, PricingError> {
+        self.price_multi_asset_with_policy(product, market, ExecutionPolicy::Auto)
+    }
+
+    /// Price a DSL product with an explicit hardware execution policy.
+    ///
+    /// `Auto` preserves the normal adaptive behavior. A requested backend
+    /// returns an error when its feature or runtime capability is unavailable.
+    pub fn price_multi_asset_with_policy(
+        &self,
+        product: &CompiledProduct,
+        market: &MultiAssetMarket,
+        execution_policy: ExecutionPolicy,
     ) -> Result<PricingResult, PricingError> {
         market.validate()?;
 
@@ -275,6 +445,8 @@ impl DslMonteCarloEngine {
             ));
         }
 
+        let execution_backend = self.resolve_execution_backend(execution_policy)?;
+
         let n_steps = self.num_steps;
         let dt = product.maturity / n_steps as f64;
 
@@ -282,9 +454,18 @@ impl DslMonteCarloEngine {
         let (chol, _) = cholesky_for_correlation(&market.correlation)?;
 
         let initial_spots = market.initial_spots();
-        let num_locals = product.max_local_slots();
-        let execution_plan = build_execution_plan(product, n_steps, market.rate)
-            .map_err(|e| PricingError::NumericalError(e.to_string()))?;
+        let interpreter_state = if matches!(
+            execution_backend,
+            ExecutionBackend::Scalar | ExecutionBackend::Simd | ExecutionBackend::Parallel
+        ) {
+            Some((
+                build_execution_plan(product, n_steps, market.rate)
+                    .map_err(|e| PricingError::NumericalError(e.to_string()))?,
+                product.max_local_slots(),
+            ))
+        } else {
+            None
+        };
 
         // Build per-asset steppers.
         let steppers: Vec<AssetStepper> = market
@@ -293,44 +474,96 @@ impl DslMonteCarloEngine {
             .map(|a| AssetStepper::from_asset(a, market.rate, dt))
             .collect();
 
-        #[cfg(feature = "parallel")]
-        let chunk_stats = if should_parallelize_paths(self.num_paths) {
-            self.price_path_chunks_parallel(
-                product,
-                &initial_spots,
-                &execution_plan,
-                &chol,
-                &steppers,
-                num_locals,
-            )?
-        } else {
-            self.price_path_chunk(
-                self.num_paths,
-                self.seed,
-                product,
-                &initial_spots,
-                &execution_plan,
-                &chol,
-                &steppers,
-                num_locals,
-            )?
+        let chunk_stats = match execution_backend {
+            ExecutionBackend::Scalar => {
+                let (execution_plan, num_locals) = interpreter_state
+                    .as_ref()
+                    .expect("scalar backend prepares interpreter state");
+                self.price_path_chunk_scalar(
+                    self.num_paths,
+                    self.seed,
+                    product,
+                    &initial_spots,
+                    execution_plan,
+                    &chol,
+                    &steppers,
+                    *num_locals,
+                )?
+            }
+            ExecutionBackend::Simd => {
+                let (execution_plan, num_locals) = interpreter_state
+                    .as_ref()
+                    .expect("SIMD backend prepares interpreter state");
+                self.price_path_chunk(
+                    self.num_paths,
+                    self.seed,
+                    product,
+                    &initial_spots,
+                    execution_plan,
+                    &chol,
+                    &steppers,
+                    *num_locals,
+                )?
+            }
+            ExecutionBackend::Parallel => {
+                #[cfg(feature = "parallel")]
+                {
+                    let (execution_plan, num_locals) = interpreter_state
+                        .as_ref()
+                        .expect("parallel backend prepares interpreter state");
+                    self.price_path_chunks_parallel(
+                        product,
+                        &initial_spots,
+                        execution_plan,
+                        &chol,
+                        &steppers,
+                        *num_locals,
+                    )?
+                }
+                #[cfg(not(feature = "parallel"))]
+                unreachable!("parallel backend is rejected during policy resolution")
+            }
+            ExecutionBackend::Jit => {
+                #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+                {
+                    let evaluator = cached_jit_evaluator(product, self.num_steps, market.rate)?;
+                    #[cfg(feature = "parallel")]
+                    if should_parallelize_jit(self.num_paths) {
+                        self.price_path_chunks_jit(&initial_spots, &evaluator, &chol, &steppers)?
+                    } else {
+                        self.price_path_chunk_jit(
+                            self.num_paths,
+                            self.seed,
+                            &initial_spots,
+                            &evaluator,
+                            &chol,
+                            &steppers,
+                        )?
+                    }
+                    #[cfg(not(feature = "parallel"))]
+                    self.price_path_chunk_jit(
+                        self.num_paths,
+                        self.seed,
+                        &initial_spots,
+                        &evaluator,
+                        &chol,
+                        &steppers,
+                    )?
+                }
+                #[cfg(not(all(feature = "jit", not(target_family = "wasm"))))]
+                unreachable!("JIT backend is rejected during policy resolution")
+            }
+            ExecutionBackend::Gpu => {
+                unreachable!("GPU backend is rejected during policy resolution")
+            }
         };
-        #[cfg(not(feature = "parallel"))]
-        let chunk_stats = self.price_path_chunk(
-            self.num_paths,
-            self.seed,
-            product,
-            &initial_spots,
-            &execution_plan,
-            &chol,
-            &steppers,
-            num_locals,
-        )?;
 
         let n = chunk_stats.num_paths as f64;
         let mean = chunk_stats.sum_pv / n;
         let variance = if chunk_stats.num_paths > 1 {
-            (chunk_stats.sum_pv_sq - chunk_stats.sum_pv * chunk_stats.sum_pv / n) / (n - 1.0)
+            let estimated =
+                (chunk_stats.sum_pv_sq - chunk_stats.sum_pv * chunk_stats.sum_pv / n) / (n - 1.0);
+            if estimated < 0.0 { 0.0 } else { estimated }
         } else {
             0.0
         };
@@ -339,10 +572,18 @@ impl DslMonteCarloEngine {
         let mut diagnostics = Diagnostics::new();
         diagnostics.insert_key(DiagKey::NumPaths, n);
         diagnostics.insert_key(DiagKey::NumSteps, n_steps as f64);
-        #[cfg(feature = "parallel")]
-        if should_parallelize_paths(self.num_paths) {
-            diagnostics.insert_key(DiagKey::NumThreads, rayon::current_num_threads() as f64);
-        }
+        diagnostics.insert_key(
+            DiagKey::ExecutionBackend,
+            execution_backend.diagnostic_code(),
+        );
+        diagnostics.insert_key(
+            DiagKey::NumThreads,
+            self.execution_thread_count(execution_backend) as f64,
+        );
+        diagnostics.insert_key(
+            DiagKey::VectorWidth,
+            self.execution_vector_width(execution_backend) as f64,
+        );
 
         Ok(PricingResult {
             price: mean,
@@ -481,6 +722,72 @@ impl DslMonteCarloEngine {
             )
             .map_err(|e| PricingError::NumericalError(e.to_string()))?;
 
+            sum_pv += pv;
+            sum_pv_sq += pv * pv;
+        }
+
+        Ok(ChunkStats {
+            sum_pv,
+            sum_pv_sq,
+            num_paths,
+        })
+    }
+
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    fn price_path_chunk_jit(
+        &self,
+        num_paths: usize,
+        seed: u64,
+        initial_spots: &[f64],
+        evaluator: &JitProductEvaluator,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+    ) -> Result<ChunkStats, PricingError> {
+        if evaluator.snapshot_count() == 0 {
+            return Ok(ChunkStats {
+                sum_pv: 0.0,
+                sum_pv_sq: 0.0,
+                num_paths,
+            });
+        }
+
+        let n_assets = initial_spots.len();
+        let mut rng = FastRng::from_seed(self.rng_kind, seed);
+        let mut sum_pv = 0.0;
+        let mut sum_pv_sq = 0.0;
+        let mut corr_normals = vec![0.0; n_assets];
+        let mut indep_normals = vec![0.0; n_assets];
+        let mut current_spots = initial_spots.to_vec();
+        let mut next_spots = vec![0.0; n_assets];
+        let mut observation_spots = vec![vec![0.0; n_assets]; evaluator.snapshot_count()];
+        let mut scratch: JitEvaluationScratch = evaluator.new_scratch();
+
+        for _ in 0..num_paths {
+            current_spots.copy_from_slice(initial_spots);
+            if let Some(snapshot) = evaluator.snapshot_index_for_step(0) {
+                observation_spots[snapshot].copy_from_slice(initial_spots);
+            }
+
+            for step in 0..self.num_steps {
+                sample_correlated_normals_cholesky_with_scratch(
+                    chol,
+                    &mut rng,
+                    &mut indep_normals,
+                    &mut corr_normals,
+                )?;
+                for asset in 0..n_assets {
+                    next_spots[asset] =
+                        steppers[asset].step(current_spots[asset], corr_normals[asset]);
+                }
+                if let Some(snapshot) = evaluator.snapshot_index_for_step(step + 1) {
+                    observation_spots[snapshot].copy_from_slice(&next_spots);
+                }
+                std::mem::swap(&mut current_spots, &mut next_spots);
+            }
+
+            let pv = evaluator
+                .evaluate_captured_observations(&observation_spots, initial_spots, &mut scratch)
+                .map_err(|error| PricingError::NumericalError(error.to_string()))?;
             sum_pv += pv;
             sum_pv_sq += pv * pv;
         }
@@ -750,7 +1057,7 @@ impl DslMonteCarloEngine {
         steppers: &[AssetStepper],
         num_locals: usize,
     ) -> Result<ChunkStats, PricingError> {
-        let chunk_sizes = split_path_chunks(self.num_paths, rayon::current_num_threads());
+        let chunk_sizes = split_path_chunks(self.num_paths);
         let chunk_results: Vec<Result<ChunkStats, PricingError>> = chunk_sizes
             .par_iter()
             .enumerate()
@@ -767,6 +1074,43 @@ impl DslMonteCarloEngine {
                     chol,
                     steppers,
                     num_locals,
+                )
+            })
+            .collect();
+
+        let mut total = ChunkStats::default();
+        for result in chunk_results {
+            let chunk = result?;
+            total.sum_pv += chunk.sum_pv;
+            total.sum_pv_sq += chunk.sum_pv_sq;
+            total.num_paths += chunk.num_paths;
+        }
+        Ok(total)
+    }
+
+    #[cfg(all(feature = "jit", feature = "parallel", not(target_family = "wasm")))]
+    fn price_path_chunks_jit(
+        &self,
+        initial_spots: &[f64],
+        evaluator: &JitProductEvaluator,
+        chol: &[Vec<f64>],
+        steppers: &[AssetStepper],
+    ) -> Result<ChunkStats, PricingError> {
+        let chunk_sizes = split_path_chunks(self.num_paths);
+        let chunk_results: Vec<Result<ChunkStats, PricingError>> = chunk_sizes
+            .par_iter()
+            .enumerate()
+            .map(|(i, &chunk_paths)| {
+                let chunk_seed = self
+                    .seed
+                    .wrapping_add((i as u64).wrapping_mul(6_364_136_223_846_793_005));
+                self.price_path_chunk_jit(
+                    chunk_paths,
+                    chunk_seed,
+                    initial_spots,
+                    evaluator,
+                    chol,
+                    steppers,
                 )
             })
             .collect();
@@ -1000,10 +1344,37 @@ const SIMD_X86_PATH_LANES: usize = 4;
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 const SIMD_NEON_PATH_LANES: usize = 2;
 
-#[cfg(feature = "simd")]
 #[inline]
 fn should_simd_path_batch(num_paths: usize, lanes: usize) -> bool {
     num_paths >= lanes * 4
+}
+
+#[inline]
+fn simd_path_lanes() -> usize {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        return SIMD_X86_PATH_LANES;
+    }
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    {
+        return SIMD_NEON_PATH_LANES;
+    }
+    #[allow(unreachable_code)]
+    1
+}
+
+#[inline]
+fn simd_runtime_available() -> bool {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        return is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+    }
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    {
+        return true;
+    }
+    #[allow(unreachable_code)]
+    false
 }
 
 #[cfg(feature = "parallel")]
@@ -1018,12 +1389,17 @@ fn should_parallelize_paths(num_paths: usize) -> bool {
 }
 
 #[cfg(feature = "parallel")]
-fn split_path_chunks(num_paths: usize, threads: usize) -> Vec<usize> {
-    let chunk_size = PATH_CHUNK_SIZE.max(num_paths / threads.max(1));
+#[inline]
+fn should_parallelize_jit(num_paths: usize) -> bool {
+    num_paths >= MIN_PARALLEL_PATHS
+}
+
+#[cfg(feature = "parallel")]
+fn split_path_chunks(num_paths: usize) -> Vec<usize> {
     let mut remaining = num_paths;
     let mut chunks = Vec::new();
     while remaining > 0 {
-        let chunk = remaining.min(chunk_size);
+        let chunk = remaining.min(PATH_CHUNK_SIZE);
         chunks.push(chunk);
         remaining -= chunk;
     }
@@ -1093,6 +1469,28 @@ mod tests {
                         func: BuiltinFn::Price,
                         args: vec![Expr::Literal(Value::F64(0.0))],
                     },
+                }],
+            }],
+        }
+    }
+
+    fn make_constant_product(amount: f64) -> CompiledProduct {
+        CompiledProduct {
+            name: "Constant".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![UnderlyingDef {
+                name: "SPX".to_string(),
+                asset_index: 0,
+                underlying_type: Default::default(),
+            }],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::Literal(Value::F64(amount)),
                 }],
             }],
         }
@@ -1345,5 +1743,152 @@ mod tests {
             "commodity forward price {} should be between 70 and 110",
             result.price
         );
+    }
+
+    #[test]
+    fn constant_payoff_roundoff_does_not_make_stderr_nan() {
+        // This value makes the two-pass variance numerator a few ulps below
+        // zero when accumulated three times.
+        let product = make_constant_product(3.162_277_660_168_379_6e-25);
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.0, 0.0);
+        let result = DslMonteCarloEngine::new(3, 1, 42)
+            .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Scalar)
+            .unwrap();
+
+        assert!(result.price.is_finite());
+        assert_eq!(result.stderr, Some(0.0));
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn explicit_parallel_small_batch_reports_scalar_vector_width() {
+        let product = make_forward_product();
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
+        let result = DslMonteCarloEngine::new(1, 2, 42)
+            .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Parallel)
+            .unwrap();
+
+        assert_eq!(
+            result.diagnostics.get(DiagKey::ExecutionBackend.as_str()),
+            Some(&ExecutionBackend::Parallel.diagnostic_code())
+        );
+        assert_eq!(
+            result.diagnostics.get(DiagKey::VectorWidth.as_str()),
+            Some(&1.0)
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn explicit_parallel_is_reproducible_across_pool_sizes() {
+        let product = make_forward_product();
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
+        let engine = DslMonteCarloEngine::new(10_003, 8, 314);
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    engine
+                        .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Parallel)
+                        .unwrap()
+                })
+        };
+
+        let one_thread = run(1);
+        let four_threads = run(4);
+        assert_eq!(one_thread.price.to_bits(), four_threads.price.to_bits());
+        assert_eq!(
+            one_thread.stderr.unwrap().to_bits(),
+            four_threads.stderr.unwrap().to_bits()
+        );
+    }
+
+    #[cfg(all(feature = "jit", feature = "parallel", not(target_family = "wasm")))]
+    #[test]
+    fn explicit_jit_is_reproducible_across_pool_sizes() {
+        let product = make_forward_product();
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
+        let engine = DslMonteCarloEngine::new(MIN_PARALLEL_PATHS + 1, 8, 2718);
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    engine
+                        .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Jit)
+                        .unwrap()
+                })
+        };
+
+        let one_thread = run(1);
+        let four_threads = run(4);
+        assert_eq!(one_thread.price.to_bits(), four_threads.price.to_bits());
+        assert_eq!(
+            one_thread.stderr.unwrap().to_bits(),
+            four_threads.stderr.unwrap().to_bits()
+        );
+    }
+
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    #[test]
+    fn explicit_jit_policy_matches_scalar_and_reports_backend() {
+        let product = make_forward_product();
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
+        let engine = DslMonteCarloEngine::new(1_024, 32, 42);
+
+        let scalar = engine
+            .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Scalar)
+            .unwrap();
+        let jitted = engine
+            .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Jit)
+            .unwrap();
+
+        assert_eq!(jitted.price, scalar.price);
+        assert_eq!(jitted.stderr, scalar.stderr);
+        assert_eq!(
+            jitted.diagnostics.get(DiagKey::ExecutionBackend.as_str()),
+            Some(&ExecutionBackend::Jit.diagnostic_code())
+        );
+        assert_eq!(
+            jitted.diagnostics.get(DiagKey::VectorWidth.as_str()),
+            Some(&1.0)
+        );
+    }
+
+    #[cfg(all(
+        feature = "jit",
+        not(feature = "simd"),
+        not(feature = "parallel"),
+        not(target_family = "wasm")
+    ))]
+    #[test]
+    fn auto_jit_policy_uses_conservative_path_threshold() {
+        let below = DslMonteCarloEngine::new(MIN_AUTO_JIT_PATHS - 1, 32, 42);
+        assert_eq!(
+            below
+                .resolve_execution_backend(ExecutionPolicy::Auto)
+                .unwrap(),
+            ExecutionBackend::Scalar
+        );
+
+        let at_threshold = DslMonteCarloEngine::new(MIN_AUTO_JIT_PATHS, 32, 42);
+        assert_eq!(
+            at_threshold
+                .resolve_execution_backend(ExecutionPolicy::Auto)
+                .unwrap(),
+            ExecutionBackend::Jit
+        );
+    }
+
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    #[test]
+    fn prepared_jit_evaluator_cache_reuses_identical_plan() {
+        let product = make_forward_product();
+        let first = cached_jit_evaluator(&product, 32, 0.05).unwrap();
+        let second = cached_jit_evaluator(&product, 32, 0.05).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }

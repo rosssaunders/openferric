@@ -1,5 +1,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use openferric::dsl::{AssetMarketData, DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+use openferric::dsl::{JitProductEvaluator, eval::evaluate_product};
 use std::fs;
 use std::hint::black_box;
 use std::path::PathBuf;
@@ -99,5 +101,71 @@ fn bench_dsl_price(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(dsl_benches, bench_dsl_parse_compile, bench_dsl_price);
+fn bench_dsl_jit(c: &mut Criterion) {
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    {
+        let product = parse_and_compile(&load_example("06_autocallable_worst_of.of"))
+            .expect("autocall should compile");
+        let num_steps = 252;
+        let rate = 0.03;
+        let initial_spots = vec![100.0; product.num_underlyings];
+        let path = vec![initial_spots.clone(); num_steps + 1];
+        let evaluator =
+            JitProductEvaluator::compile(&product, num_steps, rate).expect("JIT should compile");
+        let mut scratch = evaluator.new_scratch();
+        let mut group = c.benchmark_group("dsl_jit");
+
+        group.bench_function("compile_execution_plan", |b| {
+            b.iter(|| {
+                black_box(
+                    JitProductEvaluator::compile(
+                        black_box(&product),
+                        black_box(num_steps),
+                        black_box(rate),
+                    )
+                    .expect("JIT should compile"),
+                )
+            })
+        });
+        group.bench_function("warm_path_evaluation", |b| {
+            b.iter(|| {
+                black_box(
+                    evaluator
+                        .evaluate_path_with_scratch(
+                            black_box(&path),
+                            black_box(&initial_spots),
+                            &mut scratch,
+                        )
+                        .expect("JIT path evaluation should succeed"),
+                )
+            })
+        });
+        group.bench_function("interpreter_plan_and_path_evaluation", |b| {
+            b.iter(|| {
+                black_box(
+                    evaluate_product(
+                        black_box(&product),
+                        black_box(&path),
+                        black_box(&initial_spots),
+                        black_box(num_steps),
+                        black_box(rate),
+                    )
+                    .expect("interpreter path evaluation should succeed"),
+                )
+            })
+        });
+
+        group.finish();
+    }
+
+    #[cfg(not(all(feature = "jit", not(target_family = "wasm"))))]
+    let _ = c;
+}
+
+criterion_group!(
+    dsl_benches,
+    bench_dsl_parse_compile,
+    bench_dsl_price,
+    bench_dsl_jit
+);
 criterion_main!(dsl_benches);

@@ -284,3 +284,39 @@ fn adi_enforces_feller_condition_when_requested() {
         other => panic!("unexpected error variant: {other}"),
     }
 }
+
+#[cfg(feature = "parallel")]
+#[test]
+fn adi_parallel_line_solves_are_thread_count_deterministic() {
+    use rayon::ThreadPoolBuilder;
+
+    let model = Heston {
+        mu: 0.0,
+        kappa: 2.0,
+        theta: 0.04,
+        xi: 0.25,
+        rho: -0.6,
+        v0: 0.04,
+    };
+    let market = Market::builder()
+        .spot(100.0)
+        .rate(0.03)
+        .dividend_yield(0.01)
+        .flat_vol(0.20)
+        .build()
+        .expect("valid market");
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let engine = AdiHestonEngine::new(model, 24, 96, 96);
+
+    let price_with_threads = |threads| {
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("thread pool")
+            .install(|| engine.price(&option, &market).expect("ADI price").price)
+    };
+
+    let one = price_with_threads(1);
+    let four = price_with_threads(4);
+    assert_eq!(one.to_bits(), four.to_bits());
+}

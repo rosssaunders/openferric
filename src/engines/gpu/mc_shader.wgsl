@@ -1,21 +1,17 @@
 // Monte Carlo European option pricing compute shader with on-device reduction.
-// Each workgroup thread simulates one path, then a tree reduction in shared
-// memory produces per-workgroup partial sums — only these are read back to
-// the host, eliminating the main readback bottleneck for large path counts.
+// Each invocation uses both normals from one Box-Muller pair to price two
+// exact-terminal GBM samples. A tree reduction in shared memory produces
+// per-workgroup partial sums, so only those summaries are read back.
 
 struct Params {
     spot: f32,
     strike: f32,
-    rate: f32,
-    vol: f32,
-    expiry: f32,
-    dt_drift: f32,    // (r - 0.5*vol^2) * dt
-    dt_vol: f32,      // vol * sqrt(dt)
-    discount: f32,
-    num_steps: u32,
+    terminal_drift: f32, // (r - 0.5*vol^2) * expiry
+    terminal_vol: f32,   // vol * sqrt(expiry)
     num_paths: u32,
     seed: u32,
     is_call: u32,
+    padding: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -78,49 +74,45 @@ fn box_muller() -> vec2<f32> {
     return vec2<f32>(r * cos(theta), r * sin(theta));
 }
 
+fn payoff_for_normal(z: f32) -> f32 {
+    let terminal_spot = params.spot * exp(fma(params.terminal_vol, z, params.terminal_drift));
+    if params.is_call != 0u {
+        return max(terminal_spot - params.strike, 0.0);
+    }
+    return max(params.strike - terminal_spot, 0.0);
+}
+
 @compute @workgroup_size(256)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) wg_id: vec3<u32>,
 ) {
-    let path_id = global_id.x;
+    let first_path_id = global_id.x * 2u;
     let lid = local_id.x;
 
-    // Threads beyond num_paths contribute zero to the reduction.
-    var payoff: f32 = 0.0;
-    if path_id < params.num_paths {
-        seed_rng(path_id);
+    // Invocations beyond num_paths contribute zero to the reduction. For an
+    // odd path count, the final invocation uses only the first normal.
+    var payoff_sum: f32 = 0.0;
+    var payoff_sum_sq: f32 = 0.0;
+    if first_path_id < params.num_paths {
+        seed_rng(global_id.x);
+        let normals = box_muller();
 
-        var spot = params.spot;
-        let dt_drift = params.dt_drift;
-        let dt_vol = params.dt_vol;
-        let num_steps = params.num_steps;
+        let first_payoff = payoff_for_normal(normals.x);
+        payoff_sum = first_payoff;
+        payoff_sum_sq = first_payoff * first_payoff;
 
-        // Simulate GBM path, consuming normals from Box-Muller pairs.
-        let pairs = num_steps / 2u;
-        for (var p = 0u; p < pairs; p++) {
-            let z = box_muller();
-            spot *= exp(fma(dt_vol, z.x, dt_drift));
-            spot *= exp(fma(dt_vol, z.y, dt_drift));
-        }
-        // Handle odd remaining step.
-        if (num_steps & 1u) != 0u {
-            let z = box_muller();
-            spot *= exp(fma(dt_vol, z.x, dt_drift));
-        }
-
-        // Compute payoff.
-        if params.is_call != 0u {
-            payoff = max(spot - params.strike, 0.0);
-        } else {
-            payoff = max(params.strike - spot, 0.0);
+        if first_path_id + 1u < params.num_paths {
+            let second_payoff = payoff_for_normal(normals.y);
+            payoff_sum += second_payoff;
+            payoff_sum_sq += second_payoff * second_payoff;
         }
     }
 
     // ── Hierarchical tree reduction in shared memory ──
-    shared_sum[lid] = payoff;
-    shared_sum_sq[lid] = payoff * payoff;
+    shared_sum[lid] = payoff_sum;
+    shared_sum_sq[lid] = payoff_sum_sq;
     workgroupBarrier();
 
     // 8 reduction steps for workgroup_size 256 (log2(256) = 8).

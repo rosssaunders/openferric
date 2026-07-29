@@ -15,7 +15,10 @@
 //! Every assertion message carries the full parameter set so a failure is
 //! immediately reproducible.
 
-use openferric::core::{OptionType, PricingEngine, PricingResult};
+use openferric::core::{
+    BarrierDirection as CoreBarrierDirection, BarrierStyle, OptionType, PricingEngine,
+    PricingResult,
+};
 use openferric::credit::{Cds, bootstrap_survival_curve_from_cds_spreads};
 use openferric::engines::analytic::digital::DigitalAnalyticEngine;
 use openferric::engines::analytic::{
@@ -25,6 +28,8 @@ use openferric::instruments::digital::{AssetOrNothingOption, CashOrNothingOption
 use openferric::instruments::{BarrierOption, FuturesOption, FxOption, VanillaOption};
 use openferric::market::Market;
 use openferric::math::fast_rng::Xoshiro256PlusPlus;
+use openferric::pricing::barrier::barrier_price_closed_form;
+use openferric::pricing::european::{black_76_price, black_scholes_price};
 use openferric::rates::{YieldCurve, YieldCurveBuilder};
 use openferric::vol::fengler::FenglerSurface;
 use openferric::vol::surface::{SviParams, VolSurface};
@@ -189,6 +194,113 @@ fn put_call_parity_black76() {
             "Black76 parity violated at point {i}: F={forward} K={strike} r={rate} \
              vol={vol} T={expiry} call={call} put={put} e^-rT(F-K)={parity} err={err}"
         );
+    }
+}
+
+#[test]
+fn black_scholes_and_black76_are_homogeneous() {
+    // Scaling every cash amount by λ must scale the option value by λ.
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(0xA11C_E005);
+    for i in 0..200 {
+        let spot = uniform(&mut rng, 0.1, 500.0);
+        let strike = uniform(&mut rng, 0.1, 500.0);
+        let scale = uniform(&mut rng, 0.01, 100.0);
+        let rate = uniform(&mut rng, -0.10, 0.25);
+        let vol = uniform(&mut rng, 0.01, 2.0);
+        let expiry = uniform(&mut rng, 0.001, 10.0);
+
+        for option_type in [OptionType::Call, OptionType::Put] {
+            let base_bs = black_scholes_price(option_type, spot, strike, rate, vol, expiry);
+            let scaled_bs =
+                black_scholes_price(option_type, scale * spot, scale * strike, rate, vol, expiry);
+            let bs_tolerance = 8e-10 * (1.0 + scaled_bs.abs());
+            assert!(
+                (scaled_bs - scale * base_bs).abs() <= bs_tolerance,
+                "Black-Scholes homogeneity failed at point {i}: type={option_type:?} \
+                 S={spot} K={strike} scale={scale} r={rate} vol={vol} T={expiry} \
+                 base={base_bs} scaled={scaled_bs}"
+            );
+
+            let base_black76 = black_76_price(option_type, spot, strike, rate, vol, expiry);
+            let scaled_black76 =
+                black_76_price(option_type, scale * spot, scale * strike, rate, vol, expiry);
+            let black76_tolerance = 8e-10 * (1.0 + scaled_black76.abs());
+            assert!(
+                (scaled_black76 - scale * base_black76).abs() <= black76_tolerance,
+                "Black-76 homogeneity failed at point {i}: type={option_type:?} \
+                 F={spot} K={strike} scale={scale} r={rate} vol={vol} T={expiry} \
+                 base={base_black76} scaled={scaled_black76}"
+            );
+        }
+    }
+}
+
+#[test]
+fn expiry_and_zero_volatility_follow_intrinsic_value_contract() {
+    let discount = (-0.05_f64).exp();
+    for option_type in [OptionType::Call, OptionType::Put] {
+        for (spot, strike) in [(80.0, 100.0), (100.0, 100.0), (120.0, 100.0)] {
+            let intrinsic = match option_type {
+                OptionType::Call => f64::max(spot - strike, 0.0),
+                OptionType::Put => f64::max(strike - spot, 0.0),
+            };
+            assert_eq!(
+                black_scholes_price(option_type, spot, strike, 0.05, 0.20, 0.0),
+                intrinsic
+            );
+            let deterministic_spot_value = match option_type {
+                OptionType::Call => f64::max(spot - strike * discount, 0.0),
+                OptionType::Put => f64::max(strike * discount - spot, 0.0),
+            };
+            assert_eq!(
+                black_scholes_price(option_type, spot, strike, 0.05, 0.0, 1.0),
+                deterministic_spot_value
+            );
+            assert_eq!(
+                black_76_price(option_type, spot, strike, 0.05, 0.20, 0.0),
+                intrinsic
+            );
+            assert_eq!(
+                black_76_price(option_type, spot, strike, 0.05, 0.0, 1.0),
+                discount * intrinsic
+            );
+        }
+    }
+}
+
+#[test]
+fn already_breached_barrier_has_deterministic_style_semantics() {
+    for (direction, barrier) in [
+        (CoreBarrierDirection::Down, 105.0),
+        (CoreBarrierDirection::Up, 95.0),
+    ] {
+        for option_type in [OptionType::Call, OptionType::Put] {
+            let vanilla = black_scholes_price(option_type, 100.0, 100.0, 0.03, 0.20, 1.0);
+            let knock_in = barrier_price_closed_form(
+                option_type,
+                BarrierStyle::In,
+                direction,
+                100.0,
+                100.0,
+                barrier,
+                0.03,
+                0.20,
+                1.0,
+            );
+            let knock_out = barrier_price_closed_form(
+                option_type,
+                BarrierStyle::Out,
+                direction,
+                100.0,
+                100.0,
+                barrier,
+                0.03,
+                0.20,
+                1.0,
+            );
+            assert_eq!(knock_in, vanilla);
+            assert_eq!(knock_out, 0.0);
+        }
     }
 }
 

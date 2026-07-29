@@ -390,12 +390,20 @@ impl MonteCarloEngine {
             return Err(py_value_error("payoff must be callable"));
         }
         let (core_engine, control_error) = self.to_core();
+        // Python callbacks serialize on the GIL and may carry observable
+        // side effects, so preserve deterministic callback order rather than
+        // dispatching them from Rayon workers.
+        let core_engine = core_engine.with_execution_policy(core_mc::CpuExecutionPolicy::Scalar);
         let (payoff_fn, payoff_error) = python_path_evaluator(payoff);
-        let result = core_engine.run(
-            &generator.inner,
-            move |path| payoff_fn(path),
-            discount_factor,
-        );
+        // The Rust simulation owns the hot loop. Release the GIL while it is
+        // running; Python callbacks briefly re-attach only when invoked.
+        let result = py.detach(|| {
+            core_engine.run(
+                &generator.inner,
+                move |path| payoff_fn(path),
+                discount_factor,
+            )
+        });
 
         if let Some(message) = payoff_error.lock().ok().and_then(|slot| slot.clone()) {
             return Err(py_value_error(message));
@@ -419,12 +427,17 @@ impl MonteCarloEngine {
             return Err(py_value_error("payoff must be callable"));
         }
         let (core_engine, control_error) = self.to_core();
+        let core_engine = core_engine.with_execution_policy(core_mc::CpuExecutionPolicy::Scalar);
         let (payoff_fn, payoff_error) = python_path_evaluator(payoff);
-        let result = core_engine.run(
-            &generator.inner,
-            move |path| payoff_fn(path),
-            discount_factor,
-        );
+        // The Rust simulation owns the hot loop. Release the GIL while it is
+        // running; Python callbacks briefly re-attach only when invoked.
+        let result = py.detach(|| {
+            core_engine.run(
+                &generator.inner,
+                move |path| payoff_fn(path),
+                discount_factor,
+            )
+        });
 
         if let Some(message) = payoff_error.lock().ok().and_then(|slot| slot.clone()) {
             return Err(py_value_error(message));

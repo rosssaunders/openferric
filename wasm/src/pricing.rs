@@ -144,8 +144,8 @@ fn black76_greeks_7(
 ///
 /// All input slices must have the same length.  `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
-/// Returns a `Vec<f64>` of prices in the same order, or throws on
-/// mismatched input lengths.
+/// Returns prices in the same order, or throws a JavaScript error when the
+/// input array lengths differ.
 #[wasm_bindgen]
 pub fn bs_price_batch_wasm(
     spots: &[f64],
@@ -190,12 +190,70 @@ pub fn bs_price_batch_wasm(
     Ok(out)
 }
 
+/// Batch Black-Scholes pricing with uniform market parameters.
+///
+/// This shape maps directly to the core analytic batch kernel. In the opt-in
+/// `simd` package built with WebAssembly `simd128`, pairs of options execute
+/// the explicit `f64x2` pricing path; the portable package uses the same API
+/// with the scalar fallback. `spots` and `strikes` must have equal lengths.
+#[wasm_bindgen]
+pub fn bs_price_uniform_batch_wasm(
+    spots: &[f64],
+    strikes: &[f64],
+    rate: f64,
+    div_yield: f64,
+    vol: f64,
+    maturity: f64,
+    is_call: bool,
+) -> Result<Vec<f64>, JsValue> {
+    check_batch_lengths("spots", spots.len(), &[("strikes", strikes.len())])?;
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("maturity", maturity)?;
+
+    Ok(openferric::engines::analytic::bs_price_batch(
+        spots, strikes, rate, div_yield, vol, maturity, is_call,
+    ))
+}
+
+/// Batch Black-Scholes delta, gamma, vega, and theta with uniform parameters.
+///
+/// The result is interleaved as
+/// `[delta, gamma, vega, theta]` for each option. The opt-in SIMD128 package
+/// uses the same explicit `f64x2` analytic backend as uniform batch pricing.
+#[wasm_bindgen]
+pub fn bsm_greeks_uniform_batch_wasm(
+    spots: &[f64],
+    strikes: &[f64],
+    rate: f64,
+    div_yield: f64,
+    vol: f64,
+    expiry: f64,
+    is_call: bool,
+) -> Result<Vec<f64>, JsValue> {
+    check_batch_lengths("spots", spots.len(), &[("strikes", strikes.len())])?;
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+
+    let (delta, gamma, vega, theta) = openferric::engines::analytic::bs_greeks_batch(
+        spots, strikes, rate, div_yield, vol, expiry, is_call,
+    );
+    let mut out = Vec::with_capacity(spots.len() * 4);
+    for index in 0..spots.len() {
+        out.extend_from_slice(&[delta[index], gamma[index], vega[index], theta[index]]);
+    }
+    Ok(out)
+}
+
 /// Batch Black-76 pricing: one WASM call for N options.
 ///
 /// All input slices must have the same length. `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
-/// Returns a `Vec<f64>` of prices in the same order, or throws on
-/// mismatched input lengths.
+/// Returns prices in the same order, or throws a JavaScript error when the
+/// input array lengths differ.
 #[wasm_bindgen]
 pub fn black76_price_batch_wasm(
     forwards: &[f64],
@@ -241,9 +299,9 @@ pub fn black76_price_batch_wasm(
 ///
 /// All input slices must have the same length.  `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
-/// Returns a flat `Vec<f64>` of 7 values per option:
-/// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times, or
-/// throws on mismatched input lengths.
+/// Returns a flat array of 7 values per option:
+/// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times.
+/// A JavaScript error is thrown when the input array lengths differ.
 #[wasm_bindgen]
 pub fn bsm_greeks_batch_wasm(
     spots: &[f64],
@@ -299,12 +357,11 @@ pub fn bsm_greeks_batch_wasm(
 ///
 /// All input slices must have the same length. `is_calls` uses `1` = call,
 /// `0` = put (wasm-bindgen cannot pass `&[bool]`).
-/// Returns a flat `Vec<f64>` of 7 values per option:
+/// Returns a flat array of 7 values per option:
 /// `[delta, gamma, vega, theta, rho, vanna, volga]` repeated N times.
+/// A JavaScript error is thrown when the input array lengths differ.
 ///
 /// `delta` is forward delta (`dV/dF`), consistent with Deribit convention.
-///
-/// Throws on mismatched input lengths.
 #[wasm_bindgen]
 pub fn black76_greeks_batch_wasm(
     forwards: &[f64],
@@ -517,8 +574,8 @@ mod tests {
         let vols = [0.20, 0.20];
         let mats = [1.0, 1.0];
         let calls = [1u8, 0u8];
-        let batch =
-            bs_price_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &mats, &calls).unwrap();
+        let batch = bs_price_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &mats, &calls)
+            .expect("matching batch lengths");
         assert_eq!(batch.len(), 2);
         let p1 = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         let p2 = bs_price(100.0, 110.0, 0.05, 0.0, 0.20, 1.0, false).unwrap();
@@ -548,7 +605,7 @@ mod tests {
         let calls = [1u8];
         let batch =
             bsm_greeks_batch_wasm(&spots, &strikes, &rates, &divs, &vols, &expiries, &calls)
-                .unwrap();
+                .expect("matching batch lengths");
         let single = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         assert_eq!(batch.len(), 7);
         for i in 0..7 {
@@ -567,10 +624,10 @@ mod tests {
         let mats = [1.0, 0.75];
         let calls = [1u8, 0u8];
 
-        let black =
-            black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls).unwrap();
-        let bsm =
-            bs_price_batch_wasm(&forwards, &strikes, &rates, &rates, &vols, &mats, &calls).unwrap();
+        let black = black76_price_batch_wasm(&forwards, &strikes, &rates, &vols, &mats, &calls)
+            .expect("matching batch lengths");
+        let bsm = bs_price_batch_wasm(&forwards, &strikes, &rates, &rates, &vols, &mats, &calls)
+            .expect("matching batch lengths");
 
         assert_eq!(black.len(), bsm.len());
         for i in 0..black.len() {
@@ -591,11 +648,11 @@ mod tests {
 
         let black =
             black76_greeks_batch_wasm(&forwards, &strikes, &rates, &vols, &expiries, &calls)
-                .unwrap();
+                .expect("matching batch lengths");
         let bsm = bsm_greeks_batch_wasm(
             &forwards, &strikes, &rates, &rates, &vols, &expiries, &calls,
         )
-        .unwrap();
+        .expect("matching batch lengths");
 
         assert_eq!(black.len(), 7);
         assert_eq!(bsm.len(), 7);

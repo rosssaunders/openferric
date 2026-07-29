@@ -648,6 +648,34 @@ fn test_lsm_seed_reproducibility() {
     println!("Seed reproducibility test passed");
 }
 
+#[cfg(feature = "parallel")]
+#[test]
+fn test_lsm_reproducible_across_rayon_thread_counts() {
+    use rayon::ThreadPoolBuilder;
+
+    let engine = LongstaffSchwartzEngine::new(20_000, 40, 12345);
+    let market = Market::builder()
+        .spot(40.0)
+        .rate(0.06)
+        .flat_vol(0.20)
+        .build()
+        .unwrap();
+    let option = VanillaOption::american_put(40.0, 1.0);
+
+    let price_with_threads = |threads| {
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| engine.price(&option, &market).unwrap().price)
+    };
+
+    assert_eq!(
+        price_with_threads(1).to_bits(),
+        price_with_threads(4).to_bits()
+    );
+}
+
 // ============================================================================
 // Test: American call on non-dividend-paying stock ~ European call
 // For q=0 there is no early exercise benefit for calls.

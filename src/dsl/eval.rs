@@ -59,28 +59,43 @@ fn nan_max(a: f64, b: f64) -> f64 {
     }
 }
 
+/// Validate the dynamically evaluated argument to `price`.
+///
+/// Keep this check shared by the scalar, AVX2, and NEON evaluators so every
+/// execution backend rejects non-finite, negative, fractional, and
+/// out-of-range asset indices identically.
+#[inline]
+fn checked_asset_index(value: f64, num_assets: usize) -> Result<usize, DslError> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value >= num_assets as f64 {
+        return Err(DslError::EvalError(format!(
+            "asset index {value} is not a non-negative integer in range 0..{num_assets}"
+        )));
+    }
+    Ok(value as usize)
+}
+
 // ── Packed instruction format ──────────────────────────────────────
 
 /// A single 4-byte packed VM instruction.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-struct Instruction {
-    opcode: u8,
-    flags: u8,
-    operand: u16,
+pub(crate) struct Instruction {
+    pub(crate) opcode: u8,
+    pub(crate) flags: u8,
+    pub(crate) operand: u16,
 }
 
 const _: () = assert!(std::mem::size_of::<Instruction>() == 4);
 
 /// Compiled bytecode program with an associated constant pool.
 #[derive(Debug, Clone)]
-struct Program {
-    code: Vec<Instruction>,
-    constants: Vec<f64>,
+pub(crate) struct Program {
+    pub(crate) code: Vec<Instruction>,
+    pub(crate) constants: Vec<f64>,
 }
 
 /// Opcode constants organised by family.
-mod opcode {
+pub(crate) mod opcode {
     // 0x00–0x0F: Control
     pub const JUMP: u8 = 0x01;
     pub const JUMP_FALSE: u8 = 0x02;
@@ -167,7 +182,7 @@ pub struct Cashflow {
 #[derive(Debug, Clone)]
 pub(crate) struct ProductExecutionPlan {
     step_to_snapshot: Vec<usize>,
-    schedules: Vec<ScheduleExecutionPlan>,
+    pub(crate) schedules: Vec<ScheduleExecutionPlan>,
     snapshot_count: usize,
     max_stack: usize,
     /// Highest path step that must provide an observation snapshot, or
@@ -199,17 +214,17 @@ impl ProductExecutionPlan {
 }
 
 #[derive(Debug, Clone)]
-struct ScheduleExecutionPlan {
-    observations: Vec<ObservationPoint>,
-    program: Program,
+pub(crate) struct ScheduleExecutionPlan {
+    pub(crate) observations: Vec<ObservationPoint>,
+    pub(crate) program: Program,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ObservationPoint {
-    snapshot_index: usize,
-    observation_date: f64,
-    discount_factor: f64,
-    is_final: bool,
+pub(crate) struct ObservationPoint {
+    pub(crate) snapshot_index: usize,
+    pub(crate) observation_date: f64,
+    pub(crate) discount_factor: f64,
+    pub(crate) is_final: bool,
 }
 
 // ── Program builder ────────────────────────────────────────────────
@@ -1065,17 +1080,10 @@ unsafe fn execute_program_batch_x86_range(
             opcode::PRICE => {
                 let idxs = stack.pop_array();
                 let mut values = [0.0; SIMD_BATCH_LANES_X86];
-                for lane in 0..SIMD_BATCH_LANES_X86 {
-                    // `as usize` saturates: negative/NaN indices must error
-                    // like out-of-range ones instead of reading asset 0.
-                    let raw = idxs[lane];
-                    if !(raw.is_finite() && raw >= 0.0) || raw as usize >= ctx.spots.len() {
-                        return Err(DslError::EvalError(format!(
-                            "asset index {raw} out of range (have {} assets)",
-                            ctx.spots.len()
-                        )));
-                    }
-                    values[lane] = ctx.spots[raw as usize][lane];
+                for (lane, (&index_value, value)) in idxs.iter().zip(values.iter_mut()).enumerate()
+                {
+                    let idx = checked_asset_index(index_value, ctx.spots.len())?;
+                    *value = ctx.spots[idx][lane];
                 }
                 stack.push_array(values);
             }
@@ -1558,17 +1566,10 @@ unsafe fn execute_program_batch_neon_range(
             opcode::PRICE => {
                 let idxs = stack.pop_array();
                 let mut values = [0.0; SIMD_BATCH_LANES_NEON];
-                for lane in 0..SIMD_BATCH_LANES_NEON {
-                    // `as usize` saturates: negative/NaN indices must error
-                    // like out-of-range ones instead of reading asset 0.
-                    let raw = idxs[lane];
-                    if !(raw.is_finite() && raw >= 0.0) || raw as usize >= ctx.spots.len() {
-                        return Err(DslError::EvalError(format!(
-                            "asset index {raw} out of range (have {} assets)",
-                            ctx.spots.len()
-                        )));
-                    }
-                    values[lane] = ctx.spots[raw as usize][lane];
+                for (lane, (&index_value, value)) in idxs.iter().zip(values.iter_mut()).enumerate()
+                {
+                    let idx = checked_asset_index(index_value, ctx.spots.len())?;
+                    *value = ctx.spots[idx][lane];
                 }
                 stack.push_array(values);
             }
@@ -2079,16 +2080,8 @@ fn execute_program(
                 stack.push(max_val);
             }
             opcode::PRICE => {
-                // `as usize` saturates, so a negative or NaN index would
-                // silently read asset 0; treat it like an out-of-range index.
-                let raw = stack.pop();
-                if !(raw.is_finite() && raw >= 0.0) || raw as usize >= ctx.spots.len() {
-                    return Err(DslError::EvalError(format!(
-                        "asset index {raw} out of range (have {} assets)",
-                        ctx.spots.len()
-                    )));
-                }
-                stack.push(ctx.spots[raw as usize]);
+                let idx = checked_asset_index(stack.pop(), ctx.spots.len())?;
+                stack.push(ctx.spots[idx]);
             }
 
             // ── Store ──────────────────────────────────────────
@@ -2172,6 +2165,48 @@ mod tests {
     #[test]
     fn instruction_is_four_bytes() {
         assert_eq!(std::mem::size_of::<Instruction>(), 4);
+    }
+
+    #[test]
+    fn price_indices_must_be_finite_non_negative_integers_in_range() {
+        assert_eq!(checked_asset_index(0.0, 2).unwrap(), 0);
+        assert_eq!(checked_asset_index(1.0, 2).unwrap(), 1);
+
+        for invalid in [-1.0, 0.5, 2.0, f64::NAN, f64::INFINITY] {
+            let error = checked_asset_index(invalid, 2).unwrap_err();
+            assert!(error.to_string().contains("asset index"));
+        }
+    }
+
+    #[test]
+    fn scalar_price_opcode_rejects_fractional_asset_index() {
+        let product = CompiledProduct {
+            name: "Invalid fractional price index".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![UnderlyingDef {
+                name: "SPX".to_string(),
+                asset_index: 0,
+                underlying_type: Default::default(),
+            }],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::Call {
+                        func: BuiltinFn::Price,
+                        args: vec![Expr::Literal(Value::F64(0.5))],
+                    },
+                }],
+            }],
+        };
+        let path_spots = vec![vec![100.0], vec![105.0]];
+
+        let error = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0)
+            .expect_err("fractional asset indices must be rejected");
+        assert!(error.to_string().contains("asset index"));
     }
 
     /// Helper: build a simple product that pays notional * coupon_rate * obs_date

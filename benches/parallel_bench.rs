@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use openferric::core::OptionType;
 use openferric::core::PricingEngine;
+use openferric::core::{ExecutionPolicy, OptionType};
 use openferric::engines::monte_carlo::{
     MonteCarloPricingEngine, mc_european_parallel, mc_european_qmc_with_seed,
     mc_european_sequential, mc_greeks_grid_parallel, mc_greeks_grid_sequential,
@@ -40,7 +40,17 @@ fn bench_mc_european_parallel(c: &mut Criterion) {
         })
     });
 
-    for threads in [2_usize, 4, 8] {
+    let logical_cpus = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    // Include common P-core/physical-core plateaus as well as every logical
+    // processor; hybrid CPUs often regress before the logical maximum.
+    let mut thread_counts = vec![2_usize, 4, 8, 16, logical_cpus];
+    thread_counts.sort_unstable();
+    thread_counts.dedup();
+    thread_counts.retain(|&threads| threads <= logical_cpus.max(2));
+
+    for threads in thread_counts {
         group.bench_with_input(
             BenchmarkId::new("rayon_threads", threads),
             &threads,
@@ -58,6 +68,35 @@ fn bench_mc_european_parallel(c: &mut Criterion) {
                 })
             },
         );
+    }
+
+    group.finish();
+}
+
+fn bench_public_mc_execution_policy(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let mut group = c.benchmark_group("public_mc_execution_policy_100k");
+    group.sample_size(10);
+
+    let policies = [
+        ("scalar", ExecutionPolicy::Scalar),
+        #[cfg(feature = "simd")]
+        ("simd", ExecutionPolicy::Simd),
+        ("parallel", ExecutionPolicy::Parallel),
+        ("auto", ExecutionPolicy::Auto),
+    ];
+
+    for (name, policy) in policies {
+        let engine = MonteCarloPricingEngine::new(100_000, 252, 42).with_execution_policy(policy);
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let result = engine
+                    .price(black_box(&option), black_box(&market))
+                    .expect("pricing should succeed");
+                black_box((result.price, result.stderr))
+            })
+        });
     }
 
     group.finish();
@@ -236,6 +275,7 @@ fn bench_qmc_vs_mc_convergence(c: &mut Criterion) {
 criterion_group!(
     parallel_benches,
     bench_mc_european_parallel,
+    bench_public_mc_execution_policy,
     bench_greeks_grid,
     bench_fast_norm_cdf,
     bench_rng_generation,

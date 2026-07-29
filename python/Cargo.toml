@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-openferric_core = { path = "..", package = "openferric" }
+openferric_core = { path = "..", package = "openferric", features = ["accelerated-native"] }
 pyo3 = { version = "0.28", features = ["extension-module"] }
+numpy = "0.28"
 rand = "0.10"

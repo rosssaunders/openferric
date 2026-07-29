@@ -8,6 +8,9 @@ use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 use crate::models::stochastic::Heston;
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 use super::fd_common::{intrinsic, solve_tridiagonal_inplace};
 
 #[inline]
@@ -228,7 +231,7 @@ struct SolveCtx<'a> {
 /// Reusable per-direction tridiagonal work buffers (allocated once per pricing
 /// call and reused across all time steps and sweeps, mirroring the scratch
 /// pattern in `crank_nicolson`).
-struct TridiagScratch {
+struct TridiagonalScratch {
     lower: Vec<f64>,
     diag: Vec<f64>,
     upper: Vec<f64>,
@@ -240,20 +243,120 @@ struct TridiagScratch {
     interior: Vec<f64>,
 }
 
-impl TridiagScratch {
-    fn new(m: usize) -> Self {
+impl TridiagonalScratch {
+    fn new(len: usize) -> Self {
         Self {
-            lower: vec![0.0; m],
-            diag: vec![0.0; m],
-            upper: vec![0.0; m],
-            solve_lower: vec![0.0; m],
-            solve_upper: vec![0.0; m],
-            rhs: vec![0.0; m],
-            c_star: vec![0.0; m],
-            d_star: vec![0.0; m],
-            interior: vec![0.0; m],
+            lower: vec![0.0; len],
+            diag: vec![0.0; len],
+            upper: vec![0.0; len],
+            solve_lower: vec![0.0; len],
+            solve_upper: vec![0.0; len],
+            rhs: vec![0.0; len],
+            c_star: vec![0.0; len],
+            d_star: vec![0.0; len],
+            interior: vec![0.0; len],
         }
     }
+}
+
+fn solve_s_line(
+    j: usize,
+    rhs_seed: &[f64],
+    a1_old: &[f64],
+    ctx: &SolveCtx<'_>,
+    out_row: &mut [f64],
+    scratch: &mut TridiagonalScratch,
+) -> Result<(), PricingError> {
+    let m = ctx.grid.n_s - 1;
+    let v = j as f64 * ctx.grid.dv;
+    let lo_bv = out_row[0];
+    let hi_bv = out_row[ctx.grid.n_s];
+    let inv_2ds = 0.5 / ctx.grid.ds;
+    let inv_ds2 = 1.0 / (ctx.grid.ds * ctx.grid.ds);
+
+    for k in 0..m {
+        let i = k + 1;
+        let s = i as f64 * ctx.grid.ds;
+        let a = 0.5 * v * s * s * inv_ds2 - (ctx.rate - ctx.dividend_yield) * s * inv_2ds;
+        let b = -v * s * s * inv_ds2 - ctx.rate;
+        let c = 0.5 * v * s * s * inv_ds2 + (ctx.rate - ctx.dividend_yield) * s * inv_2ds;
+
+        scratch.lower[k] = -ctx.theta_dt * a;
+        scratch.diag[k] = 1.0 - ctx.theta_dt * b;
+        scratch.upper[k] = -ctx.theta_dt * c;
+        let p = idx(i, j, ctx.grid.n_s);
+        scratch.rhs[k] = rhs_seed[p] - ctx.theta_dt * a1_old[p];
+    }
+
+    scratch.rhs[0] -= scratch.lower[0] * lo_bv;
+    scratch.rhs[m - 1] -= scratch.upper[m - 1] * hi_bv;
+    scratch.solve_lower.copy_from_slice(&scratch.lower);
+    scratch.solve_upper.copy_from_slice(&scratch.upper);
+    scratch.solve_lower[0] = 0.0;
+    scratch.solve_upper[m - 1] = 0.0;
+
+    solve_tridiagonal_inplace(
+        &scratch.solve_lower,
+        &scratch.diag,
+        &scratch.solve_upper,
+        &scratch.rhs,
+        &mut scratch.c_star,
+        &mut scratch.d_star,
+        &mut scratch.interior,
+    )?;
+
+    out_row[1..ctx.grid.n_s].copy_from_slice(&scratch.interior[..m]);
+    Ok(())
+}
+
+fn solve_v_column(
+    i: usize,
+    rhs_seed: &[f64],
+    a2_old: &[f64],
+    ctx: &SolveCtx<'_>,
+    solution: &mut [f64],
+    scratch: &mut TridiagonalScratch,
+) -> Result<(), PricingError> {
+    let m = ctx.grid.n_v - 1;
+    let inv_2dv = 0.5 / ctx.grid.dv;
+    let inv_dv2 = 1.0 / (ctx.grid.dv * ctx.grid.dv);
+    let lo_bv = rhs_seed[idx(i, 1, ctx.grid.n_s)];
+    let hi_bv = rhs_seed[idx(i, ctx.grid.n_v - 1, ctx.grid.n_s)];
+
+    for k in 0..m {
+        let j = k + 1;
+        let v = j as f64 * ctx.grid.dv;
+        let a = 0.5 * ctx.model.xi * ctx.model.xi * v * inv_dv2
+            - ctx.model.kappa * (ctx.model.theta - v) * inv_2dv;
+        let b = -ctx.model.xi * ctx.model.xi * v * inv_dv2;
+        let c = 0.5 * ctx.model.xi * ctx.model.xi * v * inv_dv2
+            + ctx.model.kappa * (ctx.model.theta - v) * inv_2dv;
+
+        scratch.lower[k] = -ctx.theta_dt * a;
+        scratch.diag[k] = 1.0 - ctx.theta_dt * b;
+        scratch.upper[k] = -ctx.theta_dt * c;
+        let p = idx(i, j, ctx.grid.n_s);
+        scratch.rhs[k] = rhs_seed[p] - ctx.theta_dt * a2_old[p];
+    }
+
+    scratch.rhs[0] -= scratch.lower[0] * lo_bv;
+    scratch.rhs[m - 1] -= scratch.upper[m - 1] * hi_bv;
+    scratch.solve_lower.copy_from_slice(&scratch.lower);
+    scratch.solve_upper.copy_from_slice(&scratch.upper);
+    scratch.solve_lower[0] = 0.0;
+    scratch.solve_upper[m - 1] = 0.0;
+
+    solve_tridiagonal_inplace(
+        &scratch.solve_lower,
+        &scratch.diag,
+        &scratch.solve_upper,
+        &scratch.rhs,
+        &mut scratch.c_star,
+        &mut scratch.d_star,
+        &mut scratch.interior,
+    )?;
+    solution.copy_from_slice(&scratch.interior[..m]);
+    Ok(())
 }
 
 fn solve_s_direction(
@@ -263,21 +366,11 @@ fn solve_s_direction(
     strike: f64,
     tau: f64,
     ctx: &SolveCtx<'_>,
-    scratch: &mut TridiagScratch,
+    scratch: &mut TridiagonalScratch,
     out: &mut [f64],
 ) -> Result<(), PricingError> {
     let m = ctx.grid.n_s - 1;
-    let TridiagScratch {
-        lower,
-        diag,
-        upper,
-        solve_lower,
-        solve_upper,
-        rhs,
-        c_star,
-        d_star,
-        interior,
-    } = scratch;
+    debug_assert_eq!(scratch.lower.len(), m);
 
     apply_spot_boundaries(
         out,
@@ -289,53 +382,41 @@ fn solve_s_direction(
         ctx.grid,
     );
 
-    let ds = ctx.grid.ds;
-    let inv_2ds = 0.5 / ds;
-    let inv_ds2 = 1.0 / (ds * ds);
+    #[cfg(feature = "parallel")]
+    if ctx.grid.n_s * ctx.grid.n_v >= 8_192 && rayon::current_num_threads() > 1 {
+        let width = ctx.grid.n_s + 1;
+        out.par_chunks_mut(width)
+            .enumerate()
+            .skip(1)
+            .take(ctx.grid.n_v - 1)
+            .try_for_each_init(
+                || TridiagonalScratch::new(m),
+                |worker_scratch, (j, row)| {
+                    solve_s_line(j, rhs_seed, a1_old, ctx, row, worker_scratch)
+                },
+            )?;
+        apply_boundaries(
+            out,
+            option_type,
+            strike,
+            ctx.rate,
+            ctx.dividend_yield,
+            tau,
+            ctx.grid,
+        );
+        return Ok(());
+    }
 
     for j in 1..ctx.grid.n_v {
-        let v = j as f64 * ctx.grid.dv;
-        let lo_bv = out[idx(0, j, ctx.grid.n_s)];
-        let hi_bv = out[idx(ctx.grid.n_s, j, ctx.grid.n_s)];
-
-        for k in 0..m {
-            let i = k + 1;
-            let s = i as f64 * ds;
-
-            let a = 0.5 * v * s * s * inv_ds2 - (ctx.rate - ctx.dividend_yield) * s * inv_2ds;
-            let b = -v * s * s * inv_ds2 - ctx.rate;
-            let c = 0.5 * v * s * s * inv_ds2 + (ctx.rate - ctx.dividend_yield) * s * inv_2ds;
-
-            lower[k] = -ctx.theta_dt * a;
-            diag[k] = 1.0 - ctx.theta_dt * b;
-            upper[k] = -ctx.theta_dt * c;
-
-            let p = idx(i, j, ctx.grid.n_s);
-            rhs[k] = rhs_seed[p] - ctx.theta_dt * a1_old[p];
-        }
-
-        rhs[0] -= lower[0] * lo_bv;
-        rhs[m - 1] -= upper[m - 1] * hi_bv;
-
-        solve_lower.copy_from_slice(lower);
-        solve_upper.copy_from_slice(upper);
-        solve_lower[0] = 0.0;
-        solve_upper[m - 1] = 0.0;
-
-        solve_tridiagonal_inplace(
-            solve_lower,
-            diag,
-            solve_upper,
-            rhs,
-            c_star,
-            d_star,
-            interior,
+        let row_start = idx(0, j, ctx.grid.n_s);
+        solve_s_line(
+            j,
+            rhs_seed,
+            a1_old,
+            ctx,
+            &mut out[row_start..row_start + ctx.grid.n_s + 1],
+            scratch,
         )?;
-
-        for (k, val) in interior[..m].iter().enumerate() {
-            let i = k + 1;
-            out[idx(i, j, ctx.grid.n_s)] = *val;
-        }
     }
 
     apply_boundaries(
@@ -357,69 +438,49 @@ fn solve_v_direction(
     strike: f64,
     tau: f64,
     ctx: &SolveCtx<'_>,
-    scratch: &mut TridiagScratch,
+    scratch: &mut TridiagonalScratch,
+    parallel_buffer: &mut [f64],
     out: &mut [f64],
 ) -> Result<(), PricingError> {
     let m = ctx.grid.n_v - 1;
-    let TridiagScratch {
-        lower,
-        diag,
-        upper,
-        solve_lower,
-        solve_upper,
-        rhs,
-        c_star,
-        d_star,
-        interior,
-    } = scratch;
+    debug_assert_eq!(scratch.lower.len(), m);
+    debug_assert_eq!(parallel_buffer.len(), (ctx.grid.n_s - 1) * m);
 
-    let dv = ctx.grid.dv;
-    let inv_2dv = 0.5 / dv;
-    let inv_dv2 = 1.0 / (dv * dv);
+    #[cfg(feature = "parallel")]
+    if ctx.grid.n_s * ctx.grid.n_v >= 8_192 && rayon::current_num_threads() > 1 {
+        parallel_buffer
+            .par_chunks_mut(m)
+            .enumerate()
+            .try_for_each_init(
+                || TridiagonalScratch::new(m),
+                |worker_scratch, (column, solution)| {
+                    solve_v_column(column + 1, rhs_seed, a2_old, ctx, solution, worker_scratch)
+                },
+            )?;
+
+        for (column, solution) in parallel_buffer.chunks(m).enumerate() {
+            let i = column + 1;
+            for (k, &value) in solution.iter().enumerate() {
+                out[idx(i, k + 1, ctx.grid.n_s)] = value;
+            }
+        }
+        apply_boundaries(
+            out,
+            option_type,
+            strike,
+            ctx.rate,
+            ctx.dividend_yield,
+            tau,
+            ctx.grid,
+        );
+        return Ok(());
+    }
 
     for i in 1..ctx.grid.n_s {
-        let lo_bv = rhs_seed[idx(i, 1, ctx.grid.n_s)];
-        let hi_bv = rhs_seed[idx(i, ctx.grid.n_v - 1, ctx.grid.n_s)];
-
-        for k in 0..m {
-            let j = k + 1;
-            let v = j as f64 * dv;
-
-            let a = 0.5 * ctx.model.xi * ctx.model.xi * v * inv_dv2
-                - ctx.model.kappa * (ctx.model.theta - v) * inv_2dv;
-            let b = -ctx.model.xi * ctx.model.xi * v * inv_dv2;
-            let c = 0.5 * ctx.model.xi * ctx.model.xi * v * inv_dv2
-                + ctx.model.kappa * (ctx.model.theta - v) * inv_2dv;
-
-            lower[k] = -ctx.theta_dt * a;
-            diag[k] = 1.0 - ctx.theta_dt * b;
-            upper[k] = -ctx.theta_dt * c;
-
-            let p = idx(i, j, ctx.grid.n_s);
-            rhs[k] = rhs_seed[p] - ctx.theta_dt * a2_old[p];
-        }
-
-        rhs[0] -= lower[0] * lo_bv;
-        rhs[m - 1] -= upper[m - 1] * hi_bv;
-
-        solve_lower.copy_from_slice(lower);
-        solve_upper.copy_from_slice(upper);
-        solve_lower[0] = 0.0;
-        solve_upper[m - 1] = 0.0;
-
-        solve_tridiagonal_inplace(
-            solve_lower,
-            diag,
-            solve_upper,
-            rhs,
-            c_star,
-            d_star,
-            interior,
-        )?;
-
-        for (k, val) in interior[..m].iter().enumerate() {
-            let j = k + 1;
-            out[idx(i, j, ctx.grid.n_s)] = *val;
+        let solution = &mut parallel_buffer[(i - 1) * m..i * m];
+        solve_v_column(i, rhs_seed, a2_old, ctx, solution, scratch)?;
+        for (k, &value) in solution.iter().enumerate() {
+            out[idx(i, k + 1, ctx.grid.n_s)] = value;
         }
     }
 
@@ -553,10 +614,12 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
             model: &self.model,
             grid: &grid,
         };
-
-        // Reusable tridiagonal scratch buffers shared across all time steps.
-        let mut s_scratch = TridiagScratch::new(grid.n_s - 1);
-        let mut v_scratch = TridiagScratch::new(grid.n_v - 1);
+        // Reuse Thomas-solver workspaces across every ADI sweep. The column
+        // buffer also lets independent variance-direction solves run in
+        // parallel without mutating strided output locations concurrently.
+        let mut s_scratch = TridiagonalScratch::new(grid.n_s - 1);
+        let mut v_scratch = TridiagonalScratch::new(grid.n_v - 1);
+        let mut v_parallel_buffer = vec![0.0; (grid.n_s - 1) * (grid.n_v - 1)];
 
         for step in 0..n_t {
             let tau_new = (step + 1) as f64 * dt;
@@ -598,6 +661,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
                 tau_new,
                 &ctx,
                 &mut v_scratch,
+                &mut v_parallel_buffer,
                 &mut y2,
             )?;
 
@@ -650,6 +714,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
                         tau_new,
                         &ctx,
                         &mut v_scratch,
+                        &mut v_parallel_buffer,
                         &mut z2,
                     )?;
                     u.copy_from_slice(&z2);

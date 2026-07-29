@@ -20,6 +20,7 @@ pub mod mc_qmc;
 pub mod mc_simd;
 pub mod spread_mc;
 
+pub use crate::core::{ExecutionBackend, ExecutionPolicy};
 pub use correlated_mc::{
     cholesky_for_correlation, sample_correlated_normals_cholesky, sample_correlated_normals_factor,
 };

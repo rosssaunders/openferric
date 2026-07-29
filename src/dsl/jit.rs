@@ -26,70 +26,16 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use super::eval::ObservationResult;
-
-// Re-use opcode constants from eval.
-mod opcode {
-    pub const JUMP: u8 = 0x01;
-    pub const JUMP_FALSE: u8 = 0x02;
-    pub const SKIP: u8 = 0x03;
-
-    pub const PUSH_CONST: u8 = 0x10;
-    pub const PUSH_LOCAL: u8 = 0x11;
-    pub const PUSH_STATE: u8 = 0x12;
-    pub const PUSH_NOTIONAL: u8 = 0x13;
-    pub const PUSH_DATE: u8 = 0x14;
-    pub const PUSH_IS_FINAL: u8 = 0x15;
-    pub const PUSH_TRUE: u8 = 0x16;
-    pub const PUSH_FALSE: u8 = 0x17;
-
-    pub const STORE_LOCAL: u8 = 0x20;
-    pub const STORE_STATE: u8 = 0x21;
-
-    pub const ADD: u8 = 0x30;
-    pub const SUB: u8 = 0x31;
-    pub const MUL: u8 = 0x32;
-    pub const DIV: u8 = 0x33;
-    pub const NEG: u8 = 0x34;
-    pub const ABS: u8 = 0x35;
-    pub const EXP: u8 = 0x36;
-    pub const LOG: u8 = 0x37;
-    pub const MIN: u8 = 0x38;
-    pub const MAX: u8 = 0x39;
-
-    pub const EQ: u8 = 0x40;
-    pub const NE: u8 = 0x41;
-    pub const LT: u8 = 0x42;
-    pub const LE: u8 = 0x43;
-    pub const GT: u8 = 0x44;
-    pub const GE: u8 = 0x45;
-    pub const AND: u8 = 0x46;
-    pub const OR: u8 = 0x47;
-    pub const NOT: u8 = 0x48;
-
-    pub const PAY: u8 = 0x50;
-    pub const REDEEM: u8 = 0x51;
-    pub const PRICE: u8 = 0x52;
-    pub const WORST_OF: u8 = 0x53;
-    pub const BEST_OF: u8 = 0x54;
-    pub const WORST_OF_PERF: u8 = 0x55;
-    pub const BEST_OF_PERF: u8 = 0x56;
-}
-
-/// Packed bytecode instruction. Must match the layout in `eval.rs`.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-struct Instruction {
-    opcode: u8,
-    flags: u8,
-    operand: u16,
-}
-
-const _: () = assert!(std::mem::size_of::<Instruction>() == 4);
+use super::error::DslError;
+use super::eval::{
+    Instruction, ObservationResult, ProductExecutionPlan, Program, build_execution_plan, opcode,
+};
+use super::ir::CompiledProduct;
 
 const RESULT_CONTINUE: u8 = 0;
 const RESULT_REDEEMED: u8 = 1;
 const RESULT_SKIPPED: u8 = 2;
+const RESULT_INVALID_PRICE_INDEX: u8 = 3;
 
 // ---- External helper functions (called from JIT code) ----
 
@@ -202,12 +148,22 @@ impl JitCompiledProgram {
         compile_program(&instructions, constants)
     }
 
+    fn compile_bytecode(program: &Program) -> Result<Self, String> {
+        compile_program(&program.code, &program.constants)
+    }
+
     /// Execute the compiled program.
     ///
     /// # Safety
     ///
     /// The caller must ensure that `spots`, `initial_spots`, `locals`,
     /// `state`, and `pv` are valid and appropriately sized.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the compiled program produces an invalid asset index or an
+    /// unknown status code. Use [`Self::execute_checked`] to handle those
+    /// failures without panicking.
     pub unsafe fn execute(
         &self,
         spots: &[f64],
@@ -220,6 +176,40 @@ impl JitCompiledProgram {
         state: &mut [f64],
         pv: &mut f64,
     ) -> ObservationResult {
+        unsafe {
+            self.execute_checked(
+                spots,
+                initial_spots,
+                notional,
+                obs_date,
+                is_final,
+                discount,
+                locals,
+                state,
+                pv,
+            )
+        }
+        .unwrap_or_else(|error| panic!("JIT execution failed: {error}"))
+    }
+
+    /// Execute the compiled program and report invalid runtime status codes.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `spots`, `initial_spots`, `locals`,
+    /// `state`, and `pv` are valid and appropriately sized.
+    pub unsafe fn execute_checked(
+        &self,
+        spots: &[f64],
+        initial_spots: &[f64],
+        notional: f64,
+        obs_date: f64,
+        is_final: bool,
+        discount: f64,
+        locals: &mut [f64],
+        state: &mut [f64],
+        pv: &mut f64,
+    ) -> Result<ObservationResult, DslError> {
         let result = unsafe {
             (self.fn_ptr)(
                 spots.as_ptr(),
@@ -236,10 +226,261 @@ impl JitCompiledProgram {
             )
         };
         match result {
-            RESULT_REDEEMED => ObservationResult::Redeemed,
-            RESULT_SKIPPED => ObservationResult::Skipped,
-            _ => ObservationResult::Continue,
+            RESULT_CONTINUE => Ok(ObservationResult::Continue),
+            RESULT_REDEEMED => Ok(ObservationResult::Redeemed),
+            RESULT_SKIPPED => Ok(ObservationResult::Skipped),
+            RESULT_INVALID_PRICE_INDEX => Err(DslError::EvalError(
+                "asset index is not a non-negative integer or is out of range".to_string(),
+            )),
+            _ => Err(DslError::EvalError(format!(
+                "JIT returned unknown status code {result}"
+            ))),
         }
+    }
+}
+
+/// A reusable, native-code execution plan for one compiled DSL product.
+///
+/// Construction performs both bytecode planning and JIT compilation. Keep this
+/// value and call [`Self::evaluate_path_with_scratch`] for repeated paths so
+/// compilation and allocation are amortized rather than paid inside a hot
+/// Monte Carlo loop.
+pub struct JitProductEvaluator {
+    plan: ProductExecutionPlan,
+    programs: Vec<JitCompiledProgram>,
+    notional: f64,
+    initial_state: Vec<f64>,
+    num_underlyings: usize,
+    num_locals: usize,
+    num_steps: usize,
+}
+
+/// Reusable memory for [`JitProductEvaluator`] path evaluation.
+///
+/// Scratch values are evaluator-specific. Create them with
+/// [`JitProductEvaluator::new_scratch`].
+pub struct JitEvaluationScratch {
+    observation_spots: Vec<Vec<f64>>,
+    locals: Vec<f64>,
+    state: Vec<f64>,
+}
+
+impl JitProductEvaluator {
+    /// Build and JIT-compile a product execution plan.
+    pub fn compile(
+        product: &CompiledProduct,
+        num_steps: usize,
+        rate: f64,
+    ) -> Result<Self, DslError> {
+        if num_steps == 0 {
+            return Err(DslError::EvalError(
+                "JIT evaluation requires num_steps > 0".to_string(),
+            ));
+        }
+        if product.maturity <= 0.0 || !product.maturity.is_finite() {
+            return Err(DslError::EvalError(
+                "JIT evaluation requires a positive finite maturity".to_string(),
+            ));
+        }
+        if !rate.is_finite() {
+            return Err(DslError::EvalError(
+                "JIT evaluation requires a finite rate".to_string(),
+            ));
+        }
+
+        let plan = build_execution_plan(product, num_steps, rate)?;
+        let programs = plan
+            .schedules
+            .iter()
+            .map(|schedule| {
+                JitCompiledProgram::compile_bytecode(&schedule.program)
+                    .map_err(|err| DslError::EvalError(format!("JIT compilation failed: {err}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self {
+            plan,
+            programs,
+            notional: product.notional,
+            initial_state: product
+                .state_vars
+                .iter()
+                .map(|state| state.initial.as_f64())
+                .collect(),
+            num_underlyings: product.num_underlyings,
+            num_locals: product.max_local_slots(),
+            num_steps,
+        })
+    }
+
+    /// Allocate reusable scratch memory sized for this evaluator.
+    pub fn new_scratch(&self) -> JitEvaluationScratch {
+        JitEvaluationScratch {
+            observation_spots: vec![vec![0.0; self.num_underlyings]; self.plan.snapshot_count()],
+            locals: vec![0.0; self.num_locals],
+            state: self.initial_state.clone(),
+        }
+    }
+
+    pub(crate) fn snapshot_count(&self) -> usize {
+        self.plan.snapshot_count()
+    }
+
+    pub(crate) fn snapshot_index_for_step(&self, step: usize) -> Option<usize> {
+        self.plan.snapshot_index_for_step(step)
+    }
+
+    /// Evaluate one simulated path, allocating scratch memory for convenience.
+    ///
+    /// For repeated paths, prefer [`Self::evaluate_path_with_scratch`].
+    pub fn evaluate_path(
+        &self,
+        path_spots: &[Vec<f64>],
+        initial_spots: &[f64],
+    ) -> Result<f64, DslError> {
+        let mut scratch = self.new_scratch();
+        self.evaluate_path_with_scratch(path_spots, initial_spots, &mut scratch)
+    }
+
+    /// Evaluate one simulated path using caller-reused scratch memory.
+    pub fn evaluate_path_with_scratch(
+        &self,
+        path_spots: &[Vec<f64>],
+        initial_spots: &[f64],
+        scratch: &mut JitEvaluationScratch,
+    ) -> Result<f64, DslError> {
+        self.validate_inputs(path_spots, initial_spots, scratch)?;
+
+        for (step, spots) in path_spots.iter().enumerate() {
+            if let Some(snapshot) = self.plan.snapshot_index_for_step(step) {
+                scratch.observation_spots[snapshot].copy_from_slice(spots);
+            }
+        }
+        self.evaluate_observations_with_scratch(
+            &scratch.observation_spots,
+            initial_spots,
+            &mut scratch.locals,
+            &mut scratch.state,
+        )
+    }
+
+    pub(crate) fn evaluate_captured_observations(
+        &self,
+        observation_spots: &[Vec<f64>],
+        initial_spots: &[f64],
+        scratch: &mut JitEvaluationScratch,
+    ) -> Result<f64, DslError> {
+        if initial_spots.len() != self.num_underlyings
+            || observation_spots.len() != self.plan.snapshot_count()
+            || observation_spots
+                .iter()
+                .any(|spots| spots.len() != self.num_underlyings)
+        {
+            return Err(DslError::EvalError(
+                "JIT observation snapshots do not match the compiled product".to_string(),
+            ));
+        }
+        self.validate_scratch(scratch)?;
+        self.evaluate_observations_with_scratch(
+            observation_spots,
+            initial_spots,
+            &mut scratch.locals,
+            &mut scratch.state,
+        )
+    }
+
+    fn evaluate_observations_with_scratch(
+        &self,
+        observation_spots: &[Vec<f64>],
+        initial_spots: &[f64],
+        locals: &mut [f64],
+        state: &mut [f64],
+    ) -> Result<f64, DslError> {
+        state.copy_from_slice(&self.initial_state);
+
+        let mut pv = 0.0;
+        for (schedule, program) in self.plan.schedules.iter().zip(&self.programs) {
+            for observation in &schedule.observations {
+                locals.fill(0.0);
+                let spots = &observation_spots[observation.snapshot_index];
+
+                // SAFETY: all slices were sized from the source product and
+                // validated above. The program is compiled from that same
+                // product's validated bytecode.
+                let result = unsafe {
+                    program.execute_checked(
+                        spots,
+                        initial_spots,
+                        self.notional,
+                        observation.observation_date,
+                        observation.is_final,
+                        observation.discount_factor,
+                        locals,
+                        state,
+                        &mut pv,
+                    )
+                }?;
+
+                if matches!(
+                    result,
+                    ObservationResult::Redeemed | ObservationResult::Skipped
+                ) {
+                    return Ok(pv);
+                }
+            }
+        }
+
+        Ok(pv)
+    }
+
+    fn validate_inputs(
+        &self,
+        path_spots: &[Vec<f64>],
+        initial_spots: &[f64],
+        scratch: &JitEvaluationScratch,
+    ) -> Result<(), DslError> {
+        let expected_steps = self.num_steps + 1;
+        if path_spots.len() != expected_steps {
+            return Err(DslError::EvalError(format!(
+                "JIT path has {} steps, expected {expected_steps}",
+                path_spots.len()
+            )));
+        }
+        if initial_spots.len() != self.num_underlyings {
+            return Err(DslError::EvalError(format!(
+                "JIT initial spots have {} assets, expected {}",
+                initial_spots.len(),
+                self.num_underlyings
+            )));
+        }
+        if let Some((step, spots)) = path_spots
+            .iter()
+            .enumerate()
+            .find(|(_, spots)| spots.len() != self.num_underlyings)
+        {
+            return Err(DslError::EvalError(format!(
+                "JIT path step {step} has {} assets, expected {}",
+                spots.len(),
+                self.num_underlyings
+            )));
+        }
+        self.validate_scratch(scratch)
+    }
+
+    fn validate_scratch(&self, scratch: &JitEvaluationScratch) -> Result<(), DslError> {
+        if scratch.observation_spots.len() != self.plan.snapshot_count()
+            || scratch
+                .observation_spots
+                .iter()
+                .any(|spots| spots.len() != self.num_underlyings)
+            || scratch.locals.len() != self.num_locals
+            || scratch.state.len() != self.initial_state.len()
+        {
+            return Err(DslError::EvalError(
+                "JIT scratch belongs to a different product evaluator".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -265,6 +506,10 @@ impl CompileStack {
             .pop()
             .expect("JIT compile stack underflow -- bytecode is malformed")
     }
+
+    fn clear(&mut self) {
+        self.values.clear();
+    }
 }
 
 // ---- Parameter indices ----
@@ -287,6 +532,8 @@ fn compile_program(
     instructions: &[Instruction],
     constants: &[f64],
 ) -> Result<JitCompiledProgram, String> {
+    validate_program(instructions, constants)?;
+
     // 1. Create the JIT module.
     let mut jit_builder = JITBuilder::new(cranelift_module::default_libcall_names())
         .map_err(|e| format!("failed to create JIT builder: {e}"))?;
@@ -385,6 +632,7 @@ fn compile_program(
         let return_continue_block = builder.create_block();
         let return_redeemed_block = builder.create_block();
         let return_skipped_block = builder.create_block();
+        let return_invalid_price_index_block = builder.create_block();
 
         let mut stack = CompileStack::new();
         let mem = MemFlags::new();
@@ -392,18 +640,22 @@ fn compile_program(
 
         let mut pc = 0usize;
         while pc < instructions.len() {
-            if pc > 0 {
-                if let Some(&target_block) = block_map.get(&pc) {
-                    // JUMP_FALSE already switches to the fall-through block
-                    // (which is this pc's block); avoid emitting a self-jump
-                    // and re-switching to an already-current block.
-                    if builder.current_block() != Some(target_block) {
-                        if !block_terminated {
-                            builder.ins().jump(target_block, &[]);
-                        }
-                        builder.switch_to_block(target_block);
-                        block_terminated = false;
+            if pc > 0
+                && let Some(&target_block) = block_map.get(&pc)
+            {
+                // JUMP_FALSE already switches to the fall-through block
+                // (which is this pc's block); avoid emitting a self-jump
+                // and re-switching to an already-current block.
+                if builder.current_block() != Some(target_block) {
+                    if !block_terminated {
+                        builder.ins().jump(target_block, &[]);
                     }
+                    builder.switch_to_block(target_block);
+                    // Valid DSL control flow reaches statement boundaries
+                    // with an empty stack. Clear any values left by
+                    // unreachable bytecode lowered into a dead block.
+                    stack.clear();
+                    block_terminated = false;
                 }
             }
 
@@ -636,56 +888,52 @@ fn compile_program(
                 }
 
                 opcode::PRICE => {
-                    // Bounds-check the f64 index before converting and
-                    // loading: a NaN or negative index would trap in
-                    // `fcvt_to_uint`, and an index >= num_assets would be an
-                    // out-of-bounds read. Out-of-range (or NaN) indices
-                    // produce NaN, which propagates to the PV and matches the
-                    // interpreter's error contract of never reading out of
-                    // bounds.
-                    //
-                    // Backend contract: the interpreters (scalar and SIMD
-                    // batch) report invalid indices -- negative, NaN, or
-                    // >= num_assets -- as `DslError::EvalError`. The JIT has
-                    // no error channel, so its contract is NaN-for-invalid
-                    // instead; callers comparing backends must treat an
-                    // interpreter error and a JIT NaN as the same condition.
+                    // Validate before conversion/loading. NaN and negative
+                    // values can trap `fcvt_to_uint`, while fractional and
+                    // out-of-range values violate the scalar/SIMD PRICE
+                    // contract. All invalid cases return the checked JIT
+                    // status without touching the spots array.
                     let idx_f64 = stack.pop();
+                    let zero = builder.ins().f64const(0.0);
+                    let non_negative =
+                        builder
+                            .ins()
+                            .fcmp(FloatCC::GreaterThanOrEqual, idx_f64, zero);
                     let num_assets = builder.use_var(var_num_assets);
                     let num_assets_f64 = builder.ins().fcvt_from_uint(F64, num_assets);
-                    let zero = builder.ins().f64const(0.0);
-                    let ge_zero = builder
-                        .ins()
-                        .fcmp(FloatCC::GreaterThanOrEqual, idx_f64, zero);
-                    let lt_len = builder
-                        .ins()
-                        .fcmp(FloatCC::LessThan, idx_f64, num_assets_f64);
-                    // NaN compares false on both, so it is rejected here.
-                    let in_bounds = builder.ins().band(ge_zero, lt_len);
-
+                    let below_num_assets =
+                        builder
+                            .ins()
+                            .fcmp(FloatCC::LessThan, idx_f64, num_assets_f64);
+                    let in_range = builder.ins().band(non_negative, below_num_assets);
+                    let integer_check_block = builder.create_block();
                     let load_block = builder.create_block();
-                    let merge_block = builder.create_block();
-                    builder.append_block_param(merge_block, F64);
+                    builder.ins().brif(
+                        in_range,
+                        integer_check_block,
+                        &[],
+                        return_invalid_price_index_block,
+                        &[],
+                    );
+                    builder.switch_to_block(integer_check_block);
 
-                    let nan = builder.ins().f64const(f64::NAN);
-                    builder
-                        .ins()
-                        .brif(in_bounds, load_block, &[], merge_block, &[nan]);
-
-                    builder.switch_to_block(load_block);
-                    // Safe: 0.0 <= idx_f64 < num_assets, so the conversion
-                    // cannot trap and the load is within the spots slice.
                     let idx_i64 = builder.ins().fcvt_to_uint(I64, idx_f64);
+                    let round_trip = builder.ins().fcvt_from_uint(F64, idx_i64);
+                    let is_integer = builder.ins().fcmp(FloatCC::Equal, idx_f64, round_trip);
+                    builder.ins().brif(
+                        is_integer,
+                        load_block,
+                        &[],
+                        return_invalid_price_index_block,
+                        &[],
+                    );
+                    builder.switch_to_block(load_block);
+
                     let eight = builder.ins().iconst(I64, 8);
                     let byte_off = builder.ins().imul(idx_i64, eight);
                     let s_ptr = builder.use_var(var_spots);
                     let addr = builder.ins().iadd(s_ptr, byte_off);
-                    let loaded = builder.ins().load(F64, mem, addr, 0);
-                    builder.ins().jump(merge_block, &[loaded]);
-
-                    builder.switch_to_block(merge_block);
-                    let result = builder.block_params(merge_block)[0];
-                    stack.push(result);
+                    stack.push(builder.ins().load(F64, mem, addr, 0));
                 }
                 opcode::WORST_OF => {
                     let n = inst.operand as usize;
@@ -751,9 +999,9 @@ fn compile_program(
                     builder
                         .ins()
                         .brif(is_false, false_block, &[], true_block, &[]);
-                    // The brif terminates the current block; we immediately
-                    // switch to the fall-through block so block_terminated
-                    // stays false.
+                    // The branch terminates the current block. Continue
+                    // lowering in the fall-through block immediately; the
+                    // loop's target-block check avoids switching to it twice.
                     builder.switch_to_block(true_block);
                     block_terminated = false;
                 }
@@ -798,6 +1046,12 @@ fn compile_program(
         let rs = builder.ins().iconst(I8, i64::from(RESULT_SKIPPED));
         builder.ins().return_(&[rs]);
 
+        builder.switch_to_block(return_invalid_price_index_block);
+        let ri = builder
+            .ins()
+            .iconst(I8, i64::from(RESULT_INVALID_PRICE_INDEX));
+        builder.ins().return_(&[ri]);
+
         builder.seal_all_blocks();
         builder.finalize();
     }
@@ -818,6 +1072,189 @@ fn compile_program(
         _module: module,
         fn_ptr,
     })
+}
+
+/// Validate bytecode before handing it to Cranelift.
+///
+/// Besides producing useful errors for malformed public `compile` inputs, this
+/// keeps the code generator's compile-time stack operations and raw memory
+/// accesses from being reached with structurally invalid bytecode. The DSL
+/// compiler only emits forward, statement-level branches with an empty stack,
+/// which is the control-flow form supported by this JIT.
+fn validate_program(instructions: &[Instruction], constants: &[f64]) -> Result<(), String> {
+    for (pc, inst) in instructions.iter().enumerate() {
+        if inst.flags != 0 {
+            return Err(format!(
+                "unsupported instruction flags 0x{:02x} at pc {pc}",
+                inst.flags
+            ));
+        }
+
+        match inst.opcode {
+            opcode::JUMP | opcode::JUMP_FALSE => {
+                let target = inst.operand as usize;
+                if target > instructions.len() {
+                    return Err(format!(
+                        "jump target {target} out of range at pc {pc} (program length {})",
+                        instructions.len()
+                    ));
+                }
+                if target <= pc {
+                    return Err(format!(
+                        "backward/self jump from pc {pc} to {target} is not supported"
+                    ));
+                }
+            }
+            opcode::PUSH_CONST => {
+                let idx = inst.operand as usize;
+                if idx >= constants.len() {
+                    return Err(format!(
+                        "PUSH_CONST operand {idx} out of range (have {} constants)",
+                        constants.len()
+                    ));
+                }
+            }
+            opcode::SKIP
+            | opcode::PUSH_LOCAL
+            | opcode::PUSH_STATE
+            | opcode::PUSH_NOTIONAL
+            | opcode::PUSH_DATE
+            | opcode::PUSH_IS_FINAL
+            | opcode::PUSH_TRUE
+            | opcode::PUSH_FALSE
+            | opcode::STORE_LOCAL
+            | opcode::STORE_STATE
+            | opcode::ADD
+            | opcode::SUB
+            | opcode::MUL
+            | opcode::DIV
+            | opcode::NEG
+            | opcode::ABS
+            | opcode::EXP
+            | opcode::LOG
+            | opcode::MIN
+            | opcode::MAX
+            | opcode::EQ
+            | opcode::NE
+            | opcode::LT
+            | opcode::LE
+            | opcode::GT
+            | opcode::GE
+            | opcode::AND
+            | opcode::OR
+            | opcode::NOT
+            | opcode::PAY
+            | opcode::REDEEM
+            | opcode::PRICE
+            | opcode::WORST_OF
+            | opcode::BEST_OF
+            | opcode::WORST_OF_PERF
+            | opcode::BEST_OF_PERF => {}
+            _ => {
+                return Err(format!("unknown opcode 0x{:02x} at pc {pc}", inst.opcode));
+            }
+        }
+    }
+
+    let mut depths = vec![None; instructions.len() + 1];
+    let mut work = vec![(0usize, 0usize)];
+
+    while let Some((pc, depth)) = work.pop() {
+        if let Some(existing) = depths[pc] {
+            if existing != depth {
+                return Err(format!(
+                    "inconsistent stack depth at pc {pc}: {existing} versus {depth}"
+                ));
+            }
+            continue;
+        }
+        depths[pc] = Some(depth);
+
+        if pc == instructions.len() {
+            if depth != 0 {
+                return Err(format!(
+                    "program exits with {depth} value(s) left on the stack"
+                ));
+            }
+            continue;
+        }
+
+        let inst = instructions[pc];
+        let (required, delta) = stack_effect(inst);
+        if depth < required {
+            return Err(format!(
+                "stack underflow at pc {pc}: opcode 0x{:02x} needs {required} value(s), has {depth}",
+                inst.opcode
+            ));
+        }
+        let next_depth = (depth as isize + delta) as usize;
+
+        let mut add_successor = |successor: usize| -> Result<(), String> {
+            if matches!(inst.opcode, opcode::JUMP | opcode::JUMP_FALSE) && next_depth != 0 {
+                return Err(format!(
+                    "control flow at pc {pc} carries {next_depth} stack value(s); only statement-level branches are supported"
+                ));
+            }
+            work.push((successor, next_depth));
+            Ok(())
+        };
+
+        match inst.opcode {
+            opcode::JUMP => add_successor(inst.operand as usize)?,
+            opcode::JUMP_FALSE => {
+                add_successor(inst.operand as usize)?;
+                add_successor(pc + 1)?;
+            }
+            opcode::REDEEM | opcode::SKIP => {}
+            _ => add_successor(pc + 1)?,
+        }
+    }
+
+    Ok(())
+}
+
+#[inline]
+fn stack_effect(inst: Instruction) -> (usize, isize) {
+    match inst.opcode {
+        opcode::PUSH_CONST
+        | opcode::PUSH_LOCAL
+        | opcode::PUSH_STATE
+        | opcode::PUSH_NOTIONAL
+        | opcode::PUSH_DATE
+        | opcode::PUSH_IS_FINAL
+        | opcode::PUSH_TRUE
+        | opcode::PUSH_FALSE
+        | opcode::WORST_OF_PERF
+        | opcode::BEST_OF_PERF => (0, 1),
+        opcode::STORE_LOCAL
+        | opcode::STORE_STATE
+        | opcode::PAY
+        | opcode::REDEEM
+        | opcode::JUMP_FALSE => (1, -1),
+        opcode::ADD
+        | opcode::SUB
+        | opcode::MUL
+        | opcode::DIV
+        | opcode::MIN
+        | opcode::MAX
+        | opcode::EQ
+        | opcode::NE
+        | opcode::LT
+        | opcode::LE
+        | opcode::GT
+        | opcode::GE
+        | opcode::AND
+        | opcode::OR => (2, -1),
+        opcode::NEG | opcode::ABS | opcode::EXP | opcode::LOG | opcode::NOT | opcode::PRICE => {
+            (1, 0)
+        }
+        opcode::WORST_OF | opcode::BEST_OF => {
+            let count = inst.operand as usize;
+            (count, 1 - count as isize)
+        }
+        opcode::JUMP | opcode::SKIP => (0, 0),
+        _ => unreachable!("opcodes are checked before stack validation"),
+    }
 }
 
 fn declare_ext_f64_unary(module: &mut JITModule, name: &str) -> Result<FuncId, String> {
@@ -893,6 +1330,7 @@ mod libm_ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsl::{eval::evaluate_product, parse_and_compile};
 
     fn inst(opcode: u8, operand: u16) -> (u8, u8, u16) {
         (opcode, 0, operand)
@@ -1667,19 +2105,57 @@ mod tests {
     }
 
     #[test]
-    fn jit_price_negative_index_returns_nan() {
+    fn jit_checked_execution_reports_all_invalid_price_indices() {
+        let code = vec![
+            inst(opcode::PUSH_CONST, 0),
+            inst(opcode::PRICE, 0),
+            inst(opcode::STORE_LOCAL, 0),
+        ];
+
+        for invalid in [-1.0, f64::NAN, 0.5, 3.0, 1e18, f64::INFINITY] {
+            let compiled = JitCompiledProgram::compile(&code, &[invalid]).unwrap();
+            let mut locals = [0.0];
+            let mut state = [];
+            let mut pv = 0.0;
+
+            let error = unsafe {
+                compiled.execute_checked(
+                    &[100.0, 250.0, 300.0],
+                    &[100.0, 100.0, 100.0],
+                    1.0,
+                    1.0,
+                    false,
+                    1.0,
+                    &mut locals,
+                    &mut state,
+                    &mut pv,
+                )
+            }
+            .expect_err("invalid PRICE index must be rejected");
+
+            assert!(
+                error.to_string().contains("asset index"),
+                "unexpected error for PRICE({invalid}): {error}"
+            );
+            assert_eq!(locals[0], 0.0);
+            assert_eq!(pv, 0.0);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "JIT execution failed")]
+    fn jit_legacy_execution_does_not_silently_accept_invalid_price_index() {
         let code = vec![
             inst(opcode::PUSH_CONST, 0),
             inst(opcode::PRICE, 0),
             inst(opcode::STORE_LOCAL, 0),
         ];
         let compiled = JitCompiledProgram::compile(&code, &[-1.0]).unwrap();
-
-        let mut locals = vec![0.0; 4];
-        let mut state = vec![0.0; 4];
+        let mut locals = [0.0];
+        let mut state = [];
         let mut pv = 0.0;
 
-        let result = unsafe {
+        unsafe {
             compiled.execute(
                 &[100.0, 250.0, 300.0],
                 &[100.0, 100.0, 100.0],
@@ -1692,104 +2168,6 @@ mod tests {
                 &mut pv,
             )
         };
-        assert!(matches!(result, ObservationResult::Continue));
-        assert!(
-            locals[0].is_nan(),
-            "PRICE(-1) should yield NaN, got {}",
-            locals[0]
-        );
-    }
-
-    #[test]
-    fn jit_price_nan_index_returns_nan() {
-        let code = vec![
-            inst(opcode::PUSH_CONST, 0),
-            inst(opcode::PRICE, 0),
-            inst(opcode::STORE_LOCAL, 0),
-        ];
-        let compiled = JitCompiledProgram::compile(&code, &[f64::NAN]).unwrap();
-
-        let mut locals = vec![0.0; 4];
-        let mut state = vec![0.0; 4];
-        let mut pv = 0.0;
-
-        let result = unsafe {
-            compiled.execute(
-                &[100.0, 250.0, 300.0],
-                &[100.0, 100.0, 100.0],
-                1.0,
-                1.0,
-                false,
-                1.0,
-                &mut locals,
-                &mut state,
-                &mut pv,
-            )
-        };
-        assert!(matches!(result, ObservationResult::Continue));
-        assert!(
-            locals[0].is_nan(),
-            "PRICE(NaN) should yield NaN, got {}",
-            locals[0]
-        );
-    }
-
-    #[test]
-    fn jit_price_index_out_of_range_returns_nan() {
-        let code = vec![
-            inst(opcode::PUSH_CONST, 0),
-            inst(opcode::PRICE, 0),
-            inst(opcode::STORE_LOCAL, 0),
-        ];
-        // Index 3 with only 3 spots (valid indices 0..=2).
-        let compiled = JitCompiledProgram::compile(&code, &[3.0]).unwrap();
-
-        let mut locals = vec![0.0; 4];
-        let mut state = vec![0.0; 4];
-        let mut pv = 0.0;
-
-        let result = unsafe {
-            compiled.execute(
-                &[100.0, 250.0, 300.0],
-                &[100.0, 100.0, 100.0],
-                1.0,
-                1.0,
-                false,
-                1.0,
-                &mut locals,
-                &mut state,
-                &mut pv,
-            )
-        };
-        assert!(matches!(result, ObservationResult::Continue));
-        assert!(
-            locals[0].is_nan(),
-            "PRICE(3) with 3 assets should yield NaN, got {}",
-            locals[0]
-        );
-
-        // A far-out-of-range index must also be NaN, not an OOB read.
-        let compiled = JitCompiledProgram::compile(&code, &[1e18]).unwrap();
-        locals[0] = 0.0;
-        let result = unsafe {
-            compiled.execute(
-                &[100.0, 250.0, 300.0],
-                &[100.0, 100.0, 100.0],
-                1.0,
-                1.0,
-                false,
-                1.0,
-                &mut locals,
-                &mut state,
-                &mut pv,
-            )
-        };
-        assert!(matches!(result, ObservationResult::Continue));
-        assert!(
-            locals[0].is_nan(),
-            "PRICE(1e18) should yield NaN, got {}",
-            locals[0]
-        );
     }
 
     #[test]
@@ -2060,5 +2438,185 @@ mod tests {
             locals[0]
         );
         assert!((locals[1] - 1.0).abs() < 1e-10, "log(e)={}", locals[1]);
+    }
+
+    #[test]
+    fn jit_rejects_malformed_control_flow_and_stack() {
+        let underflow = JitCompiledProgram::compile(&[inst(opcode::ADD, 0)], &[])
+            .err()
+            .expect("stack underflow must be rejected");
+        assert!(underflow.contains("stack underflow"), "{underflow}");
+
+        let out_of_range = JitCompiledProgram::compile(&[inst(opcode::JUMP, 2)], &[])
+            .err()
+            .expect("out-of-range jump must be rejected");
+        assert!(out_of_range.contains("out of range"), "{out_of_range}");
+
+        let backward =
+            JitCompiledProgram::compile(&[inst(opcode::PUSH_TRUE, 0), inst(opcode::JUMP, 0)], &[])
+                .err()
+                .expect("backward jump must be rejected");
+        assert!(backward.contains("backward/self jump"), "{backward}");
+
+        let stack_across_branch = JitCompiledProgram::compile(
+            &[
+                inst(opcode::PUSH_CONST, 0),
+                inst(opcode::PUSH_TRUE, 0),
+                inst(opcode::JUMP_FALSE, 3),
+            ],
+            &[1.0],
+        )
+        .err()
+        .expect("stack values across branches must be rejected");
+        assert!(
+            stack_across_branch.contains("only statement-level branches"),
+            "{stack_across_branch}"
+        );
+
+        let flagged = JitCompiledProgram::compile(&[(opcode::SKIP, 1, 0)], &[])
+            .err()
+            .expect("unknown flags must be rejected");
+        assert!(
+            flagged.contains("unsupported instruction flags"),
+            "{flagged}"
+        );
+
+        let unknown = JitCompiledProgram::compile(&[(0xff, 0, 0)], &[])
+            .err()
+            .expect("unknown opcode must be rejected");
+        assert!(unknown.contains("unknown opcode"), "{unknown}");
+    }
+
+    #[test]
+    fn jit_empty_program_continues() {
+        let compiled = JitCompiledProgram::compile(&[], &[]).unwrap();
+        let mut locals = [];
+        let mut state = [];
+        let mut pv = 0.0;
+        let result = unsafe {
+            compiled.execute(
+                &[100.0],
+                &[100.0],
+                1.0,
+                1.0,
+                false,
+                1.0,
+                &mut locals,
+                &mut state,
+                &mut pv,
+            )
+        };
+        assert!(matches!(result, ObservationResult::Continue));
+        assert_eq!(pv, 0.0);
+    }
+
+    #[test]
+    fn real_product_jit_matches_interpreter_across_branches() {
+        let source = "\
+product \"JIT Differential\"
+    notional: 100
+    maturity: 1.0
+
+    underlyings
+        SPX = asset(0)
+        SX5E = asset(1)
+
+    state
+        coupon_paid: bool = false
+
+    schedule semi_annual from 0.5 to 1.0
+        let wof = worst_of(performances())
+
+        if wof >= 1.0 and not is_final then
+            pay notional * 0.05
+            set coupon_paid = true
+
+        if is_final then
+            if coupon_paid then
+                redeem notional + 5
+            else
+                redeem notional * wof
+";
+        let product = parse_and_compile(source).unwrap();
+        let evaluator = JitProductEvaluator::compile(&product, 2, 0.03).unwrap();
+        let initial = [100.0, 100.0];
+
+        let paths = [
+            vec![vec![100.0, 100.0], vec![110.0, 105.0], vec![90.0, 80.0]],
+            vec![vec![100.0, 100.0], vec![90.0, 95.0], vec![120.0, 110.0]],
+        ];
+
+        let mut scratch = evaluator.new_scratch();
+        for path in paths {
+            let interpreted = evaluate_product(&product, &path, &initial, 2, 0.03).unwrap();
+            let jitted = evaluator
+                .evaluate_path_with_scratch(&path, &initial, &mut scratch)
+                .unwrap();
+            assert!(
+                (jitted - interpreted).abs() < 1e-10,
+                "JIT {jitted} != interpreter {interpreted}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_jit_evaluator_validates_paths_and_scratch() {
+        let source = "\
+product \"Forward\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX = asset(0)
+    schedule annual from 1.0 to 1.0
+        redeem price(0)
+";
+        let product = parse_and_compile(source).unwrap();
+        let evaluator = JitProductEvaluator::compile(&product, 1, 0.0).unwrap();
+        let path = vec![vec![100.0], vec![105.0]];
+
+        assert_eq!(evaluator.evaluate_path(&path, &[100.0]).unwrap(), 105.0);
+
+        let short_path = vec![vec![100.0]];
+        let error = evaluator.evaluate_path(&short_path, &[100.0]).unwrap_err();
+        assert!(error.to_string().contains("expected 2"));
+
+        let other_product = parse_and_compile(
+            "\
+product \"Two Assets\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX = asset(0)
+        SX5E = asset(1)
+    schedule annual from 1.0 to 1.0
+        redeem notional
+",
+        )
+        .unwrap();
+        let other_evaluator = JitProductEvaluator::compile(&other_product, 1, 0.0).unwrap();
+        let mut wrong_scratch = other_evaluator.new_scratch();
+        let error = evaluator
+            .evaluate_path_with_scratch(&path, &[100.0], &mut wrong_scratch)
+            .unwrap_err();
+        assert!(error.to_string().contains("different product evaluator"));
+
+        let invalid_price_product = parse_and_compile(
+            "\
+product \"Invalid Price Index\"
+    notional: 100
+    maturity: 1.0
+    underlyings
+        SPX = asset(0)
+    schedule annual from 1.0 to 1.0
+        redeem price(1)
+",
+        )
+        .unwrap();
+        let invalid_evaluator =
+            JitProductEvaluator::compile(&invalid_price_product, 1, 0.0).unwrap();
+        let error = invalid_evaluator
+            .evaluate_path(&path, &[100.0])
+            .unwrap_err();
+        assert!(error.to_string().contains("asset index"));
     }
 }

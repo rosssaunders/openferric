@@ -31,13 +31,13 @@
 //! and uses no external data.
 
 use openferric::core::types::AsianSpec;
-use openferric::core::{Averaging, OptionType, PricingEngine, StrikeType};
+use openferric::core::{Averaging, Instrument, OptionType, PricingEngine, StrikeType};
 use openferric::engines::analytic::{
     BarrierAnalyticEngine, BlackScholesEngine, DigitalAnalyticEngine, GeometricAsianEngine,
 };
 use openferric::engines::fft::{BlackScholesCharFn, CarrMadanParams, carr_madan_price_at_strikes};
 use openferric::engines::lsm::LongstaffSchwartzEngine;
-use openferric::engines::monte_carlo::MonteCarloPricingEngine;
+use openferric::engines::monte_carlo::{MonteCarloInstrument, MonteCarloPricingEngine};
 use openferric::engines::numerical::AmericanBinomialEngine;
 use openferric::engines::pde::CrankNicolsonEngine;
 use openferric::engines::tree::{BinomialTreeEngine, TrinomialTreeEngine};
@@ -453,6 +453,44 @@ enum BarrierKind {
     DownIn,
 }
 
+/// Test-only vanilla adapter that deliberately exercises the generic
+/// path-by-path engine instead of the exact-terminal vanilla fast path.
+///
+/// Barrier in/out parity needs all three prices to consume the same
+/// stepwise random stream. The optimized `VanillaOption` dispatch samples
+/// the mathematically equivalent terminal distribution directly, so it
+/// intentionally has a different seeded stream.
+#[derive(Debug)]
+struct PathwiseVanilla(VanillaOption);
+
+impl Instrument for PathwiseVanilla {
+    fn instrument_type(&self) -> &str {
+        "PathwiseVanilla"
+    }
+}
+
+impl MonteCarloInstrument for PathwiseVanilla {
+    fn validate_for_mc(&self) -> Result<(), openferric::core::PricingError> {
+        self.0.validate()
+    }
+
+    fn maturity(&self) -> f64 {
+        self.0.expiry
+    }
+
+    fn reference_strike(&self, _spot: f64) -> f64 {
+        self.0.strike
+    }
+
+    fn payoff_from_path(&self, path: &[f64]) -> f64 {
+        let terminal = path[path.len() - 1];
+        match self.0.option_type {
+            OptionType::Call => (terminal - self.0.strike).max(0.0),
+            OptionType::Put => (self.0.strike - terminal).max(0.0),
+        }
+    }
+}
+
 fn barrier_option(
     kind: BarrierKind,
     level: f64,
@@ -551,7 +589,11 @@ fn barrier_in_out_parity_analytic_and_mc() {
         // MC parity with common paths (same seed, steps, maturity, model).
         let m_in = mc.price(&knock_in, &market).expect("mc in").price;
         let m_out = mc.price(&knock_out, &market).expect("mc out").price;
-        let m_vanilla = mc.price(&vanilla, &market).expect("mc vanilla").price;
+        let pathwise_vanilla = PathwiseVanilla(vanilla);
+        let m_vanilla = mc
+            .price(&pathwise_vanilla, &market)
+            .expect("pathwise mc vanilla")
+            .price;
         assert_close(
             "mc in+out parity (common seed)",
             &label,

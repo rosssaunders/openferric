@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt
 
@@ -33,14 +33,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --features parallel,simd
+        run: cargo clippy --locked --workspace --all-targets --all-features
         env:
           RUSTFLAGS: ""
 
@@ -87,12 +87,12 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --workspace --features parallel,simd
+        run: cargo test --locked --workspace --features accelerated-native
         env:
           RUSTFLAGS: ""
 
@@ -105,7 +105,7 @@ jobs:
         run: pip install maturin pytest
 
       - name: Build Python wheel
-        run: maturin build --release -m python/Cargo.toml
+        run: maturin build --locked --release -m python/Cargo.toml
         env:
           RUSTFLAGS: ""
 
@@ -124,14 +124,12 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run NEON SIMD regressions
-        run: |
-          cargo test -p openferric --test simd_test --features simd
-          cargo test -p openferric --lib --features simd commodity_forward_product_mean_reverts
+      - name: Run full ARM64 suite with NEON and Rayon
+        run: cargo test --locked -p openferric --features parallel,simd
         env:
           RUSTFLAGS: ""
 
@@ -142,8 +140,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install pinned nightly for threaded WASM
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-11-15
+          components: rust-src
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
@@ -151,11 +156,91 @@ jobs:
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      - name: Build WASM
-        run: wasm-pack build wasm --target web --out-dir ../www/pkg
+      - name: Build portable WASM
+        run: ./scripts/build-wasm.sh baseline
 
-      - name: Test WASM bindings
-        run: wasm-pack test --node wasm
+      - name: Build SIMD128 WASM
+        run: ./scripts/build-wasm.sh simd
 
-      - name: Check WASM size budget
+      - name: Build threaded WASM
+        run: ./scripts/build-wasm.sh threads
+
+      - name: Test WASM under Node
+        run: rustup run 1.94.0 wasm-pack test --node wasm --locked
+
+      - name: Test SIMD128 WASM under Node
+        run: |
+          rustup run 1.94.0 env \
+            RUSTFLAGS='--cfg getrandom_backend="wasm_js" -C target-feature=+simd128' \
+            wasm-pack test --node wasm --locked --features simd
+
+      - name: Smoke-test threaded WASM in headless Chrome
+        run: node scripts/test-wasm-threads.mjs
+
+      - name: Check WASM WebGPU build
+        run: rustup run 1.94.0 cargo check --locked -p openferric-wasm --target wasm32-unknown-unknown --features gpu
+
+      - name: Check portable WASM size budget
         run: test "$(wc -c < www/pkg/openferric_wasm_bg.wasm)" -le 1200000
+
+  core-feature-matrix:
+    name: Core (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-default
+            os: ubuntu-latest
+            command: test
+            args: --no-default-features
+          - name: linux-parallel
+            os: ubuntu-latest
+            command: check
+            args: --no-default-features --features parallel
+          - name: linux-simd
+            os: ubuntu-latest
+            command: check
+            args: --no-default-features --features simd
+          - name: linux-all
+            os: ubuntu-latest
+            command: test
+            args: --all-features
+          - name: windows-accelerated
+            os: windows-latest
+            command: check
+            args: --no-default-features --features parallel,simd,jit
+          - name: macos-accelerated
+            os: macos-latest
+            command: check
+            args: --no-default-features --features parallel,simd,jit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run feature and platform combination
+        run: cargo ${{ matrix.command }} --locked -p openferric ${{ matrix.args }}
+        env:
+          RUSTFLAGS: ""
+
+  msrv:
+    name: MSRV 1.92
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install declared MSRV
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check every core feature at MSRV
+        run: cargo check --locked -p openferric --all-features
+        env:
+          RUSTFLAGS: ""

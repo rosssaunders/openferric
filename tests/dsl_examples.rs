@@ -4,6 +4,8 @@
 //! and produces a finite price under standard market conditions.
 
 use openferric::dsl::{AssetMarketData, DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+use openferric::dsl::{JitProductEvaluator, eval::evaluate_product};
 
 fn single_asset_market() -> MultiAssetMarket {
     MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02)
@@ -227,4 +229,41 @@ fn example_29_dispersion_note() {
 #[test]
 fn example_30_napoleon() {
     test_example("30_napoleon.of", &two_asset_market());
+}
+
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+#[test]
+fn every_example_matches_interpreter_with_jit() {
+    let mut files = std::fs::read_dir("examples/dsl")
+        .expect("read examples/dsl")
+        .map(|entry| entry.expect("read directory entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "of"))
+        .collect::<Vec<_>>();
+    files.sort();
+
+    for path in files {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let product = parse_and_compile(&source)
+            .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
+        let num_steps = 252;
+        let rate = 0.03;
+        let initial_spots = vec![100.0; product.num_underlyings];
+        let flat_path = vec![initial_spots.clone(); num_steps + 1];
+
+        let interpreted = evaluate_product(&product, &flat_path, &initial_spots, num_steps, rate)
+            .unwrap_or_else(|error| panic!("interpret {}: {error}", path.display()));
+        let evaluator = JitProductEvaluator::compile(&product, num_steps, rate)
+            .unwrap_or_else(|error| panic!("JIT compile {}: {error}", path.display()));
+        let jitted = evaluator
+            .evaluate_path(&flat_path, &initial_spots)
+            .unwrap_or_else(|error| panic!("JIT execute {}: {error}", path.display()));
+
+        let tolerance = 1e-10 * interpreted.abs().max(1.0);
+        assert!(
+            (jitted - interpreted).abs() <= tolerance,
+            "{}: JIT {jitted} != interpreter {interpreted}",
+            path.display()
+        );
+    }
 }

@@ -69,7 +69,8 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
     let r = _mm256_fnmadd_pd(n, _mm256_set1_pd(LN_2_HI), x);
     let r = _mm256_fnmadd_pd(n, _mm256_set1_pd(LN_2_LO), r);
 
-    // Degree-11 polynomial over reduced range |r| <= ln(2)/2.
+    // Degree-11 Taylor polynomial over |r| <= ln(2)/2. Dense differential
+    // tests bound relative error by 2e-14 over the practical range [-700, 700].
     let c11 = _mm256_set1_pd(1.0 / 39_916_800.0);
     let c10 = _mm256_set1_pd(1.0 / 3_628_800.0);
     let c9 = _mm256_set1_pd(1.0 / 362_880.0);
@@ -115,11 +116,11 @@ pub unsafe fn exp_f64x4(x: __m256d) -> __m256d {
     _mm256_blendv_pd(y, _mm256_set1_pd(f64::NAN), nan_mask)
 }
 
-/// Fast exp() with degree-7 minimax polynomial (~2e-10 relative error).
+/// Fast exp() with a degree-7 polynomial.
 ///
-/// Saves 4 FMA operations vs the degree-11 version by using optimized Remez
-/// minimax coefficients instead of truncated Taylor series. Sufficient accuracy
-/// for Monte Carlo simulation, path generation, and most pricing applications.
+/// Saves four FMA operations versus the degree-11 version. Dense differential
+/// tests bound relative error by `8e-9` over the practical finite range
+/// `[-700, 700]`.
 #[inline]
 #[target_feature(enable = "avx2,fma")]
 /// # Safety
@@ -143,11 +144,10 @@ pub unsafe fn fast_exp_f64x4(x: __m256d) -> __m256d {
     let r = _mm256_fnmadd_pd(n, _mm256_set1_pd(LN_2_HI), x);
     let r = _mm256_fnmadd_pd(n, _mm256_set1_pd(LN_2_LO), r);
 
-    // Degree-7 minimax polynomial over |r| <= ln(2)/2.
-    // Coefficients from Remez exchange on [−ln2/2, ln2/2]:
+    // Degree-7 Taylor-like polynomial over |r| <= ln(2)/2:
     //   p(r) ≈ 1 + r + r²/2 + r³/6 + r⁴/24 + r⁵/120 + r⁶/720 + r⁷/5040
-    // The low-order terms (c0–c2) are exact; the high-order terms carry the
-    // minimax correction that keeps max relative error < 2e-10.
+    // The coefficients are rounded near reciprocal factorials; this is not a
+    // Remez minimax fit. The tested relative-error bound is 8e-9.
     let c7 = _mm256_set1_pd(1.984_126_984_12e-4); // ≈ 1/5040
     let c6 = _mm256_set1_pd(1.388_888_889_0e-3); // ≈ 1/720
     let c5 = _mm256_set1_pd(8.333_333_333_3e-3); // ≈ 1/120
@@ -504,6 +504,9 @@ pub unsafe fn fill_normals_simd(
 mod tests {
     use super::*;
 
+    const HIGH_EXP_RELATIVE_ERROR_BOUND: f64 = 2e-14;
+    const FAST_EXP_RELATIVE_ERROR_BOUND: f64 = 8e-9;
+
     /// Special inputs covering underflow, overflow, infinities and NaN.
     const EXP_LN_SPECIALS: [f64; 9] = [
         f64::NEG_INFINITY,
@@ -528,7 +531,7 @@ mod tests {
             assert_eq!(got, expected, "exp({x}) = {got}, expected {expected}");
         } else if expected < f64::MIN_POSITIVE {
             assert!(
-                got >= 0.0 && got <= f64::MIN_POSITIVE,
+                (0.0..=f64::MIN_POSITIVE).contains(&got),
                 "exp({x}) = {got}, expected ~0 (std: {expected})"
             );
         } else {
@@ -555,6 +558,70 @@ mod tests {
         }
     }
 
+    fn assert_dense_exp_accuracy(start: f64, end: f64, samples: usize) {
+        let mut max_high = (0.0_f64, 0.0_f64);
+        let mut max_fast = (0.0_f64, 0.0_f64);
+        let denominator = (samples - 1) as f64;
+
+        for base in (0..samples).step_by(4) {
+            let mut input = [0.0_f64; 4];
+            let valid_lanes = (samples - base).min(4);
+            for (lane, value) in input.iter_mut().take(valid_lanes).enumerate() {
+                let sample = (base + lane) as f64;
+                *value = (end - start).mul_add(sample / denominator, start);
+            }
+
+            let mut high = [0.0_f64; 4];
+            let mut fast = [0.0_f64; 4];
+            // SAFETY: the calling tests perform the AVX2+FMA runtime check and
+            // all arrays contain four lanes.
+            unsafe {
+                let x = load_f64x4(&input, 0);
+                store_f64x4(&mut high, 0, exp_f64x4(x));
+                store_f64x4(&mut fast, 0, fast_exp_f64x4(x));
+            }
+
+            for lane in 0..valid_lanes {
+                let x = input[lane];
+                let expected = x.exp();
+                let high_error = ((high[lane] - expected) / expected).abs();
+                let fast_error = ((fast[lane] - expected) / expected).abs();
+                if high_error > max_high.0 {
+                    max_high = (high_error, x);
+                }
+                if fast_error > max_fast.0 {
+                    max_fast = (fast_error, x);
+                }
+            }
+        }
+
+        assert!(
+            max_high.0 <= HIGH_EXP_RELATIVE_ERROR_BOUND,
+            "degree-11 exp max relative error {} at x={} exceeds {}",
+            max_high.0,
+            max_high.1,
+            HIGH_EXP_RELATIVE_ERROR_BOUND
+        );
+        assert!(
+            max_fast.0 <= FAST_EXP_RELATIVE_ERROR_BOUND,
+            "degree-7 exp max relative error {} at x={} exceeds {}",
+            max_fast.0,
+            max_fast.1,
+            FAST_EXP_RELATIVE_ERROR_BOUND
+        );
+    }
+
+    #[test]
+    fn exp_f64x4_dense_accuracy_bounds() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
+            return;
+        }
+
+        let half_ln_2 = std::f64::consts::LN_2 * 0.5;
+        assert_dense_exp_accuracy(-half_ln_2, half_ln_2, 16_385);
+        assert_dense_exp_accuracy(-700.0, 700.0, 65_537);
+    }
+
     #[test]
     fn exp_f64x4_special_values_match_std() {
         if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
@@ -572,8 +639,8 @@ mod tests {
                 store_f64x4(&mut fast, 0, fast_exp_f64x4(x));
             }
             for (i, &x) in chunk.iter().enumerate() {
-                check_exp_special(x, exact[i], 1e-10);
-                check_exp_special(x, fast[i], 5e-9);
+                check_exp_special(x, exact[i], HIGH_EXP_RELATIVE_ERROR_BOUND);
+                check_exp_special(x, fast[i], FAST_EXP_RELATIVE_ERROR_BOUND);
             }
         }
     }

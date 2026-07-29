@@ -232,8 +232,8 @@ fn asian_arithmetic_mc_converges_to_quantlib_reference_within_two_stderr() {
         .price(&option, &market)
         .expect("fine MC succeeds");
 
-    let coarse_err = (coarse.price - case.expected).abs();
     let fine_err = (fine.price - case.expected).abs();
+    let coarse_stderr = coarse.stderr.expect("MC stderr must be present");
     let fine_stderr = fine.stderr.expect("MC stderr must be present");
 
     assert!(
@@ -246,8 +246,15 @@ fn asian_arithmetic_mc_converges_to_quantlib_reference_within_two_stderr() {
         fine_stderr
     );
 
-    // Note: a seeded coarse-vs-fine error comparison is not statistically
-    // meaningful (a lucky coarse draw can beat the fine run); the 2*stderr
-    // bound above is the sound convergence check.
-    let _ = coarse_err;
+    // A particular larger pseudo-random sample need not have a smaller
+    // realized absolute error than its prefix. Convergence is instead
+    // evidenced by the estimator's standard error shrinking at the expected
+    // O(1/sqrt(N)) rate; quadrupling paths should approximately halve it.
+    assert!(
+        fine_stderr <= 0.6 * coarse_stderr,
+        "line {}: standard error did not contract (coarse={} fine={})",
+        case.line,
+        coarse_stderr,
+        fine_stderr
+    );
 }

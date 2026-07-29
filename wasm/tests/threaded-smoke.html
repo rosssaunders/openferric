@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenFerric threaded WASM smoke test</title>
+  </head>
+  <body data-status="running">
+    <pre id="result">running</pre>
+    <script type="module">
+      const resultNode = document.querySelector("#result");
+
+      function finish(status, message) {
+        document.body.dataset.status = status;
+        resultNode.textContent = message;
+      }
+
+      try {
+        if (!crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
+          throw new Error("cross-origin isolation and SharedArrayBuffer are required");
+        }
+
+        const openferric = await import("/www/pkg-threads/openferric_wasm.js");
+        await openferric.default();
+        await openferric.initThreadPool(2);
+
+        const source = await fetch("/examples/dsl/03_forward.of").then((response) => {
+          if (!response.ok) {
+            throw new Error(`failed to load DSL fixture: HTTP ${response.status}`);
+          }
+          return response.text();
+        });
+        const compiled = JSON.parse(openferric.dsl_parse_and_compile(source));
+        if (!compiled.ok) {
+          throw new Error(`failed to compile DSL fixture: ${JSON.stringify(compiled.err)}`);
+        }
+
+        const market = JSON.stringify({
+          assets: [
+            {
+              type: "Equity",
+              spot: 100,
+              vol: 0.2,
+              dividend_yield: 0.01,
+            },
+          ],
+          correlation: [[1]],
+          rate: 0.03,
+        });
+        const priced = JSON.parse(
+          openferric.dsl_price(JSON.stringify(compiled.ok), market, 8192, 2, 42n),
+        );
+        if (priced.err || !Number.isFinite(priced.price)) {
+          throw new Error(`threaded pricing failed: ${JSON.stringify(priced)}`);
+        }
+
+        finish("passed", `thread pool initialized; price=${priced.price}`);
+      } catch (error) {
+        finish("failed", error instanceof Error ? error.stack ?? error.message : String(error));
+      }
+    </script>
+  </body>
+</html>

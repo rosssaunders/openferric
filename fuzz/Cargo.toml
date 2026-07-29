@@ -1,0 +1,30 @@
+[package]
+name = "openferric-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+openferric = { path = ".." }
+
+[[bin]]
+name = "dsl_pipeline"
+path = "fuzz_targets/dsl_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "trade_json"
+path = "fuzz_targets/trade_json.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

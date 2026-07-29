@@ -17,6 +17,25 @@ use std::sync::Arc;
 
 pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 
+/// CPU execution strategy for the generic path simulation engine.
+///
+/// SIMD, GPU, and JIT execution require workload-specific implementations and
+/// are exposed by the higher-level pricing engines. Keeping this policy
+/// limited to backends the generic callback engine can actually execute avoids
+/// silently accepting an unsupported hardware request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CpuExecutionPolicy {
+    /// Select scalar or parallel execution from the available CPU resources
+    /// and workload size.
+    #[default]
+    Auto,
+    /// Run deterministically on the calling thread.
+    Scalar,
+    /// Run fixed simulation chunks on the Rayon thread pool.
+    #[cfg(feature = "parallel")]
+    Parallel,
+}
+
 pub trait PathGenerator: Send + Sync {
     fn steps(&self) -> usize;
     fn generate_from_normals(&self, normals_1: &[f64], normals_2: &[f64]) -> Vec<f64>;
@@ -130,6 +149,8 @@ pub struct MonteCarloEngine {
     pub seed: u64,
     pub rng_kind: FastRngKind,
     pub reproducible: bool,
+    /// CPU execution strategy for the generic callback engine.
+    pub execution_policy: CpuExecutionPolicy,
 }
 
 impl MonteCarloEngine {
@@ -141,6 +162,7 @@ impl MonteCarloEngine {
             seed,
             rng_kind: FastRngKind::Xoshiro256PlusPlus,
             reproducible: true,
+            execution_policy: CpuExecutionPolicy::Auto,
         }
     }
 
@@ -179,6 +201,15 @@ impl MonteCarloEngine {
         self
     }
 
+    /// Sets the CPU execution strategy for generic path simulation.
+    ///
+    /// The generic engine supports scalar and, when enabled, Rayon-parallel
+    /// execution.
+    pub fn with_execution_policy(mut self, execution_policy: CpuExecutionPolicy) -> Self {
+        self.execution_policy = execution_policy;
+        self
+    }
+
     pub fn run<G, P>(&self, generator: &G, payoff: P, discount_factor: f64) -> (f64, f64)
     where
         G: PathGenerator,
@@ -206,100 +237,119 @@ impl MonteCarloEngine {
         // Using a tuple-struct alias for clarity.
         type Acc = (f64, f64, f64, f64, f64, u64);
         let identity: Acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0);
+        type Scratch = (Vec<f64>, Vec<f64>, Vec<f64>);
+        const CHUNK_SAMPLES: usize = 256;
+        let chunk_count = samples.div_ceil(CHUNK_SAMPLES);
+        let make_scratch = || {
+            (
+                vec![0.0_f64; steps],
+                vec![0.0_f64; steps],
+                vec![0.0_f64; path_len],
+            )
+        };
 
-        // Per-thread fold function: owns pre-allocated buffers, accumulates
-        // statistics inline without collecting into a Vec.
-        let fold_fn = |mut acc: (Acc, Vec<f64>, Vec<f64>, Vec<f64>), i: usize| {
-            let (ref mut stats, ref mut z1, ref mut z2, ref mut path) = acc;
-
-            let seed = resolve_stream_seed(base_seed, i, reproducible);
+        // A fixed chunk owns one RNG stream. Chunk boundaries and seeds do not
+        // depend on the Rayon pool, while map_init reuses path/normal buffers
+        // for every chunk handled by a worker.
+        let simulate_chunk = |scratch: &mut Scratch, chunk_index: usize| -> Acc {
+            let (z1, z2, path) = scratch;
+            let seed = resolve_stream_seed(base_seed, chunk_index, reproducible);
             let mut rng = FastRng::from_seed(rng_kind, seed);
+            let chunk_start = chunk_index * CHUNK_SAMPLES;
+            let chunk_end = (chunk_start + CHUNK_SAMPLES).min(samples);
+            let mut stats = identity;
 
-            // Only generate as many normal streams as the model needs.
-            // GBM needs 1 stream (skipping z2 halves RNG + inverse-CDF work).
-            for j in 0..steps {
-                z1[j] = sample_standard_normal(&mut rng);
-                if num_streams >= 2 {
-                    z2[j] = sample_standard_normal(&mut rng);
+            for _ in chunk_start..chunk_end {
+                // Only generate as many normal streams as the model needs.
+                // GBM needs 1 stream (skipping z2 halves RNG + inverse-CDF work).
+                for j in 0..steps {
+                    z1[j] = sample_standard_normal(&mut rng);
+                    if num_streams >= 2 {
+                        z2[j] = sample_standard_normal(&mut rng);
+                    }
                 }
-            }
 
-            generator.generate_into(z1, z2, path);
-            let x = payoff(path);
-            let y = if has_cv {
-                (control.as_ref().unwrap().evaluator)(path)
-            } else {
-                0.0
-            };
-
-            let (x, y) = if antithetic {
-                for v in z1.iter_mut() {
-                    *v = -*v;
-                }
-                for v in z2.iter_mut() {
-                    *v = -*v;
-                }
                 generator.generate_into(z1, z2, path);
-                let xa = payoff(path);
-                let ya = if has_cv {
+                let x = payoff(path);
+                let y = if has_cv {
                     (control.as_ref().unwrap().evaluator)(path)
                 } else {
                     0.0
                 };
-                (0.5 * (x + xa), 0.5 * (y + ya))
-            } else {
-                (x, y)
-            };
 
-            stats.0 += x;
-            stats.1 += x * x;
-            stats.2 += y;
-            stats.3 += x * y;
-            stats.4 += y * y;
-            stats.5 += 1;
+                let (x, y) = if antithetic {
+                    for value in z1.iter_mut() {
+                        *value = -*value;
+                    }
+                    for value in z2.iter_mut() {
+                        *value = -*value;
+                    }
+                    generator.generate_into(z1, z2, path);
+                    let xa = payoff(path);
+                    let ya = if has_cv {
+                        (control.as_ref().unwrap().evaluator)(path)
+                    } else {
+                        0.0
+                    };
+                    (0.5 * (x + xa), 0.5 * (y + ya))
+                } else {
+                    (x, y)
+                };
 
-            acc
+                stats.0 += x;
+                stats.1 += x * x;
+                stats.2 += y;
+                stats.3 += x * y;
+                stats.4 += y * y;
+                stats.5 += 1;
+            }
+
+            stats
+        };
+
+        let reduce_fn = |a: Acc, b: Acc| -> Acc {
+            (
+                a.0 + b.0,
+                a.1 + b.1,
+                a.2 + b.2,
+                a.3 + b.3,
+                a.4 + b.4,
+                a.5 + b.5,
+            )
         };
 
         #[cfg(feature = "parallel")]
         let (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count) = {
-            let reduce_fn = |a: Acc, b: Acc| -> Acc {
-                (
-                    a.0 + b.0,
-                    a.1 + b.1,
-                    a.2 + b.2,
-                    a.3 + b.3,
-                    a.4 + b.4,
-                    a.5 + b.5,
-                )
+            const AUTO_PARALLEL_MIN_NORMALS: usize = 32_768;
+            let work_items = samples.saturating_mul(steps.max(1));
+            let use_parallel = match self.execution_policy {
+                CpuExecutionPolicy::Parallel => true,
+                CpuExecutionPolicy::Auto => {
+                    rayon::current_num_threads() > 1 && work_items >= AUTO_PARALLEL_MIN_NORMALS
+                }
+                CpuExecutionPolicy::Scalar => false,
             };
-            (0..samples)
-                .into_par_iter()
-                .fold(
-                    || {
-                        (
-                            identity,
-                            vec![0.0_f64; steps],
-                            vec![0.0_f64; steps],
-                            vec![0.0_f64; path_len],
-                        )
-                    },
-                    &fold_fn,
-                )
-                .map(|(stats, _, _, _)| stats)
-                .reduce(|| identity, reduce_fn)
+
+            if use_parallel {
+                let partials = (0..chunk_count)
+                    .into_par_iter()
+                    .map_init(&make_scratch, &simulate_chunk)
+                    .collect::<Vec<_>>();
+                partials.into_iter().fold(identity, reduce_fn)
+            } else {
+                let mut scratch = make_scratch();
+                (0..chunk_count)
+                    .map(|chunk_index| simulate_chunk(&mut scratch, chunk_index))
+                    .fold(identity, reduce_fn)
+            }
         };
 
         #[cfg(not(feature = "parallel"))]
         let (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count) = {
-            let init = (
-                identity,
-                vec![0.0_f64; steps],
-                vec![0.0_f64; steps],
-                vec![0.0_f64; path_len],
-            );
-            let (stats, _, _, _) = (0..samples).fold(init, &fold_fn);
-            stats
+            let mut scratch = make_scratch();
+            (0..chunk_count)
+                .map(|chunk_index| simulate_chunk(&mut scratch, chunk_index))
+                .fold(identity, reduce_fn)
         };
 
         let n = count as f64;
@@ -331,6 +381,7 @@ impl MonteCarloEngine {
             } else {
                 0.0
             };
+            let var = if var < 0.0 { 0.0 } else { var };
             let price = discount_factor * mean;
             let stderr = discount_factor * (var / n).sqrt();
             (price, stderr)
@@ -341,6 +392,7 @@ impl MonteCarloEngine {
             } else {
                 0.0
             };
+            let var = if var < 0.0 { 0.0 } else { var };
             let price = discount_factor * mean;
             let stderr = discount_factor * (var / n).sqrt();
             (price, stderr)
@@ -459,5 +511,77 @@ mod tests {
         );
 
         assert!((p1 - bs).abs() <= (p0 - bs).abs() + 0.15);
+    }
+
+    #[test]
+    fn constant_payoff_has_zero_stderr_with_and_without_control_variate() {
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: 0.03,
+                sigma: 0.2,
+            },
+            s0: 100.0,
+            maturity: 1.0,
+            steps: 1,
+        };
+        // Three copies of 0.1 make the sum-of-squares variance formula
+        // slightly negative in binary floating point without cancellation
+        // protection.
+        let base = MonteCarloEngine::new(3, 7).with_execution_policy(CpuExecutionPolicy::Scalar);
+        let (price, stderr) = base.run(&generator, |_| 0.1, 0.95);
+        assert!((price - 0.095).abs() <= f64::EPSILON);
+        assert_eq!(stderr, 0.0);
+
+        let control = ControlVariate {
+            expected: 0.2,
+            evaluator: Arc::new(|_| 0.2),
+        };
+        let (price, stderr) = base
+            .with_control_variate(control)
+            .run(&generator, |_| 0.1, 0.95);
+        assert!((price - 0.095).abs() <= f64::EPSILON);
+        assert_eq!(stderr, 0.0);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn fixed_chunk_streams_match_across_scalar_and_parallel_pools() {
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: 0.04,
+                sigma: 0.3,
+            },
+            s0: 100.0,
+            maturity: 1.5,
+            steps: 37,
+        };
+        let control = ControlVariate {
+            expected: 100.0 * (0.04_f64 * 1.5).exp(),
+            evaluator: Arc::new(|path: &[f64]| path[path.len() - 1]),
+        };
+        let base = MonteCarloEngine::new(10_003, 918)
+            .with_antithetic(true)
+            .with_control_variate(control);
+        let payoff = |path: &[f64]| (path[path.len() - 1] - 105.0).max(0.0);
+        let discount = (-0.04_f64 * 1.5).exp();
+
+        let scalar = base
+            .clone()
+            .with_execution_policy(CpuExecutionPolicy::Scalar)
+            .run(&generator, payoff, discount);
+        let run_parallel = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("thread pool")
+                .install(|| {
+                    base.clone()
+                        .with_execution_policy(CpuExecutionPolicy::Parallel)
+                        .run(&generator, payoff, discount)
+                })
+        };
+
+        assert_eq!(scalar, run_parallel(2));
+        assert_eq!(scalar, run_parallel(4));
     }
 }

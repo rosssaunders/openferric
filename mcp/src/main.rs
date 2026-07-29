@@ -294,3 +294,95 @@ async fn write_response(out: &mut BufWriter<io::Stdout>, response: &Value) -> io
     out.write_all(b"\n").await?;
     out.flush().await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_request_negotiates_protocol() {
+        let responses = handle_incoming(json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "initialize",
+            "params": {}
+        }));
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["id"], 7);
+        assert_eq!(responses[0]["result"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(responses[0]["result"]["serverInfo"]["name"], SERVER_NAME);
+    }
+
+    #[test]
+    fn notifications_do_not_produce_responses() {
+        let responses = handle_incoming(json!({
+            "jsonrpc": "2.0",
+            "method": "resources/list"
+        }));
+        assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn empty_batch_and_unknown_method_return_json_rpc_errors() {
+        let empty = handle_incoming(json!([]));
+        assert_eq!(empty[0]["error"]["code"], -32600);
+
+        let unknown = handle_incoming(json!({
+            "jsonrpc": "2.0",
+            "id": "request",
+            "method": "does/not/exist"
+        }));
+        assert_eq!(unknown[0]["id"], "request");
+        assert_eq!(unknown[0]["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn tools_list_has_unique_names_and_valid_schemas() {
+        let result = handle_tools_list();
+        let tools = result["tools"].as_array().expect("tools must be an array");
+        assert!(!tools.is_empty());
+        let mut names = tools
+            .iter()
+            .map(|tool| {
+                assert_eq!(tool["inputSchema"]["type"], "object");
+                tool["name"].as_str().expect("tool name")
+            })
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), tools.len());
+    }
+
+    #[test]
+    fn european_pricing_tool_round_trips_through_protocol() {
+        let responses = handle_incoming(json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "price_european",
+                "arguments": {
+                    "spot": 100.0,
+                    "strike": 100.0,
+                    "rate": 0.05,
+                    "vol": 0.2,
+                    "time": 1.0,
+                    "is_call": true
+                }
+            }
+        }));
+        let result = &responses[0]["result"];
+        assert_eq!(result["isError"], false);
+        let price = result["structuredContent"]["price"]
+            .as_f64()
+            .expect("numeric price");
+        assert!((price - 10.4506).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn resource_read_rejects_unknown_uri() {
+        let error = handle_resources_read(&json!({"uri": "openferric://unknown"}))
+            .expect_err("unknown resource should fail");
+        assert_eq!(error.0, -32602);
+    }
+}

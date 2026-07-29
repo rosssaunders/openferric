@@ -24,6 +24,8 @@ pub mod simd_avx512;
 pub mod simd_math;
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 pub mod simd_neon;
+#[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+pub mod simd_wasm;
 pub mod sobol;
 pub mod timeseries;
 

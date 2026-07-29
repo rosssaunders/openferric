@@ -30,8 +30,8 @@ Project-level instructions for coding agents working in this repository. Keep th
 cargo build
 cargo build --release
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --features parallel,simd
-cargo test --workspace --features parallel,simd
+cargo clippy --locked --workspace --all-targets --all-features
+cargo test --locked --workspace --features accelerated-native
 cargo test test_name
 cargo test --test quantlib_reference
 cargo bench
@@ -63,8 +63,10 @@ pytest python/tests -v
 ### WASM
 
 ```bash
-wasm-pack build wasm --target web --out-dir ../www/pkg
-wasm-pack test --node wasm
+./scripts/build-wasm.sh baseline
+./scripts/build-wasm.sh simd
+./scripts/build-wasm.sh threads
+wasm-pack test --node wasm --locked
 ```
 
 ### TypeScript
@@ -79,20 +81,21 @@ npm run typecheck
 Current CI in `.github/workflows/ci.yml` runs:
 
 1. `cargo fmt --all --check`
-2. `cargo clippy --workspace --all-targets --features parallel,simd`
-3. `cargo test --workspace --features parallel,simd`
+2. `cargo clippy --locked --workspace --all-targets --all-features`
+3. `cargo test --locked --workspace --features accelerated-native`
 4. ARM64 NEON SIMD regression tests on `ubuntu-24.04-arm`
 5. Python wheel build plus `pytest python/tests -v`
-6. `wasm-pack build wasm --target web --out-dir ../www/pkg`
-7. `wasm-pack test --node wasm`
-8. WASM binary size budget check for `www/pkg/openferric_wasm_bg.wasm`
+6. Portable, SIMD128, and threaded WASM builds plus Node ABI tests
+7. WebGPU WASM compile check
+8. Portable WASM binary size budget check for `www/pkg/openferric_wasm_bg.wasm`
 
 Prefer validating the narrowest relevant subset locally, but make sure changes are consistent with the CI commands above before opening a PR.
 
 ## Feature Flags
 
 - `parallel`: Rayon-parallel Monte Carlo.
-- `simd`: AVX2/NEON SIMD paths.
+- `simd`: AVX2, AVX-512, NEON, and opt-in WASM SIMD128 paths.
+- `accelerated-native`: enables both `parallel` and `simd`.
 - `gpu`: WebGPU support.
 - `jit`: Cranelift-backed DSL JIT.
 

@@ -3,33 +3,34 @@
 //! Selects between accuracy levels for exp() and inverse CDF approximants
 //! based on the target Monte Carlo standard error budget. When stochastic
 //! MC error dominates approximation error by 10x+, cheaper (lower-degree)
-//! minimax approximants are used automatically.
+//! polynomial approximants are used automatically.
 //!
 //! ## Tiers
 //!
 //! - **High** (risk/PnL reporting): degree-11 exp, full-precision inverse CDF.
-//!   Max relative error ~1 ULP. Use for analytic pricing, Greeks, risk reports.
+//!   Dense differential tests bound exp relative error by `2e-14` over the
+//!   practical finite range `[-700, 700]`.
 //!
-//! - **Fast** (scenario sweeps, MC simulation): degree-7 minimax exp (~2e-10
-//!   relative error). ~2x faster exp(). Appropriate when MC noise is orders
-//!   of magnitude larger than approximation error.
+//! - **Fast** (scenario sweeps, MC simulation): degree-7 exp with relative
+//!   error bounded by `8e-9` over the same range. It saves four polynomial
+//!   FMAs and is appropriate when MC noise dominates approximation error.
 //!
 //! ## Selection logic
 //!
 //! MC standard error = O(σ / √N). Even at N = 10^8 the MC error (~10^-4)
-//! dwarfs the fast-exp error (~2e-10). The tier selection is therefore
-//! conservative: `Fast` is used for any MC simulation, `High` for analytic
-//! or precision-critical computations.
+//! dwarfs the fast-exp error (at most `8e-9` on the tested range). The tier
+//! selection is therefore conservative: `Fast` is used for any MC simulation,
+//! `High` for analytic or precision-critical computations.
 
 /// Accuracy tier for SIMD approximants (exp, inverse CDF).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum AccuracyTier {
-    /// High-accuracy approximants: degree-11 exp (~1 ULP), full-precision
-    /// inverse CDF. Use for analytic pricing, Greeks, and risk reporting.
+    /// High-accuracy approximants: degree-11 exp (at most `2e-14` relative
+    /// error over `[-700, 700]`) and full-precision inverse CDF.
     High,
-    /// Fast approximants: degree-7 minimax exp (~2e-10 relative error).
-    /// ~2x faster for exp(). Sufficient for Monte Carlo path generation
-    /// where stochastic noise dominates approximation error.
+    /// Fast approximants: degree-7 exp (at most `8e-9` relative error over
+    /// `[-700, 700]`). Saves four polynomial FMAs and is sufficient for Monte
+    /// Carlo path generation where stochastic noise dominates.
     #[default]
     Fast,
 }
@@ -38,18 +39,18 @@ impl AccuracyTier {
     /// Select the appropriate accuracy tier for Monte Carlo simulation
     /// based on the number of paths and steps.
     ///
-    /// The MC standard error is O(1/√N). The `Fast` tier exp() error of
-    /// ~2e-10 is negligible compared to MC noise at any practical path
-    /// count (even 10^8 paths has ~10^-4 MC error). This function always
-    /// returns `Fast` for MC use cases, making the selection explicit
-    /// rather than implicit.
+    /// The MC standard error is O(1/√N). The `Fast` tier exp() error of at
+    /// most `8e-9` over the tested practical range is negligible compared to
+    /// MC noise at any practical path count (even 10^8 paths has ~10^-4 MC
+    /// error). This function always returns `Fast` for MC use cases, making
+    /// the selection explicit rather than implicit.
     ///
-    /// Override with `AccuracyTier::High` if the results feed directly
-    /// into risk reports or regulatory calculations where every ULP matters.
+    /// Override with `AccuracyTier::High` if the results feed directly into
+    /// risk reports or regulatory calculations requiring the tighter bound.
     #[inline]
     pub fn for_mc(num_paths: usize, _num_steps: usize) -> Self {
         // MC standard error at N paths ≈ σ/√N.
-        // Even at N=10^8 this is ~10^-4, far above fast-exp error of 2e-10.
+        // Even at N=10^8 this is ~10^-4, far above fast-exp error of 8e-9.
         // Only a vanishingly small path count would make High worthwhile,
         // but at that point the MC estimate itself is meaningless.
         let _ = num_paths; // All MC use cases can safely use Fast tier.
@@ -86,7 +87,7 @@ pub fn tiered_exp(x: f64, tier: AccuracyTier) -> f64 {
 ///
 /// On x86_64 with AVX2+FMA:
 /// - `High`: degree-11 polynomial (11 FMA ops)
-/// - `Fast`: degree-7 minimax polynomial (7 FMA ops, ~2x faster)
+/// - `Fast`: degree-7 polynomial (7 FMA ops)
 ///
 /// # Safety
 /// Caller must ensure the target SIMD features are available.
@@ -100,6 +101,22 @@ pub unsafe fn tiered_exp_f64x4(
     match tier {
         AccuracyTier::High => unsafe { crate::math::simd_math::exp_f64x4(x) },
         AccuracyTier::Fast => unsafe { crate::math::simd_math::fast_exp_f64x4(x) },
+    }
+}
+
+/// Dispatch a two-lane NEON exp operation using the selected accuracy tier.
+///
+/// # Safety
+/// The caller must ensure NEON is available on the executing CPU.
+#[cfg(all(feature = "simd", target_arch = "aarch64"))]
+#[inline]
+pub unsafe fn tiered_exp_f64x2(
+    x: std::arch::aarch64::float64x2_t,
+    tier: AccuracyTier,
+) -> std::arch::aarch64::float64x2_t {
+    match tier {
+        AccuracyTier::High => unsafe { crate::math::simd_neon::simd_exp_f64x2(x) },
+        AccuracyTier::Fast => unsafe { crate::math::simd_neon::fast_exp_f64x2(x) },
     }
 }
 
