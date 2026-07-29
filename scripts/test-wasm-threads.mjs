@@ -184,8 +184,19 @@ try {
   const devToolsUrl = await new Promise((resolveUrl, rejectUrl) => {
     const timeout = setTimeout(() => {
       rejectUrl(new Error(`headless Chrome did not start DevTools\n${stderr}`));
-    }, 10_000);
-    browser.once("error", rejectUrl);
+    }, 30_000);
+    browser.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectUrl(error);
+    });
+    browser.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      rejectUrl(
+        new Error(
+          `headless Chrome exited before starting DevTools (code ${code}, signal ${signal})\n${stderr}`,
+        ),
+      );
+    });
     browser.stderr.setEncoding("utf8").on("data", (chunk) => {
       stderr += chunk;
       const match = stderr.match(/DevTools listening on (ws:\/\/\S+)/);

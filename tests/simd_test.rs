@@ -9,8 +9,12 @@ mod batch_workspace_tests {
     const GUARD: f64 = -9_876_543.25;
 
     #[track_caller]
-    fn assert_machine_precision_eq(actual: f64, expected: f64) {
-        let scale = actual.abs().max(expected.abs()).max(1.0);
+    fn assert_machine_precision_eq(actual: f64, expected: f64, operation_scale: f64) {
+        let scale = actual
+            .abs()
+            .max(expected.abs())
+            .max(operation_scale.abs())
+            .max(1.0);
         let tolerance = 4.0 * f64::EPSILON * scale;
         assert!(
             (actual - expected).abs() <= tolerance,
@@ -180,7 +184,10 @@ mod batch_workspace_tests {
                     // Accelerated targets may evaluate the mathematically
                     // equivalent discounted-forward form with different
                     // rounding from the two-discount-factor reference.
-                    assert_machine_precision_eq(prices[index], expected);
+                    let operation_scale = (spots[index] * df_q)
+                        .abs()
+                        .max((strikes[index] * df_r).abs());
+                    assert_machine_precision_eq(prices[index], expected, operation_scale);
                 }
 
                 let (delta, gamma, vega, theta) =
@@ -202,7 +209,8 @@ mod batch_workspace_tests {
                     } else {
                         f64::max(strikes[index] - spots[index], 0.0)
                     };
-                    assert_machine_precision_eq(prices[index], intrinsic);
+                    let operation_scale = spots[index].abs().max(strikes[index].abs());
+                    assert_machine_precision_eq(prices[index], intrinsic, operation_scale);
                 }
 
                 let (delta, gamma, vega, theta) =
