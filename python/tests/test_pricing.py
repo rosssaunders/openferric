@@ -2,11 +2,13 @@
 
 import math
 
+import numpy as np
 import pytest
 from conftest import ABS_TOL, REL_TOL, is_nan
 from openferric import (
     AnalyticEngine,
     Autocallable,
+    bs_price_batch,
     py_american_price,
     py_barrier_price,
     py_bs_greeks,
@@ -52,6 +54,28 @@ class TestBsPrice:
 
     def test_invalid_option_type(self, std_market):
         assert is_nan(py_bs_price(**std_market, option_type="straddle"))
+
+    def test_numpy_batch_matches_scalar(self):
+        spots = np.array([80.0, 100.0, 120.0], dtype=np.float64)
+        strikes = np.array([100.0, 100.0, 100.0], dtype=np.float64)
+        actual = bs_price_batch(spots, strikes, 0.05, 0.0, 0.2, 1.0, True)
+        expected = np.array([py_bs_price(float(spot), 100.0, 1.0, 0.2, 0.05, "call") for spot in spots])
+        # The vector path uses the fast A&S CDF approximation. Its documented
+        # CDF error propagates to a price-level absolute bound below 5e-5 for
+        # this grid, while the scalar binding uses the high-accuracy CDF.
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=5e-5)
+
+    def test_numpy_batch_rejects_mismatched_lengths(self):
+        with pytest.raises(ValueError, match="same length"):
+            bs_price_batch(
+                np.array([100.0], dtype=np.float64),
+                np.array([90.0, 100.0], dtype=np.float64),
+                0.05,
+                0.0,
+                0.2,
+                1.0,
+                True,
+            )
 
 
 # =========================================================================

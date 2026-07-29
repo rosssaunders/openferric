@@ -11,7 +11,12 @@ pub struct WasmGpuMcResult {
 
 /// GPU Monte Carlo European option pricing via WebGPU compute shaders.
 ///
-/// Uses `u32` for `num_paths` and `num_steps` to avoid BigInt in JS.
+/// Uses exact terminal GBM sampling, with two paths generated per shader
+/// invocation. `num_steps` remains part of the JavaScript API and must be
+/// positive, but does not affect a terminal European payoff. WebGPU arithmetic
+/// is `f32`; the final price and sampling standard error are reduced in `f64`.
+///
+/// Uses `u32` for path and step counts to avoid BigInt in JavaScript.
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
 #[wasm_bindgen]
 pub async fn gpu_mc_price_european(

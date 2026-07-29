@@ -1,0 +1,84 @@
+name: Deep verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 2 * * 6"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz parsers and serialized inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cargo-fuzz
+
+      - name: Check fuzz workspace
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml --all --check
+          cargo check --locked --manifest-path fuzz/Cargo.toml --bins
+
+      - name: Fuzz DSL pipeline
+        run: cargo fuzz run dsl_pipeline -- -max_total_time=120
+
+      - name: Fuzz trade JSON
+        run: cargo fuzz run trade_json -- -max_total_time=120
+
+  miri:
+    name: Miri unsafe-kernel checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Run scalar math tests under Miri
+        run: "cargo miri test -p openferric --no-default-features --lib math::"
+
+  mutation:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+
+      - name: Check whether tests kill core pricing mutations
+        run: |
+          cargo mutants \
+            --package openferric \
+            --features accelerated-native \
+            --file src/core/engine.rs \
+            --file src/pricing/european.rs \
+            --file src/engines/analytic/bs_simd.rs \
+            --timeout-multiplier 3 \
+            --jobs 2 \
+            --cargo-test-arg=--lib
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report-${{ github.sha }}
+          path: mutants.out
+          retention-days: 30

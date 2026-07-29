@@ -25,7 +25,9 @@
 //! # Feature Flags
 //! - `parallel`: enables Rayon-powered parallel Monte Carlo and grid workflows.
 //! - `simd`: enables SIMD-specialized paths where available.
+//! - `accelerated-native`: enables both `parallel` and `simd`.
 //! - `gpu`: enables `wgpu`-based GPU Monte Carlo engines.
+//! - `jit`: enables native Cranelift compilation for DSL product evaluation.
 //!
 //! # Quick Start
 //! Price a Black-Scholes call:

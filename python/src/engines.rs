@@ -1242,6 +1242,7 @@ impl McEngine {
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn vanilla_price(
+        py: Python<'_>,
         option_type: &str,
         spot: f64,
         strike: f64,
@@ -1275,7 +1276,8 @@ impl McEngine {
         if let Some(tier) = accuracy_tier_from_str(accuracy_tier)? {
             engine = engine.with_accuracy_tier(tier);
         }
-        Ok(map_pricing_err(engine.price(&instrument, &market))?.into())
+        let result = py.detach(|| engine.price(&instrument, &market));
+        Ok(map_pricing_err(result)?.into())
     }
 
     #[staticmethod]

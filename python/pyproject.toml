@@ -5,6 +5,7 @@ build-backend = "maturin"
 [project]
 name = "openferric"
 version = "0.1.0"
+dependencies = ["numpy>=1.26"]
 
 [tool.maturin]
 manifest-path = "Cargo.toml"

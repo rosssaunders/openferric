@@ -1,3 +1,251 @@
+mod batch_workspace_tests {
+    use openferric::core::OptionType;
+    use openferric::engines::analytic::{
+        bs_greeks_batch, bs_greeks_batch_into, bs_price_batch, bs_price_batch_into,
+        normal_cdf_batch_approx, normal_cdf_batch_approx_into,
+    };
+    use openferric::pricing::european::black_scholes_price;
+
+    const GUARD: f64 = -9_876_543.25;
+
+    #[track_caller]
+    fn assert_machine_precision_eq(actual: f64, expected: f64, operation_scale: f64) {
+        let scale = actual
+            .abs()
+            .max(expected.abs())
+            .max(operation_scale.abs())
+            .max(1.0);
+        let tolerance = 4.0 * f64::EPSILON * scale;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual {actual} differs from expected {expected} by more than {tolerance}"
+        );
+    }
+
+    #[test]
+    fn batch_workspace_apis_cover_all_vector_tails_and_unaligned_slices() {
+        // 0..=17 covers empty input and more than two full AVX-512 vectors,
+        // four AVX2 vectors, or eight NEON vectors, including every tail.
+        for len in 0..=17 {
+            let spot_storage: Vec<f64> = (0..len + 2).map(|i| 70.0 + i as f64 * 3.25).collect();
+            let strike_storage: Vec<f64> = (0..len + 2).map(|i| 80.0 + i as f64 * 2.50).collect();
+            let spots = &spot_storage[1..1 + len];
+            let strikes = &strike_storage[1..1 + len];
+
+            for is_call in [false, true] {
+                let expected = bs_price_batch(spots, strikes, 0.03, 0.01, 0.24, 1.3, is_call);
+                let mut guarded = vec![GUARD; len + 2];
+                bs_price_batch_into(
+                    spots,
+                    strikes,
+                    0.03,
+                    0.01,
+                    0.24,
+                    1.3,
+                    is_call,
+                    &mut guarded[1..1 + len],
+                );
+
+                assert_eq!(guarded[0], GUARD);
+                assert_eq!(guarded[len + 1], GUARD);
+                for index in 0..len {
+                    assert!(
+                        (guarded[index + 1] - expected[index]).abs() <= 1.0e-12,
+                        "price workspace mismatch at length {len}, index {index}"
+                    );
+
+                    let adjusted_spot = spots[index] * (-0.01_f64 * 1.3).exp();
+                    let option_type = if is_call {
+                        OptionType::Call
+                    } else {
+                        OptionType::Put
+                    };
+                    let scalar = black_scholes_price(
+                        option_type,
+                        adjusted_spot,
+                        strikes[index],
+                        0.03,
+                        0.24,
+                        1.3,
+                    );
+                    // The batch path uses the fast A&S CDF approximation.
+                    // Its 7.5e-8 absolute CDF error translates to a
+                    // price-level bound of roughly (S + K) * 7.5e-8.
+                    assert!(
+                        (guarded[index + 1] - scalar).abs() <= 5.0e-5,
+                        "SIMD/scalar mismatch at length {len}, index {index}"
+                    );
+                }
+
+                let expected_greeks =
+                    bs_greeks_batch(spots, strikes, 0.03, 0.01, 0.24, 1.3, is_call);
+                let mut delta = vec![GUARD; len + 2];
+                let mut gamma = vec![GUARD; len + 2];
+                let mut vega = vec![GUARD; len + 2];
+                let mut theta = vec![GUARD; len + 2];
+                bs_greeks_batch_into(
+                    spots,
+                    strikes,
+                    0.03,
+                    0.01,
+                    0.24,
+                    1.3,
+                    is_call,
+                    &mut delta[1..1 + len],
+                    &mut gamma[1..1 + len],
+                    &mut vega[1..1 + len],
+                    &mut theta[1..1 + len],
+                );
+
+                for output in [&delta, &gamma, &vega, &theta] {
+                    assert_eq!(output[0], GUARD);
+                    assert_eq!(output[len + 1], GUARD);
+                }
+                for index in 0..len {
+                    assert_eq!(
+                        delta[index + 1].to_bits(),
+                        expected_greeks.0[index].to_bits()
+                    );
+                    assert_eq!(
+                        gamma[index + 1].to_bits(),
+                        expected_greeks.1[index].to_bits()
+                    );
+                    assert_eq!(
+                        vega[index + 1].to_bits(),
+                        expected_greeks.2[index].to_bits()
+                    );
+                    assert_eq!(
+                        theta[index + 1].to_bits(),
+                        expected_greeks.3[index].to_bits()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normal_cdf_workspace_covers_tails_and_special_values() {
+        let values = [
+            f64::NEG_INFINITY,
+            -8.0,
+            -1.0,
+            -0.0,
+            0.0,
+            1.0,
+            8.0,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+
+        for len in 0..=values.len() {
+            let expected = normal_cdf_batch_approx(&values[..len]);
+            let mut guarded = vec![GUARD; len + 2];
+            normal_cdf_batch_approx_into(&values[..len], &mut guarded[1..1 + len]);
+            assert_eq!(guarded[0], GUARD);
+            assert_eq!(guarded[len + 1], GUARD);
+            for index in 0..len {
+                if expected[index].is_nan() {
+                    assert!(guarded[index + 1].is_nan());
+                } else {
+                    assert_eq!(guarded[index + 1].to_bits(), expected[index].to_bits());
+                }
+            }
+        }
+
+        let all = normal_cdf_batch_approx(&values);
+        assert_eq!(all[0], 0.0);
+        assert_eq!(all[7], 1.0);
+        assert!(all[8].is_nan());
+    }
+
+    #[test]
+    fn batch_price_edge_domains_match_scalar_contract() {
+        let r = 0.05_f64;
+        let q = 0.02_f64;
+        let expiry = 1.7_f64;
+        let strike = 100.0_f64;
+        let deterministic_boundary = strike * ((q - r) * expiry).exp();
+        let spots = [80.0, deterministic_boundary, 100.0, 120.0, 150.0];
+        let strikes = [strike; 5];
+        let df_r = (-r * expiry).exp();
+        let df_q = (-q * expiry).exp();
+
+        // A non-positive volatility with time remaining is a deterministic
+        // discounted terminal payoff, not today's intrinsic value.
+        for vol in [0.0, -0.1] {
+            for is_call in [false, true] {
+                let prices = bs_price_batch(&spots, &strikes, r, q, vol, expiry, is_call);
+                for index in 0..spots.len() {
+                    let expected = if is_call {
+                        f64::max(spots[index] * df_q - strikes[index] * df_r, 0.0)
+                    } else {
+                        f64::max(strikes[index] * df_r - spots[index] * df_q, 0.0)
+                    };
+                    // Accelerated targets may evaluate the mathematically
+                    // equivalent discounted-forward form with different
+                    // rounding from the two-discount-factor reference.
+                    let operation_scale = (spots[index] * df_q)
+                        .abs()
+                        .max((strikes[index] * df_r).abs());
+                    assert_machine_precision_eq(prices[index], expected, operation_scale);
+                }
+
+                let (delta, gamma, vega, theta) =
+                    bs_greeks_batch(&spots, &strikes, r, q, vol, expiry, is_call);
+                for output in [delta, gamma, vega, theta] {
+                    assert!(output.iter().all(|value| *value == 0.0));
+                }
+            }
+        }
+
+        // At or past expiry, intrinsic value takes precedence even when
+        // volatility is also non-positive.
+        for (vol, expiry) in [(0.2, 0.0), (0.2, -1.0), (0.0, -1.0)] {
+            for is_call in [false, true] {
+                let prices = bs_price_batch(&spots, &strikes, r, q, vol, expiry, is_call);
+                for index in 0..spots.len() {
+                    let intrinsic = if is_call {
+                        f64::max(spots[index] - strikes[index], 0.0)
+                    } else {
+                        f64::max(strikes[index] - spots[index], 0.0)
+                    };
+                    let operation_scale = spots[index].abs().max(strikes[index].abs());
+                    assert_machine_precision_eq(prices[index], intrinsic, operation_scale);
+                }
+
+                let (delta, gamma, vega, theta) =
+                    bs_greeks_batch(&spots, &strikes, r, q, vol, expiry, is_call);
+                for output in [delta, gamma, vega, theta] {
+                    assert!(output.iter().all(|value| *value == 0.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "output length must match input")]
+    fn price_workspace_rejects_wrong_output_length() {
+        let mut output = [0.0; 1];
+        bs_price_batch_into(
+            &[100.0, 101.0],
+            &[100.0, 101.0],
+            0.03,
+            0.0,
+            0.2,
+            1.0,
+            true,
+            &mut output,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "output length must match input")]
+    fn cdf_workspace_rejects_wrong_output_length() {
+        let mut output = [0.0; 1];
+        normal_cdf_batch_approx_into(&[0.0, 1.0], &mut output);
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 mod simd_tests {
     use rand::rngs::StdRng;

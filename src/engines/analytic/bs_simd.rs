@@ -10,6 +10,43 @@
 //!
 //! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 
+use std::sync::OnceLock;
+
+/// SIMD implementation selected for batch analytic pricing on this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSimdBackend {
+    Scalar,
+    Avx2,
+    Avx512,
+    Neon,
+    /// Compile-time WebAssembly SIMD128 (`f64x2`) backend.
+    WasmSimd128,
+}
+
+/// Detect the widest supported batch backend once and cache the result.
+pub fn detected_batch_simd_backend() -> BatchSimdBackend {
+    static BACKEND: OnceLock<BatchSimdBackend> = OnceLock::new();
+    *BACKEND.get_or_init(|| {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        if is_x86_feature_detected!("avx512f") {
+            return BatchSimdBackend::Avx512;
+        }
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return BatchSimdBackend::Avx2;
+        }
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return BatchSimdBackend::Neon;
+        }
+        #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+        let backend = BatchSimdBackend::WasmSimd128;
+        #[cfg(not(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128")))]
+        let backend = BatchSimdBackend::Scalar;
+        backend
+    })
+}
+
 /// Scalar Abramowitz & Stegun 7.1.26 normal CDF approximation.
 ///
 /// Branch-free implementation using bit-level sign extraction,
@@ -42,38 +79,43 @@ pub fn normal_cdf_approx(x: f64) -> f64 {
 /// Batch normal CDF approximation with runtime SIMD dispatch and scalar fallback.
 pub fn normal_cdf_batch_approx(xs: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0_f64; xs.len()];
+    normal_cdf_batch_approx_into(xs, &mut out);
+    out
+}
 
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("avx512f") {
+/// Allocation-free normal CDF batch API.
+pub fn normal_cdf_batch_approx_into(xs: &[f64], out: &mut [f64]) {
+    assert_eq!(xs.len(), out.len(), "output length must match input");
+    match detected_batch_simd_backend() {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        BatchSimdBackend::Avx512 => {
             // SAFETY: Guarded by runtime CPU feature detection.
-            unsafe { normal_cdf_batch_avx512(xs, &mut out) };
-            return out;
+            unsafe { normal_cdf_batch_avx512(xs, out) };
+            return;
         }
-    }
-
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        BatchSimdBackend::Avx2 => {
             // SAFETY: Guarded by runtime CPU feature detection.
-            unsafe { normal_cdf_batch_avx2(xs, &mut out) };
-            return out;
+            unsafe { normal_cdf_batch_avx2(xs, out) };
+            return;
         }
-    }
-
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        BatchSimdBackend::Neon => {
             // SAFETY: Guarded by runtime CPU feature detection.
-            unsafe { normal_cdf_batch_neon(xs, &mut out) };
-            return out;
+            unsafe { normal_cdf_batch_neon(xs, out) };
+            return;
         }
+        #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+        BatchSimdBackend::WasmSimd128 => {
+            crate::math::simd_wasm::normal_cdf_batch_into(xs, out);
+            return;
+        }
+        _ => {}
     }
 
     for (dst, &x) in out.iter_mut().zip(xs.iter()) {
         *dst = normal_cdf_approx(x);
     }
-    out
 }
 
 /// Black-Scholes price for a batch of options.
@@ -95,39 +137,58 @@ pub fn bs_price_batch(
     );
 
     let mut out = vec![0.0_f64; spots.len()];
+    bs_price_batch_into(spots, strikes, r, q, vol, t, is_call, &mut out);
+    out
+}
 
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("avx512f") {
+/// Allocation-free batch pricing API for caller-owned workspaces.
+#[allow(clippy::too_many_arguments)]
+pub fn bs_price_batch_into(
+    spots: &[f64],
+    strikes: &[f64],
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+    out: &mut [f64],
+) {
+    assert_eq!(spots.len(), strikes.len(), "spots and strikes must match");
+    assert_eq!(spots.len(), out.len(), "output length must match input");
+    match detected_batch_simd_backend() {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        BatchSimdBackend::Avx512 => {
             // SAFETY: Guarded by runtime CPU feature detection.
-            unsafe { bs_price_batch_avx512(spots, strikes, r, q, vol, t, is_call, &mut out) };
-            return out;
+            unsafe { bs_price_batch_avx512(spots, strikes, r, q, vol, t, is_call, out) };
+            return;
         }
-    }
-
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        BatchSimdBackend::Avx2 => {
             // SAFETY: Guarded by runtime CPU feature detection.
-            unsafe { bs_price_batch_avx2(spots, strikes, r, q, vol, t, is_call, &mut out) };
-            return out;
+            unsafe { bs_price_batch_avx2(spots, strikes, r, q, vol, t, is_call, out) };
+            return;
         }
-    }
-
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        BatchSimdBackend::Neon => {
             // SAFETY: Guarded by runtime CPU feature detection.
-            return unsafe {
-                crate::math::simd_neon::bs_price_neon_batch(spots, strikes, r, q, vol, t, is_call)
+            unsafe {
+                crate::math::simd_neon::bs_price_neon_batch_into(
+                    spots, strikes, r, q, vol, t, is_call, out,
+                )
             };
+            return;
         }
+        #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+        BatchSimdBackend::WasmSimd128 => {
+            bs_price_batch_wasm_simd(spots, strikes, r, q, vol, t, is_call, out);
+            return;
+        }
+        _ => {}
     }
 
     for i in 0..spots.len() {
         out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
     }
-    out
 }
 
 /// Black-Scholes Greeks (delta, gamma, vega, theta) for a batch of options.
@@ -153,47 +214,72 @@ pub fn bs_greeks_batch(
     let mut gamma = vec![0.0_f64; n];
     let mut vega = vec![0.0_f64; n];
     let mut theta = vec![0.0_f64; n];
+    bs_greeks_batch_into(
+        spots, strikes, r, q, vol, t, is_call, &mut delta, &mut gamma, &mut vega, &mut theta,
+    );
+    (delta, gamma, vega, theta)
+}
 
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("avx512f") {
+/// Allocation-free batch Greeks API for caller-owned workspaces.
+#[allow(clippy::too_many_arguments)]
+pub fn bs_greeks_batch_into(
+    spots: &[f64],
+    strikes: &[f64],
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+    delta: &mut [f64],
+    gamma: &mut [f64],
+    vega: &mut [f64],
+    theta: &mut [f64],
+) {
+    let n = spots.len();
+    assert_eq!(n, strikes.len(), "spots and strikes must match");
+    for output in [&*delta, &*gamma, &*vega, &*theta] {
+        assert_eq!(n, output.len(), "output length must match input");
+    }
+
+    match detected_batch_simd_backend() {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        BatchSimdBackend::Avx512 => {
             // SAFETY: Guarded by runtime CPU feature detection.
             unsafe {
                 bs_greeks_batch_avx512(
-                    spots, strikes, r, q, vol, t, is_call, &mut delta, &mut gamma, &mut vega,
-                    &mut theta,
+                    spots, strikes, r, q, vol, t, is_call, delta, gamma, vega, theta,
                 )
             };
-            return (delta, gamma, vega, theta);
+            return;
         }
-    }
-
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        BatchSimdBackend::Avx2 => {
             // SAFETY: Guarded by runtime CPU feature detection.
             unsafe {
                 bs_greeks_batch_avx2(
-                    spots, strikes, r, q, vol, t, is_call, &mut delta, &mut gamma, &mut vega,
-                    &mut theta,
+                    spots, strikes, r, q, vol, t, is_call, delta, gamma, vega, theta,
                 )
             };
-            return (delta, gamma, vega, theta);
+            return;
         }
-    }
-
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        BatchSimdBackend::Neon => {
             // SAFETY: Guarded by runtime CPU feature detection.
             unsafe {
                 bs_greeks_batch_neon(
-                    spots, strikes, r, q, vol, t, is_call, &mut delta, &mut gamma, &mut vega,
-                    &mut theta,
+                    spots, strikes, r, q, vol, t, is_call, delta, gamma, vega, theta,
                 )
             };
-            return (delta, gamma, vega, theta);
+            return;
         }
+        #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+        BatchSimdBackend::WasmSimd128 => {
+            bs_greeks_batch_wasm_simd(
+                spots, strikes, r, q, vol, t, is_call, delta, gamma, vega, theta,
+            );
+            return;
+        }
+        _ => {}
     }
 
     for i in 0..n {
@@ -203,13 +289,11 @@ pub fn bs_greeks_batch(
         vega[i] = v;
         theta[i] = th;
     }
-
-    (delta, gamma, vega, theta)
 }
 
 #[inline]
 fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
-    if t <= 0.0 || vol <= 0.0 {
+    if t <= 0.0 {
         return if is_call {
             (spot - strike).max(0.0)
         } else {
@@ -217,13 +301,20 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
         };
     }
 
+    let df_r = (-r * t).exp();
+    let df_q = (-q * t).exp();
+    if vol <= 0.0 {
+        return if is_call {
+            (spot * df_q - strike * df_r).max(0.0)
+        } else {
+            (strike * df_r - spot * df_q).max(0.0)
+        };
+    }
+
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, r - q) * t) / sig_sqrt_t;
     let d2 = d1 - sig_sqrt_t;
-
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
 
     // Only 2 CDF evaluations; put uses put-call parity: P = C - S*df_q + K*df_r.
     let s_df_q = spot * df_q;
@@ -285,6 +376,249 @@ fn bs_greeks_scalar(
     };
 
     (delta, gamma, vega, theta)
+}
+
+#[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm_simd_impl {
+    use std::arch::wasm32::*;
+
+    use crate::math::simd_wasm::{load_f64x2, normal_cdf_f64x2, store_f64x2};
+
+    use super::{bs_greeks_scalar, bs_price_scalar};
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn bs_price_batch_wasm_simd(
+        spots: &[f64],
+        strikes: &[f64],
+        r: f64,
+        q: f64,
+        vol: f64,
+        t: f64,
+        is_call: bool,
+        out: &mut [f64],
+    ) {
+        // Preserve the scalar contract for degenerate and non-finite uniform
+        // parameters. The hot path below is only meaningful for a regular
+        // Black-Scholes diffusion.
+        if t <= 0.0
+            || vol <= 0.0
+            || !r.is_finite()
+            || !q.is_finite()
+            || !vol.is_finite()
+            || !t.is_finite()
+        {
+            for index in 0..spots.len() {
+                out[index] = bs_price_scalar(spots[index], strikes[index], r, q, vol, t, is_call);
+            }
+            return;
+        }
+
+        let sqrt_t = t.sqrt();
+        let sig_sqrt_t = vol * sqrt_t;
+        let inv_sig_sqrt_t = f64x2_splat(1.0 / sig_sqrt_t);
+        let sig_sqrt_t_v = f64x2_splat(sig_sqrt_t);
+        let drift = f64x2_splat((0.5 * vol).mul_add(vol, r - q) * t);
+        let df_r = f64x2_splat((-r * t).exp());
+        let df_q = f64x2_splat((-q * t).exp());
+
+        let mut index = 0;
+        while index + 2 <= spots.len() {
+            let spot_0 = spots[index];
+            let spot_1 = spots[index + 1];
+            let strike_0 = strikes[index];
+            let strike_1 = strikes[index + 1];
+            if !(spot_0.is_finite()
+                && spot_1.is_finite()
+                && strike_0.is_finite()
+                && strike_1.is_finite()
+                && spot_0 > 0.0
+                && spot_1 > 0.0
+                && strike_0 > 0.0
+                && strike_1 > 0.0)
+            {
+                out[index] = bs_price_scalar(spot_0, strike_0, r, q, vol, t, is_call);
+                out[index + 1] = bs_price_scalar(spot_1, strike_1, r, q, vol, t, is_call);
+                index += 2;
+                continue;
+            }
+
+            let spots_v = load_f64x2(spots, index);
+            let strikes_v = load_f64x2(strikes, index);
+
+            // WebAssembly SIMD has no vector logarithm. Division and all
+            // downstream d1/d2, CDF-polynomial, discount, and payoff
+            // arithmetic remain explicit f64x2 operations.
+            let ratios = f64x2_div(spots_v, strikes_v);
+            let ln_ratio = f64x2(
+                f64x2_extract_lane::<0>(ratios).ln(),
+                f64x2_extract_lane::<1>(ratios).ln(),
+            );
+            let d1 = f64x2_mul(f64x2_add(ln_ratio, drift), inv_sig_sqrt_t);
+            let d2 = f64x2_sub(d1, sig_sqrt_t_v);
+            let nd1 = normal_cdf_f64x2(d1);
+            let nd2 = normal_cdf_f64x2(d2);
+            let discounted_spot = f64x2_mul(spots_v, df_q);
+            let discounted_strike = f64x2_mul(strikes_v, df_r);
+            let call = f64x2_sub(
+                f64x2_mul(discounted_spot, nd1),
+                f64x2_mul(discounted_strike, nd2),
+            );
+            let result = if is_call {
+                call
+            } else {
+                f64x2_add(f64x2_sub(call, discounted_spot), discounted_strike)
+            };
+            store_f64x2(out, index, result);
+            index += 2;
+        }
+
+        if index < spots.len() {
+            out[index] = bs_price_scalar(spots[index], strikes[index], r, q, vol, t, is_call);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn bs_greeks_batch_wasm_simd(
+        spots: &[f64],
+        strikes: &[f64],
+        r: f64,
+        q: f64,
+        vol: f64,
+        t: f64,
+        is_call: bool,
+        delta: &mut [f64],
+        gamma: &mut [f64],
+        vega: &mut [f64],
+        theta: &mut [f64],
+    ) {
+        if t <= 0.0
+            || vol <= 0.0
+            || !r.is_finite()
+            || !q.is_finite()
+            || !vol.is_finite()
+            || !t.is_finite()
+        {
+            for index in 0..spots.len() {
+                let values = bs_greeks_scalar(spots[index], strikes[index], r, q, vol, t, is_call);
+                delta[index] = values.0;
+                gamma[index] = values.1;
+                vega[index] = values.2;
+                theta[index] = values.3;
+            }
+            return;
+        }
+
+        const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
+        let one = f64x2_splat(1.0);
+        let sqrt_t = t.sqrt();
+        let sig_sqrt_t = vol * sqrt_t;
+        let inv_sig_sqrt_t = f64x2_splat(1.0 / sig_sqrt_t);
+        let sig_sqrt_t_v = f64x2_splat(sig_sqrt_t);
+        let drift = f64x2_splat((0.5 * vol).mul_add(vol, r - q) * t);
+        let df_r = f64x2_splat((-r * t).exp());
+        let df_q = f64x2_splat((-q * t).exp());
+        let sqrt_t_v = f64x2_splat(sqrt_t);
+        let gamma_denom = f64x2_splat(vol * sqrt_t);
+        let theta_scale = f64x2_splat(-0.5 * vol / sqrt_t);
+        let q_v = f64x2_splat(q);
+        let r_v = f64x2_splat(r);
+
+        let mut index = 0;
+        while index + 2 <= spots.len() {
+            let spot_0 = spots[index];
+            let spot_1 = spots[index + 1];
+            let strike_0 = strikes[index];
+            let strike_1 = strikes[index + 1];
+            if !(spot_0.is_finite()
+                && spot_1.is_finite()
+                && strike_0.is_finite()
+                && strike_1.is_finite()
+                && spot_0 > 0.0
+                && spot_1 > 0.0
+                && strike_0 > 0.0
+                && strike_1 > 0.0)
+            {
+                for lane in index..index + 2 {
+                    let values =
+                        bs_greeks_scalar(spots[lane], strikes[lane], r, q, vol, t, is_call);
+                    delta[lane] = values.0;
+                    gamma[lane] = values.1;
+                    vega[lane] = values.2;
+                    theta[lane] = values.3;
+                }
+                index += 2;
+                continue;
+            }
+
+            let spots_v = load_f64x2(spots, index);
+            let strikes_v = load_f64x2(strikes, index);
+            let ratios = f64x2_div(spots_v, strikes_v);
+            let ln_ratio = f64x2(
+                f64x2_extract_lane::<0>(ratios).ln(),
+                f64x2_extract_lane::<1>(ratios).ln(),
+            );
+            let d1 = f64x2_mul(f64x2_add(ln_ratio, drift), inv_sig_sqrt_t);
+            let d2 = f64x2_sub(d1, sig_sqrt_t_v);
+            let nd1 = normal_cdf_f64x2(d1);
+            let nd2 = normal_cdf_f64x2(d2);
+
+            // As with CDF, WebAssembly has no vector exponential. Only the two
+            // exponentials are scalar; PDF scaling and all Greek formulas are
+            // vector arithmetic.
+            let pdf_exponent = f64x2_mul(f64x2_splat(-0.5), f64x2_mul(d1, d1));
+            let pdf = f64x2(
+                INV_SQRT_2PI * f64x2_extract_lane::<0>(pdf_exponent).exp(),
+                INV_SQRT_2PI * f64x2_extract_lane::<1>(pdf_exponent).exp(),
+            );
+
+            let discounted_pdf = f64x2_mul(df_q, pdf);
+            let delta_v = if is_call {
+                f64x2_mul(df_q, nd1)
+            } else {
+                f64x2_mul(df_q, f64x2_sub(nd1, one))
+            };
+            let gamma_v = f64x2_div(discounted_pdf, f64x2_mul(spots_v, gamma_denom));
+            let vega_v = f64x2_mul(f64x2_mul(spots_v, discounted_pdf), sqrt_t_v);
+            let theta_common = f64x2_mul(f64x2_mul(spots_v, discounted_pdf), theta_scale);
+            let theta_v = if is_call {
+                f64x2_sub(
+                    f64x2_add(
+                        theta_common,
+                        f64x2_mul(f64x2_mul(q_v, spots_v), f64x2_mul(df_q, nd1)),
+                    ),
+                    f64x2_mul(f64x2_mul(r_v, strikes_v), f64x2_mul(df_r, nd2)),
+                )
+            } else {
+                f64x2_add(
+                    f64x2_sub(
+                        theta_common,
+                        f64x2_mul(
+                            f64x2_mul(q_v, spots_v),
+                            f64x2_mul(df_q, f64x2_sub(one, nd1)),
+                        ),
+                    ),
+                    f64x2_mul(
+                        f64x2_mul(r_v, strikes_v),
+                        f64x2_mul(df_r, f64x2_sub(one, nd2)),
+                    ),
+                )
+            };
+
+            store_f64x2(delta, index, delta_v);
+            store_f64x2(gamma, index, gamma_v);
+            store_f64x2(vega, index, vega_v);
+            store_f64x2(theta, index, theta_v);
+            index += 2;
+        }
+
+        if index < spots.len() {
+            let values = bs_greeks_scalar(spots[index], strikes[index], r, q, vol, t, is_call);
+            delta[index] = values.0;
+            gamma[index] = values.1;
+            vega[index] = values.2;
+            theta[index] = values.3;
+        }
+    }
 }
 
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
@@ -900,3 +1234,5 @@ use avx2_impl::{bs_greeks_batch_avx2, bs_price_batch_avx2, normal_cdf_batch_avx2
 use avx512_impl::{bs_greeks_batch_avx512, bs_price_batch_avx512, normal_cdf_batch_avx512};
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 use neon_impl::{bs_greeks_batch_neon, normal_cdf_batch_neon};
+#[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+use wasm_simd_impl::{bs_greeks_batch_wasm_simd, bs_price_batch_wasm_simd};

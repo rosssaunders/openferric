@@ -79,25 +79,27 @@ Full coverage notes live in [docs/COVERAGE.md](docs/COVERAGE.md). The current re
 
 ## Performance
 
-| Benchmark | Throughput |
-|---|---|
-| Black-Scholes (single) | **88 ns** / 11.3M ops/sec |
-| Black-Scholes SIMD batch | **69M options/sec** (1.8x scalar) |
-| Normal CDF (SIMD) | **283M evals/sec** (2.1x scalar) |
-| Barrier analytic | **168 ns** / 6M ops/sec |
-| Heston semi-analytic | **3.9 µs** / 256K ops/sec |
-| American binomial (500 steps) | **1.9 ms** |
-| Monte Carlo 100K paths | **406 ms** |
-| Vol surface recalibration | **< 50 ms** (20 expiry slices) |
+Pricing engines support explicit `ExecutionPolicy` selection and an `Auto`
+policy that chooses between scalar, SIMD, Rayon, GPU, and prepared JIT
+implementations according to workload and target capabilities. The selected
+backend, vector width, and thread count are returned in pricing diagnostics.
+
+Criterion results are produced by the scheduled benchmark workflow on a
+labelled, stable runner. Each artifact includes the commit, compiler version,
+hardware metadata, and Criterion's timing distributions and confidence intervals; benchmark
+numbers are intentionally not copied into this README without that provenance.
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for backend eligibility,
+determinism, precision, build variants, and reproducible benchmark commands.
 
 ## Feature Flags
 
 | Feature | Description |
 |---|---|
+| `accelerated-native` | Portable native build with runtime SIMD dispatch and Rayon |
 | `parallel` | Rayon-parallel Monte Carlo and parallel-enabled benchmark/test paths |
-| `simd` | SIMD code paths for AVX2 and NEON-enabled workloads |
-| `gpu` | WebGPU support for GPU-accelerated pricing paths |
-| `jit` | Cranelift-backed JIT support for DSL execution |
+| `simd` | Runtime-dispatched AVX2, AVX-512, and NEON kernels plus opt-in WASM SIMD128 analytic batches |
+| `gpu` | WebGPU exact-terminal Monte Carlo with pooled asynchronous resources |
+| `jit` | Native-only Cranelift JIT support for prepared DSL execution |
 
 ## Build and Validation
 
@@ -107,9 +109,9 @@ Core Rust workflow:
 cargo build
 cargo build --release
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --features parallel,simd
-cargo test --workspace --features parallel,simd
-cargo bench
+cargo clippy --locked --workspace --all-targets --all-features
+cargo test --locked --workspace --features accelerated-native
+cargo bench --locked --features accelerated-native
 ```
 
 TypeScript and Python linting:
@@ -125,7 +127,7 @@ ruff format --check python/ examples/
 Python package:
 
 ```bash
-maturin build --release -m python/Cargo.toml
+maturin build --locked --release -m python/Cargo.toml
 pip install target/wheels/*.whl
 pytest python/tests/ -v
 ```
@@ -133,8 +135,10 @@ pytest python/tests/ -v
 WASM build:
 
 ```bash
-wasm-pack build wasm --target web --out-dir ../www/pkg
-wasm-pack test --node wasm
+./scripts/build-wasm.sh baseline
+./scripts/build-wasm.sh simd
+./scripts/build-wasm.sh threads
+wasm-pack test --node wasm --locked
 ```
 
 Coverage helpers:

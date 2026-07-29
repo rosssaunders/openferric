@@ -1,7 +1,8 @@
+use numpy::{PyArray1, PyReadonlyArray1};
 use openferric_core::core::{Greeks as CoreGreeks, PricingEngine, PricingError};
 use openferric_core::engines::analytic::{
-    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, kirk_spread_price,
-    margrabe_exchange_price,
+    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, bs_price_batch,
+    kirk_spread_price, margrabe_exchange_price,
 };
 use openferric_core::greeks::black_scholes_merton_greeks;
 use openferric_core::instruments::{
@@ -849,6 +850,40 @@ pub fn py_bs_price(
     };
 
     black_scholes_price(option_type, spot, strike, rate, vol, expiry)
+}
+
+/// Vectorized Black--Scholes pricing over NumPy arrays.
+///
+/// Inputs are borrowed directly from contiguous NumPy buffers, avoiding the
+/// list-to-`Vec` copies made by ordinary PyO3 sequence extraction. The core
+/// routine performs runtime SIMD dispatch.
+#[pyfunction]
+#[pyo3(name = "bs_price_batch")]
+#[allow(clippy::too_many_arguments)]
+pub fn py_bs_price_batch<'py>(
+    py: Python<'py>,
+    spots: PyReadonlyArray1<'py, f64>,
+    strikes: PyReadonlyArray1<'py, f64>,
+    rate: f64,
+    dividend_yield: f64,
+    vol: f64,
+    expiry: f64,
+    is_call: bool,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let spots = spots
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("spots must be a contiguous float64 array"))?;
+    let strikes = strikes
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("strikes must be a contiguous float64 array"))?;
+    if spots.len() != strikes.len() {
+        return Err(PyValueError::new_err(
+            "spots and strikes must have the same length",
+        ));
+    }
+
+    let values = bs_price_batch(spots, strikes, rate, dividend_yield, vol, expiry, is_call);
+    Ok(PyArray1::from_vec(py, values))
 }
 
 #[pyfunction]
@@ -2059,6 +2094,7 @@ pub fn py_strategy_intrinsic_pnl(
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(py_bs_price, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(py_bs_price_batch, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(py_black76_price, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(py_bs_greeks, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(py_barrier_price, module)?)?;

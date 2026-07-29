@@ -9,6 +9,8 @@ use openferric::engines::monte_carlo::{
 use openferric::instruments::VanillaOption;
 #[cfg(feature = "parallel")]
 use openferric::{core::OptionType, market::Market};
+#[cfg(feature = "parallel")]
+use rayon::ThreadPoolBuilder;
 
 /// NIST reference values for the standard normal CDF.
 const CDF_REFERENCE: &[(f64, f64)] = &[
@@ -48,7 +50,7 @@ fn bsm_inverse_round_trips_cdf_within_one_e_minus_six() {
 
 #[cfg(feature = "parallel")]
 #[test]
-fn parallel_mc_price_matches_sequential_within_two_percent() {
+fn parallel_mc_price_matches_sequential_exactly() {
     let option = VanillaOption::european_call(100.0, 1.0);
     let market = Market::builder()
         .spot(100.0)
@@ -61,14 +63,34 @@ fn parallel_mc_price_matches_sequential_within_two_percent() {
     let seq = mc_european_sequential(&option, &market, 100_000, 252);
     let par = mc_european_parallel(&option, &market, 100_000, 252);
 
-    let rel_err = (par.price - seq.price).abs() / seq.price.abs().max(1.0e-12);
-    assert!(
-        rel_err <= 0.02,
-        "parallel/sequential mismatch: seq={} par={} rel_err={}",
-        seq.price,
-        par.price,
-        rel_err
-    );
+    assert_eq!(par.price, seq.price);
+    assert_eq!(par.stderr, seq.stderr);
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_mc_stream_partition_is_independent_of_thread_count() {
+    let option = VanillaOption::european_put(105.0, 1.25);
+    let market = Market::builder()
+        .spot(100.0)
+        .rate(0.03)
+        .dividend_yield(0.01)
+        .flat_vol(0.25)
+        .build()
+        .unwrap();
+
+    let run = |threads| {
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| mc_european_parallel(&option, &market, 50_003, 252))
+    };
+    let two = run(2);
+    let eight = run(8);
+
+    assert_eq!(two.price, eight.price);
+    assert_eq!(two.stderr, eight.stderr);
 }
 
 #[cfg(feature = "parallel")]

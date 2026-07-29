@@ -1,0 +1,87 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    name: Stable CPU benchmark
+    runs-on: [self-hosted, linux, x64, openferric-benchmark]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Record runner provenance
+        run: |
+          mkdir -p target/benchmark-metadata
+          rustc -Vv > target/benchmark-metadata/rustc.txt
+          lscpu > target/benchmark-metadata/lscpu.txt
+          git rev-parse HEAD > target/benchmark-metadata/commit.txt
+
+      - name: Run scalar and accelerated benchmarks
+        run: cargo bench --locked -p openferric --features parallel,simd,jit -- --noplot
+        env:
+          RUSTFLAGS: ""
+
+      - name: Upload Criterion history
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}
+          path: |
+            target/criterion
+            target/benchmark-metadata
+          retention-days: 90
+
+  gpu:
+    name: Stable GPU benchmark
+    runs-on: [self-hosted, linux, x64, gpu, openferric-benchmark]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Record GPU runner provenance
+        run: |
+          mkdir -p target/benchmark-metadata
+          rustc -Vv > target/benchmark-metadata/rustc.txt
+          git rev-parse HEAD > target/benchmark-metadata/commit.txt
+          uname -a > target/benchmark-metadata/system.txt
+          if command -v lspci >/dev/null 2>&1; then
+            lspci -nn | grep -Ei 'vga|3d|display' > target/benchmark-metadata/gpu-pci.txt || true
+          fi
+          if command -v vulkaninfo >/dev/null 2>&1; then
+            vulkaninfo --summary > target/benchmark-metadata/vulkan.txt 2>&1 || true
+          fi
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            nvidia-smi -q > target/benchmark-metadata/nvidia.txt 2>&1 || true
+          fi
+          if command -v rocm-smi >/dev/null 2>&1; then
+            rocm-smi --showproductname --showdriverversion \
+              > target/benchmark-metadata/amd-rocm.txt 2>&1 || true
+          fi
+
+      - name: Run warm WebGPU benchmarks
+        run: cargo bench --locked -p openferric --bench gpu_bench --features gpu -- --noplot
+        env:
+          RUSTFLAGS: ""
+
+      - name: Upload GPU Criterion history
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-gpu-${{ github.sha }}
+          path: |
+            target/criterion
+            target/benchmark-metadata
+          retention-days: 90

@@ -34,7 +34,11 @@ pub use binary_barrier::{BinaryBarrierType, cash_or_nothing_barrier_price};
 pub use black_scholes::{BlackScholesEngine, black_scholes};
 pub use black76::{Black76Engine, black76_greeks, black76_price};
 pub use bs_inline::bs_price_asm;
-pub use bs_simd::{bs_greeks_batch, bs_price_batch, normal_cdf_approx, normal_cdf_batch_approx};
+pub use bs_simd::{
+    BatchSimdBackend, bs_greeks_batch, bs_greeks_batch_into, bs_price_batch, bs_price_batch_into,
+    detected_batch_simd_backend, normal_cdf_approx, normal_cdf_batch_approx,
+    normal_cdf_batch_approx_into,
+};
 pub use digital::DigitalAnalyticEngine;
 pub use double_barrier::DoubleBarrierAnalyticEngine;
 pub use exotic::ExoticAnalyticEngine;

@@ -51,6 +51,67 @@ pub trait PricingEngine<I: Instrument> {
     }
 }
 
+/// Requested execution strategy for hardware-aware pricing engines.
+///
+/// `Auto` lets an engine select a backend from the available CPU features,
+/// thread count, and workload size. The explicit variants request a
+/// particular backend; engines return an error when a requested backend is
+/// unavailable or cannot preserve the instrument's pricing semantics.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum ExecutionPolicy {
+    /// Select a backend from runtime capabilities and workload size.
+    #[default]
+    Auto,
+    /// Use the portable scalar implementation.
+    Scalar,
+    /// Use a single-threaded SIMD implementation.
+    Simd,
+    /// Use the CPU thread pool, combining it with SIMD when supported.
+    Parallel,
+    /// Request a GPU implementation.
+    Gpu,
+    /// Request a just-in-time compiled implementation.
+    Jit,
+}
+
+/// Backend actually used for a pricing operation.
+///
+/// Pricing diagnostics encode this enum through
+/// [`ExecutionBackend::diagnostic_code`]. A parallel backend may also use
+/// SIMD; inspect the `vector_width` diagnostic to distinguish that case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum ExecutionBackend {
+    Scalar = 0,
+    Simd = 1,
+    Parallel = 2,
+    Gpu = 3,
+    Jit = 4,
+}
+
+impl ExecutionBackend {
+    /// Stable numeric representation stored in scalar pricing diagnostics.
+    #[inline]
+    pub const fn diagnostic_code(self) -> f64 {
+        self as u8 as f64
+    }
+
+    /// Decodes a backend diagnostic produced by this library.
+    #[inline]
+    pub const fn from_diagnostic_code(code: f64) -> Option<Self> {
+        match code as u8 {
+            0 if code == 0.0 => Some(Self::Scalar),
+            1 if code == 1.0 => Some(Self::Simd),
+            2 if code == 2.0 => Some(Self::Parallel),
+            3 if code == 3.0 => Some(Self::Gpu),
+            4 if code == 4.0 => Some(Self::Jit),
+            _ => None,
+        }
+    }
+}
+
 /// Compact key set for engine diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DiagKey {
@@ -64,6 +125,7 @@ pub enum DiagKey {
     DiscountFactor,
     DoubleKnockoutBase,
     EffectiveVol,
+    ExecutionBackend,
     ExerciseDates,
     FairVariance,
     FairVolatility,
@@ -90,6 +152,7 @@ pub enum DiagKey {
     SurvivalDigital,
     U,
     VarOfVar,
+    VectorWidth,
     Vol,
     VolAdj,
 }
@@ -108,6 +171,7 @@ impl DiagKey {
             Self::DiscountFactor => "discount_factor",
             Self::DoubleKnockoutBase => "double_knockout_base",
             Self::EffectiveVol => "effective_vol",
+            Self::ExecutionBackend => "execution_backend",
             Self::ExerciseDates => "exercise_dates",
             Self::FairVariance => "fair_variance",
             Self::FairVolatility => "fair_volatility",
@@ -134,6 +198,7 @@ impl DiagKey {
             Self::SurvivalDigital => "survival_digital",
             Self::U => "u",
             Self::VarOfVar => "var_of_var",
+            Self::VectorWidth => "vector_width",
             Self::Vol => "vol",
             Self::VolAdj => "vol_adj",
         }
@@ -155,6 +220,7 @@ impl std::str::FromStr for DiagKey {
             "discount_factor" => Ok(Self::DiscountFactor),
             "double_knockout_base" => Ok(Self::DoubleKnockoutBase),
             "effective_vol" => Ok(Self::EffectiveVol),
+            "execution_backend" => Ok(Self::ExecutionBackend),
             "exercise_dates" => Ok(Self::ExerciseDates),
             "fair_variance" => Ok(Self::FairVariance),
             "fair_volatility" => Ok(Self::FairVolatility),
@@ -181,6 +247,7 @@ impl std::str::FromStr for DiagKey {
             "survival_digital" => Ok(Self::SurvivalDigital),
             "u" => Ok(Self::U),
             "var_of_var" => Ok(Self::VarOfVar),
+            "vector_width" => Ok(Self::VectorWidth),
             "vol" => Ok(Self::Vol),
             "vol_adj" => Ok(Self::VolAdj),
             _ => Err(()),
@@ -313,3 +380,38 @@ impl std::fmt::Display for PricingError {
 }
 
 impl std::error::Error for PricingError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_backend_diagnostic_codes_round_trip() {
+        for backend in [
+            ExecutionBackend::Scalar,
+            ExecutionBackend::Simd,
+            ExecutionBackend::Parallel,
+            ExecutionBackend::Gpu,
+            ExecutionBackend::Jit,
+        ] {
+            assert_eq!(
+                ExecutionBackend::from_diagnostic_code(backend.diagnostic_code()),
+                Some(backend)
+            );
+        }
+        assert_eq!(ExecutionBackend::from_diagnostic_code(-1.0), None);
+        assert_eq!(ExecutionBackend::from_diagnostic_code(1.5), None);
+        assert_eq!(ExecutionBackend::from_diagnostic_code(f64::NAN), None);
+    }
+
+    #[test]
+    fn execution_diagnostic_keys_use_stable_names() {
+        assert_eq!(DiagKey::ExecutionBackend.as_str(), "execution_backend");
+        assert_eq!(DiagKey::VectorWidth.as_str(), "vector_width");
+        assert_eq!(
+            "execution_backend".parse::<DiagKey>(),
+            Ok(DiagKey::ExecutionBackend)
+        );
+        assert_eq!("vector_width".parse::<DiagKey>(), Ok(DiagKey::VectorWidth));
+    }
+}
