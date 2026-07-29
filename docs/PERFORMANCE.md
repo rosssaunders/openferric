@@ -395,13 +395,13 @@ Branch coverage merges three Rust configurations plus execution through the
 Python bindings:
 
 ```bash
-cargo llvm-cov --locked --branch --no-report \
+cargo +nightly llvm-cov --locked --branch --no-report \
   -p openferric --no-default-features
-cargo llvm-cov --locked --branch --no-report \
+cargo +nightly llvm-cov --locked --branch --no-report \
   --no-clean -p openferric --no-default-features --features parallel,simd
-cargo llvm-cov --locked --branch --no-report \
+cargo +nightly llvm-cov --locked --branch --no-report \
   --no-clean -p openferric --no-default-features --features jit
-cargo llvm-cov report --branch --codecov \
+cargo +nightly llvm-cov report --branch --codecov \
   --output-path codecov.json \
   --ignore-filename-regex '/(tests|benches|examples|src/bin)/'
 ```
