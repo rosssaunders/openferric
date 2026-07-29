@@ -12,6 +12,11 @@ permissions:
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    env:
+      # Branch instrumentation uses `-Z coverage-options=branch`. This must
+      # override the repository's stable rust-toolchain.toml for every step,
+      # including the instrumented maturin build.
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
 
@@ -23,14 +28,17 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Clean previous coverage artifacts
+        run: cargo llvm-cov clean --workspace
+
       - name: Collect scalar coverage
         run: cargo llvm-cov --locked --branch --no-report -p openferric --no-default-features
 
       - name: Collect SIMD and parallel coverage
-        run: cargo llvm-cov --locked --branch --no-report --no-clean -p openferric --no-default-features --features parallel,simd
+        run: cargo llvm-cov --locked --branch --no-report -p openferric --no-default-features --features parallel,simd
 
       - name: Collect JIT coverage
-        run: cargo llvm-cov --locked --branch --no-report --no-clean -p openferric --no-default-features --features jit
+        run: cargo llvm-cov --locked --branch --no-report -p openferric --no-default-features --features jit
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,6 +52,7 @@ jobs:
         shell: bash
         run: |
           eval "$(cargo llvm-cov show-env --sh)"
+          export RUSTFLAGS="${RUSTFLAGS:-} -Z coverage-options=branch"
           maturin build --locked -m python/Cargo.toml
           pip install --force-reinstall target/wheels/*.whl
           pytest python/tests -q
