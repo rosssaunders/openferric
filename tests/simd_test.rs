@@ -8,6 +8,16 @@ mod batch_workspace_tests {
 
     const GUARD: f64 = -9_876_543.25;
 
+    #[track_caller]
+    fn assert_machine_precision_eq(actual: f64, expected: f64) {
+        let scale = actual.abs().max(expected.abs()).max(1.0);
+        let tolerance = 4.0 * f64::EPSILON * scale;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual {actual} differs from expected {expected} by more than {tolerance}"
+        );
+    }
+
     #[test]
     fn batch_workspace_apis_cover_all_vector_tails_and_unaligned_slices() {
         // 0..=17 covers empty input and more than two full AVX-512 vectors,
@@ -167,7 +177,10 @@ mod batch_workspace_tests {
                     } else {
                         f64::max(strikes[index] * df_r - spots[index] * df_q, 0.0)
                     };
-                    assert_eq!(prices[index], expected);
+                    // Accelerated targets may evaluate the mathematically
+                    // equivalent discounted-forward form with different
+                    // rounding from the two-discount-factor reference.
+                    assert_machine_precision_eq(prices[index], expected);
                 }
 
                 let (delta, gamma, vega, theta) =
@@ -189,7 +202,7 @@ mod batch_workspace_tests {
                     } else {
                         f64::max(strikes[index] - spots[index], 0.0)
                     };
-                    assert_eq!(prices[index], intrinsic);
+                    assert_machine_precision_eq(prices[index], intrinsic);
                 }
 
                 let (delta, gamma, vega, theta) =
