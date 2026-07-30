@@ -52,6 +52,14 @@ impl Dual {
     }
 
     #[inline]
+    pub fn ln_1p(self) -> Self {
+        Self {
+            value: self.value.ln_1p(),
+            derivative: self.derivative / (1.0 + self.value),
+        }
+    }
+
+    #[inline]
     pub fn sqrt(self) -> Self {
         let value = self.value.sqrt();
         Self {
@@ -239,6 +247,16 @@ impl Dual2 {
     }
 
     #[inline]
+    pub fn ln_1p(self) -> Self {
+        let inv = 1.0 / (1.0 + self.value);
+        Self {
+            value: self.value.ln_1p(),
+            first: self.first * inv,
+            second: self.second * inv - self.first * self.first * inv * inv,
+        }
+    }
+
+    #[inline]
     pub fn sqrt(self) -> Self {
         let value = self.value.sqrt();
         let inv_two_sqrt = 0.5 / value;
@@ -252,6 +270,13 @@ impl Dual2 {
 
     #[inline]
     pub fn normal_cdf(self) -> Self {
+        if self.value.is_infinite() {
+            return Self {
+                value: normal_cdf(self.value),
+                first: 0.0,
+                second: 0.0,
+            };
+        }
         let pdf = normal_pdf(self.value);
         Self {
             value: normal_cdf(self.value),
@@ -588,6 +613,18 @@ impl AadTape {
     }
 
     #[inline]
+    pub fn ln_1p(&mut self, a: Var) -> Var {
+        let av = self.values[a.idx];
+        self.push_node(
+            av.ln_1p(),
+            NodeOp::Unary {
+                parent: a.idx,
+                weight: 1.0 / (1.0 + av),
+            },
+        )
+    }
+
+    #[inline]
     pub fn sqrt(&mut self, a: Var) -> Var {
         let av = self.values[a.idx];
         let value = av.sqrt();
@@ -693,6 +730,20 @@ pub fn black_scholes_price_greeks_aad(
     expiry: f64,
 ) -> (f64, Greeks) {
     #[inline]
+    fn nan_result() -> (f64, Greeks) {
+        (
+            f64::NAN,
+            Greeks {
+                delta: f64::NAN,
+                gamma: f64::NAN,
+                vega: f64::NAN,
+                theta: f64::NAN,
+                rho: f64::NAN,
+            },
+        )
+    }
+
+    #[inline]
     fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
         match option_type {
             OptionType::Call => (spot - strike).max(0.0),
@@ -700,6 +751,19 @@ pub fn black_scholes_price_greeks_aad(
         }
     }
 
+    if !spot.is_finite()
+        || !strike.is_finite()
+        || !rate.is_finite()
+        || !dividend_yield.is_finite()
+        || !vol.is_finite()
+        || !expiry.is_finite()
+        || spot < 0.0
+        || strike < 0.0
+        || vol < 0.0
+        || (spot == 0.0 && strike == 0.0)
+    {
+        return nan_result();
+    }
     if expiry <= 0.0 {
         return (
             intrinsic(option_type, spot, strike),
@@ -712,11 +776,22 @@ pub fn black_scholes_price_greeks_aad(
             },
         );
     }
-    if vol <= 0.0 && vol.is_finite() && spot > 0.0 && strike > 0.0 {
-        // Deterministic (zero-vol) limit with expiry > 0: the option pays the
-        // discounted forward intrinsic e^{-rT} (S e^{(r-q)T} - K)^+ (and the
-        // put analogue), NOT the undiscounted spot intrinsic. Build it on the
-        // tape so first-order Greeks propagate consistently.
+    if vol == 0.0 && spot > 0.0 && strike > 0.0 {
+        let df_r = (-rate * expiry).exp();
+        let df_q = (-dividend_yield * expiry).exp();
+        let forward_value = spot * df_q - strike * df_r;
+        if forward_value == 0.0 {
+            let (_, greeks) = nan_result();
+            return (0.0, greeks);
+        }
+        if forward_value.is_nan() {
+            return nan_result();
+        }
+
+        // Deterministic (zero-vol) limit with expiry > 0. Build the two
+        // discounted legs directly: forming F = S exp((r-q)T) and then
+        // multiplying by exp(-rT) creates an avoidable 0 * infinity at large
+        // but finite rates.
         let mut tape = AadTape::with_capacity(24);
         let s = tape.variable(spot);
         let r = tape.variable(rate);
@@ -724,19 +799,19 @@ pub fn black_scholes_price_greeks_aad(
         let t = tape.variable(expiry);
         let k = tape.constant(strike);
 
-        let r_minus_q = tape.sub(r, q);
-        let growth = tape.mul(r_minus_q, t);
-        let growth_factor = tape.exp(growth);
-        let fwd = tape.mul(s, growth_factor);
-        let moneyness = match option_type {
-            OptionType::Call => tape.sub(fwd, k),
-            OptionType::Put => tape.sub(k, fwd),
-        };
-        let payoff = tape.positive_part(moneyness);
+        let qt = tape.mul(q, t);
+        let minus_qt = tape.neg(qt);
+        let df_q = tape.exp(minus_qt);
+        let discounted_spot = tape.mul(s, df_q);
         let rt = tape.mul(r, t);
         let minus_rt = tape.neg(rt);
         let df_r = tape.exp(minus_rt);
-        let price_var = tape.mul(df_r, payoff);
+        let discounted_strike = tape.mul(k, df_r);
+        let moneyness = match option_type {
+            OptionType::Call => tape.sub(discounted_spot, discounted_strike),
+            OptionType::Put => tape.sub(discounted_strike, discounted_spot),
+        };
+        let price_var = tape.positive_part(moneyness);
 
         let price = tape.value(price_var);
         let grads = tape.gradient_vec(price_var, &[s, r, t]);
@@ -752,15 +827,67 @@ pub fn black_scholes_price_greeks_aad(
             },
         );
     }
-    if vol <= 0.0 || !vol.is_finite() || spot <= 0.0 || strike <= 0.0 {
+
+    if spot == 0.0 || strike == 0.0 {
+        let df_r = (-rate * expiry).exp();
+        let df_q = (-dividend_yield * expiry).exp();
+        let s_df_q = spot * df_q;
+        let k_df_r = strike * df_r;
+        let forward_value = s_df_q - k_df_r;
+        let (price, delta, theta, rho) = match option_type {
+            OptionType::Call if forward_value > 0.0 => (
+                forward_value,
+                df_q,
+                dividend_yield * s_df_q - rate * k_df_r,
+                strike * expiry * df_r,
+            ),
+            OptionType::Put if forward_value < 0.0 => (
+                -forward_value,
+                -df_q,
+                -dividend_yield * s_df_q + rate * k_df_r,
+                -strike * expiry * df_r,
+            ),
+            _ => (0.0, 0.0, 0.0, 0.0),
+        };
         return (
-            intrinsic(option_type, spot, strike),
+            price,
             Greeks {
-                delta: 0.0,
+                delta,
                 gamma: 0.0,
                 vega: 0.0,
-                theta: 0.0,
-                rho: 0.0,
+                theta,
+                rho,
+            },
+        );
+    }
+
+    let sig_sqrt_t_numeric = vol * expiry.sqrt();
+    let (d1_numeric, _) = crate::engines::analytic::bs_inline::stable_d1_d2(
+        spot,
+        strike,
+        rate,
+        dividend_yield,
+        vol,
+        expiry,
+    );
+    let nonfinite_discount_scale = !(spot * (-dividend_yield * expiry).exp()).is_finite()
+        || !(strike * (-rate * expiry).exp()).is_finite();
+    if sig_sqrt_t_numeric <= crate::engines::analytic::bs_inline::ACCURATE_CDF_TOTAL_VOL
+        || !d1_numeric.is_finite()
+        || d1_numeric.abs() >= 38.0
+        || nonfinite_discount_scale
+    {
+        use crate::engines::analytic::black_scholes::{
+            bs_delta, bs_gamma, bs_price, bs_rho, bs_theta, bs_vega,
+        };
+        return (
+            bs_price(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+            Greeks {
+                delta: bs_delta(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+                gamma: bs_gamma(spot, strike, rate, dividend_yield, vol, expiry),
+                vega: bs_vega(spot, strike, rate, dividend_yield, vol, expiry),
+                theta: bs_theta(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+                rho: bs_rho(option_type, spot, strike, rate, dividend_yield, vol, expiry),
             },
         );
     }
@@ -775,8 +902,16 @@ pub fn black_scholes_price_greeks_aad(
 
     let sqrt_t = tape.sqrt(t);
     let sig_sqrt_t = tape.mul(sigma, sqrt_t);
-    let s_over_k = tape.div(s, k);
-    let ln_sk = tape.ln(s_over_k);
+    let relative_moneyness = (spot - strike) / strike;
+    let ln_sk = if relative_moneyness.abs() <= 0.5 {
+        let s_minus_k = tape.sub(s, k);
+        let relative = tape.div(s_minus_k, k);
+        tape.ln_1p(relative)
+    } else {
+        let ln_s = tape.ln(s);
+        let ln_k = tape.ln(k);
+        tape.sub(ln_s, ln_k)
+    };
 
     let sigma_sq = tape.mul(sigma, sigma);
     let half_c = tape.constant(0.5);
@@ -809,14 +944,18 @@ pub fn black_scholes_price_greeks_aad(
         OptionType::Put => put,
     };
 
-    let price = tape.value(price_var);
+    let tape_price = tape.value(price_var);
     let grads = tape.gradient_vec(price_var, &[s, r, sigma, t]);
 
     let s2 = Dual2::variable(spot);
     let sig_sqrt_t_2 = vol * expiry.sqrt();
-    let d1_2 = ((s2 / Dual2::constant(strike)).ln()
-        + (rate - dividend_yield + 0.5 * vol * vol) * expiry)
-        / sig_sqrt_t_2;
+    let log_spot_strike_2 = if relative_moneyness.abs() <= 0.5 {
+        ((s2 - Dual2::constant(strike)) / Dual2::constant(strike)).ln_1p()
+    } else {
+        s2.ln() - Dual2::constant(strike).ln()
+    };
+    let d1_2 =
+        (log_spot_strike_2 + (rate - dividend_yield + 0.5 * vol * vol) * expiry) / sig_sqrt_t_2;
     let d2_2 = d1_2 - Dual2::constant(sig_sqrt_t_2);
     let df_r_2 = (-rate * expiry).exp();
     let df_q_2 = (-dividend_yield * expiry).exp();
@@ -825,6 +964,19 @@ pub fn black_scholes_price_greeks_aad(
     let price_2 = match option_type {
         OptionType::Call => call_2,
         OptionType::Put => call_2 - s2 * df_q_2 + Dual2::constant(strike * df_r_2),
+    };
+    let price = if sig_sqrt_t_2 <= crate::engines::analytic::bs_inline::ACCURATE_CDF_TOTAL_VOL {
+        crate::engines::analytic::bs_inline::stable_short_total_vol_price(
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            matches!(option_type, OptionType::Call),
+        )
+    } else {
+        tape_price
     };
 
     (
@@ -954,6 +1106,98 @@ mod tests {
             assert!((greeks.vega - v_ref).abs() < 1e-10, "vega mismatch");
             assert!((greeks.theta - th_ref).abs() < 1e-10, "theta mismatch");
             assert!((greeks.rho - rh_ref).abs() < 1e-10, "rho mismatch");
+        }
+    }
+
+    #[test]
+    fn black_scholes_aad_matches_scalar_domain_and_tiny_volatility_contract() {
+        let expected = 100.0 * 0.398_942_280_401_432_7e-16;
+        for option_type in [OptionType::Call, OptionType::Put] {
+            let (price, _) =
+                black_scholes_price_greeks_aad(option_type, 100.0, 100.0, 0.0, 0.0, 1e-16, 1.0);
+            let relative_error = ((price - expected) / expected).abs();
+            assert!(relative_error <= 8.0 * f64::EPSILON);
+
+            let (price, greeks) =
+                black_scholes_price_greeks_aad(option_type, 0.0, 0.0, 0.03, 0.01, 0.2, 1.0);
+            assert!(price.is_nan());
+            for value in [
+                greeks.delta,
+                greeks.gamma,
+                greeks.vega,
+                greeks.theta,
+                greeks.rho,
+            ] {
+                assert!(value.is_nan());
+            }
+
+            let (price, greeks) =
+                black_scholes_price_greeks_aad(option_type, 100.0, 100.0, 0.03, 0.01, -0.2, 1.0);
+            assert!(price.is_nan());
+            assert!(greeks.delta.is_nan());
+        }
+
+        let (put, put_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Put, 0.0, 100.0, 0.03, 0.01, 0.2, 1.0);
+        assert_eq!(put, 100.0 * (-0.03_f64).exp());
+        assert_eq!(put_greeks.delta, -(-0.01_f64).exp());
+
+        let (call, call_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Call, 100.0, 0.0, 0.03, 0.01, 0.2, 1.0);
+        assert_eq!(call, 100.0 * (-0.01_f64).exp());
+        assert_eq!(call_greeks.delta, (-0.01_f64).exp());
+
+        let (kink_price, kink_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Call, 100.0, 100.0, 0.0, 0.0, 0.0, 1.0);
+        assert_eq!(kink_price, 0.0);
+        for value in [
+            kink_greeks.delta,
+            kink_greeks.gamma,
+            kink_greeks.vega,
+            kink_greeks.theta,
+            kink_greeks.rho,
+        ] {
+            assert!(value.is_nan());
+        }
+
+        let (large_rate_price, large_rate_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Call, 100.0, 100.0, 1_000.0, 0.0, 0.0, 1.0);
+        assert_eq!(large_rate_price, 100.0);
+        assert_eq!(large_rate_greeks.delta, 1.0);
+        assert_eq!(large_rate_greeks.gamma, 0.0);
+        assert_eq!(large_rate_greeks.vega, 0.0);
+        assert_eq!(large_rate_greeks.theta, 0.0);
+        assert_eq!(large_rate_greeks.rho, 0.0);
+
+        let (_, extreme_greeks) = black_scholes_price_greeks_aad(
+            OptionType::Call,
+            1.0e308,
+            1.0e-308,
+            0.0,
+            0.0,
+            1.0e-16,
+            1.0,
+        );
+        assert_eq!(extreme_greeks.delta, 1.0);
+        assert_eq!(extreme_greeks.gamma, 0.0);
+        assert_eq!(extreme_greeks.vega, 0.0);
+        assert_eq!(extreme_greeks.theta, 0.0);
+        assert_eq!(extreme_greeks.rho, 1.0e-308);
+
+        for option_type in [OptionType::Call, OptionType::Put] {
+            let scalar = bs_price(option_type, 100.0, 100.0, -1_000.0, -1_000.0, 1.0e-16, 1.0);
+            let aad = black_scholes_price_greeks_aad(
+                option_type,
+                100.0,
+                100.0,
+                -1_000.0,
+                -1_000.0,
+                1.0e-16,
+                1.0,
+            )
+            .0;
+            assert_eq!(scalar, f64::INFINITY);
+            assert_eq!(aad, scalar);
         }
     }
 }

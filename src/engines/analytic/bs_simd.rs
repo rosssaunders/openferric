@@ -12,6 +12,13 @@
 
 use std::sync::OnceLock;
 
+use crate::math::fast_norm::accurate_norm_cdf;
+
+/// Below this total volatility the absolute error of the fast A&S CDF can be
+/// larger than the option's time value.  Use the Cody/erfc implementation for
+/// this numerically sensitive region.
+const ACCURATE_CDF_TOTAL_VOL: f64 = 1.0e-3;
+
 /// SIMD implementation selected for batch analytic pricing on this process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchSimdBackend {
@@ -47,6 +54,42 @@ pub fn detected_batch_simd_backend() -> BatchSimdBackend {
     })
 }
 
+#[inline]
+fn backend_width(backend: BatchSimdBackend) -> usize {
+    match backend {
+        BatchSimdBackend::Avx512 => 8,
+        BatchSimdBackend::Avx2 => 4,
+        BatchSimdBackend::Neon | BatchSimdBackend::WasmSimd128 => 2,
+        BatchSimdBackend::Scalar => 1,
+    }
+}
+
+/// A partial vector plus dispatch overhead loses to the scalar loop for the
+/// small batches commonly produced by Python and iterator adapters.
+#[inline]
+fn simd_is_worthwhile(len: usize, backend: BatchSimdBackend) -> bool {
+    let width = backend_width(backend);
+    width > 1 && len >= width && (len >= 4 * width || len.is_multiple_of(width))
+}
+
+#[inline]
+fn batch_requires_scalar(spots: &[f64], strikes: &[f64], r: f64, q: f64, vol: f64, t: f64) -> bool {
+    let df_r = (-r * t).exp();
+    let df_q = (-q * t).exp();
+    !r.is_finite()
+        || !q.is_finite()
+        || !vol.is_finite()
+        || !t.is_finite()
+        || spots.iter().zip(strikes.iter()).any(|(&spot, &strike)| {
+            !spot.is_finite()
+                || !strike.is_finite()
+                || spot <= 0.0
+                || strike <= 0.0
+                || !(spot * df_q).is_finite()
+                || !(strike * df_r).is_finite()
+        })
+}
+
 /// Scalar Abramowitz & Stegun 7.1.26 normal CDF approximation.
 ///
 /// Branch-free implementation using bit-level sign extraction,
@@ -60,6 +103,13 @@ pub fn normal_cdf_approx(x: f64) -> f64 {
     const A4: f64 = -1.821_255_978;
     const A5: f64 = 1.330_274_429;
     const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
+
+    // Preserve the exact mathematical value for both +0.0 and -0.0.  The
+    // sign-bit selection below would otherwise put the two zeros on opposite
+    // sides of the approximation error.
+    if x == 0.0 {
+        return 0.5;
+    }
 
     let z = x.abs();
     let t = 1.0 / P.mul_add(z, 1.0);
@@ -86,7 +136,15 @@ pub fn normal_cdf_batch_approx(xs: &[f64]) -> Vec<f64> {
 /// Allocation-free normal CDF batch API.
 pub fn normal_cdf_batch_approx_into(xs: &[f64], out: &mut [f64]) {
     assert_eq!(xs.len(), out.len(), "output length must match input");
-    match detected_batch_simd_backend() {
+    let backend = detected_batch_simd_backend();
+    if !simd_is_worthwhile(xs.len(), backend) {
+        for (dst, &x) in out.iter_mut().zip(xs.iter()) {
+            *dst = normal_cdf_approx(x);
+        }
+        return;
+    }
+
+    match backend {
         #[cfg(all(feature = "simd", target_arch = "x86_64"))]
         BatchSimdBackend::Avx512 => {
             // SAFETY: Guarded by runtime CPU feature detection.
@@ -155,7 +213,21 @@ pub fn bs_price_batch_into(
 ) {
     assert_eq!(spots.len(), strikes.len(), "spots and strikes must match");
     assert_eq!(spots.len(), out.len(), "output length must match input");
-    match detected_batch_simd_backend() {
+    let backend = detected_batch_simd_backend();
+    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= ACCURATE_CDF_TOTAL_VOL;
+    if t <= 0.0
+        || vol <= 0.0
+        || sensitive_total_vol
+        || !simd_is_worthwhile(spots.len(), backend)
+        || batch_requires_scalar(spots, strikes, r, q, vol, t)
+    {
+        for i in 0..spots.len() {
+            out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+        }
+        return;
+    }
+
+    match backend {
         #[cfg(all(feature = "simd", target_arch = "x86_64"))]
         BatchSimdBackend::Avx512 => {
             // SAFETY: Guarded by runtime CPU feature detection.
@@ -241,7 +313,25 @@ pub fn bs_greeks_batch_into(
         assert_eq!(n, output.len(), "output length must match input");
     }
 
-    match detected_batch_simd_backend() {
+    let backend = detected_batch_simd_backend();
+    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= ACCURATE_CDF_TOTAL_VOL;
+    if t <= 0.0
+        || vol <= 0.0
+        || sensitive_total_vol
+        || !simd_is_worthwhile(n, backend)
+        || batch_requires_scalar(spots, strikes, r, q, vol, t)
+    {
+        for i in 0..n {
+            let (d, g, v, th) = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+            delta[i] = d;
+            gamma[i] = g;
+            vega[i] = v;
+            theta[i] = th;
+        }
+        return;
+    }
+
+    match backend {
         #[cfg(all(feature = "simd", target_arch = "x86_64"))]
         BatchSimdBackend::Avx512 => {
             // SAFETY: Guarded by runtime CPU feature detection.
@@ -293,6 +383,19 @@ pub fn bs_greeks_batch_into(
 
 #[inline]
 fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
+    if !spot.is_finite()
+        || !strike.is_finite()
+        || !r.is_finite()
+        || !q.is_finite()
+        || !vol.is_finite()
+        || !t.is_finite()
+        || spot < 0.0
+        || strike < 0.0
+        || vol < 0.0
+        || (spot == 0.0 && strike == 0.0)
+    {
+        return f64::NAN;
+    }
     if t <= 0.0 {
         return if is_call {
             (spot - strike).max(0.0)
@@ -303,28 +406,36 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
 
     let df_r = (-r * t).exp();
     let df_q = (-q * t).exp();
-    if vol <= 0.0 {
+    if spot == 0.0 {
+        return if is_call { 0.0 } else { strike * df_r };
+    }
+    if strike == 0.0 {
+        return if is_call { spot * df_q } else { 0.0 };
+    }
+    if vol == 0.0 {
         return if is_call {
             (spot * df_q - strike * df_r).max(0.0)
         } else {
             (strike * df_r - spot * df_q).max(0.0)
         };
     }
+    if !(spot * df_q).is_finite() || !(strike * df_r).is_finite() {
+        return super::bs_inline::stable_short_total_vol_price(spot, strike, r, q, vol, t, is_call);
+    }
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, r - q) * t) / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
+    if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL {
+        return super::bs_inline::stable_short_total_vol_price(spot, strike, r, q, vol, t, is_call);
+    }
+    let (d1, d2) = super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t);
 
-    // Only 2 CDF evaluations; put uses put-call parity: P = C - S*df_q + K*df_r.
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
+    // Only 2 CDF evaluations; put uses put-call parity.
     let call = s_df_q * normal_cdf_approx(d1) - k_df_r * normal_cdf_approx(d2);
-    if is_call {
-        call
-    } else {
-        call - s_df_q + k_df_r
-    }
+    let (call, put) = (call, call - s_df_q + k_df_r);
+    if is_call { call } else { put }
 }
 
 #[inline]
@@ -343,22 +454,72 @@ fn bs_greeks_scalar(
     t: f64,
     is_call: bool,
 ) -> (f64, f64, f64, f64) {
-    if t <= 0.0 || vol <= 0.0 {
+    if !spot.is_finite()
+        || !strike.is_finite()
+        || !r.is_finite()
+        || !q.is_finite()
+        || !vol.is_finite()
+        || !t.is_finite()
+        || spot < 0.0
+        || strike < 0.0
+        || vol < 0.0
+        || (spot == 0.0 && strike == 0.0)
+    {
+        return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    }
+    if t <= 0.0 {
         return (0.0, 0.0, 0.0, 0.0);
+    }
+
+    let df_r = (-r * t).exp();
+    let df_q = (-q * t).exp();
+    if spot == 0.0 {
+        return if is_call {
+            (0.0, 0.0, 0.0, 0.0)
+        } else {
+            (-df_q, 0.0, 0.0, r * strike * df_r)
+        };
+    }
+    if strike == 0.0 {
+        return if is_call {
+            (df_q, 0.0, 0.0, q * spot * df_q)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+    }
+    if vol == 0.0 {
+        let forward_value = spot * df_q - strike * df_r;
+        return match forward_value.partial_cmp(&0.0) {
+            Some(std::cmp::Ordering::Greater) if is_call => {
+                (df_q, 0.0, 0.0, q * spot * df_q - r * strike * df_r)
+            }
+            Some(std::cmp::Ordering::Less) if !is_call => {
+                (-df_q, 0.0, 0.0, -q * spot * df_q + r * strike * df_r)
+            }
+            Some(std::cmp::Ordering::Equal) => {
+                // The deterministic payoff has a kink at the forward strike;
+                // no unique Black-Scholes Greek exists there.
+                (f64::NAN, f64::NAN, f64::NAN, f64::NAN)
+            }
+            Some(_) => (0.0, 0.0, 0.0, 0.0),
+            None => (f64::NAN, f64::NAN, f64::NAN, f64::NAN),
+        };
     }
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, r - q) * t) / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
+    let (d1, d2) = super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t);
 
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
     let pdf = normal_pdf_scalar(d1);
 
     // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
-    let nd1 = normal_cdf_approx(d1);
-    let nd2 = normal_cdf_approx(d2);
+    let cdf = if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL {
+        accurate_norm_cdf
+    } else {
+        normal_cdf_approx
+    };
+    let nd1 = cdf(d1);
+    let nd2 = cdf(d2);
 
     let delta = if is_call {
         df_q * nd1

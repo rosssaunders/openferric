@@ -205,6 +205,7 @@ impl PricingEngine<VarianceSwap> for VarianceSwapEngine {
         instrument: &VarianceSwap,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         let fair_variance = fair_variance_strike_from_quotes(
@@ -236,6 +237,7 @@ impl PricingEngine<VolatilitySwap> for VarianceSwapEngine {
         instrument: &VolatilitySwap,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         let fair_variance = fair_variance_strike_from_quotes(

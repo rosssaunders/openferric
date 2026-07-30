@@ -31,6 +31,7 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
         instrument: &AsianOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if instrument.asian.averaging != Averaging::Geometric {
@@ -45,12 +46,7 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
             ));
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let price = geometric_asian_discrete_fixed_closed_form(
             instrument.option_type,

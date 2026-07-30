@@ -12,6 +12,7 @@
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use super::mc_engine::RunningMoments;
 use crate::core::{PricingEngine, PricingError, PricingResult};
 use crate::instruments::spread::SpreadOption;
 use crate::market::Market;
@@ -27,9 +28,9 @@ pub struct SpreadMonteCarloEngine {
     /// Enables antithetic variates.
     pub antithetic: bool,
     /// Pseudo-random number generator backend.
-    pub rng_kind: FastRngKind,
+    pub(crate) rng_kind: FastRngKind,
     /// Reproducible stream splitting mode.
-    pub reproducible: bool,
+    pub(crate) reproducible: bool,
 }
 
 impl SpreadMonteCarloEngine {
@@ -50,6 +51,16 @@ impl SpreadMonteCarloEngine {
         self
     }
 
+    /// Returns the configured random-number generator.
+    pub fn rng_kind(&self) -> FastRngKind {
+        self.rng_kind
+    }
+
+    /// Returns whether seeded stream splitting is reproducible.
+    pub fn is_reproducible(&self) -> bool {
+        self.reproducible
+    }
+
     /// Chooses RNG backend for path simulation.
     pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
         self.rng_kind = rng_kind;
@@ -62,7 +73,7 @@ impl SpreadMonteCarloEngine {
     /// Uses a reproducible seed.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
-        self.reproducible = true;
+        self.reproducible = !matches!(self.rng_kind, FastRngKind::ThreadRng);
         self
     }
 
@@ -84,9 +95,10 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
     fn price(
         &self,
         instrument: &SpreadOption,
-        _market: &Market,
+        market: &Market,
     ) -> Result<PricingResult, PricingError> {
         instrument.validate()?;
+        market.validate()?;
 
         if self.num_paths == 0 {
             return Err(PricingError::InvalidInput(
@@ -121,48 +133,50 @@ impl PricingEngine<SpreadOption> for SpreadMonteCarloEngine {
         let reproducible = self.reproducible;
         let base_seed = self.seed;
 
-        let simulate_sample = |i: usize| {
-            let seed = resolve_stream_seed(base_seed, i, reproducible);
+        const CHUNK_SAMPLES: usize = 256;
+        let chunk_count = samples.div_ceil(CHUNK_SAMPLES);
+        let simulate_chunk = |chunk_index: usize| {
+            let seed = resolve_stream_seed(base_seed, chunk_index, reproducible);
             let mut rng = FastRng::from_seed(rng_kind, seed);
-            let z1 = sample_standard_normal(&mut rng);
-            let z2 = sample_standard_normal(&mut rng);
-
-            let payoff = terminal_spread_payoff(
-                instrument, z1, z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
-            );
-
-            if self.antithetic {
-                let anti = terminal_spread_payoff(
-                    instrument, -z1, -z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
+            let start = chunk_index * CHUNK_SAMPLES;
+            let end = (start + CHUNK_SAMPLES).min(samples);
+            let mut stats = RunningMoments::default();
+            for _ in start..end {
+                let z1 = sample_standard_normal(&mut rng);
+                let z2 = sample_standard_normal(&mut rng);
+                let payoff = terminal_spread_payoff(
+                    instrument, z1, z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
                 );
-                0.5 * (payoff + anti)
-            } else {
-                payoff
+                let sample = if self.antithetic {
+                    let anti = terminal_spread_payoff(
+                        instrument, -z1, -z2, corr_tail, drift1, drift2, vol_term1, vol_term2,
+                    );
+                    0.5 * (payoff + anti)
+                } else {
+                    payoff
+                };
+                stats.record(sample);
             }
+            stats
         };
 
         #[cfg(feature = "parallel")]
-        let payoffs = (0..samples)
+        let partials = (0..chunk_count)
             .into_par_iter()
-            .map(simulate_sample)
+            .map(simulate_chunk)
             .collect::<Vec<_>>();
         #[cfg(not(feature = "parallel"))]
-        let payoffs = (0..samples).map(simulate_sample).collect::<Vec<_>>();
+        let partials = (0..chunk_count).map(simulate_chunk).collect::<Vec<_>>();
 
-        let n = payoffs.len() as f64;
-        // Single-pass statistics: avoid second iteration over payoffs.
-        let mut sum = 0.0_f64;
-        let mut sum_sq = 0.0_f64;
-        for &x in &payoffs {
-            sum += x;
-            sum_sq += x * x;
+        // Indexed collection plus fixed-order Chan merging makes seeded results
+        // independent of Rayon scheduling and worker count.
+        let mut stats = RunningMoments::default();
+        for partial in partials {
+            stats.merge(partial);
         }
-        let mean = sum / n;
-        let variance = if payoffs.len() > 1 {
-            (sum_sq - sum * sum / n) / (n - 1.0)
-        } else {
-            0.0
-        };
+        let n = stats.count() as f64;
+        let mean = stats.mean();
+        let variance = stats.sample_variance();
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("num_paths", self.num_paths as f64);
@@ -239,5 +253,44 @@ mod tests {
             kirk,
             rel_err
         );
+    }
+
+    #[test]
+    fn near_deterministic_spread_has_finite_nonzero_stderr() {
+        let option = SpreadOption {
+            s1: 100.0,
+            s2: 1.0,
+            k: 1.0,
+            vol1: 1.0e-10,
+            vol2: 1.0e-10,
+            rho: 0.5,
+            q1: 0.0,
+            q2: 0.0,
+            r: 0.0,
+            t: 1.0,
+        };
+        let market = Market::builder().spot(100.0).flat_vol(0.2).build().unwrap();
+        let result = SpreadMonteCarloEngine::new(100_000, 123)
+            .price(&option, &market)
+            .unwrap();
+        let stderr = result.stderr.unwrap();
+        assert!(stderr.is_finite());
+        assert!(stderr > 0.0, "stderr={stderr}");
+        assert!(stderr < 1.0e-9, "stderr={stderr}");
+    }
+
+    #[test]
+    fn thread_rng_never_claims_seeded_reproducibility() {
+        for engine in [
+            SpreadMonteCarloEngine::new(32, 1)
+                .with_thread_rng()
+                .with_seed(42),
+            SpreadMonteCarloEngine::new(32, 1)
+                .with_seed(42)
+                .with_thread_rng(),
+        ] {
+            assert_eq!(engine.rng_kind, FastRngKind::ThreadRng);
+            assert!(!engine.reproducible);
+        }
     }
 }

@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use openferric::core::OptionType;
-use openferric::engines::analytic::{bs_price_batch, normal_cdf_batch_approx};
+use openferric::engines::analytic::{bs_price_batch, normal_cdf_approx, normal_cdf_batch_approx};
 use openferric::engines::monte_carlo::{mc_european_call_soa, mc_european_call_soa_scalar};
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use openferric::math::simd_math::{exp_f64x4, ln_f64x4, load_f64x4, store_f64x4};
@@ -18,6 +18,53 @@ fn make_spot_strike(n: usize) -> (Vec<f64>, Vec<f64>) {
         strikes.push(55.0 + (i % 900) as f64 * 0.11);
     }
     (spots, strikes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bs_price_scalar_fast(
+    spot: f64,
+    strike: f64,
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> f64 {
+    let sqrt_t = t.sqrt();
+    let total_vol = vol * sqrt_t;
+    let d1 = ((spot / strike).ln() + (r - q + 0.5 * vol * vol) * t) / total_vol;
+    let d2 = d1 - total_vol;
+    let spot_pv = spot * (-q * t).exp();
+    let strike_pv = strike * (-r * t).exp();
+    let call = spot_pv * normal_cdf_approx(d1) - strike_pv * normal_cdf_approx(d2);
+    if is_call {
+        call
+    } else {
+        call - spot_pv + strike_pv
+    }
+}
+
+fn bench_analytic_batch_auto_crossover(c: &mut Criterion) {
+    let (r, q, vol, t) = (0.03, 0.01, 0.2, 1.0);
+    let mut group = c.benchmark_group("analytic_batch_auto_crossover");
+    for n in [1_usize, 2, 3, 4, 7, 8, 15, 16, 31, 32, 64] {
+        let (spots, strikes) = make_spot_strike(n);
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("scalar_as", n), &n, |b, _| {
+            b.iter(|| {
+                let prices: Vec<f64> = spots
+                    .iter()
+                    .zip(strikes.iter())
+                    .map(|(&spot, &strike)| bs_price_scalar_fast(spot, strike, r, q, vol, t, true))
+                    .collect();
+                black_box(prices)
+            })
+        });
+        group.bench_with_input(BenchmarkId::new("auto_dispatch", n), &n, |b, _| {
+            b.iter(|| black_box(bs_price_batch(&spots, &strikes, r, q, vol, t, true)))
+        });
+    }
+    group.finish();
 }
 
 fn bench_bs_scalar_vs_simd(c: &mut Criterion) {
@@ -280,6 +327,7 @@ fn bench_ln_exp_scalar_vs_simd(c: &mut Criterion) {
 
 criterion_group!(
     simd_benches,
+    bench_analytic_batch_auto_crossover,
     bench_bs_scalar_vs_simd,
     bench_mc_scalar_vs_simd,
     bench_normal_cdf_scalar_vs_simd,

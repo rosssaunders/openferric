@@ -3,6 +3,7 @@
 import math
 
 import pytest
+from conftest import assert_releases_gil
 from openferric import GbmPathGenerator, HestonPathGenerator, McEngine, MonteCarloEngine
 
 
@@ -87,3 +88,134 @@ def test_custom_payoff_validates_callback():
 
     with pytest.raises(ValueError, match="payoff must be callable"):
         engine.run_gbm(generator, 42, 1.0)
+
+
+def test_pure_rust_mc_entry_points_release_gil():
+    operations = {
+        "arithmetic Asian": lambda: McEngine.arithmetic_asian_price(
+            option_type="call",
+            spot=100.0,
+            strike=100.0,
+            expiry=1.0,
+            rate=0.05,
+            dividend_yield=0.0,
+            vol=0.2,
+            observation_times=[0.25, 0.5, 0.75, 1.0],
+            paths=200_000,
+            steps=32,
+            seed=42,
+            control_variate=True,
+            rng_kind="xoshiro",
+            reproducible=True,
+        ),
+        "pathwise Greeks": lambda: McEngine.greeks_pathwise(
+            option_type="call",
+            spot=100.0,
+            strike=100.0,
+            expiry=1.0,
+            rate=0.05,
+            dividend_yield=0.0,
+            vol=0.2,
+            num_paths=400_000,
+            seed=42,
+            antithetic=True,
+            spot_bump_rel=0.01,
+            rng_kind="xoshiro",
+            reproducible=True,
+        ),
+        "likelihood-ratio Greeks": lambda: McEngine.greeks_likelihood_ratio(
+            option_type="call",
+            spot=100.0,
+            strike=100.0,
+            expiry=1.0,
+            rate=0.05,
+            dividend_yield=0.0,
+            vol=0.2,
+            num_paths=400_000,
+            seed=42,
+            antithetic=True,
+            spot_bump_rel=0.01,
+            rng_kind="xoshiro",
+            reproducible=True,
+        ),
+        "spread": lambda: McEngine.spread_price(
+            s1=100.0,
+            s2=90.0,
+            k=5.0,
+            vol1=0.2,
+            vol2=0.25,
+            rho=0.5,
+            q1=0.0,
+            q2=0.0,
+            rate=0.05,
+            expiry=1.0,
+            num_paths=400_000,
+            seed=42,
+            antithetic=True,
+            rng_kind="xoshiro",
+            reproducible=True,
+        ),
+    }
+
+    for name, operation in operations.items():
+        result = assert_releases_gil(operation)
+        assert result is not None, name
+
+
+def spread_price(**overrides):
+    parameters = dict(
+        s1=100.0,
+        s2=90.0,
+        k=5.0,
+        vol1=0.2,
+        vol2=0.25,
+        rho=0.5,
+        q1=0.0,
+        q2=0.0,
+        rate=0.05,
+        expiry=1.0,
+        num_paths=4_096,
+        seed=42,
+        antithetic=True,
+        rng_kind="xoshiro",
+        reproducible=True,
+    )
+    parameters.update(overrides)
+    return McEngine.spread_price(**parameters)
+
+
+@pytest.mark.parametrize("field", ["s1", "s2", "k", "vol1", "vol2", "q1", "q2", "rate", "expiry"])
+@pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])
+def test_spread_price_rejects_non_finite_inputs(field, bad_value):
+    with pytest.raises(ValueError):
+        spread_price(**{field: bad_value})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"s1": 0.0},
+        {"s2": -1.0},
+        {"k": -1.0},
+        {"vol1": -0.1},
+        {"vol2": -0.1},
+        {"rho": math.nan},
+        {"rho": -1.01},
+        {"rho": 1.01},
+        {"expiry": -0.1},
+        {"num_paths": 0},
+    ],
+)
+def test_spread_price_rejects_out_of_domain_inputs(override):
+    with pytest.raises(ValueError):
+        spread_price(**override)
+
+
+def test_spread_price_accepts_zero_volatility_and_expiry():
+    deterministic = spread_price(vol1=0.0, vol2=0.0)
+    assert math.isfinite(deterministic.price)
+    assert deterministic.stderr == 0.0
+
+    expired = spread_price(expiry=0.0)
+    assert expired.price == pytest.approx(5.0)
+    assert expired.stderr == 0.0

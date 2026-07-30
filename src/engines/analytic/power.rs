@@ -120,15 +120,11 @@ impl PricingEngine<PowerOption> for PowerOptionEngine {
         instrument: &PowerOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         let implied_strike = instrument.strike.powf(1.0 / instrument.alpha);
-        let vol = market.vol_for(implied_strike, instrument.expiry.max(1.0e-12));
-        if vol < 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be >= 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(implied_strike, instrument.expiry.max(1.0e-12))?;
         let q = market.effective_dividend_yield(instrument.expiry.max(1.0e-12));
 
         let price = power_option_price(

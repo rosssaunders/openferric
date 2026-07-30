@@ -18,6 +18,7 @@ use crate::core::{
     BarrierDirection, BarrierStyle, ExerciseStyle, OptionType, PricingEngine, PricingError,
     PricingResult,
 };
+use crate::engines::monte_carlo::mc_engine::RunningMoments;
 use crate::engines::monte_carlo::simulate_gbm_paths_soa;
 use crate::instruments::{BarrierOption, BermudanOption, VanillaOption};
 use crate::market::Market;
@@ -130,23 +131,15 @@ fn first_barrier_hit_index(path: &[f64], level: f64, direction: BarrierDirection
 /// Mean and standard error of `scale * values`, computed in a single pass
 /// without materializing the scaled values.
 fn scaled_mean_and_stderr(values: &[f64], scale: f64) -> (f64, f64) {
-    let n = values.len() as f64;
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
+    let mut stats = RunningMoments::default();
     for &v in values {
-        sum += v;
-        sum_sq += v * v;
+        stats.record(v);
     }
-    let mean = sum / n;
-    let var = if values.len() > 1 {
-        // Clamp to guard against catastrophic cancellation producing a tiny
-        // negative value, while preserving NaN inputs for diagnostics.
-        let estimated = (sum_sq - sum * sum / n) / (n - 1.0);
-        if estimated < 0.0 { 0.0 } else { estimated }
-    } else {
-        0.0
-    };
-    (scale * mean, scale * (var / n).sqrt())
+    let n = stats.count() as f64;
+    (
+        scale * stats.mean(),
+        scale * (stats.sample_variance() / n).sqrt(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -164,17 +157,17 @@ struct QuadraticRegressionSums {
 
 impl QuadraticRegressionSums {
     #[inline(always)]
-    fn add(&mut self, spot: f64, value: f64) {
-        let spot2 = spot * spot;
+    fn add(&mut self, normalized_spot: f64, normalized_value: f64) {
+        let spot2 = normalized_spot * normalized_spot;
         self.count += 1;
         self.s1 += 1.0;
-        self.s += spot;
+        self.s += normalized_spot;
         self.s2 += spot2;
-        self.s3 += spot2 * spot;
+        self.s3 += spot2 * normalized_spot;
         self.s4 += spot2 * spot2;
-        self.y += value;
-        self.sy += spot * value;
-        self.s2y += spot2 * value;
+        self.y += normalized_value;
+        self.sy += normalized_spot * normalized_value;
+        self.s2y += spot2 * normalized_value;
     }
 
     #[inline]
@@ -199,6 +192,7 @@ fn regression_sums(
     strike: f64,
 ) -> QuadraticRegressionSums {
     debug_assert_eq!(spots.len(), values.len());
+    let scale = strike;
 
     #[cfg(feature = "parallel")]
     if spots.len() >= 8_192 {
@@ -212,7 +206,7 @@ fn regression_sums(
                 let mut sums = QuadraticRegressionSums::default();
                 for (&spot, &value) in spot_chunk.iter().zip(value_chunk) {
                     if intrinsic(option_type, spot, strike) > 0.0 {
-                        sums.add(spot, value);
+                        sums.add(spot / scale, value / scale);
                     }
                 }
                 sums
@@ -228,7 +222,7 @@ fn regression_sums(
     let mut sums = QuadraticRegressionSums::default();
     for (&spot, &value) in spots.iter().zip(values) {
         if intrinsic(option_type, spot, strike) > 0.0 {
-            sums.add(spot, value);
+            sums.add(spot / scale, value / scale);
         }
     }
     sums
@@ -241,33 +235,37 @@ fn regression_beta(
     stride: usize,
     step: usize,
     values: &[f64],
-) -> Vector3<f64> {
-    let mut s1 = 0.0_f64;
-    let mut s_s = 0.0_f64;
-    let mut s_s2 = 0.0_f64;
-    let mut s_s3 = 0.0_f64;
-    let mut s_s4 = 0.0_f64;
-    let mut s_y = 0.0_f64;
-    let mut s_sy = 0.0_f64;
-    let mut s_s2y = 0.0_f64;
+    strike: f64,
+) -> Result<Vector3<f64>, PricingError> {
+    let mut sums = QuadraticRegressionSums::default();
 
     for &idx in itm {
         let s = paths[idx * stride + step];
-        let s2 = s * s;
         let y = values[idx];
-        s1 += 1.0;
-        s_s += s;
-        s_s2 += s2;
-        s_s3 += s2 * s;
-        s_s4 += s2 * s2;
-        s_y += y;
-        s_sy += s * y;
-        s_s2y += s2 * y;
+        sums.add(s / strike, y / strike);
     }
 
-    let xtx = Matrix3::new(s1, s_s, s_s2, s_s, s_s2, s_s3, s_s2, s_s3, s_s4);
-    let xty = Vector3::new(s_y, s_sy, s_s2y);
-    xtx.lu().solve(&xty).unwrap_or(Vector3::zeros())
+    solve_quadratic_regression(sums)
+}
+
+#[inline]
+fn solve_quadratic_regression(sums: QuadraticRegressionSums) -> Result<Vector3<f64>, PricingError> {
+    let xtx = Matrix3::new(
+        sums.s1, sums.s, sums.s2, sums.s, sums.s2, sums.s3, sums.s2, sums.s3, sums.s4,
+    );
+    let xty = Vector3::new(sums.y, sums.sy, sums.s2y);
+    let beta = xtx.lu().solve(&xty).ok_or_else(|| {
+        PricingError::NumericalError(
+            "Longstaff-Schwartz continuation regression is singular".to_string(),
+        )
+    })?;
+    if beta.iter().any(|coefficient| !coefficient.is_finite()) {
+        return Err(PricingError::NumericalError(
+            "Longstaff-Schwartz continuation regression produced non-finite coefficients"
+                .to_string(),
+        ));
+    }
+    Ok(beta)
 }
 
 #[inline]
@@ -299,12 +297,7 @@ impl LongstaffSchwartzEngine {
 
         match self.dynamics {
             LsmDynamics::Gbm => {
-                let vol = market.vol_for(reference_strike, instrument.expiry);
-                if !vol.is_finite() || vol <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market volatility must be finite and > 0".to_string(),
-                    ));
-                }
+                let vol = market.checked_vol_for(reference_strike, instrument.expiry)?;
                 let drift = (drift_rn - 0.5 * vol * vol) * dt;
                 let step_vol = vol * sqrt_dt;
                 for pi in 0..self.num_paths {
@@ -323,12 +316,7 @@ impl LongstaffSchwartzEngine {
                     paths[base] = s;
                     for ti in 1..=self.num_steps {
                         let t = (ti as f64 * dt).max(1.0e-8);
-                        let sigma = market.vol_for(s.max(1.0e-8), t);
-                        if !sigma.is_finite() || sigma <= 0.0 {
-                            return Err(PricingError::InvalidInput(
-                                "local volatility surface returned non-positive value".to_string(),
-                            ));
-                        }
+                        let sigma = market.checked_vol_for(s.max(1.0e-8), t)?;
                         let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
                         let drift = (drift_rn - 0.5 * sigma * sigma) * dt;
                         s *= (drift + sigma * sqrt_dt * z).exp();
@@ -392,6 +380,7 @@ impl LongstaffSchwartzEngine {
         market: &Market,
     ) -> Result<BermudanLsmOutput, PricingError> {
         instrument.validate()?;
+        market.validate()?;
         if self.num_steps < 2 {
             return Err(PricingError::InvalidInput(
                 "num_steps must be >= 2 for Longstaff-Schwartz".to_string(),
@@ -464,11 +453,15 @@ impl LongstaffSchwartzEngine {
                 continue;
             }
 
-            let beta = regression_beta(&itm, &paths, stride, ti, &values);
+            let beta = regression_beta(&itm, &paths, stride, ti, &values, strike)?;
             let mut exercised_spots = Vec::with_capacity(itm.len());
             for idx in itm.iter().copied() {
                 let s = paths[idx * stride + ti];
-                let continuation = beta[0] + beta[1] * s + beta[2] * s * s;
+                let normalized_spot = s / strike;
+                let continuation = strike
+                    * (beta[0]
+                        + beta[1] * normalized_spot
+                        + beta[2] * normalized_spot * normalized_spot);
                 let exercise = intrinsic(instrument.option_type, s, strike);
                 if exercise > continuation {
                     values[idx] = exercise;
@@ -495,7 +488,7 @@ impl LongstaffSchwartzEngine {
         if let LsmDynamics::Gbm = self.dynamics {
             diagnostics.insert_key(
                 crate::core::DiagKey::Vol,
-                market.vol_for(terminal_strike, instrument.expiry),
+                market.checked_vol_for(terminal_strike, instrument.expiry)?,
             );
         }
 
@@ -519,6 +512,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
         instrument.validate()?;
+        market.validate()?;
 
         if self.num_steps < 2 {
             return Err(PricingError::InvalidInput(
@@ -540,12 +534,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let dt = instrument.expiry / self.num_steps as f64;
         let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
@@ -607,11 +596,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 continue;
             }
 
-            let xtx = Matrix3::new(
-                sums.s1, sums.s, sums.s2, sums.s, sums.s2, sums.s3, sums.s2, sums.s3, sums.s4,
-            );
-            let xty = Vector3::new(sums.y, sums.sy, sums.s2y);
-            let beta = xtx.lu().solve(&xty).unwrap_or(Vector3::zeros());
+            let beta = solve_quadratic_regression(sums)?;
 
             #[cfg(feature = "parallel")]
             if values.len() >= 8_192 && rayon::current_num_threads() > 1 {
@@ -621,7 +606,11 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                     .for_each(|(value, &spot)| {
                         let exercise = intrinsic(instrument.option_type, spot, instrument.strike);
                         if exercise > 0.0 {
-                            let continuation = beta[0] + beta[1] * spot + beta[2] * spot * spot;
+                            let normalized_spot = spot / instrument.strike;
+                            let continuation = instrument.strike
+                                * (beta[0]
+                                    + beta[1] * normalized_spot
+                                    + beta[2] * normalized_spot * normalized_spot);
                             if exercise > continuation {
                                 *value = exercise;
                             }
@@ -633,7 +622,11 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             for (value, &spot) in values.iter_mut().zip(spots) {
                 let exercise = intrinsic(instrument.option_type, spot, instrument.strike);
                 if exercise > 0.0 {
-                    let continuation = beta[0] + beta[1] * spot + beta[2] * spot * spot;
+                    let normalized_spot = spot / instrument.strike;
+                    let continuation = instrument.strike
+                        * (beta[0]
+                            + beta[1] * normalized_spot
+                            + beta[2] * normalized_spot * normalized_spot);
                     if exercise > continuation {
                         *value = exercise;
                     }
@@ -675,6 +668,7 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
         instrument.validate()?;
+        market.validate()?;
 
         if self.num_steps == 0 {
             return Err(PricingError::InvalidInput(
@@ -687,12 +681,7 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
             ));
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let dt = instrument.expiry / self.num_steps as f64;
         let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
@@ -787,7 +776,13 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::scaled_mean_and_stderr;
+    use super::{
+        LongstaffSchwartzEngine, QuadraticRegressionSums, scaled_mean_and_stderr,
+        solve_quadratic_regression,
+    };
+    use crate::core::PricingEngine;
+    use crate::instruments::VanillaOption;
+    use crate::market::Market;
 
     #[test]
     fn constant_values_do_not_produce_nan_stderr_from_roundoff() {
@@ -799,5 +794,78 @@ mod tests {
 
         let (_, nan_stderr) = scaled_mean_and_stderr(&[f64::NAN, value, value], 1.0);
         assert!(nan_stderr.is_nan());
+    }
+
+    #[test]
+    fn centered_stderr_preserves_tiny_nonzero_variation() {
+        let base = 100.0;
+        let values = [base - 2.0e-10, base - 1.0e-10, base, base + 1.0e-10];
+        let (_, stderr) = scaled_mean_and_stderr(&values, 1.0);
+        assert!(stderr.is_finite());
+        assert!(stderr > 0.0, "stderr={stderr}");
+        assert!(stderr < 1.0e-9, "stderr={stderr}");
+    }
+
+    #[test]
+    fn american_lsm_is_homogeneous_across_large_finite_scales() {
+        let engine = LongstaffSchwartzEngine::new(12_000, 30, 77);
+        let price_at_scale = |scale: f64| {
+            let option = VanillaOption::american_put(100.0 * scale, 1.0);
+            let market = Market::builder()
+                .spot(100.0 * scale)
+                .rate(0.03)
+                .dividend_yield(0.01)
+                .flat_vol(0.2)
+                .build()
+                .unwrap();
+            engine.price(&option, &market).unwrap().price / scale
+        };
+
+        let baseline = price_at_scale(1.0);
+        for scale in [2.0_f64.powi(-200), 2.0_f64.powi(200)] {
+            let normalized = price_at_scale(scale);
+            assert!(
+                (normalized - baseline).abs() <= baseline.abs().max(1.0) * 2.0e-12,
+                "scale={scale:e}, normalized={normalized:.17e}, baseline={baseline:.17e}"
+            );
+        }
+    }
+
+    #[test]
+    fn singular_continuation_regression_is_surfaced() {
+        let mut sums = QuadraticRegressionSums::default();
+        for _ in 0..8 {
+            sums.add(1.0, 0.5);
+        }
+        let error = solve_quadratic_regression(sums).unwrap_err();
+        assert!(error.to_string().contains("singular"));
+    }
+
+    #[test]
+    fn pricing_boundary_rejects_non_finite_market_fields() {
+        let valid = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let option = VanillaOption::american_put(100.0, 1.0);
+        let engine = LongstaffSchwartzEngine::new(128, 4, 42);
+        for invalid in [
+            Market {
+                spot: f64::NAN,
+                ..valid.clone()
+            },
+            Market {
+                rate: f64::INFINITY,
+                ..valid.clone()
+            },
+            Market {
+                vol: crate::market::VolSource::Flat(f64::NAN),
+                ..valid.clone()
+            },
+        ] {
+            assert!(engine.price(&option, &invalid).is_err());
+        }
     }
 }

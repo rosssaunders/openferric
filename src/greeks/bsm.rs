@@ -55,10 +55,7 @@ where
 }
 
 fn d1_d2_with_dividend(s: f64, k: f64, r: f64, q: f64, sigma: f64, t: f64) -> (f64, f64) {
-    let vt = sigma * t.sqrt();
-    let d1 = ((s / k).ln() + (r - q + 0.5 * sigma * sigma) * t) / vt;
-    let d2 = d1 - vt;
-    (d1, d2)
+    crate::engines::analytic::bs_inline::stable_d1_d2(s, k, r, q, sigma, t)
 }
 
 pub fn black_scholes_merton_greeks(
@@ -70,7 +67,28 @@ pub fn black_scholes_merton_greeks(
     sigma: f64,
     t: f64,
 ) -> EuropeanBsmGreeks {
-    if s <= 0.0 || k <= 0.0 || t <= 0.0 || sigma <= 0.0 {
+    if !s.is_finite()
+        || !k.is_finite()
+        || !r.is_finite()
+        || !q.is_finite()
+        || !sigma.is_finite()
+        || !t.is_finite()
+        || s < 0.0
+        || k < 0.0
+        || sigma < 0.0
+        || (s == 0.0 && k == 0.0)
+    {
+        return EuropeanBsmGreeks {
+            delta: f64::NAN,
+            gamma: f64::NAN,
+            vega: f64::NAN,
+            theta: f64::NAN,
+            rho: f64::NAN,
+            vanna: f64::NAN,
+            volga: f64::NAN,
+        };
+    }
+    if t <= 0.0 {
         return EuropeanBsmGreeks {
             delta: 0.0,
             gamma: 0.0,
@@ -79,6 +97,29 @@ pub fn black_scholes_merton_greeks(
             rho: 0.0,
             vanna: 0.0,
             volga: 0.0,
+        };
+    }
+    if sigma == 0.0 || s == 0.0 || k == 0.0 {
+        use crate::engines::analytic::black_scholes::{
+            bs_delta, bs_gamma, bs_rho, bs_theta, bs_vega,
+        };
+
+        let delta = bs_delta(option_type, s, k, r, q, sigma, t);
+        let gamma = bs_gamma(s, k, r, q, sigma, t);
+        let vega = bs_vega(s, k, r, q, sigma, t);
+        let theta = bs_theta(option_type, s, k, r, q, sigma, t);
+        let rho = bs_rho(option_type, s, k, r, q, sigma, t);
+        let undefined = [delta, gamma, vega, theta, rho]
+            .iter()
+            .any(|value| value.is_nan());
+        return EuropeanBsmGreeks {
+            delta,
+            gamma,
+            vega,
+            theta,
+            rho,
+            vanna: if undefined { f64::NAN } else { 0.0 },
+            volga: if undefined { f64::NAN } else { 0.0 },
         };
     }
 
@@ -334,5 +375,42 @@ mod tests {
     fn volga_equals_vomma_alias() {
         let g = black_scholes_merton_greeks(OptionType::Call, 100.0, 100.0, 0.03, 0.01, 0.25, 0.9);
         assert!((g.volga - g.vomma()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn zero_volatility_greeks_use_deterministic_limits() {
+        let (r, q, t, k) = (0.03_f64, 0.01_f64, 1.5_f64, 100.0_f64);
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        let put = black_scholes_merton_greeks(OptionType::Put, 80.0, k, r, q, 0.0, t);
+        assert_eq!(put.delta, -df_q);
+        assert_eq!(put.gamma, 0.0);
+        assert_eq!(put.vega, 0.0);
+        assert_eq!(put.theta, -q * 80.0 * df_q + r * k * df_r);
+        assert_eq!(put.rho, -k * t * df_r);
+        assert_eq!(put.vanna, 0.0);
+        assert_eq!(put.volga, 0.0);
+
+        let kink = black_scholes_merton_greeks(OptionType::Call, k, k, 0.0, 0.0, 0.0, t);
+        for value in [
+            kink.delta, kink.gamma, kink.vega, kink.theta, kink.rho, kink.vanna, kink.volga,
+        ] {
+            assert!(value.is_nan());
+        }
+
+        let undefined_origin =
+            black_scholes_merton_greeks(OptionType::Call, 0.0, 0.0, r, q, 0.2, t);
+        for value in [
+            undefined_origin.delta,
+            undefined_origin.gamma,
+            undefined_origin.vega,
+            undefined_origin.theta,
+            undefined_origin.rho,
+            undefined_origin.vanna,
+            undefined_origin.volga,
+        ] {
+            assert!(value.is_nan());
+        }
     }
 }

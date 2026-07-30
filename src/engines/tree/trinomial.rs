@@ -54,6 +54,7 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         instrument: &VanillaOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if self.steps == 0 {
@@ -71,12 +72,7 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let dt = instrument.expiry / self.steps as f64;
         let u = (vol * (2.0 * dt).sqrt()).exp();

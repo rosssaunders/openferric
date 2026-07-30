@@ -123,7 +123,7 @@ fn heston_quantlib_cached_reference_values() {
     // Reference: QuantLib hestonmodel.cpp cached values (Lewis FT dataset).
     let fixture = parse_heston_fixture();
 
-    for (idx, strike) in fixture.strikes.iter().copied().enumerate().take(3) {
+    for (idx, strike) in fixture.strikes.iter().copied().enumerate() {
         let call_price = heston_price_fft(
             fixture.spot,
             &[strike],
@@ -137,15 +137,25 @@ fn heston_quantlib_cached_reference_values() {
             fixture.maturity,
         )[0]
         .1;
-        let expected_call = fixture.expected_put_call[idx].1;
-        // QuantLib cached entries are from a broader model-validation table;
-        // keep tolerance loose enough for 32-point quadrature and rounded fixtures.
-        let tol = 1.0;
+        let put_price = call_price
+            - fixture.spot * (-fixture.dividend_rate * fixture.maturity).exp()
+            + strike * (-fixture.risk_free_rate * fixture.maturity).exp();
+        let (expected_put, expected_call) = fixture.expected_put_call[idx];
+        // The reference values use QuantLib's 128-point Gauss-Laguerre and
+        // adaptive analytic engines. The independent Carr-Madan FFT has a
+        // measured absolute discretization error below one cent for this
+        // five-strike grid.
+        let tol = 1.0e-2;
         let call_err = (call_price - expected_call).abs();
+        let put_err = (put_price - expected_put).abs();
 
         assert!(
-            call_err <= tol,
+            call_price.is_finite() && call_err <= tol,
             "K={strike} call mismatch: expected={expected_call} got={call_price} err={call_err} tol={tol}"
+        );
+        assert!(
+            put_price.is_finite() && put_err <= tol,
+            "K={strike} put mismatch: expected={expected_put} got={put_price} err={put_err} tol={tol}"
         );
     }
 }

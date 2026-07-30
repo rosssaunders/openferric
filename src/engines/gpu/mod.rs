@@ -14,10 +14,10 @@
 mod gpu_mc;
 
 #[cfg(all(feature = "gpu", not(target_family = "wasm")))]
-pub use gpu_mc::mc_european_gpu;
+pub use gpu_mc::{gpu_is_ready, mc_european_gpu, prewarm_gpu};
 
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
-pub use gpu_mc::mc_european_gpu_async;
+pub use gpu_mc::{gpu_is_ready, mc_european_gpu_async, prewarm_gpu_async};
 
 #[cfg(feature = "gpu")]
 pub use gpu_mc::GpuMcResult;

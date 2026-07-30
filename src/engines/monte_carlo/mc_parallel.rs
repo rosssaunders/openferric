@@ -13,6 +13,7 @@ use rayon::prelude::*;
 
 use crate::core::{DiagKey, ExecutionBackend, ExerciseStyle, OptionType, PricingResult};
 use crate::engines::analytic::black_scholes::{bs_delta, bs_gamma, bs_vega};
+use crate::engines::monte_carlo::mc_engine::RunningMoments;
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
@@ -54,7 +55,7 @@ fn simulate_chunk_exact(
     total_diffusion: f64,
     n_paths: usize,
     chunk_seed: u64,
-) -> (f64, f64, usize) {
+) -> RunningMoments {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
@@ -107,10 +108,9 @@ fn simulate_chunk_exact_scalar(
     total_diffusion: f64,
     n_paths: usize,
     chunk_seed: u64,
-) -> (f64, f64, usize) {
+) -> RunningMoments {
     let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, chunk_seed);
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
+    let mut stats = RunningMoments::default();
 
     let mut remaining = n_paths;
     while remaining >= 8 {
@@ -141,20 +141,20 @@ fn simulate_chunk_exact_scalar(
         let p6 = payoff(option_type, s6, strike);
         let p7 = payoff(option_type, s7, strike);
 
-        sum += p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7;
-        sum_sq += p0 * p0 + p1 * p1 + p2 * p2 + p3 * p3 + p4 * p4 + p5 * p5 + p6 * p6 + p7 * p7;
+        for value in [p0, p1, p2, p3, p4, p5, p6, p7] {
+            stats.record(value);
+        }
         remaining -= 8;
     }
     while remaining > 0 {
         let z = sample_standard_normal(&mut rng);
         let s = spot0 * total_diffusion.mul_add(z, total_drift).exp();
         let px = payoff(option_type, s, strike);
-        sum += px;
-        sum_sq += px * px;
+        stats.record(px);
         remaining -= 1;
     }
 
-    (sum, sum_sq, n_paths)
+    stats
 }
 
 const DETERMINISTIC_CHUNK_PATHS: usize = 4_096;
@@ -186,7 +186,7 @@ fn simulate_fixed_chunks(
     total_diffusion: f64,
     n_paths: usize,
     parallel: bool,
-) -> (f64, f64, usize) {
+) -> RunningMoments {
     let chunk_count = n_paths.div_ceil(DETERMINISTIC_CHUNK_PATHS);
     let simulate = |chunk_index: usize| {
         let start = chunk_index * DETERMINISTIC_CHUNK_PATHS;
@@ -215,11 +215,11 @@ fn simulate_fixed_chunks(
 
     // `collect` preserves indexed order, and reduction happens in that fixed
     // order. Results therefore do not depend on Rayon scheduling or pool size.
-    partials
-        .into_iter()
-        .fold((0.0_f64, 0.0_f64, 0_usize), |lhs, rhs| {
-            (lhs.0 + rhs.0, lhs.1 + rhs.1, lhs.2 + rhs.2)
-        })
+    let mut stats = RunningMoments::default();
+    for partial in partials {
+        stats.merge(partial);
+    }
+    stats
 }
 
 /// AVX2+FMA accelerated chunk simulation with batch inverse CDF.
@@ -234,14 +234,13 @@ unsafe fn simulate_chunk_exact_avx2(
     total_diffusion: f64,
     n_paths: usize,
     chunk_seed: u64,
-) -> (f64, f64, usize) {
+) -> RunningMoments {
     use crate::math::fast_rng::Xoshiro256PlusPlus;
     use crate::math::simd_math::{fast_exp_f64x4, splat_f64x4};
     use std::arch::x86_64::*;
 
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(chunk_seed);
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
+    let mut stats = RunningMoments::default();
 
     let spot_v = unsafe { splat_f64x4(spot0) };
     let drift_v = unsafe { splat_f64x4(total_drift) };
@@ -255,28 +254,10 @@ unsafe fn simulate_chunk_exact_avx2(
 
     let mut remaining = n_paths;
 
-    // Horizontal reduction of vector accumulators into the scalar sums,
-    // performed once per block instead of once per 4 lanes.
-    #[inline(always)]
-    unsafe fn hreduce_block(
-        sum_v: std::arch::x86_64::__m256d,
-        sq_v: std::arch::x86_64::__m256d,
-        sum: &mut f64,
-        sum_sq: &mut f64,
-    ) {
-        let mut lanes = [0.0_f64; 4];
-        unsafe { std::arch::x86_64::_mm256_storeu_pd(lanes.as_mut_ptr(), sum_v) };
-        *sum += lanes[0] + lanes[1] + lanes[2] + lanes[3];
-        unsafe { std::arch::x86_64::_mm256_storeu_pd(lanes.as_mut_ptr(), sq_v) };
-        *sum_sq += lanes[0] + lanes[1] + lanes[2] + lanes[3];
-    }
-
     // Process full blocks of BLOCK paths.
     while remaining >= BLOCK {
         unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals) };
 
-        let mut sum_v = zero_v;
-        let mut sq_v = zero_v;
         let mut j = 0usize;
         while j + 4 <= BLOCK {
             unsafe {
@@ -290,13 +271,14 @@ unsafe fn simulate_chunk_exact_avx2(
                     OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
                 };
 
-                // Keep vector accumulators; reduce once per block below.
-                sum_v = _mm256_add_pd(sum_v, payoff_v);
-                sq_v = _mm256_fmadd_pd(payoff_v, payoff_v, sq_v);
+                let mut values = [0.0_f64; 4];
+                _mm256_storeu_pd(values.as_mut_ptr(), payoff_v);
+                for value in values {
+                    stats.record(value);
+                }
             }
             j += 4;
         }
-        unsafe { hreduce_block(sum_v, sq_v, &mut sum, &mut sum_sq) };
         remaining -= BLOCK;
     }
 
@@ -305,8 +287,6 @@ unsafe fn simulate_chunk_exact_avx2(
         let batch = remaining & !3;
         unsafe { crate::math::simd_math::fill_normals_simd(&mut rng, &mut normals[..batch]) };
 
-        let mut sum_v = zero_v;
-        let mut sq_v = zero_v;
         let mut j = 0usize;
         while j + 4 <= batch {
             unsafe {
@@ -320,12 +300,14 @@ unsafe fn simulate_chunk_exact_avx2(
                     OptionType::Put => _mm256_max_pd(_mm256_sub_pd(strike_v, s_terminal), zero_v),
                 };
 
-                sum_v = _mm256_add_pd(sum_v, payoff_v);
-                sq_v = _mm256_fmadd_pd(payoff_v, payoff_v, sq_v);
+                let mut values = [0.0_f64; 4];
+                _mm256_storeu_pd(values.as_mut_ptr(), payoff_v);
+                for value in values {
+                    stats.record(value);
+                }
             }
             j += 4;
         }
-        unsafe { hreduce_block(sum_v, sq_v, &mut sum, &mut sum_sq) };
         remaining -= batch;
     }
 
@@ -338,11 +320,10 @@ unsafe fn simulate_chunk_exact_avx2(
         let z = sample_standard_normal(&mut fast_rng);
         let s = spot0 * total_diffusion.mul_add(z, total_drift).exp();
         let px = payoff(option_type, s, strike);
-        sum += px;
-        sum_sq += px * px;
+        stats.record(px);
     }
 
-    (sum, sum_sq, n_paths)
+    stats
 }
 
 /// AArch64 NEON exact-terminal chunk processing two paths per vector.
@@ -357,7 +338,7 @@ unsafe fn simulate_chunk_exact_neon(
     total_diffusion: f64,
     n_paths: usize,
     chunk_seed: u64,
-) -> (f64, f64, usize) {
+) -> RunningMoments {
     use crate::math::simd_neon::simd_exp_f64x2;
     use std::arch::aarch64::*;
 
@@ -367,8 +348,7 @@ unsafe fn simulate_chunk_exact_neon(
     let drift = vdupq_n_f64(total_drift);
     let diffusion = vdupq_n_f64(total_diffusion);
     let zero = vdupq_n_f64(0.0);
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
+    let mut stats = RunningMoments::default();
     let mut i = 0usize;
 
     while i + 2 <= n_paths {
@@ -385,8 +365,8 @@ unsafe fn simulate_chunk_exact_neon(
         };
         let mut values = [0.0_f64; 2];
         vst1q_f64(values.as_mut_ptr(), payoff);
-        sum += values[0] + values[1];
-        sum_sq += values[0] * values[0] + values[1] * values[1];
+        stats.record(values[0]);
+        stats.record(values[1]);
         i += 2;
     }
 
@@ -394,11 +374,10 @@ unsafe fn simulate_chunk_exact_neon(
         let z = sample_standard_normal(&mut rng);
         let terminal = spot0 * total_diffusion.mul_add(z, total_drift).exp();
         let value = payoff(option_type, terminal, strike);
-        sum += value;
-        sum_sq += value * value;
+        stats.record(value);
     }
 
-    (sum, sum_sq, n_paths)
+    stats
 }
 
 /// Parallel Monte Carlo pricer for European vanilla options.
@@ -411,7 +390,7 @@ pub fn mc_european_parallel(
     n_paths: usize,
     _n_steps: usize,
 ) -> PricingResult {
-    if n_paths == 0 {
+    if n_paths == 0 || instrument.validate().is_err() || market.validate().is_err() {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -455,7 +434,7 @@ pub fn mc_european_parallel(
     let total_diffusion = vol * t.sqrt();
     let discount = (-market.rate * t).exp();
 
-    let (sum, sum_sq, total_paths) = simulate_fixed_chunks(
+    let stats = simulate_fixed_chunks(
         instrument.option_type,
         instrument.strike,
         market.spot,
@@ -465,14 +444,9 @@ pub fn mc_european_parallel(
         true,
     );
 
-    let n = total_paths as f64;
-    let mean = sum / n;
-    let variance = if total_paths > 1 {
-        let estimate = (sum_sq - sum * sum / n) / (n - 1.0);
-        if estimate < 0.0 { 0.0 } else { estimate }
-    } else {
-        0.0
-    };
+    let n = stats.count() as f64;
+    let mean = stats.mean();
+    let variance = stats.sample_variance();
 
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
@@ -503,7 +477,7 @@ pub fn mc_european_sequential(
     n_paths: usize,
     _n_steps: usize,
 ) -> PricingResult {
-    if n_paths == 0 {
+    if n_paths == 0 || instrument.validate().is_err() || market.validate().is_err() {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -543,7 +517,7 @@ pub fn mc_european_sequential(
     let total_diffusion = vol * t.sqrt();
     let discount = (-market.rate * t).exp();
 
-    let (sum, sum_sq, total_paths) = simulate_fixed_chunks(
+    let stats = simulate_fixed_chunks(
         instrument.option_type,
         instrument.strike,
         market.spot,
@@ -552,14 +526,9 @@ pub fn mc_european_sequential(
         n_paths,
         false,
     );
-    let n = total_paths as f64;
-    let mean = sum / n;
-    let variance = if total_paths > 1 {
-        let estimate = (sum_sq - sum * sum / n) / (n - 1.0);
-        if estimate < 0.0 { 0.0 } else { estimate }
-    } else {
-        0.0
-    };
+    let n = stats.count() as f64;
+    let mean = stats.mean();
+    let variance = stats.sample_variance();
 
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert_key(DiagKey::NumPaths, n_paths as f64);
@@ -674,11 +643,11 @@ mod tests {
             simulate_chunk_exact_neon(args.0, args.1, args.2, args.3, args.4, args.5, args.6)
         };
 
-        let sum_tolerance = scalar.0.abs().max(1.0) * 1.0e-11;
-        let sum_sq_tolerance = scalar.1.abs().max(1.0) * 1.0e-11;
-        assert!((neon.0 - scalar.0).abs() <= sum_tolerance);
-        assert!((neon.1 - scalar.1).abs() <= sum_sq_tolerance);
-        assert_eq!(neon.2, scalar.2);
+        let mean_tolerance = scalar.mean().abs().max(1.0) * 1.0e-11;
+        let variance_tolerance = scalar.sample_variance().abs().max(1.0) * 1.0e-11;
+        assert!((neon.mean() - scalar.mean()).abs() <= mean_tolerance);
+        assert!((neon.sample_variance() - scalar.sample_variance()).abs() <= variance_tolerance);
+        assert_eq!(neon.count(), scalar.count());
         assert_eq!(exact_chunk_vector_width(args.5), 2);
         assert_eq!(exact_chunk_vector_width(1), 1);
     }

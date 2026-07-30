@@ -1,9 +1,9 @@
 //! Adaptive approximation tiering for SIMD math functions.
 //!
-//! Selects between accuracy levels for exp() and inverse CDF approximants
-//! based on the target Monte Carlo standard error budget. When stochastic
-//! MC error dominates approximation error by 10x+, cheaper (lower-degree)
-//! polynomial approximants are used automatically.
+//! Selects between accuracy levels for exp() and inverse CDF approximants.
+//! The default is accuracy-first because approximation error is systematic:
+//! antithetic variates, control variates, and nearly deterministic payoffs can
+//! reduce sampling noise below the fast approximant's bias.
 //!
 //! ## Tiers
 //!
@@ -11,27 +11,27 @@
 //!   Dense differential tests bound exp relative error by `2e-14` over the
 //!   practical finite range `[-700, 700]`.
 //!
-//! - **Fast** (scenario sweeps, MC simulation): degree-7 exp with relative
+//! - **Fast** (explicit throughput opt-in): degree-7 exp with relative
 //!   error bounded by `8e-9` over the same range. It saves four polynomial
-//!   FMAs and is appropriate when MC noise dominates approximation error.
+//!   FMAs and is appropriate only when a caller has an explicit numerical
+//!   error budget showing MC noise dominates approximation error.
 //!
 //! ## Selection logic
 //!
-//! MC standard error = O(σ / √N). Even at N = 10^8 the MC error (~10^-4)
-//! dwarfs the fast-exp error (at most `8e-9` on the tested range). The tier
-//! selection is therefore conservative: `Fast` is used for any MC simulation,
-//! `High` for analytic or precision-critical computations.
+//! MC standard error = O(σ / √N), but σ can be arbitrarily small and variance
+//! reduction can remove most stochastic error. Path count alone therefore
+//! cannot justify `Fast`; automatic selection uses `High`.
 
 /// Accuracy tier for SIMD approximants (exp, inverse CDF).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum AccuracyTier {
     /// High-accuracy approximants: degree-11 exp (at most `2e-14` relative
     /// error over `[-700, 700]`) and full-precision inverse CDF.
+    #[default]
     High,
     /// Fast approximants: degree-7 exp (at most `8e-9` relative error over
-    /// `[-700, 700]`). Saves four polynomial FMAs and is sufficient for Monte
-    /// Carlo path generation where stochastic noise dominates.
-    #[default]
+    /// `[-700, 700]`). Saves four polynomial FMAs; callers must establish that
+    /// its systematic error fits their application-specific error budget.
     Fast,
 }
 
@@ -39,22 +39,14 @@ impl AccuracyTier {
     /// Select the appropriate accuracy tier for Monte Carlo simulation
     /// based on the number of paths and steps.
     ///
-    /// The MC standard error is O(1/√N). The `Fast` tier exp() error of at
-    /// most `8e-9` over the tested practical range is negligible compared to
-    /// MC noise at any practical path count (even 10^8 paths has ~10^-4 MC
-    /// error). This function always returns `Fast` for MC use cases, making
-    /// the selection explicit rather than implicit.
-    ///
-    /// Override with `AccuracyTier::High` if the results feed directly into
-    /// risk reports or regulatory calculations requiring the tighter bound.
+    /// Path count and time-step count do not bound payoff variance or the bias
+    /// introduced by an approximation. Automatic selection therefore uses the
+    /// high-accuracy tier. Throughput-sensitive callers may explicitly request
+    /// [`AccuracyTier::Fast`] after establishing an application-specific error
+    /// budget.
     #[inline]
-    pub fn for_mc(num_paths: usize, _num_steps: usize) -> Self {
-        // MC standard error at N paths ≈ σ/√N.
-        // Even at N=10^8 this is ~10^-4, far above fast-exp error of 8e-9.
-        // Only a vanishingly small path count would make High worthwhile,
-        // but at that point the MC estimate itself is meaningless.
-        let _ = num_paths; // All MC use cases can safely use Fast tier.
-        AccuracyTier::Fast
+    pub fn for_mc(_num_paths: usize, _num_steps: usize) -> Self {
+        AccuracyTier::High
     }
 
     /// Select tier for analytic (closed-form) computations.
@@ -126,14 +118,14 @@ mod tests {
 
     #[test]
     fn test_tier_selection() {
-        assert_eq!(AccuracyTier::for_mc(1_000, 100), AccuracyTier::Fast);
-        assert_eq!(AccuracyTier::for_mc(1_000_000, 252), AccuracyTier::Fast);
+        assert_eq!(AccuracyTier::for_mc(1_000, 100), AccuracyTier::High);
+        assert_eq!(AccuracyTier::for_mc(1_000_000, 252), AccuracyTier::High);
         assert_eq!(AccuracyTier::for_analytic(), AccuracyTier::High);
     }
 
     #[test]
-    fn test_default_is_fast() {
-        assert_eq!(AccuracyTier::default(), AccuracyTier::Fast);
+    fn test_default_is_high() {
+        assert_eq!(AccuracyTier::default(), AccuracyTier::High);
     }
 
     #[test]

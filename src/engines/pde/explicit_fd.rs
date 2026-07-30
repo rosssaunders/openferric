@@ -87,6 +87,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
         instrument: &VanillaOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if self.time_steps == 0 || self.space_steps < 2 {
@@ -114,12 +115,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 || !vol.is_finite() {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be finite and > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let n_t = self.time_steps;
         let n_s = self.space_steps;

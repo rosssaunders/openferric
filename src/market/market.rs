@@ -58,36 +58,58 @@ pub struct SampledVolSurface {
 }
 
 impl SampledVolSurface {
-    /// Creates a sampled surface from explicit grids.
-    pub fn new(strikes: Vec<f64>, expiries: Vec<f64>, vols: Vec<Vec<f64>>) -> Result<Self, String> {
-        if strikes.len() < 2 || expiries.len() < 2 {
+    /// Validates a sampled surface, including values that may have entered
+    /// through deserialization rather than [`SampledVolSurface::new`].
+    pub fn validate(&self) -> Result<(), String> {
+        if self.strikes.len() < 2 || self.expiries.len() < 2 {
             return Err("sampled surface requires >= 2 strikes and >= 2 expiries".to_string());
         }
-        if strikes.windows(2).any(|w| w[1] <= w[0]) {
+        if self
+            .strikes
+            .iter()
+            .any(|strike| !strike.is_finite() || *strike <= 0.0)
+        {
+            return Err("sampled surface strikes must be finite and > 0".to_string());
+        }
+        if self
+            .expiries
+            .iter()
+            .any(|expiry| !expiry.is_finite() || *expiry <= 0.0)
+        {
+            return Err("sampled surface expiries must be finite and > 0".to_string());
+        }
+        if self.strikes.windows(2).any(|w| w[1] <= w[0]) {
             return Err("sampled surface strikes must be strictly increasing".to_string());
         }
-        if expiries.windows(2).any(|w| w[1] <= w[0]) {
+        if self.expiries.windows(2).any(|w| w[1] <= w[0]) {
             return Err("sampled surface expiries must be strictly increasing".to_string());
         }
-        if vols.len() != expiries.len() {
+        if self.vols.len() != self.expiries.len() {
             return Err("sampled surface row count must match expiries".to_string());
         }
-        if vols.iter().any(|row| row.len() != strikes.len()) {
+        if self.vols.iter().any(|row| row.len() != self.strikes.len()) {
             return Err("sampled surface each row must match strike count".to_string());
         }
-        if vols
+        if self
+            .vols
             .iter()
-            .flat_map(|row| row.iter())
-            .any(|v| !v.is_finite() || *v <= 0.0)
+            .flatten()
+            .any(|vol| !vol.is_finite() || *vol <= 0.0)
         {
             return Err("sampled surface vols must be finite and > 0".to_string());
         }
+        Ok(())
+    }
 
-        Ok(Self {
+    /// Creates a sampled surface from explicit grids.
+    pub fn new(strikes: Vec<f64>, expiries: Vec<f64>, vols: Vec<Vec<f64>>) -> Result<Self, String> {
+        let surface = Self {
             strikes,
             expiries,
             vols,
-        })
+        };
+        surface.validate()?;
+        Ok(surface)
     }
 
     fn default_strikes(spot: f64) -> Vec<f64> {
@@ -127,7 +149,10 @@ impl SampledVolSurface {
             let mut row = Vec::with_capacity(strikes.len());
             for &strike in &strikes {
                 let v = surface.vol(strike, expiry);
-                row.push(if v.is_finite() { v.max(1.0e-8) } else { 1.0e-8 });
+                // Preserve non-finite outputs so MarketBuilder/Market::validate
+                // can reject the source instead of silently replacing bad
+                // market data with an arbitrary volatility.
+                row.push(if v.is_finite() { v.max(1.0e-8) } else { v });
             }
             vols.push(row);
         }
@@ -189,6 +214,17 @@ impl VolSource {
             Self::Sampled(surface) => surface.vol(strike, expiry),
         }
     }
+
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Flat(vol) if !vol.is_finite() || *vol <= 0.0 => {
+                Err("market flat volatility must be finite and > 0".to_string())
+            }
+            Self::Flat(_) => Ok(()),
+            Self::Parametric(surface) => surface.validate(),
+            Self::Sampled(surface) => surface.validate(),
+        }
+    }
 }
 
 /// Market snapshot used by all pricing engines.
@@ -214,6 +250,33 @@ impl Market {
     #[inline]
     pub fn builder() -> MarketBuilder {
         MarketBuilder::default()
+    }
+
+    /// Validates the complete snapshot.
+    ///
+    /// Public fields and serde support allow callers to construct a `Market`
+    /// without using [`MarketBuilder`], so pricing engines call this method at
+    /// their public boundaries rather than relying on builder-only checks.
+    pub fn validate(&self) -> Result<(), PricingError> {
+        if !self.spot.is_finite() || self.spot <= 0.0 {
+            return Err(PricingError::InvalidInput(
+                "market spot must be finite and > 0".to_string(),
+            ));
+        }
+        if !self.rate.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "market rate must be finite".to_string(),
+            ));
+        }
+        if !self.dividend_yield.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "market dividend_yield must be finite".to_string(),
+            ));
+        }
+        self.dividend_schedule
+            .validate()
+            .map_err(PricingError::InvalidInput)?;
+        self.vol.validate().map_err(PricingError::InvalidInput)
     }
 
     /// Returns spot price.
@@ -292,6 +355,33 @@ impl Market {
     #[inline]
     pub fn vol_for(&self, strike: f64, expiry: f64) -> f64 {
         self.vol.vol(strike, expiry)
+    }
+
+    /// Resolves volatility and rejects invalid query coordinates or a
+    /// non-finite/non-positive surface result.
+    ///
+    /// A surface can be structurally valid yet overflow for an extreme query,
+    /// so pricing boundaries should use this checked form instead of assuming
+    /// [`Market::validate`] proves every possible surface evaluation is finite.
+    pub fn checked_vol_for(&self, strike: f64, expiry: f64) -> Result<f64, PricingError> {
+        if !strike.is_finite() || strike <= 0.0 {
+            return Err(PricingError::InvalidInput(
+                "volatility strike must be finite and > 0".to_string(),
+            ));
+        }
+        if !expiry.is_finite() || expiry < 0.0 {
+            return Err(PricingError::InvalidInput(
+                "volatility expiry must be finite and >= 0".to_string(),
+            ));
+        }
+
+        let vol = self.vol_for(strike, expiry);
+        if !vol.is_finite() || vol <= 0.0 {
+            return Err(PricingError::InvalidInput(
+                "market volatility query must return a finite value > 0".to_string(),
+            ));
+        }
+        Ok(vol)
     }
 }
 
@@ -407,14 +497,16 @@ impl MarketBuilder {
             VolSource::Flat(flat)
         };
 
-        Ok(Market {
+        let market = Market {
             spot,
             rate,
             dividend_yield,
             dividend_schedule,
             vol,
             reference_date: self.reference_date,
-        })
+        };
+        market.validate()?;
+        Ok(market)
     }
 }
 
@@ -465,6 +557,15 @@ impl MarketSnapshot {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Clone)]
+    struct NonFiniteVolSurface;
+
+    impl VolSurface for NonFiniteVolSurface {
+        fn vol(&self, _strike: f64, _expiry: f64) -> f64 {
+            f64::NAN
+        }
+    }
+
     #[test]
     fn market_builder_rejects_non_finite_inputs() {
         let cases: Vec<(&str, MarketBuilder)> = vec![
@@ -505,6 +606,61 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(market.spot(), 100.0);
+    }
+
+    #[test]
+    fn direct_market_validation_rejects_all_non_finite_scalar_fields() {
+        let valid = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .dividend_yield(0.01)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+
+        for invalid in [
+            Market {
+                spot: f64::NAN,
+                ..valid.clone()
+            },
+            Market {
+                spot: f64::INFINITY,
+                ..valid.clone()
+            },
+            Market {
+                rate: f64::NEG_INFINITY,
+                ..valid.clone()
+            },
+            Market {
+                dividend_yield: f64::NAN,
+                ..valid.clone()
+            },
+            Market {
+                vol: VolSource::Flat(f64::INFINITY),
+                ..valid.clone()
+            },
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn deserialized_sampled_surface_shape_and_finiteness_are_revalidated() {
+        let surface = SampledVolSurface {
+            strikes: vec![90.0, f64::NAN],
+            expiries: vec![0.5, 1.0],
+            vols: vec![vec![0.2, 0.21], vec![0.22, 0.23]],
+        };
+        assert!(surface.validate().is_err());
+    }
+
+    #[test]
+    fn market_builder_does_not_mask_non_finite_surface_outputs() {
+        let result = Market::builder()
+            .spot(100.0)
+            .vol_surface(Box::new(NonFiniteVolSurface))
+            .build();
+        assert!(result.is_err());
     }
 
     #[test]

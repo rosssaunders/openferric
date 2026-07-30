@@ -105,5 +105,18 @@ openferric (Python)
        └── openferric core (Rust library)
 ```
 
+Long-running pricing routines whose inputs and payoffs are fully owned by Rust
+release the Python GIL. This includes the native Monte Carlo engine methods and
+the barrier, Asian, basket, autocallable, range-accrual, Bermudan/LSM, and TARF
+Monte Carlo helpers. Custom Python payoffs necessarily re-enter Python for each
+callback.
+
+`bs_price_batch` requires contiguous one-dimensional `float64` NumPy arrays.
+Small arrays are borrowed directly to avoid copy overhead. Large arrays are
+copied to owned Rust buffers and priced without the GIL, so another Python
+thread may continue running safely while the batch kernel executes. Empty
+arrays are supported; non-finite or out-of-domain pricing inputs raise
+`ValueError`.
+
 DateTime values are passed as ISO 8601 strings (`"2026-03-18T00:00:00Z"`).
 Enums are constructed via class methods (e.g. `StressScenario.baseline()`).

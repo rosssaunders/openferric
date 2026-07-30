@@ -29,6 +29,8 @@ use crate::math::simd_neon::{load_f64x2, simd_exp_f64x2, simd_ln_f64x2, store_f6
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+use std::collections::VecDeque;
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Per-asset stepping strategy for path generation.
@@ -250,6 +252,9 @@ pub struct DslMonteCarloEngine {
 const MIN_AUTO_JIT_PATHS: usize = 4_096;
 
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+const JIT_EVALUATOR_CACHE_CAPACITY: usize = 16;
+
+#[cfg(all(feature = "jit", not(target_family = "wasm")))]
 struct CachedJitEvaluator {
     product: CompiledProduct,
     num_steps: usize,
@@ -263,20 +268,25 @@ fn cached_jit_evaluator(
     num_steps: usize,
     rate: f64,
 ) -> Result<Arc<JitProductEvaluator>, PricingError> {
-    static CACHE: OnceLock<Mutex<Option<CachedJitEvaluator>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    static CACHE: OnceLock<Mutex<VecDeque<CachedJitEvaluator>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     let rate_bits = rate.to_bits();
 
     {
-        let guard = cache.lock().map_err(|_| {
+        let mut guard = cache.lock().map_err(|_| {
             PricingError::NumericalError("DSL JIT evaluator cache lock is poisoned".to_string())
         })?;
-        if let Some(entry) = guard.as_ref()
-            && entry.num_steps == num_steps
-            && entry.rate_bits == rate_bits
-            && &entry.product == product
-        {
-            return Ok(Arc::clone(&entry.evaluator));
+        if let Some(position) = guard.iter().position(|entry| {
+            entry.num_steps == num_steps
+                && entry.rate_bits == rate_bits
+                && &entry.product == product
+        }) {
+            let entry = guard
+                .remove(position)
+                .expect("position came from the same cache");
+            let evaluator = Arc::clone(&entry.evaluator);
+            guard.push_back(entry);
+            return Ok(evaluator);
         }
     }
 
@@ -290,14 +300,20 @@ fn cached_jit_evaluator(
     let mut guard = cache.lock().map_err(|_| {
         PricingError::NumericalError("DSL JIT evaluator cache lock is poisoned".to_string())
     })?;
-    if let Some(entry) = guard.as_ref()
-        && entry.num_steps == num_steps
-        && entry.rate_bits == rate_bits
-        && &entry.product == product
-    {
-        return Ok(Arc::clone(&entry.evaluator));
+    if let Some(position) = guard.iter().position(|entry| {
+        entry.num_steps == num_steps && entry.rate_bits == rate_bits && &entry.product == product
+    }) {
+        let entry = guard
+            .remove(position)
+            .expect("position came from the same cache");
+        let evaluator = Arc::clone(&entry.evaluator);
+        guard.push_back(entry);
+        return Ok(evaluator);
     }
-    *guard = Some(CachedJitEvaluator {
+    if guard.len() == JIT_EVALUATOR_CACHE_CAPACITY {
+        guard.pop_front();
+    }
+    guard.push_back(CachedJitEvaluator {
         product: product.clone(),
         num_steps,
         rate_bits,
@@ -559,14 +575,8 @@ impl DslMonteCarloEngine {
         };
 
         let n = chunk_stats.num_paths as f64;
-        let mean = chunk_stats.sum_pv / n;
-        let variance = if chunk_stats.num_paths > 1 {
-            let estimated =
-                (chunk_stats.sum_pv_sq - chunk_stats.sum_pv * chunk_stats.sum_pv / n) / (n - 1.0);
-            if estimated < 0.0 { 0.0 } else { estimated }
-        } else {
-            0.0
-        };
+        let mean = chunk_stats.mean_pv;
+        let variance = chunk_stats.sample_variance();
         let stderr = (variance / n).sqrt();
 
         let mut diagnostics = Diagnostics::new();
@@ -663,18 +673,13 @@ impl DslMonteCarloEngine {
         num_locals: usize,
     ) -> Result<ChunkStats, PricingError> {
         if plan.snapshot_count() == 0 {
-            return Ok(ChunkStats {
-                sum_pv: 0.0,
-                sum_pv_sq: 0.0,
-                num_paths,
-            });
+            return Ok(ChunkStats::zeros(num_paths));
         }
 
         let n_assets = initial_spots.len();
         let n_steps = self.num_steps;
         let mut rng = FastRng::from_seed(self.rng_kind, seed);
-        let mut sum_pv = 0.0;
-        let mut sum_pv_sq = 0.0;
+        let mut stats = ChunkStats::default();
         let mut corr_normals = vec![0.0; n_assets];
         let mut indep_normals = vec![0.0; n_assets];
         let mut current_spots = initial_spots.to_vec();
@@ -722,15 +727,11 @@ impl DslMonteCarloEngine {
             )
             .map_err(|e| PricingError::NumericalError(e.to_string()))?;
 
-            sum_pv += pv;
-            sum_pv_sq += pv * pv;
+            stats.record(pv);
         }
 
-        Ok(ChunkStats {
-            sum_pv,
-            sum_pv_sq,
-            num_paths,
-        })
+        debug_assert_eq!(stats.num_paths, num_paths);
+        Ok(stats)
     }
 
     #[cfg(all(feature = "jit", not(target_family = "wasm")))]
@@ -744,17 +745,12 @@ impl DslMonteCarloEngine {
         steppers: &[AssetStepper],
     ) -> Result<ChunkStats, PricingError> {
         if evaluator.snapshot_count() == 0 {
-            return Ok(ChunkStats {
-                sum_pv: 0.0,
-                sum_pv_sq: 0.0,
-                num_paths,
-            });
+            return Ok(ChunkStats::zeros(num_paths));
         }
 
         let n_assets = initial_spots.len();
         let mut rng = FastRng::from_seed(self.rng_kind, seed);
-        let mut sum_pv = 0.0;
-        let mut sum_pv_sq = 0.0;
+        let mut stats = ChunkStats::default();
         let mut corr_normals = vec![0.0; n_assets];
         let mut indep_normals = vec![0.0; n_assets];
         let mut current_spots = initial_spots.to_vec();
@@ -788,15 +784,11 @@ impl DslMonteCarloEngine {
             let pv = evaluator
                 .evaluate_captured_observations(&observation_spots, initial_spots, &mut scratch)
                 .map_err(|error| PricingError::NumericalError(error.to_string()))?;
-            sum_pv += pv;
-            sum_pv_sq += pv * pv;
+            stats.record(pv);
         }
 
-        Ok(ChunkStats {
-            sum_pv,
-            sum_pv_sq,
-            num_paths,
-        })
+        debug_assert_eq!(stats.num_paths, num_paths);
+        Ok(stats)
     }
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -815,11 +807,7 @@ impl DslMonteCarloEngine {
         const LANES: usize = SIMD_X86_PATH_LANES;
 
         if plan.snapshot_count() == 0 {
-            return Ok(ChunkStats {
-                sum_pv: 0.0,
-                sum_pv_sq: 0.0,
-                num_paths,
-            });
+            return Ok(ChunkStats::zeros(num_paths));
         }
 
         let n_assets = initial_spots.len();
@@ -827,8 +815,7 @@ impl DslMonteCarloEngine {
         let n_state = product.state_vars.len();
         let n_snapshots = plan.snapshot_count();
         let mut rng = FastRng::from_seed(self.rng_kind, seed);
-        let mut sum_pv = 0.0;
-        let mut sum_pv_sq = 0.0;
+        let mut stats = ChunkStats::default();
         let mut corr_normals = vec![vec![0.0; n_assets]; LANES];
         let mut indep_normals = vec![vec![0.0; n_assets]; LANES];
         let mut current_spots = vec![[0.0; LANES]; n_assets];
@@ -897,8 +884,7 @@ impl DslMonteCarloEngine {
             .map_err(|e| PricingError::NumericalError(e.to_string()))?;
 
             for pv in pv_batch {
-                sum_pv += pv;
-                sum_pv_sq += pv * pv;
+                stats.record(pv);
             }
 
             processed += LANES;
@@ -915,15 +901,11 @@ impl DslMonteCarloEngine {
                 steppers,
                 num_locals,
             )?;
-            sum_pv += tail.sum_pv;
-            sum_pv_sq += tail.sum_pv_sq;
+            stats.merge(tail);
         }
 
-        Ok(ChunkStats {
-            sum_pv,
-            sum_pv_sq,
-            num_paths,
-        })
+        debug_assert_eq!(stats.num_paths, num_paths);
+        Ok(stats)
     }
 
     #[cfg(all(feature = "simd", target_arch = "aarch64"))]
@@ -941,11 +923,7 @@ impl DslMonteCarloEngine {
         const LANES: usize = SIMD_NEON_PATH_LANES;
 
         if plan.snapshot_count() == 0 {
-            return Ok(ChunkStats {
-                sum_pv: 0.0,
-                sum_pv_sq: 0.0,
-                num_paths,
-            });
+            return Ok(ChunkStats::zeros(num_paths));
         }
 
         let n_assets = initial_spots.len();
@@ -953,8 +931,7 @@ impl DslMonteCarloEngine {
         let n_state = product.state_vars.len();
         let n_snapshots = plan.snapshot_count();
         let mut rng = FastRng::from_seed(self.rng_kind, seed);
-        let mut sum_pv = 0.0;
-        let mut sum_pv_sq = 0.0;
+        let mut stats = ChunkStats::default();
         let mut corr_normals = vec![vec![0.0; n_assets]; LANES];
         let mut indep_normals = vec![vec![0.0; n_assets]; LANES];
         let mut current_spots = vec![[0.0; LANES]; n_assets];
@@ -1018,8 +995,7 @@ impl DslMonteCarloEngine {
             .map_err(|e| PricingError::NumericalError(e.to_string()))?;
 
             for pv in pv_batch {
-                sum_pv += pv;
-                sum_pv_sq += pv * pv;
+                stats.record(pv);
             }
 
             processed += LANES;
@@ -1036,15 +1012,11 @@ impl DslMonteCarloEngine {
                 steppers,
                 num_locals,
             )?;
-            sum_pv += tail.sum_pv;
-            sum_pv_sq += tail.sum_pv_sq;
+            stats.merge(tail);
         }
 
-        Ok(ChunkStats {
-            sum_pv,
-            sum_pv_sq,
-            num_paths,
-        })
+        debug_assert_eq!(stats.num_paths, num_paths);
+        Ok(stats)
     }
 
     #[cfg(feature = "parallel")]
@@ -1081,9 +1053,7 @@ impl DslMonteCarloEngine {
         let mut total = ChunkStats::default();
         for result in chunk_results {
             let chunk = result?;
-            total.sum_pv += chunk.sum_pv;
-            total.sum_pv_sq += chunk.sum_pv_sq;
-            total.num_paths += chunk.num_paths;
+            total.merge(chunk);
         }
         Ok(total)
     }
@@ -1118,9 +1088,7 @@ impl DslMonteCarloEngine {
         let mut total = ChunkStats::default();
         for result in chunk_results {
             let chunk = result?;
-            total.sum_pv += chunk.sum_pv;
-            total.sum_pv_sq += chunk.sum_pv_sq;
-            total.num_paths += chunk.num_paths;
+            total.merge(chunk);
         }
         Ok(total)
     }
@@ -1334,9 +1302,62 @@ impl DslMonteCarloEngine {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ChunkStats {
-    sum_pv: f64,
-    sum_pv_sq: f64,
+    mean_pv: f64,
+    m2_pv: f64,
     num_paths: usize,
+}
+
+impl ChunkStats {
+    #[inline]
+    fn zeros(num_paths: usize) -> Self {
+        Self {
+            mean_pv: 0.0,
+            m2_pv: 0.0,
+            num_paths,
+        }
+    }
+
+    #[inline(always)]
+    fn record(&mut self, pv: f64) {
+        self.num_paths += 1;
+        let delta = pv - self.mean_pv;
+        self.mean_pv += delta / self.num_paths as f64;
+        let delta2 = pv - self.mean_pv;
+        self.m2_pv += delta * delta2;
+    }
+
+    #[inline]
+    #[cfg(any(
+        test,
+        feature = "parallel",
+        all(feature = "simd", any(target_arch = "x86_64", target_arch = "aarch64"))
+    ))]
+    fn merge(&mut self, other: Self) {
+        if other.num_paths == 0 {
+            return;
+        }
+        if self.num_paths == 0 {
+            *self = other;
+            return;
+        }
+
+        let lhs_count = self.num_paths as f64;
+        let rhs_count = other.num_paths as f64;
+        let total_count = lhs_count + rhs_count;
+        let delta = other.mean_pv - self.mean_pv;
+        self.mean_pv += delta * rhs_count / total_count;
+        self.m2_pv += other.m2_pv + delta * delta * lhs_count * rhs_count / total_count;
+        self.num_paths += other.num_paths;
+    }
+
+    #[inline]
+    fn sample_variance(self) -> f64 {
+        if self.num_paths <= 1 {
+            return 0.0;
+        }
+        let variance = self.m2_pv / (self.num_paths as f64 - 1.0);
+        if variance < 0.0 { 0.0 } else { variance }
+    }
 }
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -1435,7 +1456,8 @@ impl PricingEngine<DslProduct> for DslMonteCarloEngine {
         instrument: &DslProduct,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
-        let vol = market.vol_for(market.spot, instrument.product.maturity);
+        market.validate()?;
+        let vol = market.checked_vol_for(market.spot, instrument.product.maturity)?;
         let multi_market =
             MultiAssetMarket::single(market.spot, vol, market.rate, market.dividend_yield);
         self.price_multi_asset(&instrument.product, &multi_market)
@@ -1747,8 +1769,8 @@ mod tests {
 
     #[test]
     fn constant_payoff_roundoff_does_not_make_stderr_nan() {
-        // This value makes the two-pass variance numerator a few ulps below
-        // zero when accumulated three times.
+        // This value made the former raw-moment variance numerator a few ulps
+        // below zero when accumulated three times.
         let product = make_constant_product(3.162_277_660_168_379_6e-25);
         let market = MultiAssetMarket::single(100.0, 0.20, 0.0, 0.0);
         let result = DslMonteCarloEngine::new(3, 1, 42)
@@ -1757,6 +1779,32 @@ mod tests {
 
         assert!(result.price.is_finite());
         assert_eq!(result.stderr, Some(0.0));
+    }
+
+    #[test]
+    fn centered_chunk_stats_preserve_small_variance_at_large_offset() {
+        let mut whole = ChunkStats::default();
+        for value in [
+            1.0e12,
+            1.0e12 + 0.25,
+            1.0e12 + 0.5,
+            1.0e12 + 0.75,
+            1.0e12 + 1.0,
+        ] {
+            whole.record(value);
+        }
+        assert_eq!(whole.mean_pv, 1.0e12 + 0.5);
+        assert!((whole.sample_variance() - 0.15625).abs() <= f64::EPSILON);
+
+        let mut left = ChunkStats::default();
+        left.record(1.0e12);
+        left.record(1.0e12 + 0.25);
+        let mut right = ChunkStats::default();
+        right.record(1.0e12 + 0.5);
+        right.record(1.0e12 + 0.75);
+        right.record(1.0e12 + 1.0);
+        left.merge(right);
+        assert!((left.sample_variance() - 0.15625).abs() <= f64::EPSILON);
     }
 
     #[cfg(feature = "parallel")]
@@ -1890,5 +1938,20 @@ mod tests {
         let first = cached_jit_evaluator(&product, 32, 0.05).unwrap();
         let second = cached_jit_evaluator(&product, 32, 0.05).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    #[test]
+    fn prepared_jit_evaluator_cache_retains_alternating_plans() {
+        let first_product = make_forward_product();
+        let second_product = make_constant_product(17.0);
+        let first = cached_jit_evaluator(&first_product, 31, 0.041).unwrap();
+        let second = cached_jit_evaluator(&second_product, 33, 0.042).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        let first_again = cached_jit_evaluator(&first_product, 31, 0.041).unwrap();
+        let second_again = cached_jit_evaluator(&second_product, 33, 0.042).unwrap();
+        assert!(Arc::ptr_eq(&first, &first_again));
+        assert!(Arc::ptr_eq(&second, &second_again));
     }
 }

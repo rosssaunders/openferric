@@ -9,6 +9,25 @@ pub struct WasmGpuMcResult {
     pub stderr: f64,
 }
 
+/// Return whether this JavaScript worker already has a ready WebGPU context.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+#[wasm_bindgen]
+pub fn gpu_mc_is_ready() -> bool {
+    openferric::engines::gpu::gpu_is_ready()
+}
+
+/// Initialize WebGPU resources without running a pricing dispatch.
+///
+/// Call during application startup when the first pricing request must avoid
+/// device-discovery and pipeline-compilation latency.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+#[wasm_bindgen]
+pub async fn gpu_mc_prewarm() -> Result<(), JsError> {
+    openferric::engines::gpu::prewarm_gpu_async()
+        .await
+        .map_err(|error| JsError::new(&error))
+}
+
 /// GPU Monte Carlo European option pricing via WebGPU compute shaders.
 ///
 /// Uses exact terminal GBM sampling, with two paths generated per shader
@@ -30,6 +49,43 @@ pub async fn gpu_mc_price_european(
     seed: u32,
     is_call: bool,
 ) -> Result<WasmGpuMcResult, JsError> {
+    let result = openferric::engines::gpu::mc_european_gpu_async(
+        spot,
+        strike,
+        rate,
+        vol,
+        expiry,
+        num_paths,
+        num_steps,
+        u64::from(seed),
+        is_call,
+    )
+    .await
+    .map_err(|e| JsError::new(&e))?;
+
+    Ok(WasmGpuMcResult {
+        price: result.price,
+        stderr: result.stderr,
+    })
+}
+
+/// GPU Monte Carlo pricing with a full-width seed represented as two `u32`
+/// values, avoiding JavaScript `BigInt` while preserving all 64 seed bits.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+#[wasm_bindgen]
+pub async fn gpu_mc_price_european_seed64(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    vol: f64,
+    expiry: f64,
+    num_paths: u32,
+    num_steps: u32,
+    seed_low: u32,
+    seed_high: u32,
+    is_call: bool,
+) -> Result<WasmGpuMcResult, JsError> {
+    let seed = u64::from(seed_low) | (u64::from(seed_high) << 32);
     let result = openferric::engines::gpu::mc_european_gpu_async(
         spot, strike, rate, vol, expiry, num_paths, num_steps, seed, is_call,
     )

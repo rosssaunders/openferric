@@ -31,14 +31,10 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
         instrument: &BarrierOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
         let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
         let price = barrier_price_closed_form_with_carry_and_rebate(

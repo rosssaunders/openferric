@@ -23,6 +23,7 @@
 use std::sync::OnceLock;
 
 use crate::core::{Diagnostics, PricingResult};
+use crate::engines::monte_carlo::mc_engine::RunningMoments;
 use crate::math::fast_rng::{FastRng, FastRngKind, resolve_stream_seed, sample_standard_normal};
 use crate::pricing::OptionType;
 use crate::vol::implied::implied_vol;
@@ -672,22 +673,16 @@ fn discounted_call_payoff_mean_and_stderr(
     maturity: f64,
 ) -> (f64, f64) {
     let discount = (-r * maturity).exp();
-    let n = terminals.len() as f64;
 
-    let mut sum = 0.0;
-    let mut sum_sq = 0.0;
+    let mut moments = RunningMoments::default();
     for s_t in terminals {
         let payoff = (*s_t - strike).max(0.0);
-        sum += payoff;
-        sum_sq += payoff * payoff;
+        moments.record(payoff);
     }
 
-    let mean = sum / n;
-    let variance = if terminals.len() > 1 {
-        (sum_sq - n * mean * mean).max(0.0) / (n - 1.0)
-    } else {
-        0.0
-    };
+    let n = moments.count() as f64;
+    let mean = moments.mean();
+    let variance = moments.sample_variance();
 
     (discount * mean, discount * (variance / n).sqrt())
 }
@@ -870,6 +865,22 @@ pub fn rbergomi_implied_vol_surface(
 mod tests {
     use super::*;
     use crate::pricing::european::black_scholes_price;
+
+    #[test]
+    fn public_rbergomi_stderr_resolves_small_variance_around_large_mean() {
+        let spot = 1.0e12;
+        let xi0 = 1.0e-18;
+        let n_paths = 8_192;
+        let result = rbergomi_european_mc(spot, 1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0, xi0, n_paths, 1);
+
+        let stderr = result.stderr.expect("valid rough Bergomi stderr");
+        let population_stderr = spot * xi0.exp_m1().sqrt() / (n_paths as f64).sqrt();
+        assert!(stderr.is_finite() && stderr > 0.0);
+        assert!(
+            (stderr - population_stderr).abs() <= 0.05 * population_stderr,
+            "stderr={stderr} population_stderr={population_stderr}"
+        );
+    }
 
     fn sample_fbm_moments(hurst: f64, maturity: f64, n_steps: usize, n_paths: usize) -> (f64, f64) {
         let generator = CholeskyFbmGenerator::new(hurst, maturity, n_steps).unwrap();
