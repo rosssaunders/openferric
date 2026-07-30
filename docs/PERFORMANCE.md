@@ -479,10 +479,11 @@ validation; the native live-adapter comparison skips only when no adapter is
 available. DSL tests compare every example product against the interpreter
 when JIT is enabled.
 
-CI runs the full scalar and all-feature core suites on Linux. Parallel-only,
-SIMD-only, Windows, and macOS matrix entries are compile checks because their
-runtime paths are already exercised by the Linux all-feature suite; native
-ARM64 separately executes the NEON/Rayon tests. The WASM job executes the
+CI runs the full scalar and all-feature core suites on Linux. Parallel-only
+and SIMD-only Linux matrix entries are compile checks; Windows and macOS run
+the complete accelerated native tests so architecture-specific JIT and
+dispatch behavior cannot be hidden by a successful cross-platform build.
+Native ARM64 separately executes the NEON/Rayon tests. The WASM job executes the
 portable ABI and the same ABI compiled with required SIMD128 support under
 Node, including differential tests of the explicit uniform Black-Scholes
 price and Greek kernels. It also initializes a threaded Rayon pool and prices
@@ -508,22 +509,25 @@ cargo +nightly llvm-cov report --branch --codecov \
 Codecov enforces an 80% patch target. The coverage workflow additionally
 builds an instrumented Python wheel and runs `python/tests`.
 
-Scheduled deep verification runs two libFuzzer targets, Miri, and mutation
+Scheduled deep verification runs three libFuzzer targets, Miri, and mutation
 testing. The equivalent focused commands are:
 
 ```bash
 cargo +nightly fuzz run dsl_pipeline -- -max_total_time=120
 cargo +nightly fuzz run trade_json -- -max_total_time=120
+cargo +nightly fuzz run compiled_product_json -- -max_total_time=120
 cargo +nightly miri test -p openferric --no-default-features --lib math::
 cargo mutants --package openferric --features accelerated-native \
   --file src/core/engine.rs \
+  --file src/dsl/ir.rs \
   --file src/pricing/european.rs \
   --file src/engines/analytic/bs_simd.rs \
   --timeout-multiplier 3 --jobs 2 \
   --cargo-test-arg=--lib
 ```
 
-The fuzzers cover the complete DSL parse/diagnostic/compile pipeline and
-serialized `TradeInstrument`/`Portfolio` inputs. Miri targets scalar math
+The fuzzers cover the complete DSL parse/diagnostic/compile pipeline,
+serialized `TradeInstrument`/`Portfolio` inputs, and validation of deserialized
+`CompiledProduct` IR. Miri targets scalar math
 where unsupported SIMD instructions do not obscure memory-safety checks;
 platform SIMD is covered by the native x86-64 and ARM64 test matrix.

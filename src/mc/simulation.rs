@@ -99,6 +99,7 @@ pub(crate) fn should_auto_parallelize_path(
 }
 
 pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
+pub type FalliblePathEvaluator<E> = Arc<dyn Fn(&[f64]) -> Result<f64, E> + Send + Sync>;
 
 /// CPU execution strategy for the generic path simulation engine.
 ///
@@ -222,6 +223,21 @@ impl PathGenerator for HestonPathGenerator {
 pub struct ControlVariate {
     pub expected: f64,
     pub evaluator: PathEvaluator,
+}
+
+/// Control-variate callback for [`MonteCarloEngine::run_fallible`].
+pub struct FallibleControlVariate<E> {
+    pub expected: f64,
+    pub evaluator: FalliblePathEvaluator<E>,
+}
+
+impl<E> Clone for FallibleControlVariate<E> {
+    fn clone(&self) -> Self {
+        Self {
+            expected: self.expected,
+            evaluator: Arc::clone(&self.evaluator),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -366,6 +382,48 @@ impl MonteCarloEngine {
         G: PathGenerator,
         P: Fn(&[f64]) -> f64 + Send + Sync,
     {
+        let control_variate = self.control_variate.as_ref().map(|control| {
+            let evaluator = Arc::clone(&control.evaluator);
+            FallibleControlVariate {
+                expected: control.expected,
+                evaluator: Arc::new(move |path| {
+                    Ok::<f64, std::convert::Infallible>(evaluator(path))
+                }),
+            }
+        });
+        match self.run_fallible(
+            generator,
+            |path| Ok::<f64, std::convert::Infallible>(payoff(path)),
+            discount_factor,
+            control_variate,
+        ) {
+            Ok(result) => result,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Runs path simulation with callbacks that can fail.
+    ///
+    /// The first callback error stops scalar execution and is returned to the
+    /// caller unchanged. Parallel execution evaluates fixed chunks
+    /// concurrently and deterministically returns the error from the
+    /// lowest-indexed failing chunk; callbacks in other chunks may already
+    /// have run before workers join. Use the scalar policy when callback side
+    /// effects must stop immediately and remain strictly ordered. Supplying
+    /// an explicit fallible control variate replaces the engine's stored
+    /// infallible control variate for this run.
+    pub fn run_fallible<G, P, E>(
+        &self,
+        generator: &G,
+        payoff: P,
+        discount_factor: f64,
+        control_variate: Option<FallibleControlVariate<E>>,
+    ) -> Result<(f64, f64), E>
+    where
+        G: PathGenerator,
+        P: Fn(&[f64]) -> Result<f64, E> + Send + Sync,
+        E: Send,
+    {
         assert!(self.num_paths > 0, "num_paths must be > 0");
 
         let samples = if self.antithetic {
@@ -376,7 +434,7 @@ impl MonteCarloEngine {
 
         let steps = generator.steps();
         let num_streams = generator.num_normal_streams();
-        let control = self.control_variate.clone();
+        let control = control_variate;
         let rng_kind = self.rng_kind;
         let reproducible = self.reproducible;
         let base_seed = self.seed;
@@ -397,61 +455,57 @@ impl MonteCarloEngine {
         // A fixed chunk owns one RNG stream. Chunk boundaries and seeds do not
         // depend on the Rayon pool, while map_init reuses path/normal buffers
         // for every chunk handled by a worker.
-        let simulate_chunk = |scratch: &mut Scratch, chunk_index: usize| -> BivariateMoments {
-            let (z1, z2, path) = scratch;
-            let seed = resolve_stream_seed(base_seed, chunk_index, reproducible);
-            let mut rng = FastRng::from_seed(rng_kind, seed);
-            let chunk_start = chunk_index * PATH_SIMULATION_CHUNK_SAMPLES;
-            let chunk_end = (chunk_start + PATH_SIMULATION_CHUNK_SAMPLES).min(samples);
-            let mut stats = BivariateMoments::default();
+        let simulate_chunk =
+            |scratch: &mut Scratch, chunk_index: usize| -> Result<BivariateMoments, E> {
+                let (z1, z2, path) = scratch;
+                let seed = resolve_stream_seed(base_seed, chunk_index, reproducible);
+                let mut rng = FastRng::from_seed(rng_kind, seed);
+                let chunk_start = chunk_index * PATH_SIMULATION_CHUNK_SAMPLES;
+                let chunk_end = (chunk_start + PATH_SIMULATION_CHUNK_SAMPLES).min(samples);
+                let mut stats = BivariateMoments::default();
 
-            for _ in chunk_start..chunk_end {
-                // Only generate as many normal streams as the model needs.
-                // GBM needs 1 stream (skipping z2 halves RNG + inverse-CDF work).
-                for j in 0..steps {
-                    z1[j] = sample_standard_normal(&mut rng);
-                    if num_streams >= 2 {
-                        z2[j] = sample_standard_normal(&mut rng);
+                for _ in chunk_start..chunk_end {
+                    // Only generate as many normal streams as the model needs.
+                    // GBM needs 1 stream (skipping z2 halves RNG + inverse-CDF work).
+                    for j in 0..steps {
+                        z1[j] = sample_standard_normal(&mut rng);
+                        if num_streams >= 2 {
+                            z2[j] = sample_standard_normal(&mut rng);
+                        }
                     }
-                }
 
-                generator.generate_into(z1, z2, path);
-                let x = payoff(path);
-                let y = if has_cv {
-                    (control.as_ref().unwrap().evaluator)(path)
-                } else {
-                    0.0
-                };
-
-                let (x, y) = if antithetic {
-                    for value in z1.iter_mut() {
-                        *value = -*value;
-                    }
-                    for value in z2.iter_mut() {
-                        *value = -*value;
-                    }
                     generator.generate_into(z1, z2, path);
-                    let xa = payoff(path);
-                    let ya = if has_cv {
-                        (control.as_ref().unwrap().evaluator)(path)
+                    let x = payoff(path)?;
+                    let y = if has_cv {
+                        (control.as_ref().unwrap().evaluator)(path)?
                     } else {
                         0.0
                     };
-                    (0.5 * (x + xa), 0.5 * (y + ya))
-                } else {
-                    (x, y)
-                };
 
-                stats.record(x, y);
-            }
+                    let (x, y) = if antithetic {
+                        for value in z1.iter_mut() {
+                            *value = -*value;
+                        }
+                        for value in z2.iter_mut() {
+                            *value = -*value;
+                        }
+                        generator.generate_into(z1, z2, path);
+                        let xa = payoff(path)?;
+                        let ya = if has_cv {
+                            (control.as_ref().unwrap().evaluator)(path)?
+                        } else {
+                            0.0
+                        };
+                        (0.5 * (x + xa), 0.5 * (y + ya))
+                    } else {
+                        (x, y)
+                    };
 
-            stats
-        };
+                    stats.record(x, y);
+                }
 
-        let reduce_fn = |mut a: BivariateMoments, b: BivariateMoments| {
-            a.merge(b);
-            a
-        };
+                Ok(stats)
+            };
 
         #[cfg(feature = "parallel")]
         let stats = {
@@ -471,28 +525,37 @@ impl MonteCarloEngine {
                     .into_par_iter()
                     .map_init(&make_scratch, &simulate_chunk)
                     .collect::<Vec<_>>();
-                partials
-                    .into_iter()
-                    .fold(BivariateMoments::default(), reduce_fn)
+                let mut stats = BivariateMoments::default();
+                // `Range` is indexed, so Rayon preserves chunk order when
+                // collecting into a Vec. Resolve errors on the calling thread
+                // to avoid scheduler-dependent error selection.
+                for partial in partials {
+                    stats.merge(partial?);
+                }
+                stats
             } else {
                 let mut scratch = make_scratch();
-                (0..chunk_count)
-                    .map(|chunk_index| simulate_chunk(&mut scratch, chunk_index))
-                    .fold(BivariateMoments::default(), reduce_fn)
+                let mut stats = BivariateMoments::default();
+                for chunk_index in 0..chunk_count {
+                    stats.merge(simulate_chunk(&mut scratch, chunk_index)?);
+                }
+                stats
             }
         };
 
         #[cfg(not(feature = "parallel"))]
         let stats = {
             let mut scratch = make_scratch();
-            (0..chunk_count)
-                .map(|chunk_index| simulate_chunk(&mut scratch, chunk_index))
-                .fold(BivariateMoments::default(), reduce_fn)
+            let mut stats = BivariateMoments::default();
+            for chunk_index in 0..chunk_count {
+                stats.merge(simulate_chunk(&mut scratch, chunk_index)?);
+            }
+            stats
         };
 
         let n = stats.count as f64;
 
-        if let Some(cv) = &control {
+        Ok(if let Some(cv) = &control {
             // The common sample-variance denominator cancels in beta.
             let beta = if stats.m2_y.is_finite() && stats.m2_y > 0.0 {
                 stats.co_moment / stats.m2_y
@@ -518,7 +581,7 @@ impl MonteCarloEngine {
             let price = discount_factor * stats.mean_x;
             let stderr = discount_factor * (stats.sample_variance_x() / n).sqrt();
             (price, stderr)
-        }
+        })
     }
 }
 
@@ -663,6 +726,119 @@ mod tests {
             .run(&generator, |_| 0.1, 0.95);
         assert!((price - 0.095).abs() <= f64::EPSILON);
         assert_eq!(stderr, 0.0);
+    }
+
+    #[test]
+    fn fallible_scalar_payoff_stops_on_first_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: 0.03,
+                sigma: 0.2,
+            },
+            s0: 100.0,
+            maturity: 1.0,
+            steps: 4,
+        };
+        let calls = AtomicUsize::new(0);
+        let error = MonteCarloEngine::new(10_000, 7)
+            .with_antithetic(true)
+            .with_execution_policy(CpuExecutionPolicy::Scalar)
+            .run_fallible(
+                &generator,
+                |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err::<f64, _>("payoff failed")
+                },
+                1.0,
+                None,
+            )
+            .unwrap_err();
+
+        assert_eq!(error, "payoff failed");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fallible_scalar_control_variate_stops_on_first_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: 0.03,
+                sigma: 0.2,
+            },
+            s0: 100.0,
+            maturity: 1.0,
+            steps: 4,
+        };
+        let payoff_calls = Arc::new(AtomicUsize::new(0));
+        let control_calls = Arc::new(AtomicUsize::new(0));
+        let control_counter = Arc::clone(&control_calls);
+        let control = FallibleControlVariate {
+            expected: 100.0,
+            evaluator: Arc::new(move |_| {
+                control_counter.fetch_add(1, Ordering::SeqCst);
+                Err::<f64, _>("control failed")
+            }),
+        };
+        let error = MonteCarloEngine::new(10_000, 7)
+            .with_execution_policy(CpuExecutionPolicy::Scalar)
+            .run_fallible(
+                &generator,
+                |_| {
+                    payoff_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(1.0)
+                },
+                1.0,
+                Some(control),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, "control failed");
+        assert_eq!(payoff_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(control_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn fallible_parallel_error_selection_is_deterministic_across_pool_sizes() {
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: 0.03,
+                sigma: 0.2,
+            },
+            s0: 100.0,
+            maturity: 1.0,
+            steps: 1,
+        };
+        let engine = MonteCarloEngine::new(3 * PATH_SIMULATION_CHUNK_SAMPLES, 7)
+            .with_execution_policy(CpuExecutionPolicy::Parallel);
+        let run = || {
+            engine
+                .run_fallible(
+                    &generator,
+                    |path| Err::<f64, _>(format!("{:.17e}", path[1])),
+                    1.0,
+                    None,
+                )
+                .unwrap_err()
+        };
+
+        let expected = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(run);
+        for threads in [2, 4] {
+            let actual = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(run);
+            assert_eq!(actual, expected, "threads={threads}");
+        }
     }
 
     #[test]

@@ -870,12 +870,21 @@ pub fn black_scholes_price_greeks_aad(
         vol,
         expiry,
     );
-    let nonfinite_discount_scale = !(spot * (-dividend_yield * expiry).exp()).is_finite()
-        || !(strike * (-rate * expiry).exp()).is_finite();
+    let is_call = matches!(option_type, OptionType::Call);
+    let tape_drift = (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry;
     if sig_sqrt_t_numeric <= crate::engines::analytic::bs_inline::ACCURATE_CDF_TOTAL_VOL
         || !d1_numeric.is_finite()
         || d1_numeric.abs() >= 38.0
-        || nonfinite_discount_scale
+        || !tape_drift.is_finite()
+        || crate::engines::analytic::bs_inline::requires_stable_price(
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            is_call,
+        )
     {
         use crate::engines::analytic::black_scholes::{
             bs_delta, bs_gamma, bs_price, bs_rho, bs_theta, bs_vega,
@@ -965,22 +974,8 @@ pub fn black_scholes_price_greeks_aad(
         OptionType::Call => call_2,
         OptionType::Put => call_2 - s2 * df_q_2 + Dual2::constant(strike * df_r_2),
     };
-    let price = if sig_sqrt_t_2 <= crate::engines::analytic::bs_inline::ACCURATE_CDF_TOTAL_VOL {
-        crate::engines::analytic::bs_inline::stable_short_total_vol_price(
-            spot,
-            strike,
-            rate,
-            dividend_yield,
-            vol,
-            expiry,
-            matches!(option_type, OptionType::Call),
-        )
-    } else {
-        tape_price
-    };
-
     (
-        price,
+        tape_price,
         Greeks {
             delta: grads[0],
             gamma: price_2.second,
@@ -1107,6 +1102,44 @@ mod tests {
             assert!((greeks.theta - th_ref).abs() < 1e-10, "theta mismatch");
             assert!((greeks.rho - rh_ref).abs() < 1e-10, "rho mismatch");
         }
+    }
+
+    #[test]
+    fn aad_preserves_deep_tail_and_finite_total_volatility_cases() {
+        let (tail, tail_greeks) =
+            black_scholes_price_greeks_aad(OptionType::Put, 5.0e18, 1.0e18, 0.0, 0.0, 0.2, 1.0);
+        const TAIL_EXPECTED: f64 = 22.752_884_600_977_636;
+        assert!(
+            ((tail - TAIL_EXPECTED) / TAIL_EXPECTED).abs() <= 2.0e-12,
+            "tail={tail:.17e}"
+        );
+        assert!(tail_greeks.delta < 0.0);
+
+        let (price, greeks) = black_scholes_price_greeks_aad(
+            OptionType::Call,
+            100.0,
+            100.0,
+            0.0,
+            0.0,
+            1.0e155,
+            1.0e-310,
+        );
+        const PRICE_EXPECTED: f64 = 38.292_492_254_802_62;
+        const DELTA_EXPECTED: f64 = 0.691_462_461_274_013_1;
+        assert!((price - PRICE_EXPECTED).abs() <= 2.0e-12);
+        assert!((greeks.delta - DELTA_EXPECTED).abs() <= 2.0e-14);
+
+        let (_, underflow_greeks) = black_scholes_price_greeks_aad(
+            OptionType::Call,
+            2.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0e-300,
+            1.0e-100,
+        );
+        assert!(underflow_greeks.gamma.is_finite());
+        assert_eq!(underflow_greeks.gamma, 0.0);
     }
 
     #[test]

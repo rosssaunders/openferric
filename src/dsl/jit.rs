@@ -28,7 +28,8 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use super::error::DslError;
 use super::eval::{
-    Instruction, ObservationResult, ProductExecutionPlan, Program, build_execution_plan, opcode,
+    Instruction, ObservationResult, ProductExecutionPlan, Program,
+    build_execution_plan_for_validated_product, opcode,
 };
 use super::ir::CompiledProduct;
 
@@ -36,6 +37,26 @@ const RESULT_CONTINUE: u8 = 0;
 const RESULT_REDEEMED: u8 = 1;
 const RESULT_SKIPPED: u8 = 2;
 const RESULT_INVALID_PRICE_INDEX: u8 = 3;
+
+/// Whether the current Cranelift JIT configuration is supported.
+///
+/// Cranelift 0.116's JIT module requires x86-64 PLT support. Constructing it
+/// on another architecture can panic inside the dependency, so policy
+/// selection and direct compilation both reject those targets first.
+pub(crate) const fn jit_platform_supported() -> bool {
+    cfg!(target_arch = "x86_64")
+}
+
+fn ensure_jit_platform_supported() -> Result<(), String> {
+    if jit_platform_supported() {
+        Ok(())
+    } else {
+        Err(format!(
+            "JIT execution is unsupported on {}; the current native backend requires x86_64",
+            std::env::consts::ARCH
+        ))
+    }
+}
 
 // ---- External helper functions (called from JIT code) ----
 
@@ -272,6 +293,9 @@ impl JitProductEvaluator {
         num_steps: usize,
         rate: f64,
     ) -> Result<Self, DslError> {
+        product.validate()?;
+        ensure_jit_platform_supported().map_err(DslError::EvalError)?;
+
         if num_steps == 0 {
             return Err(DslError::EvalError(
                 "JIT evaluation requires num_steps > 0".to_string(),
@@ -288,7 +312,7 @@ impl JitProductEvaluator {
             ));
         }
 
-        let plan = build_execution_plan(product, num_steps, rate)?;
+        let plan = build_execution_plan_for_validated_product(product, num_steps, rate)?;
         let programs = plan
             .schedules
             .iter()
@@ -425,12 +449,12 @@ impl JitProductEvaluator {
                     result,
                     ObservationResult::Redeemed | ObservationResult::Skipped
                 ) {
-                    return Ok(pv);
+                    return ensure_finite_pv(pv);
                 }
             }
         }
 
-        Ok(pv)
+        ensure_finite_pv(pv)
     }
 
     fn validate_inputs(
@@ -453,6 +477,15 @@ impl JitProductEvaluator {
                 self.num_underlyings
             )));
         }
+        if let Some((asset, _)) = initial_spots
+            .iter()
+            .enumerate()
+            .find(|(_, spot)| !spot.is_finite())
+        {
+            return Err(DslError::EvalError(format!(
+                "JIT initial_spots[{asset}] must be finite"
+            )));
+        }
         if let Some((step, spots)) = path_spots
             .iter()
             .enumerate()
@@ -462,6 +495,16 @@ impl JitProductEvaluator {
                 "JIT path step {step} has {} assets, expected {}",
                 spots.len(),
                 self.num_underlyings
+            )));
+        }
+        if let Some((step, asset)) = path_spots.iter().enumerate().find_map(|(step, spots)| {
+            spots
+                .iter()
+                .position(|spot| !spot.is_finite())
+                .map(|asset| (step, asset))
+        }) {
+            return Err(DslError::EvalError(format!(
+                "JIT path_spots[{step}][{asset}] must be finite"
             )));
         }
         self.validate_scratch(scratch)
@@ -481,6 +524,16 @@ impl JitProductEvaluator {
             ));
         }
         Ok(())
+    }
+}
+
+fn ensure_finite_pv(pv: f64) -> Result<f64, DslError> {
+    if pv.is_finite() {
+        Ok(pv)
+    } else {
+        Err(DslError::EvalError(
+            "JIT product evaluation produced a non-finite present value".to_string(),
+        ))
     }
 }
 
@@ -532,6 +585,7 @@ fn compile_program(
     instructions: &[Instruction],
     constants: &[f64],
 ) -> Result<JitCompiledProgram, String> {
+    ensure_jit_platform_supported()?;
     validate_program(instructions, constants)?;
 
     // 1. Create the JIT module.
@@ -1327,7 +1381,23 @@ mod libm_ffi {
 
 // ---- Tests ----
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "x86_64")))]
+mod unsupported_platform_tests {
+    use super::*;
+
+    #[test]
+    fn direct_jit_compilation_returns_unsupported_without_initializing_backend() {
+        let error = JitCompiledProgram::compile(&[], &[])
+            .err()
+            .expect("non-x86_64 JIT compilation must be unsupported");
+        assert!(
+            error.contains("unsupported"),
+            "unexpected JIT platform error: {error}"
+        );
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
     use crate::dsl::{eval::evaluate_product, parse_and_compile};
@@ -2618,5 +2688,41 @@ product \"Invalid Price Index\"
             .evaluate_path(&path, &[100.0])
             .unwrap_err();
         assert!(error.to_string().contains("asset index"));
+    }
+
+    #[test]
+    fn prepared_jit_evaluator_rejects_non_finite_spots_before_branching() {
+        let product = parse_and_compile(
+            "\
+product \"Finite fallback\"
+    notional: 1
+    maturity: 1.0
+    underlyings
+        SPX = asset(0)
+    schedule annual from 1.0 to 1.0
+        if price(0) > 0 then
+            redeem 1
+        else
+            redeem 2
+",
+        )
+        .unwrap();
+        let evaluator = JitProductEvaluator::compile(&product, 1, 0.0).unwrap();
+
+        let nan_path = vec![vec![100.0], vec![f64::NAN]];
+        let error = evaluator.evaluate_path(&nan_path, &[100.0]).unwrap_err();
+        assert!(
+            error.to_string().contains("path_spots[1][0]"),
+            "unexpected error: {error}"
+        );
+
+        let finite_path = vec![vec![100.0], vec![100.0]];
+        let error = evaluator
+            .evaluate_path(&finite_path, &[f64::INFINITY])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("initial_spots[0]"),
+            "unexpected error: {error}"
+        );
     }
 }

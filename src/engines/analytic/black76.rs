@@ -36,32 +36,47 @@ fn intrinsic(option_type: OptionType, forward: f64, strike: f64) -> f64 {
 #[inline]
 fn black76_price_greeks(option: &FuturesOption) -> (f64, Greeks, f64, f64) {
     let sqrt_t = option.t.sqrt();
-    let sig_sqrt_t = option.vol * sqrt_t;
-    let d1 = ((option.forward / option.strike).ln() + 0.5 * option.vol * option.vol * option.t)
-        / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
+    let (d1, d2) = super::bs_inline::stable_d1_d2(
+        option.forward,
+        option.strike,
+        0.0,
+        0.0,
+        option.vol,
+        option.t,
+    );
 
     let df = (-option.r * option.t).exp();
     let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
     let pdf_d1 = normal_pdf(d1);
 
-    // Compute call price, derive put via put-call parity.
-    let call = df * option.forward.mul_add(nd1, -(option.strike * nd2));
-    let price = match option.option_type {
-        OptionType::Call => call,
-        OptionType::Put => call - df * (option.forward - option.strike),
-    };
+    // Black-76 is Black-Scholes with spot equal to the supplied forward and
+    // both carry rates equal to r. Reuse the cancellation-safe price path.
+    let price = super::black_scholes::bs_price(
+        option.option_type,
+        option.forward,
+        option.strike,
+        option.r,
+        option.r,
+        option.vol,
+        option.t,
+    );
 
     let delta = match option.option_type {
         OptionType::Call => df * nd1,
-        OptionType::Put => df * (nd1 - 1.0),
+        OptionType::Put => -df * normal_cdf(-d1),
     };
-    let gamma = df * pdf_d1 / (option.forward * option.vol * sqrt_t);
+    let gamma = super::bs_inline::stable_gamma(
+        df * pdf_d1,
+        option.forward,
+        option.vol,
+        sqrt_t,
+        d1,
+        -option.r * option.t,
+    );
     let vega = df * option.forward * pdf_d1 * sqrt_t;
     let theta = option.r.mul_add(
         price,
-        -(df * option.forward * pdf_d1 * option.vol / (2.0 * sqrt_t)),
+        super::bs_inline::stable_theta_diffusion(df * option.forward * pdf_d1, option.vol, sqrt_t),
     );
 
     // Sensitivity to r for fixed forward input.
@@ -281,5 +296,23 @@ mod tests {
         assert!(result.greeks.is_some());
         assert!(result.diagnostics.contains_key("d1"));
         assert!(result.diagnostics.contains_key("d2"));
+    }
+
+    #[test]
+    fn deep_tail_and_finite_width_cases_match_independent_references() {
+        let tail = black76_price(OptionType::Put, 5.0e18, 1.0e18, 0.0, 0.2, 1.0).unwrap();
+        const TAIL_EXPECTED: f64 = 22.752_884_600_977_636;
+        assert!(
+            ((tail - TAIL_EXPECTED) / TAIL_EXPECTED).abs() <= 2.0e-12,
+            "tail={tail:.17e}"
+        );
+
+        let finite_width =
+            black76_price(OptionType::Call, 100.0, 100.0, 0.0, 1.0e155, 1.0e-310).unwrap();
+        const WIDTH_EXPECTED: f64 = 38.292_492_254_802_62;
+        assert!(
+            (finite_width - WIDTH_EXPECTED).abs() <= 2.0e-12,
+            "finite_width={finite_width:.17e}"
+        );
     }
 }

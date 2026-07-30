@@ -338,6 +338,30 @@ pub(crate) fn build_execution_plan(
     num_steps: usize,
     rate: f64,
 ) -> Result<ProductExecutionPlan, DslError> {
+    product.validate()?;
+    build_execution_plan_for_validated_product(product, num_steps, rate)
+}
+
+/// Build an execution plan after the caller has validated `product`.
+///
+/// This is crate-private so public evaluator construction always enters
+/// through [`build_execution_plan`] and cannot bypass product validation.
+pub(crate) fn build_execution_plan_for_validated_product(
+    product: &CompiledProduct,
+    num_steps: usize,
+    rate: f64,
+) -> Result<ProductExecutionPlan, DslError> {
+    if num_steps == 0 {
+        return Err(DslError::EvalError(
+            "product evaluation requires num_steps > 0".to_string(),
+        ));
+    }
+    if !rate.is_finite() {
+        return Err(DslError::EvalError(
+            "product evaluation requires a finite rate".to_string(),
+        ));
+    }
+
     let maturity = product.maturity;
     let step_scale = if maturity > 0.0 {
         num_steps as f64 / maturity
@@ -456,6 +480,44 @@ impl ProductEvaluator {
         path_spots: &[Vec<f64>],
         initial_spots: &[f64],
     ) -> Result<f64, DslError> {
+        if initial_spots.len() != self.product.num_underlyings {
+            return Err(DslError::EvalError(format!(
+                "initial_spots has {} assets, expected {}",
+                initial_spots.len(),
+                self.product.num_underlyings
+            )));
+        }
+        if let Some((asset, _)) = initial_spots
+            .iter()
+            .enumerate()
+            .find(|(_, spot)| !spot.is_finite())
+        {
+            return Err(DslError::EvalError(format!(
+                "initial_spots[{asset}] must be finite"
+            )));
+        }
+        if let Some((step, spots)) = path_spots
+            .iter()
+            .enumerate()
+            .find(|(_, spots)| spots.len() != self.product.num_underlyings)
+        {
+            return Err(DslError::EvalError(format!(
+                "path_spots step {step} has {} assets, expected {}",
+                spots.len(),
+                self.product.num_underlyings
+            )));
+        }
+        if let Some((step, asset)) = path_spots.iter().enumerate().find_map(|(step, spots)| {
+            spots
+                .iter()
+                .position(|spot| !spot.is_finite())
+                .map(|asset| (step, asset))
+        }) {
+            return Err(DslError::EvalError(format!(
+                "path_spots[{step}][{asset}] must be finite"
+            )));
+        }
+
         // A path shorter than the plan's highest snapshot step would leave
         // some snapshot buffers unwritten: empty on the first call (worst_of/
         // best_of would silently return +-inf) and stale from the previous
@@ -480,7 +542,7 @@ impl ProductEvaluator {
             }
         }
 
-        evaluate_product_with_plan_in_place(
+        let pv = evaluate_product_with_plan_in_place(
             &self.product,
             &self.plan,
             &self.observation_spots,
@@ -488,7 +550,13 @@ impl ProductEvaluator {
             &mut self.locals,
             &mut self.state,
             &mut self.stack,
-        )
+        )?;
+        if !pv.is_finite() {
+            return Err(DslError::EvalError(
+                "product evaluation produced a non-finite present value".to_string(),
+            ));
+        }
+        Ok(pv)
     }
 }
 
@@ -2538,7 +2606,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_min_max_worst_best_propagate_nan() {
+    fn public_scalar_evaluation_rejects_nan_from_min_max_worst_best() {
         let initial_spots = vec![100.0];
         let path_spots = vec![vec![100.0], vec![100.0]];
         for func in [
@@ -2549,10 +2617,11 @@ mod tests {
         ] {
             for nan_first in [true, false] {
                 let product = nan_probe_product(func, nan_first);
-                let pv = evaluate_product(&product, &path_spots, &initial_spots, 1, 0.0).unwrap();
+                let error =
+                    evaluate_product(&product, &path_spots, &initial_spots, 1, 0.0).unwrap_err();
                 assert!(
-                    pv.is_nan(),
-                    "{func:?} (nan_first={nan_first}) must propagate NaN, got {pv}"
+                    error.to_string().contains("non-finite present value"),
+                    "{func:?} (nan_first={nan_first}) returned unexpected error: {error}"
                 );
             }
         }
@@ -2856,7 +2925,7 @@ mod tests {
         let err = build_execution_plan(&product, 4, 0.05).unwrap_err();
         match err {
             DslError::EvalError(msg) => {
-                assert!(msg.contains("exceeds product maturity"), "got: {msg}");
+                assert!(msg.contains("outside [0, 1]"), "got: {msg}");
             }
             other => panic!("expected EvalError, got {other:?}"),
         }
@@ -2892,6 +2961,85 @@ mod tests {
                 "evaluator reuse {reused} != one-shot {one_shot}"
             );
         }
+    }
+
+    #[test]
+    fn public_product_evaluator_rejects_non_finite_present_value() {
+        let product = CompiledProduct {
+            name: "Overflowing payoff".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::Redeem {
+                    amount: Expr::Call {
+                        func: BuiltinFn::Exp,
+                        args: vec![Expr::Literal(Value::F64(1_000.0))],
+                    },
+                }],
+            }],
+        };
+        let path_spots = vec![vec![100.0], vec![100.0]];
+
+        let error = evaluate_product(&product, &path_spots, &[100.0], 1, 0.0).unwrap_err();
+        assert!(
+            error.to_string().contains("non-finite present value"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn public_product_evaluator_rejects_non_finite_spots_before_branching() {
+        let product = CompiledProduct {
+            name: "Finite fallback".to_string(),
+            notional: 1.0,
+            maturity: 1.0,
+            num_underlyings: 1,
+            underlyings: vec![UnderlyingDef {
+                name: "SPX".to_string(),
+                asset_index: 0,
+                underlying_type: UnderlyingType::Equity,
+            }],
+            state_vars: vec![],
+            constants: vec![],
+            schedules: vec![Schedule {
+                dates: vec![1.0],
+                body: vec![Statement::If {
+                    condition: Expr::BinOp {
+                        op: BinOp::Gt,
+                        lhs: Box::new(Expr::Call {
+                            func: BuiltinFn::Price,
+                            args: vec![Expr::Literal(Value::F64(0.0))],
+                        }),
+                        rhs: Box::new(Expr::Literal(Value::F64(0.0))),
+                    },
+                    then_body: vec![Statement::Redeem {
+                        amount: Expr::Literal(Value::F64(1.0)),
+                    }],
+                    else_body: vec![Statement::Redeem {
+                        amount: Expr::Literal(Value::F64(2.0)),
+                    }],
+                }],
+            }],
+        };
+
+        let nan_path = vec![vec![100.0], vec![f64::NAN]];
+        let error = evaluate_product(&product, &nan_path, &[100.0], 1, 0.0).unwrap_err();
+        assert!(
+            error.to_string().contains("path_spots[1][0]"),
+            "unexpected error: {error}"
+        );
+
+        let finite_path = vec![vec![100.0], vec![100.0]];
+        let error = evaluate_product(&product, &finite_path, &[f64::INFINITY], 1, 0.0).unwrap_err();
+        assert!(
+            error.to_string().contains("initial_spots[0]"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

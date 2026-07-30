@@ -4,7 +4,7 @@ import math
 
 import pytest
 from conftest import assert_releases_gil
-from openferric import GbmPathGenerator, HestonPathGenerator, McEngine, MonteCarloEngine
+from openferric import ControlVariate, GbmPathGenerator, HestonPathGenerator, McEngine, MonteCarloEngine
 
 
 def vanilla_price(**overrides):
@@ -88,6 +88,121 @@ def test_custom_payoff_validates_callback():
 
     with pytest.raises(ValueError, match="payoff must be callable"):
         engine.run_gbm(generator, 42, 1.0)
+
+
+def test_custom_engine_rejects_zero_paths():
+    with pytest.raises(ValueError, match="num_paths"):
+        MonteCarloEngine(0, 7)
+
+
+@pytest.mark.parametrize("discount_factor", [math.nan, math.inf, -math.inf, -0.1])
+def test_custom_payoff_rejects_invalid_discount_factor(discount_factor):
+    generator = GbmPathGenerator(0.0, 0.2, 100.0, 0.25, 8)
+    engine = MonteCarloEngine(100, 7)
+
+    with pytest.raises(ValueError, match="discount_factor"):
+        engine.run_gbm(generator, lambda path: path[-1], discount_factor)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_custom_payoff_rejects_non_finite_callback_values(value):
+    generator = GbmPathGenerator(0.0, 0.2, 100.0, 0.25, 8)
+    engine = MonteCarloEngine(10_000, 7)
+    calls = 0
+
+    def payoff(_path):
+        nonlocal calls
+        calls += 1
+        return value
+
+    with pytest.raises(ValueError, match="payoff callback must return a finite"):
+        engine.run_gbm(generator, payoff, 1.0)
+    assert calls == 1
+
+
+@pytest.mark.parametrize("expected", [math.nan, math.inf, -math.inf])
+def test_control_variate_rejects_non_finite_expected_value(expected):
+    with pytest.raises(ValueError, match="expected value must be finite"):
+        ControlVariate(expected, lambda path: path[-1])
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_control_variate_rejects_non_finite_callback_values(value):
+    generator = GbmPathGenerator(0.0, 0.2, 100.0, 0.25, 8)
+    control = ControlVariate(100.0, lambda _path: value)
+    engine = MonteCarloEngine(10_000, 7).with_control_variate(control)
+
+    with pytest.raises(ValueError, match="control variate callback must return a finite"):
+        engine.run_gbm(generator, lambda path: path[-1], 1.0)
+
+
+def test_gbm_callback_failure_stops_immediately_and_preserves_exception():
+    class PayoffFailureError(RuntimeError):
+        pass
+
+    calls = 0
+
+    def failing_payoff(path):
+        nonlocal calls
+        calls += 1
+        raise PayoffFailureError(f"failed at terminal value {path[-1]}")
+
+    generator = GbmPathGenerator(0.0, 0.2, 100.0, 0.25, 8)
+    engine = MonteCarloEngine(10_000, 7)
+
+    with pytest.raises(PayoffFailureError, match="failed at terminal value"):
+        engine.run_gbm(generator, failing_payoff, 1.0)
+    assert calls == 1
+
+
+def test_heston_callback_failure_stops_immediately_and_preserves_exception():
+    calls = 0
+
+    def failing_payoff(_path):
+        nonlocal calls
+        calls += 1
+        raise LookupError("heston payoff failed")
+
+    generator = HestonPathGenerator(
+        mu=0.07,
+        kappa=1.5,
+        theta=0.04,
+        xi=0.3,
+        rho=-0.7,
+        v0=0.04,
+        s0=100.0,
+        maturity=0.25,
+        steps=8,
+    )
+    engine = MonteCarloEngine(10_000, 11)
+
+    with pytest.raises(LookupError, match="heston payoff failed"):
+        engine.run_heston(generator, failing_payoff, 1.0)
+    assert calls == 1
+
+
+def test_control_variate_failure_stops_immediately_and_preserves_exception():
+    control_calls = 0
+    payoff_calls = 0
+
+    def payoff(path):
+        nonlocal payoff_calls
+        payoff_calls += 1
+        return path[-1]
+
+    def failing_control(_path):
+        nonlocal control_calls
+        control_calls += 1
+        raise ArithmeticError("control variate failed")
+
+    generator = GbmPathGenerator(0.0, 0.2, 100.0, 0.25, 8)
+    control = ControlVariate(100.0, failing_control)
+    engine = MonteCarloEngine(10_000, 7).with_control_variate(control)
+
+    with pytest.raises(ArithmeticError, match="control variate failed"):
+        engine.run_gbm(generator, payoff, 1.0)
+    assert payoff_calls == 1
+    assert control_calls == 1
 
 
 def test_pure_rust_mc_entry_points_release_gil():

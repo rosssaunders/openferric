@@ -12,7 +12,6 @@
 use crate::engines::analytic::black_scholes::{
     bs_delta, bs_gamma, bs_price, bs_rho, bs_theta, bs_vega,
 };
-use crate::math::normal_cdf;
 use crate::pricing::OptionType;
 
 #[derive(Debug, Clone, Copy)]
@@ -85,23 +84,7 @@ pub fn black_scholes_price(
 /// assert!(call > 0.0 && put > 0.0);
 /// ```
 pub fn black_76_price(option_type: OptionType, f: f64, k: f64, r: f64, sigma: f64, t: f64) -> f64 {
-    if t <= 0.0 || sigma <= 0.0 {
-        return (-r * t).exp()
-            * match option_type {
-                OptionType::Call => (f - k).max(0.0),
-                OptionType::Put => (k - f).max(0.0),
-            };
-    }
-
-    let vt = sigma * t.sqrt();
-    let d1 = ((f / k).ln() + 0.5 * sigma * sigma * t) / vt;
-    let d2 = d1 - vt;
-    let df = (-r * t).exp();
-
-    match option_type {
-        OptionType::Call => df * (f * normal_cdf(d1) - k * normal_cdf(d2)),
-        OptionType::Put => df * (k * normal_cdf(-d2) - f * normal_cdf(-d1)),
-    }
+    crate::engines::analytic::black76_price(option_type, f, k, r, sigma, t).unwrap_or(f64::NAN)
 }
 
 /// Computes Black-Scholes Greeks with zero dividend yield.

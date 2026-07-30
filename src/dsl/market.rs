@@ -189,11 +189,21 @@ impl MultiAssetMarket {
 
     /// Validates the market data.
     pub fn validate(&self) -> Result<(), PricingError> {
+        fn require_finite(name: &str, value: f64) -> Result<(), PricingError> {
+            if value.is_finite() {
+                Ok(())
+            } else {
+                Err(PricingError::InvalidInput(format!("{name} must be finite")))
+            }
+        }
+
         if self.assets.is_empty() {
             return Err(PricingError::InvalidInput(
                 "multi-asset market requires at least one asset".to_string(),
             ));
         }
+        require_finite("market rate", self.rate)?;
+
         let n = self.assets.len();
         if self.correlation.len() != n {
             return Err(PricingError::InvalidInput(format!(
@@ -208,27 +218,109 @@ impl MultiAssetMarket {
                     row.len()
                 )));
             }
+            for (j, &correlation) in row.iter().enumerate() {
+                require_finite(&format!("correlation[{i}][{j}]"), correlation)?;
+            }
         }
-        for asset in &self.assets {
+        for (index, asset) in self.assets.iter().enumerate() {
             match asset {
-                AssetMarketData::Rate { vol, .. } => {
-                    // Rate initial_value can be negative (negative rates).
-                    if *vol <= 0.0 || !vol.is_finite() {
-                        return Err(PricingError::InvalidInput(
-                            "rate asset vol must be finite and > 0".to_string(),
-                        ));
+                AssetMarketData::Equity {
+                    spot,
+                    vol,
+                    dividend_yield,
+                } => {
+                    require_finite(&format!("equity asset {index} spot"), *spot)?;
+                    require_finite(&format!("equity asset {index} vol"), *vol)?;
+                    require_finite(
+                        &format!("equity asset {index} dividend yield"),
+                        *dividend_yield,
+                    )?;
+                    if *spot <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "equity asset {index} spot must be > 0"
+                        )));
+                    }
+                    if *vol <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "equity asset {index} vol must be > 0"
+                        )));
                     }
                 }
-                _ => {
-                    if asset.initial_value() <= 0.0 {
-                        return Err(PricingError::InvalidInput(
-                            "asset spot must be > 0".to_string(),
-                        ));
+                AssetMarketData::Fx {
+                    spot,
+                    vol,
+                    domestic_rate,
+                    foreign_rate,
+                } => {
+                    require_finite(&format!("FX asset {index} spot"), *spot)?;
+                    require_finite(&format!("FX asset {index} vol"), *vol)?;
+                    require_finite(&format!("FX asset {index} domestic rate"), *domestic_rate)?;
+                    require_finite(&format!("FX asset {index} foreign rate"), *foreign_rate)?;
+                    if *spot <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "FX asset {index} spot must be > 0"
+                        )));
                     }
-                    if asset.vol() <= 0.0 || !asset.vol().is_finite() {
-                        return Err(PricingError::InvalidInput(
-                            "asset vol must be finite and > 0".to_string(),
-                        ));
+                    if *vol <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "FX asset {index} vol must be > 0"
+                        )));
+                    }
+                }
+                AssetMarketData::Commodity {
+                    spot,
+                    vol,
+                    convenience_yield,
+                    kappa,
+                    mu,
+                } => {
+                    require_finite(&format!("commodity asset {index} spot"), *spot)?;
+                    require_finite(&format!("commodity asset {index} vol"), *vol)?;
+                    require_finite(
+                        &format!("commodity asset {index} convenience yield"),
+                        *convenience_yield,
+                    )?;
+                    require_finite(&format!("commodity asset {index} kappa"), *kappa)?;
+                    require_finite(&format!("commodity asset {index} mu"), *mu)?;
+                    if *spot <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "commodity asset {index} spot must be > 0"
+                        )));
+                    }
+                    if *vol <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "commodity asset {index} vol must be > 0"
+                        )));
+                    }
+                    if *kappa <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "commodity asset {index} kappa must be > 0"
+                        )));
+                    }
+                }
+                AssetMarketData::Rate {
+                    initial_rate,
+                    vol,
+                    mean_reversion,
+                    long_run_mean,
+                } => {
+                    // Rate initial_value can be negative (negative rates).
+                    require_finite(&format!("rate asset {index} initial rate"), *initial_rate)?;
+                    require_finite(&format!("rate asset {index} vol"), *vol)?;
+                    require_finite(
+                        &format!("rate asset {index} mean reversion"),
+                        *mean_reversion,
+                    )?;
+                    require_finite(&format!("rate asset {index} long-run mean"), *long_run_mean)?;
+                    if *vol <= 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "rate asset {index} vol must be > 0"
+                        )));
+                    }
+                    if *mean_reversion < 0.0 {
+                        return Err(PricingError::InvalidInput(format!(
+                            "rate asset {index} mean reversion must be >= 0"
+                        )));
                     }
                 }
             }
@@ -239,5 +331,93 @@ impl MultiAssetMarket {
     /// Returns a vector of initial values (spot prices / initial rates).
     pub fn initial_spots(&self) -> Vec<f64> {
         self.assets.iter().map(|a| a.initial_value()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn market_with(asset: AssetMarketData) -> MultiAssetMarket {
+        MultiAssetMarket {
+            assets: vec![asset],
+            correlation: vec![vec![1.0]],
+            rate: 0.03,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_non_finite_top_level_market_values() {
+        let mut market = MultiAssetMarket::single(100.0, 0.2, f64::NAN, 0.01);
+        assert!(market.validate().unwrap_err().to_string().contains("rate"));
+
+        market.rate = 0.03;
+        market.correlation[0][0] = f64::INFINITY;
+        assert!(
+            market
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("correlation[0][0]")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_non_finite_parameter_for_every_asset_variant() {
+        let assets = [
+            AssetMarketData::Equity {
+                spot: f64::NAN,
+                vol: 0.2,
+                dividend_yield: 0.01,
+            },
+            AssetMarketData::Fx {
+                spot: 1.1,
+                vol: 0.15,
+                domestic_rate: f64::NAN,
+                foreign_rate: 0.02,
+            },
+            AssetMarketData::Commodity {
+                spot: 75.0,
+                vol: 0.3,
+                convenience_yield: 0.01,
+                kappa: f64::NAN,
+                mu: 4.0,
+            },
+            AssetMarketData::Rate {
+                initial_rate: 0.03,
+                vol: 0.01,
+                mean_reversion: 0.1,
+                long_run_mean: f64::NAN,
+            },
+        ];
+
+        for asset in assets {
+            assert!(market_with(asset).validate().is_err());
+        }
+    }
+
+    #[test]
+    fn validate_rejects_invalid_mean_reversion_domains() {
+        let commodity = AssetMarketData::Commodity {
+            spot: 75.0,
+            vol: 0.3,
+            convenience_yield: 0.01,
+            kappa: 0.0,
+            mu: 4.0,
+        };
+        let error = market_with(commodity).validate().unwrap_err().to_string();
+        assert!(error.contains("kappa must be > 0"), "unexpected: {error}");
+
+        let rate = AssetMarketData::Rate {
+            initial_rate: 0.03,
+            vol: 0.01,
+            mean_reversion: -0.1,
+            long_run_mean: 0.04,
+        };
+        let error = market_with(rate).validate().unwrap_err().to_string();
+        assert!(
+            error.contains("mean reversion must be >= 0"),
+            "unexpected: {error}"
+        );
     }
 }

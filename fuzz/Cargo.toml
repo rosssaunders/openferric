@@ -26,5 +26,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "compiled_product_json"
+path = "fuzz_targets/compiled_product_json.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

@@ -144,7 +144,16 @@ pub fn bs_price(
             OptionType::Put => (strike * df_r - spot * df_q).max(0.0),
         };
     }
-    if !(spot * df_q).is_finite() || !(strike * df_r).is_finite() {
+    let is_call = matches!(option_type, OptionType::Call);
+    if super::bs_inline::requires_stable_price(
+        spot,
+        strike,
+        rate,
+        dividend_yield,
+        vol,
+        expiry,
+        is_call,
+    ) {
         return super::bs_inline::stable_short_total_vol_price(
             spot,
             strike,
@@ -152,18 +161,7 @@ pub fn bs_price(
             dividend_yield,
             vol,
             expiry,
-            matches!(option_type, OptionType::Call),
-        );
-    }
-    if vol * expiry.sqrt() <= super::bs_inline::ACCURATE_CDF_TOTAL_VOL {
-        return super::bs_inline::stable_short_total_vol_price(
-            spot,
-            strike,
-            rate,
-            dividend_yield,
-            vol,
-            expiry,
-            matches!(option_type, OptionType::Call),
+            is_call,
         );
     }
 
@@ -176,7 +174,7 @@ pub fn bs_price(
             dividend_yield,
             vol,
             expiry,
-            matches!(option_type, OptionType::Call),
+            is_call,
         );
     }
 
@@ -224,7 +222,7 @@ pub fn bs_delta(
     let df_q = (-dividend_yield * expiry).exp();
     match option_type {
         OptionType::Call => df_q * norm_cdf(d1),
-        OptionType::Put => df_q * (norm_cdf(d1) - 1.0),
+        OptionType::Put => -df_q * norm_cdf(-d1),
     }
 }
 
@@ -259,7 +257,14 @@ pub fn bs_gamma(
     }
     let (d1, _) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
     let df_q = (-dividend_yield * expiry).exp();
-    df_q * norm_pdf(d1) / (spot * vol * expiry.sqrt())
+    super::bs_inline::stable_gamma(
+        df_q * norm_pdf(d1),
+        spot,
+        vol,
+        expiry.sqrt(),
+        d1,
+        -dividend_yield * expiry,
+    )
 }
 
 #[inline]
@@ -329,14 +334,15 @@ pub fn bs_theta(
     let df_r = (-rate * expiry).exp();
     let nd1 = norm_cdf(d1);
     let nd2 = norm_cdf(d2);
-    let theta_common = -spot * df_q * norm_pdf(d1) * vol / (2.0 * sqrt_t);
+    let theta_common =
+        super::bs_inline::stable_theta_diffusion(spot * df_q * norm_pdf(d1), vol, sqrt_t);
     match option_type {
         OptionType::Call => {
             theta_common + dividend_yield * spot * df_q * nd1 - rate * strike * df_r * nd2
         }
         OptionType::Put => {
-            theta_common - dividend_yield * spot * df_q * (1.0 - nd1)
-                + rate * strike * df_r * (1.0 - nd2)
+            theta_common - dividend_yield * spot * df_q * norm_cdf(-d1)
+                + rate * strike * df_r * norm_cdf(-d2)
         }
     }
 }
@@ -373,7 +379,7 @@ pub fn bs_rho(
     let nd2 = norm_cdf(d2);
     match option_type {
         OptionType::Call => strike * expiry * df_r * nd2,
-        OptionType::Put => -strike * expiry * df_r * (1.0 - nd2),
+        OptionType::Put => -strike * expiry * df_r * norm_cdf(-d2),
     }
 }
 
@@ -415,7 +421,6 @@ fn bs_price_greeks_with_dividend(
 
     // Shared intermediates — computed exactly once.
     let sqrt_t = expiry.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
     let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
 
     let df_r = (-rate * expiry).exp();
@@ -430,9 +435,16 @@ fn bs_price_greeks_with_dividend(
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
     let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
-    let sensitive_price = (sig_sqrt_t <= super::bs_inline::ACCURATE_CDF_TOTAL_VOL
-        || !s_df_q.is_finite()
-        || !k_df_r.is_finite())
+    let is_call = matches!(option_type, OptionType::Call);
+    let sensitive_price = super::bs_inline::requires_stable_price(
+        spot,
+        strike,
+        rate,
+        dividend_yield,
+        vol,
+        expiry,
+        is_call,
+    )
     .then(|| {
         super::bs_inline::stable_short_total_vol_price(
             spot,
@@ -441,10 +453,10 @@ fn bs_price_greeks_with_dividend(
             dividend_yield,
             vol,
             expiry,
-            matches!(option_type, OptionType::Call),
+            is_call,
         )
     });
-    let theta_common = -s_df_q * pdf_d1 * vol / (2.0 * sqrt_t);
+    let theta_common = super::bs_inline::stable_theta_diffusion(s_df_q * pdf_d1, vol, sqrt_t);
 
     let (price, delta, theta) = match option_type {
         OptionType::Call => {
@@ -453,21 +465,28 @@ fn bs_price_greeks_with_dividend(
             (sensitive_price.unwrap_or(call), d, th)
         }
         OptionType::Put => {
-            let nmd1 = 1.0 - nd1;
-            let nmd2 = 1.0 - nd2;
+            let nmd1 = norm_cdf(-d1);
+            let nmd2 = norm_cdf(-d2);
             let p = call - s_df_q + k_df_r;
-            let d = df_q * (nd1 - 1.0);
+            let d = -df_q * nmd1;
             let th = theta_common - dividend_yield * s_df_q * nmd1 + rate * k_df_r * nmd2;
             (sensitive_price.unwrap_or(p), d, th)
         }
     };
 
     // Greeks that are independent of call/put.
-    let gamma = df_q * pdf_d1 / (spot * vol * sqrt_t);
+    let gamma = super::bs_inline::stable_gamma(
+        df_q * pdf_d1,
+        spot,
+        vol,
+        sqrt_t,
+        d1,
+        -dividend_yield * expiry,
+    );
     let vega = spot * df_q * pdf_d1 * sqrt_t;
     let rho = match option_type {
         OptionType::Call => strike * expiry * df_r * nd2,
-        OptionType::Put => -strike * expiry * df_r * (1.0 - nd2),
+        OptionType::Put => -strike * expiry * df_r * norm_cdf(-d2),
     };
 
     (
@@ -648,4 +667,45 @@ pub fn black_scholes(
         .build()?;
     let engine = BlackScholesEngine::new();
     Ok(engine.price(&instrument, &market)?.price)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_tail_price_is_nonnegative_and_homogeneous() {
+        let unit = bs_price(OptionType::Put, 5.0, 1.0, 0.0, 0.0, 0.2, 1.0);
+        let scaled = bs_price(OptionType::Put, 5.0e18, 1.0e18, 0.0, 0.0, 0.2, 1.0);
+        const EXPECTED_SCALED: f64 = 22.752_884_600_977_636;
+        assert!(unit >= 0.0);
+        assert!(scaled >= 0.0);
+        assert!(
+            ((scaled - EXPECTED_SCALED) / EXPECTED_SCALED).abs() <= 2.0e-12,
+            "scaled={scaled:.17e}"
+        );
+        assert!(
+            ((scaled / 1.0e18 - unit) / unit).abs() <= 2.0e-12,
+            "unit={unit:.17e} scaled={scaled:.17e}"
+        );
+    }
+
+    #[test]
+    fn gamma_avoids_overflowing_spot_times_total_volatility() {
+        // Independent closed-form constant: phi(1) / (2 * 1e308).
+        const EXPECTED: f64 = 1.209_853_622_595_72e-309;
+        let gamma = bs_gamma(1.0e308, 1.0e308, 0.0, 0.0, 2.0, 1.0);
+        assert!(gamma > 0.0, "gamma={gamma:.17e}");
+        assert!(
+            ((gamma - EXPECTED) / EXPECTED).abs() <= 2.0e-14,
+            "gamma={gamma:.17e} expected={EXPECTED:.17e}"
+        );
+    }
+
+    #[test]
+    fn gamma_is_zero_not_nan_when_pdf_and_total_volatility_underflow() {
+        let gamma = bs_gamma(2.0, 1.0, 0.0, 0.0, 1.0e-300, 1.0e-100);
+        assert!(gamma.is_finite(), "gamma={gamma}");
+        assert_eq!(gamma, 0.0);
+    }
 }

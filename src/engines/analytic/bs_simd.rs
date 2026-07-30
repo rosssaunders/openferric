@@ -73,13 +73,23 @@ fn simd_is_worthwhile(len: usize, backend: BatchSimdBackend) -> bool {
 }
 
 #[inline]
-fn batch_requires_scalar(spots: &[f64], strikes: &[f64], r: f64, q: f64, vol: f64, t: f64) -> bool {
+fn batch_requires_scalar(
+    spots: &[f64],
+    strikes: &[f64],
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> bool {
     let df_r = (-r * t).exp();
     let df_q = (-q * t).exp();
+    let vector_drift = (0.5 * vol).mul_add(vol, r - q) * t;
     !r.is_finite()
         || !q.is_finite()
         || !vol.is_finite()
         || !t.is_finite()
+        || !vector_drift.is_finite()
         || spots.iter().zip(strikes.iter()).any(|(&spot, &strike)| {
             !spot.is_finite()
                 || !strike.is_finite()
@@ -87,7 +97,48 @@ fn batch_requires_scalar(spots: &[f64], strikes: &[f64], r: f64, q: f64, vol: f6
                 || strike <= 0.0
                 || !(spot * df_q).is_finite()
                 || !(strike * df_r).is_finite()
+                || !(spot / strike).is_finite()
+                || super::bs_inline::requires_stable_price(spot, strike, r, q, vol, t, is_call)
         })
+}
+
+#[inline]
+fn selected_price_backend(
+    spots: &[f64],
+    strikes: &[f64],
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> BatchSimdBackend {
+    let backend = detected_batch_simd_backend();
+    selected_price_backend_for(backend, spots, strikes, r, q, vol, t, is_call)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn selected_price_backend_for(
+    backend: BatchSimdBackend,
+    spots: &[f64],
+    strikes: &[f64],
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> BatchSimdBackend {
+    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= ACCURATE_CDF_TOTAL_VOL;
+    if t <= 0.0
+        || vol <= 0.0
+        || sensitive_total_vol
+        || !simd_is_worthwhile(spots.len(), backend)
+        || batch_requires_scalar(spots, strikes, r, q, vol, t, is_call)
+    {
+        BatchSimdBackend::Scalar
+    } else {
+        backend
+    }
 }
 
 /// Scalar Abramowitz & Stegun 7.1.26 normal CDF approximation.
@@ -213,14 +264,8 @@ pub fn bs_price_batch_into(
 ) {
     assert_eq!(spots.len(), strikes.len(), "spots and strikes must match");
     assert_eq!(spots.len(), out.len(), "output length must match input");
-    let backend = detected_batch_simd_backend();
-    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= ACCURATE_CDF_TOTAL_VOL;
-    if t <= 0.0
-        || vol <= 0.0
-        || sensitive_total_vol
-        || !simd_is_worthwhile(spots.len(), backend)
-        || batch_requires_scalar(spots, strikes, r, q, vol, t)
-    {
+    let backend = selected_price_backend(spots, strikes, r, q, vol, t, is_call);
+    if matches!(backend, BatchSimdBackend::Scalar) {
         for i in 0..spots.len() {
             out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
         }
@@ -319,7 +364,7 @@ pub fn bs_greeks_batch_into(
         || vol <= 0.0
         || sensitive_total_vol
         || !simd_is_worthwhile(n, backend)
-        || batch_requires_scalar(spots, strikes, r, q, vol, t)
+        || batch_requires_scalar(spots, strikes, r, q, vol, t, is_call)
     {
         for i in 0..n {
             let (d, g, v, th) = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
@@ -419,13 +464,7 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
             (strike * df_r - spot * df_q).max(0.0)
         };
     }
-    if !(spot * df_q).is_finite() || !(strike * df_r).is_finite() {
-        return super::bs_inline::stable_short_total_vol_price(spot, strike, r, q, vol, t, is_call);
-    }
-
-    let sqrt_t = t.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
-    if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL {
+    if super::bs_inline::requires_stable_price(spot, strike, r, q, vol, t, is_call) {
         return super::bs_inline::stable_short_total_vol_price(spot, strike, r, q, vol, t, is_call);
     }
     let (d1, d2) = super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t);
@@ -513,7 +552,9 @@ fn bs_greeks_scalar(
     let pdf = normal_pdf_scalar(d1);
 
     // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
-    let cdf = if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL {
+    let cdf = if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL
+        || super::bs_inline::requires_stable_price(spot, strike, r, q, vol, t, is_call)
+    {
         accurate_norm_cdf
     } else {
         normal_cdf_approx
@@ -524,16 +565,16 @@ fn bs_greeks_scalar(
     let delta = if is_call {
         df_q * nd1
     } else {
-        df_q * (nd1 - 1.0)
+        -df_q * cdf(-d1)
     };
-    let gamma = df_q * pdf / (spot * vol * sqrt_t);
+    let gamma = super::bs_inline::stable_gamma(df_q * pdf, spot, vol, sqrt_t, d1, -q * t);
     let vega = spot * df_q * pdf * sqrt_t;
 
-    let theta_common = -spot * df_q * pdf * vol / (2.0 * sqrt_t);
+    let theta_common = super::bs_inline::stable_theta_diffusion(spot * df_q * pdf, vol, sqrt_t);
     let theta = if is_call {
         theta_common + q * spot * df_q * nd1 - r * strike * df_r * nd2
     } else {
-        theta_common - q * spot * df_q * (1.0 - nd1) + r * strike * df_r * (1.0 - nd2)
+        theta_common - q * spot * df_q * cdf(-d1) + r * strike * df_r * cdf(-d2)
     };
 
     (delta, gamma, vega, theta)
@@ -1397,3 +1438,103 @@ use avx512_impl::{bs_greeks_batch_avx512, bs_price_batch_avx512, normal_cdf_batc
 use neon_impl::{bs_greeks_batch_neon, normal_cdf_batch_neon};
 #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
 use wasm_simd_impl::{bs_greeks_batch_wasm_simd, bs_price_batch_wasm_simd};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forced_backend_selection_routes_sensitive_prices_to_scalar() {
+        let tail_spots = [5.0e18; 16];
+        let tail_strikes = [1.0e18; 16];
+        let ordinary_spots = [100.0; 16];
+        let ordinary_strikes = [105.0; 16];
+
+        for backend in [
+            BatchSimdBackend::Scalar,
+            BatchSimdBackend::Avx2,
+            BatchSimdBackend::Avx512,
+            BatchSimdBackend::Neon,
+            BatchSimdBackend::WasmSimd128,
+        ] {
+            assert_eq!(
+                selected_price_backend_for(
+                    backend,
+                    &tail_spots,
+                    &tail_strikes,
+                    0.0,
+                    0.0,
+                    0.2,
+                    1.0,
+                    false,
+                ),
+                BatchSimdBackend::Scalar,
+                "tail backend={backend:?}"
+            );
+
+            let ordinary = selected_price_backend_for(
+                backend,
+                &ordinary_spots,
+                &ordinary_strikes,
+                0.02,
+                0.0,
+                0.2,
+                1.0,
+                true,
+            );
+            let expected = backend;
+            assert_eq!(ordinary, expected, "ordinary backend={backend:?}");
+        }
+
+        assert_eq!(
+            selected_price_backend_for(
+                BatchSimdBackend::Avx512,
+                &ordinary_spots,
+                &ordinary_strikes,
+                0.0,
+                0.0,
+                1.0e155,
+                1.0e-310,
+                true,
+            ),
+            BatchSimdBackend::Scalar
+        );
+    }
+
+    #[test]
+    fn deep_tail_price_is_batch_length_invariant_above_every_backend_width() {
+        const EXPECTED: f64 = 22.752_884_600_977_636;
+        let mut reference_bits = None;
+        for len in [1, 2, 4, 8, 15, 16, 17, 32] {
+            let spots = vec![5.0e18; len];
+            let strikes = vec![1.0e18; len];
+            let prices = bs_price_batch(&spots, &strikes, 0.0, 0.0, 0.2, 1.0, false);
+            for price in prices {
+                assert!(price >= 0.0);
+                assert!(
+                    ((price - EXPECTED) / EXPECTED).abs() <= 2.0e-12,
+                    "len={len} price={price:.17e}"
+                );
+                if let Some(bits) = reference_bits {
+                    assert_eq!(price.to_bits(), bits, "len={len}");
+                } else {
+                    reference_bits = Some(price.to_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gamma_underflow_is_batch_length_invariant_and_finite() {
+        for len in [1, 2, 4, 8, 16, 17] {
+            let spots = vec![2.0; len];
+            let strikes = vec![1.0; len];
+            let (_, gamma, _, _) =
+                bs_greeks_batch(&spots, &strikes, 0.0, 0.0, 1.0e-300, 1.0e-100, true);
+            assert!(
+                gamma.iter().all(|value| value.is_finite() && *value == 0.0),
+                "len={len} gamma={gamma:?}"
+            );
+        }
+    }
+}

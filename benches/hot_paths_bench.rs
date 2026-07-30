@@ -153,10 +153,9 @@ fn bench_mc_european_50k(c: &mut Criterion) {
     group.finish();
 }
 
-/// Keeps the exact-terminal Auto crossover calibrated. The implementation has
-/// no SIMD-only allocation pass, so the cost model selects SIMD once one full
-/// native vector is available. These sizes cover likely NEON, AVX2, and
-/// AVX-512 boundaries plus the former 512-path cutoff.
+/// Keeps the exact-terminal Auto crossover calibrated. Small sizes cover
+/// native vector/tail boundaries; 4,096/8,192/16,384 bracket the measured
+/// Apple M4 scalar-to-NEON crossover.
 fn bench_mc_exact_terminal_auto_crossover(c: &mut Criterion) {
     let market = benchmark_market();
     let option = VanillaOption::european_call(100.0, 1.0);
@@ -169,7 +168,9 @@ fn bench_mc_exact_terminal_auto_crossover(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("mc_exact_terminal_auto_crossover");
     group.sample_size(20);
-    for paths in [1_usize, 2, 3, 4, 7, 8, 15, 16, 31, 32, 255, 256, 511, 512] {
+    for paths in [
+        1_usize, 2, 3, 4, 7, 8, 15, 16, 31, 32, 255, 256, 511, 512, 4_096, 8_192, 16_384,
+    ] {
         group.throughput(Throughput::Elements(paths as u64));
         for (name, policy) in [
             ("scalar", ExecutionPolicy::Scalar),

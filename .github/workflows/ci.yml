@@ -208,11 +208,11 @@ jobs:
             args: --all-features
           - name: windows-accelerated
             os: windows-latest
-            command: check
+            command: test
             args: --no-default-features --features parallel,simd,jit
           - name: macos-accelerated
             os: macos-latest
-            command: check
+            command: test
             args: --no-default-features --features parallel,simd,jit
     steps:
       - uses: actions/checkout@v4

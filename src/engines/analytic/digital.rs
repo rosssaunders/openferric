@@ -43,12 +43,7 @@ fn d1_d2(
     vol: f64,
     expiry: f64,
 ) -> (f64, f64) {
-    let sqrt_t = expiry.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-        / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-    (d1, d2)
+    super::bs_inline::stable_d1_d2(spot, strike, rate, dividend_yield, vol, expiry)
 }
 
 #[inline]
@@ -99,22 +94,21 @@ fn cash_or_nothing_greeks(
     let (d1, d2) = d1_d2(spot, strike, rate, q, vol, expiry);
     let df_r = (-rate * expiry).exp();
     let npd2 = normal_pdf(d2);
-    let nd2 = normal_cdf(d2);
 
     // sign: +1 for call, -1 for put
     let (sign, nd2_signed) = match option_type {
-        OptionType::Call => (1.0, nd2),
-        OptionType::Put => (-1.0, 1.0 - nd2),
+        OptionType::Call => (1.0, normal_cdf(d2)),
+        OptionType::Put => (-1.0, normal_cdf(-d2)),
     };
 
-    let delta = sign * cash * df_r * npd2 / (spot * sig_sqrt_t);
-    let gamma = -sign * cash * df_r * npd2 * d1 / (spot * spot * vol * vol * expiry);
+    let delta = (sign * cash * df_r * npd2 / spot) / sig_sqrt_t;
+    let gamma = (((-sign * cash * df_r * npd2 * d1) / spot) / spot) / (sig_sqrt_t * sig_sqrt_t);
 
     // ∂d2/∂σ = -d1/σ, so vega = sign * C·df_r·n(d2)·(-d1/σ) (raw, per unit vol)
     let vega = -sign * cash * df_r * npd2 * d1 / vol;
 
     // theta = -∂P/∂T, with ∂d2/∂T = (r - q - σ²/2)/(σ√T) - d2/(2T)
-    let dd2_dt = (rate - q - 0.5 * vol * vol) / sig_sqrt_t - d2 / (2.0 * expiry);
+    let dd2_dt = (rate - q) / sig_sqrt_t - 0.5 * vol / sqrt_t - d2 / (2.0 * expiry);
     let theta = cash * df_r * (rate * nd2_signed - sign * npd2 * dd2_dt);
 
     // rho = ∂P/∂r = C·df_r·(-T·Nd2_signed + sign·n(d2)·√T/σ) (raw, per unit rate)
@@ -149,24 +143,23 @@ fn asset_or_nothing_greeks(
     let (d1, d2) = d1_d2(spot, strike, rate, q, vol, expiry);
     let df_q = (-q * expiry).exp();
     let npd1 = normal_pdf(d1);
-    let nd1 = normal_cdf(d1);
 
     let (sign, nd1_signed) = match option_type {
-        OptionType::Call => (1.0, nd1),
-        OptionType::Put => (-1.0, 1.0 - nd1),
+        OptionType::Call => (1.0, normal_cdf(d1)),
+        OptionType::Put => (-1.0, normal_cdf(-d1)),
     };
 
     // delta = df_q·(Nd1_signed + sign·n(d1)/(σ√T))
     let delta = df_q * (nd1_signed + sign * npd1 / sig_sqrt_t);
 
     // gamma = -sign·df_q·n(d1)·d2/(S·σ²·T), since ∂d1/∂S = 1/(S·σ·√T)
-    let gamma = -sign * df_q * npd1 * d2 / (spot * vol * vol * expiry);
+    let gamma = ((-sign * df_q * npd1 * d2) / spot) / (sig_sqrt_t * sig_sqrt_t);
 
     // vega = -sign·S·df_q·n(d1)·d2/σ (since ∂d1/∂σ = -d2/σ; raw, per unit vol)
     let vega = -sign * spot * df_q * npd1 * d2 / vol;
 
     // theta = -∂P/∂T, with ∂d1/∂T = (r - q + σ²/2)/(σ√T) - d1/(2T)
-    let dd1_dt = (rate - q + 0.5 * vol * vol) / sig_sqrt_t - d1 / (2.0 * expiry);
+    let dd1_dt = (rate - q) / sig_sqrt_t + 0.5 * vol / sqrt_t - d1 / (2.0 * expiry);
     let theta = spot * df_q * (q * nd1_signed - sign * npd1 * dd1_dt);
 
     // rho = sign·S·df_q·n(d1)·√T/σ (since ∂d1/∂r = √T/σ; raw, per unit rate)
@@ -217,11 +210,9 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
         );
         let df_r = (-market.rate * instrument.expiry).exp();
 
-        // Compute N(d2) once; derive put price via N(-d2) = 1 - N(d2).
-        let nd2 = normal_cdf(d2);
         let price = match instrument.option_type {
-            OptionType::Call => instrument.cash * df_r * nd2,
-            OptionType::Put => instrument.cash * df_r * (1.0 - nd2),
+            OptionType::Call => instrument.cash * df_r * normal_cdf(d2),
+            OptionType::Put => instrument.cash * df_r * normal_cdf(-d2),
         };
 
         let greeks = cash_or_nothing_greeks(
@@ -283,11 +274,9 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
         );
         let df_q = (-q * instrument.expiry).exp();
 
-        // Compute N(d1) once; derive put price via N(-d1) = 1 - N(d1).
-        let nd1 = normal_cdf(d1);
         let price = match instrument.option_type {
-            OptionType::Call => market.spot * df_q * nd1,
-            OptionType::Put => market.spot * df_q * (1.0 - nd1),
+            OptionType::Call => market.spot * df_q * normal_cdf(d1),
+            OptionType::Put => market.spot * df_q * normal_cdf(-d1),
         };
 
         let greeks = asset_or_nothing_greeks(
@@ -348,18 +337,37 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
             instrument.expiry,
         );
         let df_r = (-market.rate * instrument.expiry).exp();
-        let df_q = (-q * instrument.expiry).exp();
 
-        // Compute N(d1), N(d2) once; derive put via N(-d) = 1 - N(d).
-        let nd1 = normal_cdf(d1);
-        let nd2 = normal_cdf(d2);
-        let call = market
-            .spot
-            .mul_add(df_q * nd1, -(instrument.payoff_strike * df_r * nd2));
+        // Decompose the gap into a cancellation-safe vanilla at the trigger
+        // plus a cash-digital adjustment:
+        // call = C(K2) + (K2-K1) df N(d2)
+        // put  = P(K2) + (K1-K2) df N(-d2).
+        let vanilla = super::black_scholes::bs_price(
+            instrument.option_type,
+            market.spot,
+            instrument.trigger_strike,
+            market.rate,
+            q,
+            vol,
+            instrument.expiry,
+        );
         let price = match instrument.option_type {
-            OptionType::Call => call,
-            OptionType::Put => call - market.spot * df_q + instrument.payoff_strike * df_r,
+            OptionType::Call => {
+                vanilla
+                    + (instrument.trigger_strike - instrument.payoff_strike) * df_r * normal_cdf(d2)
+            }
+            OptionType::Put => {
+                vanilla
+                    + (instrument.payoff_strike - instrument.trigger_strike)
+                        * df_r
+                        * normal_cdf(-d2)
+            }
         };
+        if !price.is_finite() {
+            return Err(PricingError::NumericalError(format!(
+                "gap option price is non-finite: {price}"
+            )));
+        }
 
         // Gap = asset-or-nothing(K2) - K1 * cash-or-nothing(K2, cash=1).
         // Greeks are the linear combination of the two building blocks.
@@ -478,6 +486,54 @@ mod tests {
             .price;
 
         assert_relative_eq!(price, -0.0053, epsilon = 2e-4);
+    }
+
+    #[test]
+    fn cash_put_preserves_deep_tail_probability() {
+        // d2 is exactly 9. The reference is 1e20 * Phi(-9), computed with
+        // 100-decimal erfc arithmetic.
+        const EXPECTED: f64 = 11.285_884_059_538_406;
+        let instrument = CashOrNothingOption::new(OptionType::Put, 1.0, 1.0e20, 1.0);
+        let market = Market::builder()
+            .spot(1.82_f64.exp())
+            .rate(0.0)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let result = DigitalAnalyticEngine::new()
+            .price(&instrument, &market)
+            .unwrap();
+        assert!(
+            ((result.price - EXPECTED) / EXPECTED).abs() <= 2.0e-14,
+            "price={:.17e}",
+            result.price
+        );
+        let greeks = result.greeks.unwrap();
+        assert!(greeks.delta < 0.0);
+        assert!(greeks.rho.is_finite() && greeks.rho != 0.0);
+    }
+
+    #[test]
+    fn vanilla_equivalent_gap_put_preserves_deep_tail_value() {
+        const EXPECTED: f64 = 22.752_884_600_977_636;
+        let instrument = GapOption::new(OptionType::Put, 1.0e18, 1.0e18, 1.0);
+        let market = Market::builder()
+            .spot(5.0e18)
+            .rate(0.0)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let price = DigitalAnalyticEngine::new()
+            .price(&instrument, &market)
+            .unwrap()
+            .price;
+        assert!(price >= 0.0);
+        assert!(
+            ((price - EXPECTED) / EXPECTED).abs() <= 2.0e-12,
+            "price={price:.17e}"
+        );
     }
 
     // --- Finite-difference verification helpers ---
