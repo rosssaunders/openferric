@@ -64,7 +64,12 @@ pub fn mc_european_qmc_with_seed(
     n_steps: usize,
     seed: u64,
 ) -> PricingResult {
-    if n_paths == 0 || n_steps == 0 || n_steps > crate::math::sobol::SOBOL_MAX_DIMENSIONS {
+    if n_paths == 0
+        || n_steps == 0
+        || n_steps > crate::math::sobol::SOBOL_MAX_DIMENSIONS
+        || instrument.validate().is_err()
+        || market.validate().is_err()
+    {
         return PricingResult {
             price: f64::NAN,
             stderr: None,

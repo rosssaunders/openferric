@@ -295,11 +295,55 @@ impl VolSurface {
         let expiries = slices.iter().map(|(t, _)| *t).collect();
         let params = slices.iter().map(|(_, p)| *p).collect();
 
-        Ok(Self {
+        let surface = Self {
             expiries,
             slices: params,
             forward,
-        })
+        };
+        surface.validate()?;
+        Ok(surface)
+    }
+
+    /// Validates the serialized representation and the SVI slice domains.
+    ///
+    /// This is intentionally callable after deserialization, which bypasses
+    /// [`VolSurface::new`].
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.forward.is_finite() || self.forward <= 0.0 {
+            return Err("surface forward must be finite and > 0".to_string());
+        }
+        if self.expiries.is_empty() || self.expiries.len() != self.slices.len() {
+            return Err("surface expiries and slices must have equal non-zero length".to_string());
+        }
+        if self
+            .expiries
+            .iter()
+            .any(|expiry| !expiry.is_finite() || *expiry <= 0.0)
+            || self.expiries.windows(2).any(|w| w[1] <= w[0])
+        {
+            return Err(
+                "surface expiries must be finite, positive, and strictly increasing".to_string(),
+            );
+        }
+        for params in &self.slices {
+            if !params.a.is_finite()
+                || !params.b.is_finite()
+                || !params.rho.is_finite()
+                || !params.m.is_finite()
+                || !params.sigma.is_finite()
+            {
+                return Err("SVI parameters must be finite".to_string());
+            }
+            if params.b < 0.0 || !(-1.0..=1.0).contains(&params.rho) || params.sigma <= 0.0 {
+                return Err("SVI requires b >= 0, rho in [-1, 1], and sigma > 0".to_string());
+            }
+            let min_variance =
+                params.a + params.b * params.sigma * (1.0 - params.rho * params.rho).sqrt();
+            if !min_variance.is_finite() || min_variance < 0.0 {
+                return Err("SVI minimum total variance must be finite and >= 0".to_string());
+            }
+        }
+        Ok(())
     }
 
     /// Total implied variance `w(K, T)`.

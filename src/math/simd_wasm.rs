@@ -48,10 +48,12 @@ pub(crate) fn normal_cdf_f64x2(x: v128) -> v128 {
     let cdf_pos = f64x2_sub(one, f64x2_mul(pdf, poly));
     let cdf_neg = f64x2_sub(one, cdf_pos);
 
-    // Integer comparison observes the IEEE-754 sign bit, including -0.0 and
-    // signed NaNs, matching the scalar implementation's bit-level selection.
+    // Integer comparison observes the IEEE-754 sign bit. Restore the exact
+    // mathematical midpoint for both signed zeros after selecting the side.
     let negative = i64x2_lt(x, i64x2_splat(0));
-    v128_bitselect(cdf_neg, cdf_pos, negative)
+    let result = v128_bitselect(cdf_neg, cdf_pos, negative);
+    let is_zero = f64x2_eq(x, f64x2_splat(0.0));
+    v128_bitselect(f64x2_splat(0.5), result, is_zero)
 }
 
 pub(crate) fn normal_cdf_batch_into(xs: &[f64], out: &mut [f64]) {

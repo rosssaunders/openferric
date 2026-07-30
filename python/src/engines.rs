@@ -773,6 +773,7 @@ impl AnalyticEngine {
             r: rate,
             t: expiry,
         };
+        map_pricing_err(option.validate())?;
         let market = build_market_checked(1.0, rate, 0.0, vol1.max(vol2).max(1e-8))?;
         Ok(map_pricing_err(
             analytic_core::SpreadAnalyticEngine::new(method).price(&option, &market),
@@ -1283,6 +1284,7 @@ impl McEngine {
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn arithmetic_asian_price(
+        py: Python<'_>,
         option_type: &str,
         spot: f64,
         strike: f64,
@@ -1315,12 +1317,14 @@ impl McEngine {
         if reproducible == Some(false) {
             engine = engine.with_randomized_streams();
         }
-        Ok(map_pricing_err(engine.price(&instrument, &market))?.into())
+        let result = py.detach(|| engine.price(&instrument, &market));
+        Ok(map_pricing_err(result)?.into())
     }
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn greeks_pathwise(
+        py: Python<'_>,
         option_type: &str,
         spot: f64,
         strike: f64,
@@ -1351,12 +1355,14 @@ impl McEngine {
         if reproducible == Some(false) {
             engine = engine.with_randomized_streams();
         }
-        Ok(map_pricing_err(engine.estimate_pathwise(&instrument, &market))?.into())
+        let result = py.detach(|| engine.estimate_pathwise(&instrument, &market));
+        Ok(map_pricing_err(result)?.into())
     }
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn greeks_likelihood_ratio(
+        py: Python<'_>,
         option_type: &str,
         spot: f64,
         strike: f64,
@@ -1387,12 +1393,14 @@ impl McEngine {
         if reproducible == Some(false) {
             engine = engine.with_randomized_streams();
         }
-        Ok(map_pricing_err(engine.estimate_likelihood_ratio(&instrument, &market))?.into())
+        let result = py.detach(|| engine.estimate_likelihood_ratio(&instrument, &market));
+        Ok(map_pricing_err(result)?.into())
     }
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn spread_price(
+        py: Python<'_>,
         s1: f64,
         s2: f64,
         k: f64,
@@ -1421,6 +1429,7 @@ impl McEngine {
             r: rate,
             t: expiry,
         };
+        map_pricing_err(instrument.validate())?;
         let market = build_market_checked(1.0, rate, 0.0, vol1.max(vol2).max(1e-8))?;
         let mut engine = mc_core::SpreadMonteCarloEngine::new(num_paths, seed)
             .with_antithetic(antithetic.unwrap_or(true))
@@ -1428,7 +1437,8 @@ impl McEngine {
         if reproducible == Some(false) {
             engine = engine.with_randomized_streams();
         }
-        Ok(map_pricing_err(engine.price(&instrument, &market))?.into())
+        let result = py.detach(|| engine.price(&instrument, &market));
+        Ok(map_pricing_err(result)?.into())
     }
 }
 

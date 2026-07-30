@@ -75,6 +75,7 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
         instrument: &ConvertibleBond,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if self.steps == 0 {
@@ -123,12 +124,7 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
         } else {
             market.spot
         };
-        let vol = market.vol_for(vol_strike, instrument.maturity);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(vol_strike, instrument.maturity)?;
 
         let dt = instrument.maturity / self.steps as f64;
         let u = (vol * dt.sqrt()).exp();

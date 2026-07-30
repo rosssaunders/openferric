@@ -3,8 +3,8 @@
 //! GPU Monte Carlo European option pricing with on-device hierarchical reduction.
 //!
 //! Each GPU thread prices two terminal GBM samples from one Box--Muller pair.
-//! A per-workgroup tree reduction in shared memory produces partial sums,
-//! so only a tiny summary buffer (2 floats per workgroup) is read back
+//! A per-workgroup tree reduction in shared memory produces centered-moment
+//! summaries, so only a tiny buffer (3 floats per workgroup) is read back
 //! to the host — eliminating the main bandwidth bottleneck.
 //!
 //! WebGPU's portable numerical baseline is `f32`. Path generation and the
@@ -33,9 +33,9 @@ struct GpuParams {
     terminal_drift: f32,
     terminal_vol: f32,
     num_paths: u32,
-    seed: u32,
+    seed_low: u32,
+    seed_high: u32,
     is_call: u32,
-    _padding: u32,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -80,6 +80,55 @@ struct DispatchBuffers {
     capacity: u64,
 }
 
+/// Small retryable single-flight state machine used by WASM initialization.
+///
+/// It is target-independent so its retry and deduplication transitions can be
+/// unit-tested without requiring a browser WebGPU implementation.
+#[cfg(any(test, target_arch = "wasm32"))]
+enum RetryableInitState<C, P> {
+    Empty,
+    Initializing(P),
+    Ready(C),
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InitSnapshot<C, P> {
+    Empty,
+    Initializing(P),
+    Ready(C),
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+impl<C: Clone, P: Clone> RetryableInitState<C, P> {
+    fn snapshot(&self) -> InitSnapshot<C, P> {
+        match self {
+            Self::Empty => InitSnapshot::Empty,
+            Self::Initializing(promise) => InitSnapshot::Initializing(promise.clone()),
+            Self::Ready(context) => InitSnapshot::Ready(context.clone()),
+        }
+    }
+
+    fn begin(&mut self, promise: P) -> bool {
+        if matches!(self, Self::Empty) {
+            *self = Self::Initializing(promise);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn succeed(&mut self, context: C) {
+        *self = Self::Ready(context);
+    }
+
+    fn reset_after_failure(&mut self) {
+        if matches!(self, Self::Initializing(_)) {
+            *self = Self::Empty;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -115,7 +164,7 @@ fn build_params(
     expiry: f64,
     num_paths: usize,
     num_steps: usize,
-    seed: u32,
+    seed: u64,
     is_call: bool,
 ) -> Result<ValidatedGpuRequest, String> {
     require_finite("spot", spot)?;
@@ -158,7 +207,7 @@ fn build_params(
     let invocations = num_paths_u32.div_ceil(PATHS_PER_INVOCATION);
     let num_workgroups = invocations.div_ceil(WORKGROUP_SIZE);
     let output_size = u64::from(num_workgroups)
-        .checked_mul(2 * std::mem::size_of::<f32>() as u64)
+        .checked_mul(3 * std::mem::size_of::<f32>() as u64)
         .ok_or_else(|| "GPU output buffer size overflow".to_string())?;
 
     Ok(ValidatedGpuRequest {
@@ -168,9 +217,9 @@ fn build_params(
             terminal_drift: checked_f32("terminal drift", terminal_drift)?,
             terminal_vol: checked_f32("terminal volatility", terminal_vol)?,
             num_paths: num_paths_u32,
-            seed,
+            seed_low: seed as u32,
+            seed_high: (seed >> 32) as u32,
             is_call: u32::from(is_call),
-            _padding: 0,
         },
         num_paths,
         num_workgroups,
@@ -179,71 +228,79 @@ fn build_params(
     })
 }
 
-/// Compute MC statistics from per-workgroup partial sums.
+/// Compute MC statistics from per-workgroup centered-moment summaries.
 ///
-/// The GPU shader outputs `[sum_0, sum_sq_0, sum_1, sum_sq_1, ...]`
-/// for each workgroup. This function reduces those to the final price
-/// and standard error.
-fn reduce_partial_sums(
-    partial_sums: &[f32],
+/// The GPU shader outputs `[count_0, mean_0, M2_0, count_1, mean_1, M2_1, ...]`.
+/// This function uses Chan's parallel variance merge in `f64` to preserve
+/// near-deterministic sampling variance without subtracting two large moments.
+fn reduce_partial_moments(
+    partial_moments: &[f32],
     num_paths: usize,
     discount: f64,
 ) -> Result<GpuMcResult, String> {
     if num_paths == 0 {
         return Err("cannot reduce zero GPU paths".to_string());
     }
-    if partial_sums.is_empty() || !partial_sums.len().is_multiple_of(2) {
-        return Err("GPU partial-sum buffer must contain sum/sum-square pairs".to_string());
+    if partial_moments.is_empty() || !partial_moments.len().is_multiple_of(3) {
+        return Err("GPU partial-moment buffer must contain count/mean/M2 triples".to_string());
     }
     if !discount.is_finite() || discount < 0.0 {
         return Err("discount factor must be finite and non-negative".to_string());
     }
 
-    let n = num_paths as f64;
-    let num_workgroups = partial_sums.len() / 2;
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
-    let mut sum_compensation = 0.0_f64;
-    let mut sum_sq_compensation = 0.0_f64;
+    let num_workgroups = partial_moments.len() / 3;
+    let mut count = 0_u64;
+    let mut mean = 0.0_f64;
+    let mut m2 = 0.0_f64;
 
     for wg in 0..num_workgroups {
-        let partial_sum = partial_sums[wg * 2] as f64;
-        let partial_sum_sq = partial_sums[wg * 2 + 1] as f64;
-        if !partial_sum.is_finite()
-            || !partial_sum_sq.is_finite()
-            || partial_sum < 0.0
-            || partial_sum_sq < 0.0
+        let partial_count_f32 = partial_moments[wg * 3];
+        let partial_mean = partial_moments[wg * 3 + 1] as f64;
+        let partial_m2 = partial_moments[wg * 3 + 2] as f64;
+        if !partial_count_f32.is_finite()
+            || !partial_mean.is_finite()
+            || !partial_m2.is_finite()
+            || partial_count_f32 <= 0.0
+            || partial_count_f32 > (WORKGROUP_SIZE * PATHS_PER_INVOCATION) as f32
+            || partial_mean < 0.0
+            || partial_m2 < 0.0
+            || partial_count_f32.fract() != 0.0
         {
-            return Err("GPU produced a non-finite or negative partial sum".to_string());
+            return Err("GPU produced an invalid centered-moment summary".to_string());
         }
 
-        // Kahan accumulation reduces loss when many workgroups have very
-        // different payoff magnitudes.
-        let corrected_sum = partial_sum - sum_compensation;
-        let next_sum = sum + corrected_sum;
-        sum_compensation = (next_sum - sum) - corrected_sum;
-        sum = next_sum;
-
-        let corrected_sum_sq = partial_sum_sq - sum_sq_compensation;
-        let next_sum_sq = sum_sq + corrected_sum_sq;
-        sum_sq_compensation = (next_sum_sq - sum_sq) - corrected_sum_sq;
-        sum_sq = next_sum_sq;
+        let partial_count = partial_count_f32 as u64;
+        let next_count = count
+            .checked_add(partial_count)
+            .ok_or_else(|| "GPU path count overflow during reduction".to_string())?;
+        if next_count > num_paths as u64 {
+            return Err("GPU partial-moment counts exceed the requested path count".to_string());
+        }
+        let delta = partial_mean - mean;
+        let count_f64 = count as f64;
+        let partial_count_f64 = partial_count as f64;
+        let next_count_f64 = next_count as f64;
+        mean += delta * (partial_count_f64 / next_count_f64);
+        m2 += partial_m2 + delta * delta * (count_f64 * partial_count_f64 / next_count_f64);
+        count = next_count;
     }
 
-    let mean = sum / n;
-    let var = if num_paths > 1 {
-        // Workgroup reductions happen in f32, so a mathematically zero
-        // variance can arrive a few ulps below zero.
-        let estimate = (sum_sq - sum * sum / n) / (n - 1.0);
-        if estimate < 0.0 { 0.0 } else { estimate }
-    } else {
-        0.0
-    };
+    if count != num_paths as u64 {
+        return Err(format!(
+            "GPU returned summaries for {count} paths; expected {num_paths}"
+        ));
+    }
 
-    Ok(GpuMcResult {
-        price: discount * mean,
-        stderr: discount * (var / n).sqrt(),
-    })
+    let n = count as f64;
+    let var = if count > 1 { m2 / (n - 1.0) } else { 0.0 };
+
+    let price = discount * mean;
+    let stderr = discount * (var / n).sqrt();
+    if !price.is_finite() || !stderr.is_finite() {
+        return Err("discounted GPU statistics are not finite".to_string());
+    }
+
+    Ok(GpuMcResult { price, stderr })
 }
 
 /// Initialize the GPU context (async — works on both native and WASM).
@@ -362,7 +419,7 @@ fn validate_device_limits(ctx: &GpuContext, request: &ValidatedGpuRequest) -> Re
 /// Encode and submit the compute dispatch, returning the staging buffer
 /// and the number of bytes to read back.
 ///
-/// The output buffer holds 2 floats (sum, sum_sq) per workgroup rather
+/// The output buffer holds 3 floats (count, mean, M2) per workgroup rather
 /// than one float per path. Each invocation consumes a Box--Muller pair,
 /// so one workgroup represents up to 512 paths.
 fn acquire_dispatch_buffers(
@@ -382,7 +439,7 @@ fn acquire_dispatch_buffers(
     drop(pool);
 
     let output = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("partial_sums"),
+        label: Some("partial_moments"),
         size: required_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
@@ -478,22 +535,56 @@ mod native {
     /// Global GPU context cache. Only successful initialization is cached, so a
     /// transient adapter/device failure can be retried by a later call.
     static GPU_CTX: OnceLock<GpuContext> = OnceLock::new();
+    /// Serializes the cold path without caching an initialization error.
+    ///
+    /// `OnceLock::get_or_init` cannot be used because its closure cannot return
+    /// a retryable `Result`. The explicit mutex also prevents concurrent first
+    /// callers from constructing and then discarding duplicate devices.
+    static GPU_INIT_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(test)]
+    pub(super) static SUCCESSFUL_INITIALIZATIONS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
 
     fn get_or_init_gpu() -> Result<&'static GpuContext, String> {
         if let Some(ctx) = GPU_CTX.get() {
             return Ok(ctx);
         }
 
+        let _guard = GPU_INIT_LOCK
+            .lock()
+            .map_err(|_| "GPU initialization lock is poisoned".to_string())?;
+        if let Some(ctx) = GPU_CTX.get() {
+            return Ok(ctx);
+        }
+
         let initialized = pollster::block_on(init_gpu_context())?;
-        // Multiple first callers may initialize concurrently. The loser drops
-        // its context and uses the successfully cached one.
-        let _ = GPU_CTX.set(initialized);
+        GPU_CTX
+            .set(initialized)
+            .map_err(|_| "GPU context cache initialization raced unexpectedly".to_string())?;
+        #[cfg(test)]
+        SUCCESSFUL_INITIALIZATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         GPU_CTX
             .get()
             .ok_or_else(|| "GPU context cache initialization failed".to_string())
     }
 
-    /// Readback partial sums using blocking poll + mpsc channel (native only).
+    /// Return whether the process already has a successfully initialized GPU
+    /// context. This check never performs device discovery or initialization.
+    ///
+    /// Automatic dispatch can use this to avoid imposing cold-start latency.
+    /// Explicit GPU callers should use [`prewarm_gpu`] or call the pricing API.
+    pub fn gpu_is_ready() -> bool {
+        GPU_CTX.get().is_some()
+    }
+
+    /// Initialize and cache the native GPU context without running a pricing
+    /// dispatch. Failed attempts are not cached and may be retried later.
+    pub fn prewarm_gpu() -> Result<(), String> {
+        get_or_init_gpu().map(|_| ())
+    }
+
+    /// Read back partial moments using blocking poll + mpsc (native only).
     fn readback_blocking(
         device: &wgpu::Device,
         staging_buffer: &wgpu::Buffer,
@@ -515,8 +606,8 @@ mod native {
             .map_err(|e| format!("GPU buffer map failed: {e}"))?;
 
         let data = buffer_slice.get_mapped_range();
-        let partial_sums: &[f32] = bytemuck::cast_slice(&data);
-        let result = reduce_partial_sums(partial_sums, num_paths, discount);
+        let partial_moments: &[f32] = bytemuck::cast_slice(&data);
+        let result = reduce_partial_moments(partial_moments, num_paths, discount);
         drop(data);
         staging_buffer.unmap();
         result
@@ -526,8 +617,8 @@ mod native {
     ///
     /// Uses wgpu to dispatch an exact-terminal GBM compute shader. Each GPU
     /// invocation prices two paths using both normals from one Box--Muller pair.
-    /// On-device hierarchical reduction produces per-workgroup partial sums;
-    /// only a tiny summary buffer is read back for final reduction on CPU.
+    /// On-device hierarchical reduction produces per-workgroup centered
+    /// moments; only a tiny summary buffer is read back for final merging.
     ///
     /// The GPU device, queue, and pipeline are cached globally so subsequent calls
     /// skip initialization. Failed initialization is not cached and can be retried.
@@ -543,7 +634,7 @@ mod native {
         expiry: f64,
         num_paths: usize,
         num_steps: usize,
-        seed: u32,
+        seed: u64,
         is_call: bool,
     ) -> Result<GpuMcResult, String> {
         let request = build_params(
@@ -567,7 +658,7 @@ mod native {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub use native::mc_european_gpu;
+pub use native::{gpu_is_ready, mc_european_gpu, prewarm_gpu};
 
 // ===========================================================================
 // WASM-only (async via browser event loop)
@@ -581,26 +672,80 @@ mod wasm {
     use wasm_bindgen::JsCast;
 
     thread_local! {
-        static GPU_CTX: RefCell<Option<Rc<GpuContext>>> = const { RefCell::new(None) };
+        static GPU_INIT_STATE:
+            RefCell<RetryableInitState<Rc<GpuContext>, js_sys::Promise>> =
+            const { RefCell::new(RetryableInitState::Empty) };
     }
 
-    /// Lazily initialize (or reuse) the GPU context on the WASM thread.
+    /// Lazily initialize (or reuse) the GPU context on the WASM worker.
+    ///
+    /// JavaScript can poll another Rust future while the first caller awaits
+    /// adapter/device creation. Store and share that in-flight Promise so those
+    /// callers do not create duplicate devices. A rejected Promise resets the
+    /// state to `Empty`, preserving retry-after-transient-failure semantics.
     async fn ensure_gpu_ctx() -> Result<Rc<GpuContext>, String> {
-        // Check if already initialized — clone Rc out before any await.
-        let existing = GPU_CTX.with(|cell| cell.borrow().clone());
-        if let Some(ctx) = existing {
-            return Ok(ctx);
-        }
+        let snapshot = GPU_INIT_STATE.with(|state| state.borrow().snapshot());
+        let promise = match snapshot {
+            InitSnapshot::Ready(context) => return Ok(context),
+            InitSnapshot::Initializing(promise) => promise,
+            InitSnapshot::Empty => {
+                let promise = wasm_bindgen_futures::future_to_promise(async {
+                    match init_gpu_context().await {
+                        Ok(context) => {
+                            GPU_INIT_STATE.with(|state| {
+                                state.borrow_mut().succeed(Rc::new(context));
+                            });
+                            Ok(wasm_bindgen::JsValue::UNDEFINED)
+                        }
+                        Err(error) => {
+                            GPU_INIT_STATE.with(|state| {
+                                state.borrow_mut().reset_after_failure();
+                            });
+                            Err(wasm_bindgen::JsValue::from_str(&error))
+                        }
+                    }
+                });
+                // There is no await between observing Empty and installing the
+                // Promise, so another task on this worker cannot interleave.
+                let installed =
+                    GPU_INIT_STATE.with(|state| state.borrow_mut().begin(promise.clone()));
+                debug_assert!(installed);
+                promise
+            }
+        };
 
-        // First call — async init.
-        let ctx = Rc::new(init_gpu_context().await?);
-        GPU_CTX.with(|cell| {
-            *cell.borrow_mut() = Some(Rc::clone(&ctx));
-        });
-        Ok(ctx)
+        wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|error| {
+                error
+                    .as_string()
+                    .unwrap_or_else(|| format!("GPU initialization failed: {error:?}"))
+            })?;
+
+        match GPU_INIT_STATE.with(|state| state.borrow().snapshot()) {
+            InitSnapshot::Ready(context) => Ok(context),
+            InitSnapshot::Empty | InitSnapshot::Initializing(_) => {
+                Err("GPU initialization completed without a cached context".to_string())
+            }
+        }
     }
 
-    /// Readback partial sums using callback + JsFuture yield loop (WASM only).
+    /// Return whether this WASM worker already has an initialized WebGPU
+    /// context. This check does not start initialization.
+    pub fn gpu_is_ready() -> bool {
+        matches!(
+            GPU_INIT_STATE.with(|state| state.borrow().snapshot()),
+            InitSnapshot::Ready(_)
+        )
+    }
+
+    /// Initialize and cache this worker's WebGPU context without dispatching a
+    /// pricing kernel. Concurrent callers share the same in-flight Promise.
+    pub async fn prewarm_gpu_async() -> Result<(), String> {
+        ensure_gpu_ctx().await.map(|_| ())
+    }
+
+    /// Read back partial moments using callback + JsFuture yield loop (WASM).
     async fn readback_async(
         device: &wgpu::Device,
         staging_buffer: &wgpu::Buffer,
@@ -648,8 +793,8 @@ mod wasm {
         }
 
         let data = buffer_slice.get_mapped_range();
-        let partial_sums: &[f32] = bytemuck::cast_slice(&data);
-        let result = reduce_partial_sums(partial_sums, num_paths, discount);
+        let partial_moments: &[f32] = bytemuck::cast_slice(&data);
+        let result = reduce_partial_moments(partial_moments, num_paths, discount);
         drop(data);
         staging_buffer.unmap();
         result
@@ -667,7 +812,7 @@ mod wasm {
         expiry: f64,
         num_paths: u32,
         num_steps: u32,
-        seed: u32,
+        seed: u64,
         is_call: bool,
     ) -> Result<GpuMcResult, String> {
         let request = build_params(
@@ -700,19 +845,42 @@ mod wasm {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm::mc_european_gpu_async;
+pub use wasm::{gpu_is_ready, mc_european_gpu_async, prewarm_gpu_async};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const VALID_ARGS: (f64, f64, f64, f64, f64, usize, usize, u32, bool) =
+    const VALID_ARGS: (f64, f64, f64, f64, f64, usize, usize, u64, bool) =
         (100.0, 105.0, 0.03, 0.20, 1.5, 10_001, 252, 42, true);
 
     fn valid_request() -> ValidatedGpuRequest {
         let (spot, strike, rate, vol, expiry, paths, steps, seed, is_call) = VALID_ARGS;
         build_params(spot, strike, rate, vol, expiry, paths, steps, seed, is_call)
             .expect("standard GPU inputs should validate")
+    }
+
+    #[test]
+    fn retryable_init_state_deduplicates_and_allows_retry_after_failure() {
+        let mut state: RetryableInitState<u32, &str> = RetryableInitState::Empty;
+        assert_eq!(state.snapshot(), InitSnapshot::Empty);
+
+        assert!(state.begin("first promise"));
+        assert!(!state.begin("duplicate promise"));
+        assert_eq!(
+            state.snapshot(),
+            InitSnapshot::Initializing("first promise")
+        );
+
+        state.reset_after_failure();
+        assert_eq!(state.snapshot(), InitSnapshot::Empty);
+        assert!(state.begin("retry promise"));
+        state.succeed(42);
+        assert_eq!(state.snapshot(), InitSnapshot::Ready(42));
+
+        // A stale rejection cannot clear an already-ready context.
+        state.reset_after_failure();
+        assert_eq!(state.snapshot(), InitSnapshot::Ready(42));
     }
 
     #[test]
@@ -729,7 +897,7 @@ mod tests {
 
         assert_eq!(one_step.params, many_steps.params);
         assert_eq!(one_step.num_workgroups, 20);
-        assert_eq!(one_step.output_size, 160);
+        assert_eq!(one_step.output_size, 240);
         assert!((one_step.params.terminal_drift - 0.015).abs() < 1.0e-7);
         assert!((one_step.params.terminal_vol - 0.20 * 1.5_f32.sqrt()).abs() < 1.0e-7);
         assert!((one_step.discount - (-0.045_f64).exp()).abs() < 1.0e-14);
@@ -737,10 +905,22 @@ mod tests {
 
     #[test]
     fn build_params_accepts_expiry_and_zero_vol_boundaries() {
-        let request = build_params(100.0, 100.0, -0.01, 0.0, 0.0, 1, 1, 0, false)
-            .expect("expiry and volatility may be zero");
+        let request = build_params(
+            100.0,
+            100.0,
+            -0.01,
+            0.0,
+            0.0,
+            1,
+            1,
+            0x1122_3344_5566_7788,
+            false,
+        )
+        .expect("expiry and volatility may be zero");
         assert_eq!(request.params.terminal_drift, -0.0);
         assert_eq!(request.params.terminal_vol, 0.0);
+        assert_eq!(request.params.seed_low, 0x5566_7788);
+        assert_eq!(request.params.seed_high, 0x1122_3344);
         assert_eq!(request.params.is_call, 0);
         assert_eq!(request.num_workgroups, 1);
     }
@@ -802,36 +982,49 @@ mod tests {
     }
 
     #[test]
-    fn reduce_partial_sums_computes_sample_statistics() {
-        // Four payoffs with sum=10 and sum of squares=30, split over two
-        // workgroups. Sample variance is 5/3.
-        let result =
-            reduce_partial_sums(&[3.0, 5.0, 7.0, 25.0], 4, 0.5).expect("valid partial sums");
+    fn reduce_partial_moments_computes_sample_statistics() {
+        // Payoffs [1, 2] and [3, 4], represented as two centered-moment
+        // summaries. The combined sample variance is 5/3.
+        let result = reduce_partial_moments(&[2.0, 1.5, 0.5, 2.0, 3.5, 0.5], 4, 0.5)
+            .expect("valid partial moments");
         assert!((result.price - 1.25).abs() < 1.0e-14);
         assert!((result.stderr - 0.5 * (5.0_f64 / 12.0).sqrt()).abs() < 1.0e-14);
     }
 
     #[test]
-    fn reduce_partial_sums_handles_single_and_roundoff_cases() {
-        let single = reduce_partial_sums(&[7.0, 49.0], 1, 0.9).expect("single path is valid");
+    fn reduce_partial_moments_handles_single_and_large_offset_cases() {
+        let single =
+            reduce_partial_moments(&[1.0, 7.0, 0.0], 1, 0.9).expect("single path is valid");
         assert!((single.price - 6.3).abs() < 1.0e-14);
         assert_eq!(single.stderr, 0.0);
 
-        // This inconsistent but finite summary yields a slightly negative raw
-        // variance; f32 workgroup rounding can do the same for constant payoffs.
-        let rounded = reduce_partial_sums(&[2.0, 1.999_999_9], 2, 1.0)
-            .expect("small negative roundoff is clamped");
-        assert_eq!(rounded.stderr, 0.0);
+        // Centered moments preserve a small variance beside a very large mean;
+        // raw sum/sum-square subtraction would lose it.
+        let offset =
+            reduce_partial_moments(&[2.0, 100_000_000.0, 2.0, 2.0, 100_000_000.0, 2.0], 4, 1.0)
+                .expect("large-offset centered moments should remain stable");
+        assert_eq!(offset.price, 100_000_000.0);
+        assert!((offset.stderr - (1.0_f64 / 3.0).sqrt()).abs() < 1.0e-14);
     }
 
     #[test]
-    fn reduce_partial_sums_rejects_malformed_data() {
-        assert!(reduce_partial_sums(&[], 1, 1.0).is_err());
-        assert!(reduce_partial_sums(&[1.0], 1, 1.0).is_err());
-        assert!(reduce_partial_sums(&[0.0, 0.0], 0, 1.0).is_err());
-        assert!(reduce_partial_sums(&[f32::NAN, 0.0], 1, 1.0).is_err());
-        assert!(reduce_partial_sums(&[-1.0, 1.0], 1, 1.0).is_err());
-        assert!(reduce_partial_sums(&[1.0, 1.0], 1, f64::NAN).is_err());
+    fn reduce_partial_moments_rejects_malformed_data() {
+        assert!(reduce_partial_moments(&[], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[0.0, 0.0, 0.0], 0, 1.0).is_err());
+        assert!(reduce_partial_moments(&[0.0, 0.0, 0.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.0, f32::NAN, 0.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.0, -1.0, 0.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.5, 1.0, 0.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[513.0, 1.0, 0.0], 513, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.0, 1.0, -1.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[2.0, 1.0, 0.0], 1, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.0, 1.0, 0.0], 2, 1.0).is_err());
+        assert!(reduce_partial_moments(&[1.0, 1.0, 0.0], 1, f64::NAN).is_err());
+        assert!(
+            reduce_partial_moments(&[1.0, f32::MAX, 0.0], 1, f64::MAX).is_err(),
+            "overflowing discounted results must not be returned as infinity"
+        );
     }
 
     #[test]
@@ -848,6 +1041,34 @@ mod tests {
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
+    fn concurrent_gpu_prewarm_creates_one_context_when_adapter_available() {
+        let outcomes = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| scope.spawn(super::prewarm_gpu))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().expect("GPU prewarm thread panicked"))
+                .collect::<Vec<_>>()
+        });
+
+        if outcomes.iter().all(
+            |result| matches!(result, Err(error) if error.starts_with("No GPU adapter found:")),
+        ) {
+            eprintln!("skipping concurrent prewarm assertion: no GPU adapter");
+            return;
+        }
+        for result in outcomes {
+            result.expect("all concurrent prewarm callers should share the initialized context");
+        }
+        assert!(super::gpu_is_ready());
+        assert_eq!(
+            super::native::SUCCESSFUL_INITIALIZATIONS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
     fn gpu_price_is_consistent_with_black_scholes_when_adapter_available() {
         let price_once =
             || super::mc_european_gpu(100.0, 100.0, 0.05, 0.20, 1.0, 131_072, 252, 42, true);
@@ -860,10 +1081,10 @@ mod tests {
             Err(error) => panic!("GPU adapter was found but pricing failed: {error}"),
         };
 
-        // Black--Scholes call value for these inputs is approximately 10.4506.
-        // Include both sampling uncertainty and a small allowance for portable
-        // WebGPU f32 arithmetic.
-        let tolerance = 8.0 * result.stderr + 0.05;
+        // Black--Scholes is an independent analytic reference. Five standard
+        // errors plus a small explicit f32 budget is a statistically motivated
+        // bound; do not derive the expected price from another MC backend.
+        let tolerance = 5.0 * result.stderr + 1.0e-3;
         assert!(
             (result.price - 10.450_583_572_185_565).abs() <= tolerance,
             "GPU price {} differed from Black-Scholes by more than {} (stderr {})",
@@ -879,6 +1100,12 @@ mod tests {
         let repeated = price_once().expect("cached GPU resources should remain usable");
         assert_eq!(repeated.price.to_bits(), result.price.to_bits());
         assert_eq!(repeated.stderr.to_bits(), result.stderr.to_bits());
+        assert!(super::gpu_is_ready());
+        assert_eq!(
+            super::native::SUCCESSFUL_INITIALIZATIONS.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "concurrent cold callers must create only one cached GPU context"
+        );
 
         // Reuse the larger pooled buffers for an odd path count. At zero
         // volatility the discounted payoff is deterministic.
@@ -887,5 +1114,180 @@ mod tests {
         let expected = 100.0 - 100.0 * (-0.05_f64).exp();
         assert!((odd.price - expected).abs() < 1.0e-4);
         assert!(odd.stderr < 1.0e-3);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn gpu_uses_all_seed_bits_without_known_seed_collisions_when_adapter_available() {
+        let price_with_seed =
+            |seed| super::mc_european_gpu(100.0, 100.0, 0.05, 0.20, 1.0, 131_072, 1, seed, true);
+        let base = match price_with_seed(0) {
+            Ok(result) => result,
+            Err(error) if error.starts_with("No GPU adapter found:") => {
+                eprintln!("skipping GPU seed assertion: {error}");
+                return;
+            }
+            Err(error) => panic!("GPU adapter was found but pricing failed: {error}"),
+        };
+
+        // The former low^high fold mapped these public u64 seeds to exactly
+        // the same shader seed. Adjacent seeds also used to shift and reuse
+        // almost every path stream.
+        for seed in [1_u64, 0x0000_0001_0000_0001] {
+            let other = price_with_seed(seed).expect("cached GPU should price another seed");
+            assert_ne!(
+                (base.price.to_bits(), base.stderr.to_bits()),
+                (other.price.to_bits(), other.stderr.to_bits()),
+                "distinct public seed {seed:#018x} produced an identical GPU sample"
+            );
+        }
+
+        let repeated = price_with_seed(0).expect("same seed should remain repeatable");
+        assert_eq!(base.price.to_bits(), repeated.price.to_bits());
+        assert_eq!(base.stderr.to_bits(), repeated.stderr.to_bits());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn adjacent_gpu_seeds_have_independent_replication_scale_when_adapter_available() {
+        let paths = 65_536;
+        let first = match super::mc_european_gpu(100.0, 100.0, 0.05, 0.20, 1.0, paths, 1, 0, true) {
+            Ok(result) => result,
+            Err(error) if error.starts_with("No GPU adapter found:") => {
+                eprintln!("skipping GPU seed-independence assertion: {error}");
+                return;
+            }
+            Err(error) => panic!("GPU adapter was found but pricing failed: {error}"),
+        };
+
+        let mut prices = vec![first.price];
+        let mut stderr_sum = first.stderr;
+        let mut stderr_sq_sum = first.stderr * first.stderr;
+        for seed in 1_u64..16 {
+            let result =
+                super::mc_european_gpu(100.0, 100.0, 0.05, 0.20, 1.0, paths, 1, seed, true)
+                    .expect("cached GPU should price adjacent seeds");
+            prices.push(result.price);
+            stderr_sum += result.stderr;
+            stderr_sq_sum += result.stderr * result.stderr;
+        }
+
+        let mean = prices.iter().sum::<f64>() / prices.len() as f64;
+        let replicate_variance = prices
+            .iter()
+            .map(|price| (price - mean) * (price - mean))
+            .sum::<f64>()
+            / (prices.len() - 1) as f64;
+        let replicate_sd = replicate_variance.sqrt();
+        let mean_reported_stderr = stderr_sum / prices.len() as f64;
+        let ratio = replicate_sd / mean_reported_stderr;
+
+        // Independent replications should disperse on the scale of one
+        // reported standard error. The old `global_id + seed` construction
+        // reused all but one Box--Muller pair for adjacent seeds, making this
+        // ratio roughly three orders of magnitude too small.
+        assert!(
+            (0.25..=2.5).contains(&ratio),
+            "adjacent-seed replication SD {replicate_sd} is inconsistent with \
+             mean reported stderr {mean_reported_stderr} (ratio {ratio})"
+        );
+
+        let aggregate_stderr = stderr_sq_sum.sqrt() / prices.len() as f64;
+        let black_scholes = 10.450_583_572_185_565;
+        assert!(
+            (mean - black_scholes).abs() <= 5.0 * aggregate_stderr + 1.0e-3,
+            "mean GPU price {mean} differs from independent Black-Scholes \
+             reference {black_scholes} (aggregate stderr {aggregate_stderr})"
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn gpu_centered_moments_preserve_near_deterministic_stderr_when_adapter_available() {
+        let paths = 131_072;
+        let vol = 1.0e-6;
+        let result = match super::mc_european_gpu(
+            100.0,
+            90.0,
+            0.05,
+            vol,
+            1.0,
+            paths,
+            1,
+            0xfeed_face_cafe_beef,
+            true,
+        ) {
+            Ok(result) => result,
+            Err(error) if error.starts_with("No GPU adapter found:") => {
+                eprintln!("skipping GPU centered-moment assertion: {error}");
+                return;
+            }
+            Err(error) => panic!("GPU adapter was found but pricing failed: {error}"),
+        };
+
+        // This deep-ITM payoff is terminal spot minus a constant to numerical
+        // precision. Its discounted analytic standard error is
+        // S * sqrt(expm1(vol^2*T) / N).
+        let reference = 100.0 * ((vol * vol).exp_m1() / paths as f64).sqrt();
+        assert!(
+            result.stderr.is_finite() && result.stderr > 0.25 * reference,
+            "centered GPU stderr {} lost near-deterministic variance (reference {})",
+            result.stderr,
+            reference
+        );
+        assert!(
+            result.stderr < 4.0 * reference,
+            "centered GPU stderr {} is implausible (reference {})",
+            result.stderr,
+            reference
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn concurrent_gpu_requests_do_not_alias_parameters_when_adapter_available() {
+        if let Err(error) = super::prewarm_gpu() {
+            if error.starts_with("No GPU adapter found:") {
+                eprintln!("skipping concurrent GPU assertion: {error}");
+                return;
+            }
+            panic!("GPU adapter was found but initialization failed: {error}");
+        }
+
+        let requests = [
+            (90.0, 0.01, 0.10, 11_u64, true),
+            (100.0, 0.03, 0.20, 22_u64, false),
+            (110.0, -0.01, 0.30, 33_u64, true),
+            (120.0, 0.07, 0.15, 44_u64, false),
+        ];
+        let run = |(strike, rate, vol, seed, is_call)| {
+            super::mc_european_gpu(100.0, strike, rate, vol, 1.25, 65_537, 7, seed, is_call)
+                .expect("GPU request should succeed")
+        };
+        let expected: Vec<_> = requests.iter().copied().map(run).collect();
+
+        let actual = std::thread::scope(|scope| {
+            requests
+                .iter()
+                .copied()
+                .map(|request| scope.spawn(move || run(request)))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().expect("GPU caller thread panicked"))
+                .collect::<Vec<_>>()
+        });
+
+        for (index, (expected, actual)) in expected.iter().zip(&actual).enumerate() {
+            assert_eq!(
+                expected.price.to_bits(),
+                actual.price.to_bits(),
+                "concurrent request {index} used another request's parameters"
+            );
+            assert_eq!(
+                expected.stderr.to_bits(),
+                actual.stderr.to_bits(),
+                "concurrent request {index} used another request's moment summary"
+            );
+        }
     }
 }

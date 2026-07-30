@@ -11,6 +11,7 @@
 //! When to use: select this model module when its dynamics match observed skew/tail/term-structure behavior; prefer simpler models for calibration speed or interpretability.
 use crate::core::{Diagnostics, PricingError, PricingResult};
 use crate::engines::monte_carlo::MonteCarloInstrument;
+use crate::engines::monte_carlo::mc_engine::RunningMoments;
 use crate::market::Market;
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
 use crate::vol::local_vol::{DupireLocalVol, ImpliedVolSurface};
@@ -304,6 +305,7 @@ pub fn calibrate_leverage_surface(
     n_particles: usize,
     n_steps: usize,
 ) -> Result<LeverageSurface, PricingError> {
+    market.validate()?;
     params.validate()?;
     if maturity < 0.0 || !maturity.is_finite() {
         return Err(PricingError::InvalidInput(
@@ -400,8 +402,7 @@ fn price_with_leverage_surface<I: MonteCarloInstrument>(
 
     let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 0xC0DE_0013_u64);
     let mut path = vec![0.0; n_steps + 1];
-    let mut sum = 0.0;
-    let mut sum_sq = 0.0;
+    let mut moments = RunningMoments::default();
 
     for _ in 0..n_paths {
         let mut s = market.spot.max(MIN_SPOT);
@@ -430,18 +431,12 @@ fn price_with_leverage_surface<I: MonteCarloInstrument>(
         // discount-from-maturity factor prices them at their hit-time value,
         // matching the plain MC, LSM, and analytic barrier engines.
         let pv = discount * instrument.payoff_from_path_with_rate(&path, market.rate);
-        sum += pv;
-        sum_sq += pv * pv;
+        moments.record(pv);
     }
 
-    let n = n_paths as f64;
-    let mean = sum / n;
-    let var = if n_paths > 1 {
-        ((sum_sq - n * mean * mean) / (n - 1.0)).max(0.0)
-    } else {
-        0.0
-    };
-    let stderr = (var / n).sqrt();
+    let n = moments.count() as f64;
+    let mean = moments.mean();
+    let stderr = (moments.sample_variance() / n).sqrt();
 
     let atm_local_vol = market_local_vol(market, market.spot, dt.max(1e-6));
     let atm_leverage = leverage_surface.value(market.spot, 0.0);
@@ -469,6 +464,7 @@ pub fn slv_mc_price_checked<I: MonteCarloInstrument>(
     n_steps: usize,
 ) -> Result<PricingResult, PricingError> {
     instrument.validate_for_mc()?;
+    market.validate()?;
     params.validate()?;
 
     if n_particles == 0 {
@@ -531,6 +527,7 @@ pub fn slv_mc_price<I: MonteCarloInstrument>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Instrument;
     use crate::core::OptionType;
     use crate::core::{BarrierDirection, BarrierStyle};
     use crate::instruments::{BarrierOption, VanillaOption};
@@ -551,6 +548,110 @@ mod tests {
             let t = expiry.max(1e-6);
             (self.base + self.skew * x * x + 0.01 * (t - 1.0)).max(0.05)
         }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct ShiftedTerminalPayoff {
+        maturity: f64,
+        shift: f64,
+    }
+
+    impl Instrument for ShiftedTerminalPayoff {
+        fn instrument_type(&self) -> &str {
+            "shifted_terminal_payoff"
+        }
+    }
+
+    impl MonteCarloInstrument for ShiftedTerminalPayoff {
+        fn validate_for_mc(&self) -> Result<(), PricingError> {
+            if self.maturity.is_finite() && self.maturity > 0.0 && self.shift.is_finite() {
+                Ok(())
+            } else {
+                Err(PricingError::InvalidInput(
+                    "invalid shifted terminal payoff".to_string(),
+                ))
+            }
+        }
+
+        fn maturity(&self) -> f64 {
+            self.maturity
+        }
+
+        fn reference_strike(&self, spot: f64) -> f64 {
+            spot
+        }
+
+        fn payoff_from_path(&self, path: &[f64]) -> f64 {
+            self.shift + path[path.len() - 1]
+        }
+    }
+
+    #[test]
+    fn public_slv_stderr_is_translation_stable_for_nearly_constant_payoffs() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.0)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        let params = SlvParams {
+            v0: 0.04,
+            kappa: 1.5,
+            theta: 0.04,
+            xi: 0.0,
+            rho: 0.0,
+        };
+        let base = slv_mc_price(
+            &ShiftedTerminalPayoff {
+                maturity: 1.0,
+                shift: 0.0,
+            },
+            &market,
+            params,
+            1_024,
+            8,
+        );
+        let shifted = slv_mc_price(
+            &ShiftedTerminalPayoff {
+                maturity: 1.0,
+                shift: 1.0e12,
+            },
+            &market,
+            params,
+            1_024,
+            8,
+        );
+
+        let base_stderr = base.stderr.expect("base stderr");
+        let shifted_stderr = shifted.stderr.expect("shifted stderr");
+        assert!(shifted_stderr.is_finite() && shifted_stderr > 0.0);
+        assert!(
+            (shifted_stderr - base_stderr).abs() <= 1.0e-5 * base_stderr,
+            "base_stderr={base_stderr} shifted_stderr={shifted_stderr}"
+        );
+    }
+
+    #[test]
+    fn public_slv_result_boundaries_validate_directly_mutated_market() {
+        let mut market = Market::builder()
+            .spot(100.0)
+            .rate(0.0)
+            .flat_vol(0.2)
+            .build()
+            .expect("valid market");
+        market.rate = f64::NAN;
+        let params = SlvParams {
+            v0: 0.04,
+            kappa: 1.5,
+            theta: 0.04,
+            xi: 0.0,
+            rho: 0.0,
+        };
+        let option = VanillaOption::european_call(100.0, 1.0);
+
+        assert!(calibrate_leverage_surface(&market, params, 1.0, 16, 2).is_err());
+        assert!(slv_mc_price_checked(&option, &market, params, 16, 2).is_err());
     }
 
     fn heston_mc_price<I: MonteCarloInstrument>(

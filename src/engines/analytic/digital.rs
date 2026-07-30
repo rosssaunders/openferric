@@ -187,6 +187,7 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
         instrument: &CashOrNothingOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if instrument.expiry <= 0.0 {
@@ -203,12 +204,7 @@ impl PricingEngine<CashOrNothingOption> for DigitalAnalyticEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
         let q = market.effective_dividend_yield(instrument.expiry);
 
         let (_, d2) = d1_d2(
@@ -258,6 +254,7 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
         instrument: &AssetOrNothingOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if instrument.expiry <= 0.0 {
@@ -273,12 +270,7 @@ impl PricingEngine<AssetOrNothingOption> for DigitalAnalyticEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
         let q = market.effective_dividend_yield(instrument.expiry);
 
         let (d1, _) = d1_d2(
@@ -327,6 +319,7 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
         instrument: &GapOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if instrument.expiry <= 0.0 {
@@ -343,12 +336,7 @@ impl PricingEngine<GapOption> for DigitalAnalyticEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.trigger_strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.trigger_strike, instrument.expiry)?;
         let q = market.effective_dividend_yield(instrument.expiry);
 
         let (d1, d2) = d1_d2(

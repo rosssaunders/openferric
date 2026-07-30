@@ -82,6 +82,50 @@ pub unsafe fn store_f64x8(values: &mut [f64], i: usize, v: __m512d) {
     _mm512_storeu_pd(values.as_mut_ptr().add(i), v);
 }
 
+#[inline]
+#[target_feature(enable = "avx512f")]
+unsafe fn repair_exp_subnormal_lanes(
+    input: __m512d,
+    result: __m512d,
+    below_normal_range: __mmask8,
+) -> __m512d {
+    if below_normal_range == 0 {
+        return result;
+    }
+
+    let mut inputs = [0.0_f64; 8];
+    let mut outputs = [0.0_f64; 8];
+    _mm512_storeu_pd(inputs.as_mut_ptr(), input);
+    _mm512_storeu_pd(outputs.as_mut_ptr(), result);
+    for lane in 0..8 {
+        if inputs[lane] < -708.396_418_532_264_1 {
+            outputs[lane] = inputs[lane].exp();
+        }
+    }
+    _mm512_loadu_pd(outputs.as_ptr())
+}
+
+#[inline]
+#[target_feature(enable = "avx512f")]
+unsafe fn repair_ln_subnormal_lanes(input: __m512d, result: __m512d) -> __m512d {
+    let positive = _mm512_cmp_pd_mask(input, _mm512_setzero_pd(), _CMP_GT_OQ);
+    let below_normal = _mm512_cmp_pd_mask(input, _mm512_set1_pd(f64::MIN_POSITIVE), _CMP_LT_OQ);
+    if (positive & below_normal) == 0 {
+        return result;
+    }
+
+    let mut inputs = [0.0_f64; 8];
+    let mut outputs = [0.0_f64; 8];
+    _mm512_storeu_pd(inputs.as_mut_ptr(), input);
+    _mm512_storeu_pd(outputs.as_mut_ptr(), result);
+    for lane in 0..8 {
+        if inputs[lane] > 0.0 && inputs[lane] < f64::MIN_POSITIVE {
+            outputs[lane] = inputs[lane].ln();
+        }
+    }
+    _mm512_loadu_pd(outputs.as_ptr())
+}
+
 /// AVX-512 exp() with a degree-11 polynomial.
 ///
 /// Processes 8 f64 values simultaneously using 512-bit vectors. Uses the same
@@ -93,12 +137,12 @@ pub unsafe fn store_f64x8(values: &mut [f64], i: usize, v: __m512d) {
 /// # Safety
 /// The caller must ensure AVX-512F is available on the executing CPU.
 pub unsafe fn exp_f64x8(x: __m512d) -> __m512d {
+    let input = x;
     let max_x = _mm512_set1_pd(709.782_712_893_384);
     let min_x = _mm512_set1_pd(-708.396_418_532_264_1);
     // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
-    // Inputs below the clamp threshold (incl. -inf) must flush to 0.0 instead
-    // of returning exp(min_x) ~ 2.2e-308, and NaN must propagate instead of
-    // being clamped into exp(max_x).
+    // Lanes whose exact result is subnormal are repaired below; NaN must
+    // propagate instead of being clamped into exp(max_x).
     let overflow = _mm512_cmp_pd_mask(x, max_x, _CMP_GT_OQ);
     let underflow = _mm512_cmp_pd_mask(x, min_x, _CMP_LT_OQ);
     let nan_mask = _mm512_cmp_pd_mask(x, x, _CMP_UNORD_Q);
@@ -158,7 +202,8 @@ pub unsafe fn exp_f64x8(x: __m512d) -> __m512d {
 
     let y = _mm512_mask_blend_pd(overflow, y, _mm512_set1_pd(f64::INFINITY));
     let y = _mm512_mask_blend_pd(underflow, y, _mm512_setzero_pd());
-    _mm512_mask_blend_pd(nan_mask, y, _mm512_set1_pd(f64::NAN))
+    let y = _mm512_mask_blend_pd(nan_mask, y, _mm512_set1_pd(f64::NAN));
+    repair_exp_subnormal_lanes(input, y, underflow)
 }
 
 /// Fast exp() with a degree-7 polynomial.
@@ -173,6 +218,7 @@ pub unsafe fn exp_f64x8(x: __m512d) -> __m512d {
 /// # Safety
 /// The caller must ensure AVX-512F is available on the executing CPU.
 pub unsafe fn fast_exp_f64x8(x: __m512d) -> __m512d {
+    let input = x;
     let max_x = _mm512_set1_pd(709.782_712_893_384);
     let min_x = _mm512_set1_pd(-708.396_418_532_264_1);
     // Special values as in `exp_f64x8`: overflow -> +inf, underflow -> 0.0,
@@ -228,7 +274,8 @@ pub unsafe fn fast_exp_f64x8(x: __m512d) -> __m512d {
 
     let y = _mm512_mask_blend_pd(overflow, y, _mm512_set1_pd(f64::INFINITY));
     let y = _mm512_mask_blend_pd(underflow, y, _mm512_setzero_pd());
-    _mm512_mask_blend_pd(nan_mask, y, _mm512_set1_pd(f64::NAN))
+    let y = _mm512_mask_blend_pd(nan_mask, y, _mm512_set1_pd(f64::NAN));
+    repair_exp_subnormal_lanes(input, y, underflow)
 }
 
 /// AVX-512 natural logarithm for 8 f64 values simultaneously.
@@ -262,12 +309,13 @@ pub unsafe fn ln_f64x8(x: __m512d) -> __m512d {
     );
     let mut m = _mm512_castsi512_pd(mant_bits);
 
-    // Fold m into [sqrt(1/2), sqrt(2)] for better polynomial accuracy.
-    let sqrt_half = _mm512_set1_pd(std::f64::consts::FRAC_1_SQRT_2);
+    // Fold m from [1, 2) into [sqrt(1/2), sqrt(2)). Values at or above
+    // sqrt(2) are halved and their binary exponent incremented.
+    let sqrt_two = _mm512_set1_pd(std::f64::consts::SQRT_2);
     let one = _mm512_set1_pd(1.0);
-    let adjust = _mm512_cmp_pd_mask(m, sqrt_half, _CMP_LT_OQ);
-    m = _mm512_mask_blend_pd(adjust, m, _mm512_add_pd(m, m));
-    k = _mm512_mask_blend_pd(adjust, k, _mm512_sub_pd(k, one));
+    let adjust = _mm512_cmp_pd_mask(m, sqrt_two, _CMP_GE_OQ);
+    m = _mm512_mask_blend_pd(adjust, m, _mm512_mul_pd(m, _mm512_set1_pd(0.5)));
+    k = _mm512_mask_blend_pd(adjust, k, _mm512_add_pd(k, one));
 
     // Degree-7 minimax (fdlibm kernel) for ln(1+f), f = m-1.
     let f = _mm512_sub_pd(m, one);
@@ -315,7 +363,8 @@ pub unsafe fn ln_f64x8(x: __m512d) -> __m512d {
     y = _mm512_mask_blend_pd(eq_zero, y, _mm512_set1_pd(f64::NEG_INFINITY));
     y = _mm512_mask_blend_pd(neg, y, _mm512_set1_pd(f64::NAN));
     y = _mm512_mask_blend_pd(is_inf, y, _mm512_set1_pd(f64::INFINITY));
-    _mm512_mask_blend_pd(nan_mask, y, _mm512_set1_pd(f64::NAN))
+    y = _mm512_mask_blend_pd(nan_mask, y, _mm512_set1_pd(f64::NAN));
+    repair_ln_subnormal_lanes(x, y)
 }
 
 /// AVX-512 standard normal PDF for 8 f64 values simultaneously.
@@ -361,7 +410,9 @@ pub unsafe fn norm_cdf_f64x8(x: __m512d) -> __m512d {
     let approx = _mm512_fnmadd_pd(norm_pdf_f64x8(z), poly, one);
     let reflected = _mm512_sub_pd(one, approx);
     let neg_mask = _mm512_cmp_pd_mask(x, zero, _CMP_LT_OQ);
-    _mm512_mask_blend_pd(neg_mask, approx, reflected)
+    let result = _mm512_mask_blend_pd(neg_mask, approx, reflected);
+    let is_zero = _mm512_cmp_pd_mask(x, zero, _CMP_EQ_OQ);
+    _mm512_mask_blend_pd(is_zero, result, _mm512_set1_pd(0.5))
 }
 
 /// AVX-512 vectorized inverse normal CDF for 8 probabilities in `[0, 1]`.
@@ -406,7 +457,7 @@ pub unsafe fn inv_norm_cdf_f64x8(p: __m512d) -> __m512d {
     let val_central = _mm512_div_pd(num_c, den_c);
 
     // -- Low tail: p < P_LOW --
-    let ln_p = ln_f64x8(_mm512_max_pd(p, _mm512_set1_pd(1e-300)));
+    let ln_p = ln_f64x8(p);
     let q_low = _mm512_sqrt_pd(_mm512_mul_pd(neg_two, ln_p));
 
     let mut num_l = _mm512_set1_pd(ACKLAM_C[0]);
@@ -426,7 +477,7 @@ pub unsafe fn inv_norm_cdf_f64x8(p: __m512d) -> __m512d {
 
     // -- High tail: p > P_HIGH --
     let one_minus_p = _mm512_sub_pd(one, p);
-    let ln_1mp = ln_f64x8(_mm512_max_pd(one_minus_p, _mm512_set1_pd(1e-300)));
+    let ln_1mp = ln_f64x8(one_minus_p);
     let q_high = _mm512_sqrt_pd(_mm512_mul_pd(neg_two, ln_1mp));
 
     let mut num_h = _mm512_set1_pd(ACKLAM_C[0]);
@@ -522,11 +573,13 @@ mod tests {
     const FAST_EXP_RELATIVE_ERROR_BOUND: f64 = 8e-9;
 
     /// Special inputs covering underflow, overflow, infinities and NaN.
-    const EXP_LN_SPECIALS: [f64; 9] = [
+    const EXP_LN_SPECIALS: [f64; 11] = [
         f64::NEG_INFINITY,
         -1e308,
         -710.0,
         -708.5,
+        f64::from_bits(1),
+        f64::from_bits((1_u64 << 52) - 1),
         0.0,
         709.5,
         709.9,
@@ -534,9 +587,8 @@ mod tests {
         f64::NAN,
     ];
 
-    /// Compare a SIMD exp result against `std::f64::exp`. Below the kernels'
-    /// clamp threshold (~-708.4) std may return a subnormal while the SIMD
-    /// path flushes to +0.0; both count as zero at working precision.
+    /// Compare a SIMD exp result against `std::f64::exp`. Rare subnormal lanes
+    /// use the scalar repair path and therefore must match bit-for-bit.
     fn check_exp_special(x: f64, got: f64, tol: f64) {
         let expected = x.exp();
         if expected.is_nan() {
@@ -544,9 +596,10 @@ mod tests {
         } else if expected.is_infinite() {
             assert_eq!(got, expected, "exp({x}) = {got}, expected {expected}");
         } else if expected < f64::MIN_POSITIVE {
-            assert!(
-                (0.0..=f64::MIN_POSITIVE).contains(&got),
-                "exp({x}) = {got}, expected ~0 (std: {expected})"
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "exp({x}) = {got}, expected subnormal {expected}"
             );
         } else {
             let rel = ((got - expected) / expected).abs();
@@ -563,12 +616,47 @@ mod tests {
             assert!(got.is_nan(), "ln({x}) = {got}, expected NaN");
         } else if expected.is_infinite() {
             assert_eq!(got, expected, "ln({x}) = {got}, expected {expected}");
+        } else if x > 0.0 && x < f64::MIN_POSITIVE {
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "ln({x}) = {got}, expected repaired subnormal result {expected}"
+            );
         } else {
             let abs_err = (got - expected).abs();
+            let tolerance = 8.0 * f64::EPSILON * expected.abs().max(1.0);
             assert!(
-                abs_err <= 1e-9,
-                "ln({x}) = {got}, expected {expected}, abs_err={abs_err}"
+                abs_err <= tolerance,
+                "ln({x}) = {got}, expected {expected}, abs_err={abs_err}, tolerance={tolerance}"
             );
+        }
+    }
+
+    fn assert_dense_ln_accuracy() {
+        const SAMPLES: usize = 16_385;
+        const EXPONENTS: [i32; 7] = [-1000, -100, -1, 0, 1, 100, 1000];
+
+        for exponent in EXPONENTS {
+            let scale = 2.0_f64.powi(exponent);
+            for base in (0..SAMPLES).step_by(8) {
+                let mut input = [1.0_f64; 8];
+                let valid_lanes = (SAMPLES - base).min(8);
+                for (lane, value) in input.iter_mut().take(valid_lanes).enumerate() {
+                    let fraction = (base + lane) as f64 / SAMPLES as f64;
+                    *value = (1.0 + fraction) * scale;
+                }
+
+                let mut out = [0.0_f64; 8];
+                // SAFETY: the calling test performs the AVX-512F runtime
+                // check and both arrays contain eight lanes.
+                unsafe {
+                    let x = load_f64x8(&input, 0);
+                    store_f64x8(&mut out, 0, ln_f64x8(x));
+                }
+                for lane in 0..valid_lanes {
+                    check_ln_special(input[lane], out[lane]);
+                }
+            }
         }
     }
 
@@ -677,5 +765,13 @@ mod tests {
                 check_ln_special(x, out[i]);
             }
         }
+    }
+
+    #[test]
+    fn ln_f64x8_dense_accuracy_bound() {
+        if !is_x86_feature_detected!("avx512f") {
+            return;
+        }
+        assert_dense_ln_accuracy();
     }
 }

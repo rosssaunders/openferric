@@ -20,6 +20,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Self-test benchmark regression gate
+        run: python3 scripts/test-check-criterion-regression.py
+
       - name: Record runner provenance
         run: |
           mkdir -p target/benchmark-metadata
@@ -27,8 +30,53 @@ jobs:
           lscpu > target/benchmark-metadata/lscpu.txt
           git rev-parse HEAD > target/benchmark-metadata/commit.txt
 
+      - name: Benchmark origin/main on the same CPU host
+        run: |
+          set -o pipefail
+          rm -rf "${GITHUB_WORKSPACE}/target/criterion"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          baseline_dir="${RUNNER_TEMP}/openferric-main-cpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "${baseline_dir}" refs/remotes/origin/main
+          trap 'git worktree remove --force "${baseline_dir}"' EXIT
+          # Use the current benchmark harness against main's library so newly
+          # added crossover groups have a like-for-like first baseline.
+          cp "${GITHUB_WORKSPACE}/benches/simd_bench.rs" \
+            "${baseline_dir}/benches/simd_bench.rs"
+          cp "${GITHUB_WORKSPACE}/benches/hot_paths_bench.rs" \
+            "${baseline_dir}/benches/hot_paths_bench.rs"
+          (
+            cd "${baseline_dir}"
+            CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" \
+              RUSTFLAGS="" \
+              cargo bench --locked -p openferric --features parallel,simd,jit -- \
+                --noplot --save-baseline main
+          ) 2>&1 | tee target/benchmark-metadata/cpu-main-baseline.log
+
       - name: Run scalar and accelerated benchmarks
-        run: cargo bench --locked -p openferric --features parallel,simd,jit -- --noplot
+        run: |
+          set -o pipefail
+          cargo bench --locked -p openferric --features parallel,simd,jit -- --noplot \
+            --save-baseline candidate \
+            2>&1 | tee target/benchmark-metadata/cpu-bench.log
+          for group in \
+            analytic_batch_auto_crossover \
+            bs_price_scalar_vs_simd \
+            normal_cdf_scalar_vs_simd \
+            ln_exp_scalar_vs_simd \
+            mc_european_call_scalar_vs_simd \
+            mc_exact_terminal_auto_crossover \
+            mc_exact_terminal_rayon_crossover \
+            mc_path_rayon_crossover \
+            mc_exact_terminal_accuracy_tier \
+            dsl_jit
+          do
+            test -d "target/criterion/${group}"
+            python3 scripts/check-criterion-regression.py \
+              "target/criterion/${group}" \
+              --baseline main \
+              --current candidate \
+              --max-regression-percent 20
+          done
         env:
           RUSTFLAGS: ""
 
@@ -52,6 +100,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Self-test benchmark regression gate
+        run: python3 scripts/test-check-criterion-regression.py
+
       - name: Record GPU runner provenance
         run: |
           mkdir -p target/benchmark-metadata
@@ -72,10 +123,54 @@ jobs:
               > target/benchmark-metadata/amd-rocm.txt 2>&1 || true
           fi
 
-      - name: Run warm WebGPU benchmarks
-        run: cargo bench --locked -p openferric --bench gpu_bench --features gpu -- --noplot
+      - name: Benchmark origin/main on the same GPU host
+        run: |
+          set -o pipefail
+          rm -rf "${GITHUB_WORKSPACE}/target/criterion"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          baseline_dir="${RUNNER_TEMP}/openferric-main-gpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "${baseline_dir}" refs/remotes/origin/main
+          trap 'git worktree remove --force "${baseline_dir}"' EXIT
+          (
+            cd "${baseline_dir}"
+            CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" \
+              OPENFERRIC_REQUIRE_GPU=1 \
+              RUSTFLAGS="" \
+              cargo bench --locked -p openferric --bench gpu_bench \
+                --features gpu,parallel,simd -- \
+                --noplot --save-baseline main
+          ) 2>&1 | tee target/benchmark-metadata/gpu-main-baseline.log
+          if grep -q 'Criterion.rs ERROR:' \
+            target/benchmark-metadata/gpu-main-baseline.log; then
+            echo "Criterion reported an error while recording the main baseline" >&2
+            exit 1
+          fi
+          find target/criterion/gpu_terminal_european \
+            -path '*/main/estimates.json' -print -quit | grep -q .
+
+      - name: Run current cold, warm, and CPU-reference WebGPU benchmarks
+        run: |
+          set -o pipefail
+          cargo bench --locked -p openferric --bench gpu_bench \
+            --features gpu,parallel,simd -- --noplot --save-baseline candidate \
+            2>&1 | tee target/benchmark-metadata/gpu-bench.log
+          if grep -q 'Criterion.rs ERROR:' target/benchmark-metadata/gpu-bench.log; then
+            echo "Criterion reported an error while benchmarking the current tree" >&2
+            exit 1
+          fi
+          test -d target/criterion/gpu_terminal_european
+          test -d target/criterion/gpu_terminal_european_cpu_reference
+          grep -q 'openferric_gpu_cold_initialization_seconds=' \
+            target/benchmark-metadata/gpu-bench.log
+          python3 scripts/check-criterion-regression.py \
+            target/criterion/gpu_terminal_european \
+            --baseline main \
+            --current candidate \
+            --expected-benchmarks 2 \
+            --max-regression-percent 25
         env:
           RUSTFLAGS: ""
+          OPENFERRIC_REQUIRE_GPU: "1"
 
       - name: Upload GPU Criterion history
         uses: actions/upload-artifact@v4

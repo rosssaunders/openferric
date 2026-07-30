@@ -12,24 +12,30 @@
 //! - rolling historical VaR (5k returns, window 250),
 //! - gamma ladder on a 10-pillar yield curve.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use openferric::calibration::{Calibrator, HestonCalibrator, LmOptions, OptionVolQuote};
-use openferric::core::PricingEngine;
+use openferric::core::{ExecutionPolicy, PricingEngine};
 use openferric::credit::bootstrap_survival_curve_from_cds_spreads;
 use openferric::engines::analytic::BlackScholesEngine;
 use openferric::engines::lsm::LongstaffSchwartzEngine;
 use openferric::engines::monte_carlo::{
-    MonteCarloPricingEngine, mc_european_call_soa, mc_european_call_soa_scalar,
+    MonteCarloPricingEngine, VarianceReduction, mc_european_call_soa, mc_european_call_soa_scalar,
 };
 use openferric::engines::pde::{AdiHestonEngine, AdiScheme};
 use openferric::instruments::{Autocallable, VanillaOption};
 use openferric::market::Market;
+use openferric::math::approx_tier::AccuracyTier;
 use openferric::models::stochastic::Heston;
 use openferric::pricing::autocallable::{price_autocallable, price_autocallable_with_greeks};
 use openferric::rates::YieldCurve;
 use openferric::risk::sensitivities::{CurveBumpConfig, gamma_ladder};
 use openferric::risk::var::rolling_historical_var_from_prices;
 use openferric::vol::surface::{SviParams, VolSurface};
+#[cfg(feature = "parallel")]
+use openferric::{
+    mc::{CpuExecutionPolicy, GbmPathGenerator, MonteCarloEngine as GenericMonteCarloEngine},
+    models::Gbm,
+};
 use std::hint::black_box;
 
 fn benchmark_market() -> Market {
@@ -146,6 +152,302 @@ fn bench_mc_european_50k(c: &mut Criterion) {
 
     group.finish();
 }
+
+/// Keeps the exact-terminal Auto crossover calibrated. The implementation has
+/// no SIMD-only allocation pass, so the cost model selects SIMD once one full
+/// native vector is available. These sizes cover likely NEON, AVX2, and
+/// AVX-512 boundaries plus the former 512-path cutoff.
+fn bench_mc_exact_terminal_auto_crossover(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let simd_probe = MonteCarloPricingEngine::new(8, 1, 42)
+        .with_execution_policy(ExecutionPolicy::Simd)
+        .price(&option, &market);
+    if simd_probe.is_err() {
+        return;
+    }
+
+    let mut group = c.benchmark_group("mc_exact_terminal_auto_crossover");
+    group.sample_size(20);
+    for paths in [1_usize, 2, 3, 4, 7, 8, 15, 16, 31, 32, 255, 256, 511, 512] {
+        group.throughput(Throughput::Elements(paths as u64));
+        for (name, policy) in [
+            ("scalar", ExecutionPolicy::Scalar),
+            ("simd", ExecutionPolicy::Simd),
+            ("auto", ExecutionPolicy::Auto),
+        ] {
+            let engine = MonteCarloPricingEngine::new(paths, 1, 42).with_execution_policy(policy);
+            group.bench_with_input(BenchmarkId::new(name, paths), &paths, |b, _| {
+                b.iter(|| {
+                    black_box(
+                        engine
+                            .price(black_box(&option), black_box(&market))
+                            .expect("selected backend should be available")
+                            .price,
+                    )
+                })
+            });
+        }
+        let antithetic = MonteCarloPricingEngine::new(paths, 1, 42)
+            .with_variance_reduction(VarianceReduction::Antithetic);
+        group.bench_with_input(
+            BenchmarkId::new("auto-antithetic", paths),
+            &paths,
+            |b, _| {
+                b.iter(|| {
+                    black_box(
+                        antithetic
+                            .price(black_box(&option), black_box(&market))
+                            .expect("Auto antithetic pricing should succeed")
+                            .price,
+                    )
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_mc_exact_terminal_accuracy_tier(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let probe = MonteCarloPricingEngine::new(4, 1, 42)
+        .with_execution_policy(ExecutionPolicy::Simd)
+        .price(&option, &market);
+    if probe.is_err() {
+        return;
+    }
+
+    let paths = 100_000;
+    let mut group = c.benchmark_group("mc_exact_terminal_accuracy_tier");
+    group.sample_size(20);
+    group.throughput(Throughput::Elements(paths as u64));
+    for tier in [AccuracyTier::High, AccuracyTier::Fast] {
+        let engine = MonteCarloPricingEngine::new(paths, 1, 42)
+            .with_execution_policy(ExecutionPolicy::Simd)
+            .with_accuracy_tier(tier);
+        group.bench_function(format!("{tier:?}").to_lowercase(), |b| {
+            b.iter(|| {
+                black_box(
+                    engine
+                        .price(black_box(&option), black_box(&market))
+                        .expect("SIMD backend should be available")
+                        .price,
+                )
+            })
+        });
+    }
+    group.finish();
+}
+
+/// Measures the Rayon crossover separately from the native-SIMD crossover.
+/// The exact-terminal implementation schedules fixed 4,096-sample chunks, so
+/// the matrix straddles every early chunk boundary for 1-, 2-, and host-sized
+/// pools.
+#[cfg(feature = "parallel")]
+fn bench_mc_exact_terminal_rayon_crossover(c: &mut Criterion) {
+    let market = benchmark_market();
+    let option = VanillaOption::european_call(100.0, 1.0);
+    let serial_policy = if MonteCarloPricingEngine::new(8, 1, 42)
+        .with_execution_policy(ExecutionPolicy::Simd)
+        .price(&option, &market)
+        .is_ok()
+    {
+        ExecutionPolicy::Simd
+    } else {
+        ExecutionPolicy::Scalar
+    };
+    let host_threads = rayon::current_num_threads();
+    let mut pool_sizes = vec![1_usize, 2, host_threads];
+    pool_sizes.sort_unstable();
+    pool_sizes.dedup();
+
+    let mut group = c.benchmark_group("mc_exact_terminal_rayon_crossover");
+    group.sample_size(20);
+    for threads in pool_sizes {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("benchmark thread pool");
+        for paths in [
+            4_095_usize,
+            4_096,
+            4_097,
+            5_119,
+            5_120,
+            5_121,
+            6_144,
+            7_168,
+            8_191,
+            8_192,
+            8_193,
+            12_288,
+            16_384,
+            32_768,
+        ] {
+            group.throughput(Throughput::Elements(paths as u64));
+            for (name, policy) in [
+                ("serial", serial_policy),
+                ("parallel", ExecutionPolicy::Parallel),
+                ("auto", ExecutionPolicy::Auto),
+            ] {
+                let engine =
+                    MonteCarloPricingEngine::new(paths, 1, 42).with_execution_policy(policy);
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{threads}t-{name}"), paths),
+                    &paths,
+                    |b, _| {
+                        b.iter(|| {
+                            black_box(pool.install(|| {
+                                engine
+                                    .price(black_box(&option), black_box(&market))
+                                    .expect("selected backend should be available")
+                                    .price
+                            }))
+                        })
+                    },
+                );
+            }
+        }
+
+        // Requested path counts map to 5,119 and 5,120 effective antithetic
+        // samples, immediately below and at the calibrated Rayon boundary.
+        for effective_samples in [5_119_usize, 5_120] {
+            let requested_paths = 2 * effective_samples - 1;
+            group.throughput(Throughput::Elements(requested_paths as u64));
+            for (name, policy) in [
+                ("serial-antithetic", serial_policy),
+                ("parallel-antithetic", ExecutionPolicy::Parallel),
+                ("auto-antithetic", ExecutionPolicy::Auto),
+            ] {
+                let engine = MonteCarloPricingEngine::new(requested_paths, 1, 42)
+                    .with_execution_policy(policy)
+                    .with_variance_reduction(VarianceReduction::Antithetic);
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{threads}t-{name}"), requested_paths),
+                    &requested_paths,
+                    |b, _| {
+                        b.iter(|| {
+                            black_box(pool.install(|| {
+                                engine
+                                    .price(black_box(&option), black_box(&market))
+                                    .expect("selected backend should be available")
+                                    .price
+                            }))
+                        })
+                    },
+                );
+            }
+        }
+    }
+    group.finish();
+}
+
+#[cfg(not(feature = "parallel"))]
+fn bench_mc_exact_terminal_rayon_crossover(_: &mut Criterion) {}
+
+/// Measures path-stepped callback simulation independently of exact-terminal
+/// pricing. Each row has the same total `(paths × steps)` work at different
+/// path lengths, exposing scheduling and scratch-buffer costs that a single
+/// global cutoff cannot model.
+#[cfg(feature = "parallel")]
+fn bench_mc_path_rayon_crossover(c: &mut Criterion) {
+    let host_threads = rayon::current_num_threads();
+    let mut pool_sizes = vec![1_usize, 2, host_threads];
+    pool_sizes.sort_unstable();
+    pool_sizes.dedup();
+
+    let mut group = c.benchmark_group("mc_path_rayon_crossover");
+    group.sample_size(20);
+    for threads in pool_sizes {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("benchmark thread pool");
+        for work_items in [
+            512_usize, 768, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768, 65_536,
+        ] {
+            for steps in [1_usize, 8, 32] {
+                let paths = work_items / steps;
+                let generator = GbmPathGenerator {
+                    model: Gbm {
+                        mu: 0.05,
+                        sigma: 0.2,
+                    },
+                    s0: 100.0,
+                    maturity: 1.0,
+                    steps,
+                };
+                group.throughput(Throughput::Elements(work_items as u64));
+                for (name, policy) in [
+                    ("serial", CpuExecutionPolicy::Scalar),
+                    ("parallel", CpuExecutionPolicy::Parallel),
+                    ("auto", CpuExecutionPolicy::Auto),
+                ] {
+                    let engine =
+                        GenericMonteCarloEngine::new(paths, 42).with_execution_policy(policy);
+                    group.bench_with_input(
+                        BenchmarkId::new(format!("{threads}t-{name}-steps{steps}"), work_items),
+                        &work_items,
+                        |b, _| {
+                            b.iter(|| {
+                                black_box(pool.install(|| {
+                                    engine.run(
+                                        &generator,
+                                        |path| (path[path.len() - 1] - 100.0).max(0.0),
+                                        (-0.05_f64).exp(),
+                                    )
+                                }))
+                            })
+                        },
+                    );
+                }
+            }
+        }
+
+        for effective_samples in [511_usize, 512, 767, 768] {
+            let requested_paths = 2 * effective_samples - 1;
+            let generator = GbmPathGenerator {
+                model: Gbm {
+                    mu: 0.05,
+                    sigma: 0.2,
+                },
+                s0: 100.0,
+                maturity: 1.0,
+                steps: 1,
+            };
+            group.throughput(Throughput::Elements(requested_paths as u64));
+            for (name, policy) in [
+                ("serial-antithetic", CpuExecutionPolicy::Scalar),
+                ("parallel-antithetic", CpuExecutionPolicy::Parallel),
+                ("auto-antithetic", CpuExecutionPolicy::Auto),
+            ] {
+                let engine = GenericMonteCarloEngine::new(requested_paths, 42)
+                    .with_antithetic(true)
+                    .with_execution_policy(policy);
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{threads}t-{name}-steps1"), requested_paths),
+                    &requested_paths,
+                    |b, _| {
+                        b.iter(|| {
+                            black_box(pool.install(|| {
+                                engine.run(
+                                    &generator,
+                                    |path| (path[path.len() - 1] - 100.0).max(0.0),
+                                    (-0.05_f64).exp(),
+                                )
+                            }))
+                        })
+                    },
+                );
+            }
+        }
+    }
+    group.finish();
+}
+
+#[cfg(not(feature = "parallel"))]
+fn bench_mc_path_rayon_crossover(_: &mut Criterion) {}
 
 fn bench_adi_heston_pde(c: &mut Criterion) {
     let market = benchmark_market();
@@ -382,6 +684,10 @@ criterion_group!(
     bench_vol_surface_query,
     bench_black_scholes_price_greeks,
     bench_mc_european_50k,
+    bench_mc_exact_terminal_auto_crossover,
+    bench_mc_exact_terminal_accuracy_tier,
+    bench_mc_exact_terminal_rayon_crossover,
+    bench_mc_path_rayon_crossover,
     bench_adi_heston_pde,
     bench_lsm_american_put,
     bench_autocallable_price_vs_greeks,

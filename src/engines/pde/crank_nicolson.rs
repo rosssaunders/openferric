@@ -268,6 +268,7 @@ impl CrankNicolsonEngine {
         market: &Market,
     ) -> Result<BermudanPdeOutput, PricingError> {
         instrument.validate()?;
+        market.validate()?;
 
         if self.time_steps == 0 || self.space_steps < 2 {
             return Err(PricingError::InvalidInput(
@@ -349,12 +350,7 @@ impl CrankNicolsonEngine {
             for k in 0..interior_n {
                 let i = k + 1;
                 let s = i as f64 * ds;
-                let sigma = market.vol_for(s.max(1.0e-8), t_node);
-                if !sigma.is_finite() || sigma <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market/local volatility must be finite and > 0".to_string(),
-                    ));
-                }
+                let sigma = market.checked_vol_for(s.max(1.0e-8), t_node)?;
 
                 let alpha = 0.5 * sigma * sigma * s * s * inv_ds2;
                 let beta = drift * s * inv_2ds;
@@ -457,6 +453,7 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         instrument: &VanillaOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if self.time_steps == 0 || self.space_steps < 2 {
@@ -479,12 +476,7 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 || !vol.is_finite() {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be finite and > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let n_t = self.time_steps;
         let n_s = self.space_steps;
@@ -689,6 +681,7 @@ impl PricingEngine<BermudanOption> for CrankNicolsonEngine {
         instrument: &BermudanOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         self.price_bermudan_with_boundary(instrument, market)
             .map(|out| out.result)
     }

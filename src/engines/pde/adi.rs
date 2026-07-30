@@ -502,6 +502,7 @@ impl PricingEngine<VanillaOption> for AdiHestonEngine {
         instrument: &VanillaOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if !matches!(instrument.exercise, ExerciseStyle::European) {

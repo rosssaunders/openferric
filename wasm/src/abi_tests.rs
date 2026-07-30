@@ -180,7 +180,7 @@ fn uniform_analytic_batches_match_scalar_exports_and_cover_f64x2_tail() {
 }
 
 #[wasm_bindgen_test]
-fn uniform_analytic_batches_preserve_degenerate_scalar_contract() {
+fn uniform_analytic_batches_preserve_deterministic_limits() {
     let spots = [80.0, 100.0, 120.0];
     let strikes = [100.0; 3];
 
@@ -202,7 +202,24 @@ fn uniform_analytic_batches_preserve_degenerate_scalar_contract() {
     let deterministic_greeks =
         pricing::bsm_greeks_uniform_batch_wasm(&spots, &strikes, 0.03, 0.01, 0.0, 1.5, false)
             .expect("valid deterministic batch");
-    assert!(deterministic_greeks.iter().all(|value| *value == 0.0));
+    for index in 0..spots.len() {
+        let scalar =
+            pricing::bsm_greeks_wasm(spots[index], strikes[index], 0.03, 0.01, 0.0, 1.5, false)
+                .expect("valid deterministic scalar option");
+        assert_eq!(
+            &deterministic_greeks[index * 4..index * 4 + 4],
+            &scalar[..4]
+        );
+    }
+
+    assert_eq!(deterministic_greeks[0], -df_q);
+    assert_eq!(deterministic_greeks[1], 0.0);
+    assert_eq!(deterministic_greeks[2], 0.0);
+    assert_eq!(
+        deterministic_greeks[3],
+        -0.01 * spots[0] * df_q + 0.03 * strikes[0] * df_r
+    );
+    assert!(deterministic_greeks[4..].iter().all(|value| *value == 0.0));
 }
 
 #[cfg(all(feature = "simd", target_feature = "simd128"))]
@@ -235,7 +252,7 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
     let cdf = normal_cdf_batch_approx(&[f64::NEG_INFINITY, f64::INFINITY, -0.0, 0.0, f64::NAN]);
     assert_eq!(cdf[0], 0.0);
     assert_eq!(cdf[1], 1.0);
-    assert!(cdf[2] < 0.5);
-    assert!(cdf[3] > 0.5);
+    assert_eq!(cdf[2].to_bits(), 0.5_f64.to_bits());
+    assert_eq!(cdf[3].to_bits(), 0.5_f64.to_bits());
     assert!(cdf[4].is_nan());
 }

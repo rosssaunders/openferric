@@ -15,6 +15,89 @@ use crate::models::{Gbm, Heston};
 use rayon::prelude::*;
 use std::sync::Arc;
 
+pub(crate) const PATH_SIMULATION_CHUNK_SAMPLES: usize = 256;
+
+/// Estimates the amount of serial work removed by distributing fixed-size
+/// chunks over `threads` workers. Work is expressed in caller-defined units
+/// (`work_per_sample`), which lets exact-terminal and time-stepped simulations
+/// use separate cost models without sharing a global path-count cutoff.
+#[cfg(feature = "parallel")]
+pub(crate) fn estimated_parallel_work_savings(
+    samples: usize,
+    work_per_sample: usize,
+    chunk_samples: usize,
+    threads: usize,
+) -> usize {
+    if samples == 0 || work_per_sample == 0 || chunk_samples == 0 || threads <= 1 {
+        return 0;
+    }
+
+    let chunk_count = samples.div_ceil(chunk_samples);
+    let workers = threads.min(chunk_count);
+    if workers <= 1 {
+        return 0;
+    }
+
+    // All chunks except the final tail are equal. Assign full chunks as evenly
+    // as possible and place the tail on a least-loaded worker; this models the
+    // critical-path load of Rayon's work-stealing schedule without depending on
+    // scheduling order.
+    let full_chunks = samples / chunk_samples;
+    let tail_samples = samples % chunk_samples;
+    let base_full_chunks = full_chunks / workers;
+    let extra_full_chunks = full_chunks % workers;
+    let max_full_load =
+        (base_full_chunks + usize::from(extra_full_chunks > 0)).saturating_mul(chunk_samples);
+    let critical_samples = if tail_samples == 0 {
+        max_full_load
+    } else if full_chunks < workers {
+        max_full_load.max(tail_samples)
+    } else if extra_full_chunks == 0 {
+        base_full_chunks
+            .saturating_mul(chunk_samples)
+            .saturating_add(tail_samples)
+    } else {
+        max_full_load.max(
+            base_full_chunks
+                .saturating_mul(chunk_samples)
+                .saturating_add(tail_samples),
+        )
+    };
+
+    samples
+        .saturating_sub(critical_samples)
+        .saturating_mul(work_per_sample)
+}
+
+/// Selects Rayon for the generic path engine when enough step work can be
+/// removed from the serial critical path to cover fixed scheduling plus a
+/// bounded allowance for waking a larger pool.
+///
+/// `mc_path_rayon_crossover` benchmarks show that two 256-path, one-step GBM
+/// chunks are faster on a 2-thread pool, while the 24-thread host needs three
+/// such chunks to amortize pool wake-up. Longer paths and two-stream models
+/// cross over with smaller tail chunks because each sample contains more work.
+#[cfg(feature = "parallel")]
+pub(crate) fn should_auto_parallelize_path(
+    samples: usize,
+    steps: usize,
+    normal_streams: usize,
+    threads: usize,
+) -> bool {
+    if threads <= 1 {
+        return false;
+    }
+    let step_work = steps.max(1).saturating_mul(normal_streams.max(1));
+    let saved_work =
+        estimated_parallel_work_savings(samples, step_work, PATH_SIMULATION_CHUNK_SAMPLES, threads);
+    // Waking a large pool costs more than scheduling into a two-thread pool,
+    // but the cost plateaus once a handful of tasks can be stolen. Capping the
+    // allowance at four workers lets expensive two-chunk paths parallelize
+    // without making the threshold grow with unrelated idle workers.
+    let wakeup_allowance = PATH_SIMULATION_CHUNK_SAMPLES.saturating_mul(threads.min(4).div_ceil(2));
+    saved_work >= wakeup_allowance
+}
+
 pub type PathEvaluator = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 
 /// CPU execution strategy for the generic path simulation engine.
@@ -141,14 +224,72 @@ pub struct ControlVariate {
     pub evaluator: PathEvaluator,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct BivariateMoments {
+    count: usize,
+    mean_x: f64,
+    mean_y: f64,
+    m2_x: f64,
+    m2_y: f64,
+    co_moment: f64,
+}
+
+impl BivariateMoments {
+    #[inline(always)]
+    fn record(&mut self, x: f64, y: f64) {
+        self.count += 1;
+        let n = self.count as f64;
+        let delta_x = x - self.mean_x;
+        let delta_y = y - self.mean_y;
+        self.mean_x += delta_x / n;
+        self.mean_y += delta_y / n;
+        self.m2_x += delta_x * (x - self.mean_x);
+        self.m2_y += delta_y * (y - self.mean_y);
+        self.co_moment += delta_x * (y - self.mean_y);
+    }
+
+    #[inline]
+    fn merge(&mut self, other: Self) {
+        if other.count == 0 {
+            return;
+        }
+        if self.count == 0 {
+            *self = other;
+            return;
+        }
+        let lhs_count = self.count as f64;
+        let rhs_count = other.count as f64;
+        let total_count = lhs_count + rhs_count;
+        let weight = lhs_count * rhs_count / total_count;
+        let delta_x = other.mean_x - self.mean_x;
+        let delta_y = other.mean_y - self.mean_y;
+        self.mean_x += delta_x * rhs_count / total_count;
+        self.mean_y += delta_y * rhs_count / total_count;
+        self.m2_x += other.m2_x + delta_x * delta_x * weight;
+        self.m2_y += other.m2_y + delta_y * delta_y * weight;
+        self.co_moment += other.co_moment + delta_x * delta_y * weight;
+        self.count += other.count;
+    }
+
+    #[inline]
+    fn sample_variance_x(self) -> f64 {
+        if self.count > 1 {
+            let variance = self.m2_x / (self.count as f64 - 1.0);
+            if variance < 0.0 { 0.0 } else { variance }
+        } else {
+            0.0
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MonteCarloEngine {
     pub num_paths: usize,
     pub antithetic: bool,
     pub control_variate: Option<ControlVariate>,
     pub seed: u64,
-    pub rng_kind: FastRngKind,
-    pub reproducible: bool,
+    pub(crate) rng_kind: FastRngKind,
+    pub(crate) reproducible: bool,
     /// CPU execution strategy for the generic callback engine.
     pub execution_policy: CpuExecutionPolicy,
 }
@@ -171,6 +312,16 @@ impl MonteCarloEngine {
         self
     }
 
+    /// Returns the configured random-number generator.
+    pub fn rng_kind(&self) -> FastRngKind {
+        self.rng_kind
+    }
+
+    /// Returns whether seeded stream splitting is reproducible.
+    pub fn is_reproducible(&self) -> bool {
+        self.reproducible
+    }
+
     pub fn with_control_variate(mut self, control_variate: ControlVariate) -> Self {
         self.control_variate = Some(control_variate);
         self
@@ -186,7 +337,7 @@ impl MonteCarloEngine {
 
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
-        self.reproducible = true;
+        self.reproducible = !matches!(self.rng_kind, FastRngKind::ThreadRng);
         self
     }
 
@@ -233,13 +384,8 @@ impl MonteCarloEngine {
         let antithetic = self.antithetic;
         let has_cv = control.is_some();
 
-        // Accumulator: (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count)
-        // Using a tuple-struct alias for clarity.
-        type Acc = (f64, f64, f64, f64, f64, u64);
-        let identity: Acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0);
         type Scratch = (Vec<f64>, Vec<f64>, Vec<f64>);
-        const CHUNK_SAMPLES: usize = 256;
-        let chunk_count = samples.div_ceil(CHUNK_SAMPLES);
+        let chunk_count = samples.div_ceil(PATH_SIMULATION_CHUNK_SAMPLES);
         let make_scratch = || {
             (
                 vec![0.0_f64; steps],
@@ -251,13 +397,13 @@ impl MonteCarloEngine {
         // A fixed chunk owns one RNG stream. Chunk boundaries and seeds do not
         // depend on the Rayon pool, while map_init reuses path/normal buffers
         // for every chunk handled by a worker.
-        let simulate_chunk = |scratch: &mut Scratch, chunk_index: usize| -> Acc {
+        let simulate_chunk = |scratch: &mut Scratch, chunk_index: usize| -> BivariateMoments {
             let (z1, z2, path) = scratch;
             let seed = resolve_stream_seed(base_seed, chunk_index, reproducible);
             let mut rng = FastRng::from_seed(rng_kind, seed);
-            let chunk_start = chunk_index * CHUNK_SAMPLES;
-            let chunk_end = (chunk_start + CHUNK_SAMPLES).min(samples);
-            let mut stats = identity;
+            let chunk_start = chunk_index * PATH_SIMULATION_CHUNK_SAMPLES;
+            let chunk_end = (chunk_start + PATH_SIMULATION_CHUNK_SAMPLES).min(samples);
+            let mut stats = BivariateMoments::default();
 
             for _ in chunk_start..chunk_end {
                 // Only generate as many normal streams as the model needs.
@@ -296,37 +442,27 @@ impl MonteCarloEngine {
                     (x, y)
                 };
 
-                stats.0 += x;
-                stats.1 += x * x;
-                stats.2 += y;
-                stats.3 += x * y;
-                stats.4 += y * y;
-                stats.5 += 1;
+                stats.record(x, y);
             }
 
             stats
         };
 
-        let reduce_fn = |a: Acc, b: Acc| -> Acc {
-            (
-                a.0 + b.0,
-                a.1 + b.1,
-                a.2 + b.2,
-                a.3 + b.3,
-                a.4 + b.4,
-                a.5 + b.5,
-            )
+        let reduce_fn = |mut a: BivariateMoments, b: BivariateMoments| {
+            a.merge(b);
+            a
         };
 
         #[cfg(feature = "parallel")]
-        let (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count) = {
-            const AUTO_PARALLEL_MIN_NORMALS: usize = 32_768;
-            let work_items = samples.saturating_mul(steps.max(1));
+        let stats = {
             let use_parallel = match self.execution_policy {
                 CpuExecutionPolicy::Parallel => true,
-                CpuExecutionPolicy::Auto => {
-                    rayon::current_num_threads() > 1 && work_items >= AUTO_PARALLEL_MIN_NORMALS
-                }
+                CpuExecutionPolicy::Auto => should_auto_parallelize_path(
+                    samples,
+                    steps,
+                    num_streams,
+                    rayon::current_num_threads(),
+                ),
                 CpuExecutionPolicy::Scalar => false,
             };
 
@@ -335,66 +471,52 @@ impl MonteCarloEngine {
                     .into_par_iter()
                     .map_init(&make_scratch, &simulate_chunk)
                     .collect::<Vec<_>>();
-                partials.into_iter().fold(identity, reduce_fn)
+                partials
+                    .into_iter()
+                    .fold(BivariateMoments::default(), reduce_fn)
             } else {
                 let mut scratch = make_scratch();
                 (0..chunk_count)
                     .map(|chunk_index| simulate_chunk(&mut scratch, chunk_index))
-                    .fold(identity, reduce_fn)
+                    .fold(BivariateMoments::default(), reduce_fn)
             }
         };
 
         #[cfg(not(feature = "parallel"))]
-        let (sum_x, sum_x2, sum_y, sum_xy, sum_y2, count) = {
+        let stats = {
             let mut scratch = make_scratch();
             (0..chunk_count)
                 .map(|chunk_index| simulate_chunk(&mut scratch, chunk_index))
-                .fold(identity, reduce_fn)
+                .fold(BivariateMoments::default(), reduce_fn)
         };
 
-        let n = count as f64;
+        let n = stats.count as f64;
 
         if let Some(cv) = &control {
-            // Derive control-variate adjusted statistics from accumulated sums.
-            // cov(X,Y) = (sum_xy - sum_x * sum_y / n) / (n - 1)
-            // var(Y)    = (sum_y2 - sum_y^2 / n)       / (n - 1)
-            let denom = (n - 1.0).max(1.0);
-            let cov_xy = (sum_xy - sum_x * sum_y / n) / denom;
-            let var_y = (sum_y2 - sum_y * sum_y / n) / denom;
-
-            let beta = if var_y > 1e-16 { cov_xy / var_y } else { 0.0 };
-            let cv_expected = cv.expected;
-
-            // Adjusted value: adj_i = x_i + beta * (cv_expected - y_i)
-            // sum_adj   = sum_x + beta * (n * cv_expected - sum_y)
-            // sum_adj^2 = sum_x2 + 2*beta*cv_expected*sum_x - 2*beta*sum_xy
-            //           + beta^2 * (n*cv_expected^2 - 2*cv_expected*sum_y + sum_y2)
-            let sum_adj = sum_x + beta * (n * cv_expected - sum_y);
-            let sum_adj_sq = sum_x2 + 2.0 * beta * cv_expected * sum_x - 2.0 * beta * sum_xy
-                + beta
-                    * beta
-                    * (n * cv_expected * cv_expected - 2.0 * cv_expected * sum_y + sum_y2);
-
-            let mean = sum_adj / n;
-            let var = if n > 1.0 {
-                (sum_adj_sq - sum_adj * sum_adj / n) / (n - 1.0)
+            // The common sample-variance denominator cancels in beta.
+            let beta = if stats.m2_y.is_finite() && stats.m2_y > 0.0 {
+                stats.co_moment / stats.m2_y
             } else {
                 0.0
             };
-            let var = if var < 0.0 { 0.0 } else { var };
+            let cv_expected = cv.expected;
+
+            // adj = X + beta(E[Y] - Y). Centered moments are translation
+            // invariant, so the expected-value term changes only the mean.
+            let mean = stats.mean_x + beta * (cv_expected - stats.mean_y);
+            let adjusted_m2 = stats.m2_x + beta * beta * stats.m2_y - 2.0 * beta * stats.co_moment;
+            let var = if stats.count > 1 {
+                let variance = adjusted_m2 / (n - 1.0);
+                if variance < 0.0 { 0.0 } else { variance }
+            } else {
+                0.0
+            };
             let price = discount_factor * mean;
             let stderr = discount_factor * (var / n).sqrt();
             (price, stderr)
         } else {
-            let mean = sum_x / n;
-            let var = if n > 1.0 {
-                (sum_x2 - sum_x * sum_x / n) / (n - 1.0)
-            } else {
-                0.0
-            };
-            let var = if var < 0.0 { 0.0 } else { var };
-            let price = discount_factor * mean;
-            let stderr = discount_factor * (var / n).sqrt();
+            let price = discount_factor * stats.mean_x;
+            let stderr = discount_factor * (stats.sample_variance_x() / n).sqrt();
             (price, stderr)
         }
     }
@@ -541,6 +663,68 @@ mod tests {
             .run(&generator, |_| 0.1, 0.95);
         assert!((price - 0.095).abs() <= f64::EPSILON);
         assert_eq!(stderr, 0.0);
+    }
+
+    #[test]
+    fn near_constant_payoff_retains_nonzero_stderr() {
+        let generator = GbmPathGenerator {
+            model: Gbm {
+                mu: 0.0,
+                sigma: 0.2,
+            },
+            s0: 100.0,
+            maturity: 1.0,
+            steps: 1,
+        };
+        let (_, stderr) = MonteCarloEngine::new(50_000, 17)
+            .with_execution_policy(CpuExecutionPolicy::Scalar)
+            .run(
+                &generator,
+                |path| 100.0 + 1.0e-9 * (path[path.len() - 1] / 100.0),
+                1.0,
+            );
+        assert!(stderr.is_finite());
+        assert!(stderr > 0.0, "stderr={stderr}");
+        assert!(stderr < 1.0e-9, "stderr={stderr}");
+    }
+
+    #[test]
+    fn thread_rng_never_claims_seeded_reproducibility() {
+        for engine in [
+            MonteCarloEngine::new(32, 1).with_thread_rng().with_seed(42),
+            MonteCarloEngine::new(32, 1).with_seed(42).with_thread_rng(),
+        ] {
+            assert_eq!(engine.rng_kind, FastRngKind::ThreadRng);
+            assert!(!engine.reproducible);
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn path_auto_parallel_cost_model_respects_work_shape_and_pool_size() {
+        assert!(!should_auto_parallelize_path(512, 1, 1, 1));
+
+        assert!(!should_auto_parallelize_path(511, 1, 1, 2));
+        assert!(should_auto_parallelize_path(512, 1, 1, 2));
+
+        assert!(!should_auto_parallelize_path(767, 1, 1, 24));
+        assert!(should_auto_parallelize_path(768, 1, 1, 24));
+
+        // Longer samples repay the larger-pool wake-up allowance with a
+        // smaller tail: 64 paths × 8 steps provide 512 saved work units.
+        assert!(!should_auto_parallelize_path(319, 8, 1, 24));
+        assert!(should_auto_parallelize_path(320, 8, 1, 24));
+
+        // A single chunk cannot benefit regardless of per-path cost.
+        assert!(!should_auto_parallelize_path(256, 1_024, 2, 24));
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_work_savings_accounts_for_pool_size_and_tail_balance() {
+        assert_eq!(estimated_parallel_work_savings(8_193, 1, 4_096, 1), 0);
+        assert_eq!(estimated_parallel_work_savings(8_193, 1, 4_096, 2), 4_096);
+        assert_eq!(estimated_parallel_work_savings(8_193, 1, 4_096, 24), 4_097);
     }
 
     #[cfg(feature = "parallel")]

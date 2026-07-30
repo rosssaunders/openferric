@@ -77,6 +77,44 @@ fn string_error_to_pyerr(err: String) -> PyErr {
     PyValueError::new_err(err)
 }
 
+fn require_finite(name: &str, value: f64) -> PyResult<()> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!("{name} must be finite")))
+    }
+}
+
+fn require_non_negative(name: &str, value: f64) -> PyResult<()> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be finite and >= 0"
+        )))
+    }
+}
+
+fn require_positive(name: &str, value: f64) -> PyResult<()> {
+    if value.is_finite() && value > 0.0 {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be finite and > 0"
+        )))
+    }
+}
+
+fn require_count(name: &str, value: usize, minimum: usize) -> PyResult<()> {
+    if value >= minimum {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be >= {minimum}"
+        )))
+    }
+}
+
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PricingGreeks {
@@ -854,9 +892,9 @@ pub fn py_bs_price(
 
 /// Vectorized Black--Scholes pricing over NumPy arrays.
 ///
-/// Inputs are borrowed directly from contiguous NumPy buffers, avoiding the
-/// list-to-`Vec` copies made by ordinary PyO3 sequence extraction. The core
-/// routine performs runtime SIMD dispatch.
+/// Small inputs are borrowed directly from contiguous NumPy buffers to avoid
+/// copy overhead. Large inputs are copied to owned Rust buffers before the GIL
+/// is released for the runtime-dispatched batch kernel.
 #[pyfunction]
 #[pyo3(name = "bs_price_batch")]
 #[allow(clippy::too_many_arguments)]
@@ -881,8 +919,46 @@ pub fn py_bs_price_batch<'py>(
             "spots and strikes must have the same length",
         ));
     }
+    if !rate.is_finite() {
+        return Err(PyValueError::new_err("rate must be finite"));
+    }
+    if !dividend_yield.is_finite() {
+        return Err(PyValueError::new_err("dividend_yield must be finite"));
+    }
+    if !vol.is_finite() || vol < 0.0 {
+        return Err(PyValueError::new_err("vol must be finite and >= 0"));
+    }
+    if !expiry.is_finite() || expiry < 0.0 {
+        return Err(PyValueError::new_err("expiry must be finite and >= 0"));
+    }
+    if spots.iter().any(|spot| !spot.is_finite() || *spot <= 0.0) {
+        return Err(PyValueError::new_err(
+            "spots must contain only finite values > 0",
+        ));
+    }
+    if strikes
+        .iter()
+        .any(|strike| !strike.is_finite() || *strike <= 0.0)
+    {
+        return Err(PyValueError::new_err(
+            "strikes must contain only finite values > 0",
+        ));
+    }
 
-    let values = bs_price_batch(spots, strikes, rate, dividend_yield, vol, expiry, is_call);
+    // Two input copies cost more than the kernel for tiny arrays. Above this
+    // conservative crossover, ownership permits safe GIL-free execution:
+    // NumPy may otherwise mutate or free a borrowed buffer from another
+    // Python thread while Rust is reading it.
+    const DETACH_MIN_LEN: usize = 4_096;
+    let values = if spots.len() < DETACH_MIN_LEN {
+        bs_price_batch(spots, strikes, rate, dividend_yield, vol, expiry, is_call)
+    } else {
+        let spots = spots.to_vec();
+        let strikes = strikes.to_vec();
+        py.detach(move || {
+            bs_price_batch(&spots, &strikes, rate, dividend_yield, vol, expiry, is_call)
+        })
+    };
     Ok(PyArray1::from_vec(py, values))
 }
 
@@ -1012,6 +1088,7 @@ pub fn py_barrier_price_closed_form(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_barrier_price_mc(
+    py: Python<'_>,
     spot: f64,
     strike: f64,
     expiry: f64,
@@ -1025,31 +1102,38 @@ pub fn py_barrier_price_mc(
     num_paths: usize,
     seed: u64,
 ) -> PyResult<(f64, f64)> {
-    let Some(option_type) = parse_option_type(option_type) else {
-        return Ok((f64::NAN, f64::NAN));
-    };
-    let Some(style) = parse_barrier_style(barrier_type) else {
-        return Ok((f64::NAN, f64::NAN));
-    };
-    let Some(direction) = parse_barrier_direction(barrier_dir) else {
-        return Ok((f64::NAN, f64::NAN));
-    };
+    let option_type = parse_option_type(option_type)
+        .ok_or_else(|| PyValueError::new_err("option_type must be 'call' or 'put'"))?;
+    let style = parse_barrier_style(barrier_type)
+        .ok_or_else(|| PyValueError::new_err("barrier_type must be 'in' or 'out'"))?;
+    let direction = parse_barrier_direction(barrier_dir)
+        .ok_or_else(|| PyValueError::new_err("barrier_dir must be 'up' or 'down'"))?;
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_positive("barrier", barrier)?;
+    require_finite("rate", rate)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+    require_count("steps", steps, 1)?;
+    require_count("num_paths", num_paths, 1)?;
 
-    catch_unwind_py(|| {
-        barrier_price_mc(
-            option_type,
-            style,
-            direction,
-            spot,
-            strike,
-            barrier,
-            rate,
-            vol,
-            expiry,
-            steps.max(1),
-            num_paths,
-            seed,
-        )
+    py.detach(|| {
+        catch_unwind_py(|| {
+            barrier_price_mc(
+                option_type,
+                style,
+                direction,
+                spot,
+                strike,
+                barrier,
+                rate,
+                vol,
+                expiry,
+                steps,
+                num_paths,
+                seed,
+            )
+        })
     })
 }
 
@@ -1073,6 +1157,7 @@ pub fn py_american_price(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_longstaff_schwartz_american_put(
+    py: Python<'_>,
     spot: f64,
     strike: f64,
     expiry: f64,
@@ -1082,8 +1167,17 @@ pub fn py_longstaff_schwartz_american_put(
     num_paths: usize,
     seed: u64,
 ) -> PyResult<f64> {
-    catch_unwind_py(|| {
-        longstaff_schwartz_american_put(spot, strike, rate, vol, expiry, steps, num_paths, seed)
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_finite("rate", rate)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+    require_count("steps", steps, 2)?;
+    require_count("num_paths", num_paths, 3)?;
+    py.detach(|| {
+        catch_unwind_py(|| {
+            longstaff_schwartz_american_put(spot, strike, rate, vol, expiry, steps, num_paths, seed)
+        })
     })
 }
 
@@ -1375,6 +1469,7 @@ pub fn py_geometric_asian_discrete_fixed_closed_form(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_arithmetic_asian_price_mc(
+    py: Python<'_>,
     strike: &AsianStrike,
     spot: f64,
     rate: f64,
@@ -1387,22 +1482,35 @@ pub fn py_arithmetic_asian_price_mc(
 ) -> PyResult<(f64, f64)> {
     let option_type = parse_option_type(option_type)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported option type '{option_type}'")))?;
-    Ok(arithmetic_asian_price_mc(
-        option_type,
-        strike.to_core()?,
-        spot,
-        rate,
-        vol,
-        expiry,
-        steps.max(1),
-        num_paths,
-        seed,
-    ))
+    let strike = strike.to_core()?;
+    if let CoreAsianStrike::Fixed(value) = strike {
+        require_non_negative("strike", value)?;
+    }
+    require_positive("spot", spot)?;
+    require_finite("rate", rate)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+    require_count("steps", steps, 1)?;
+    require_count("num_paths", num_paths, 1)?;
+    Ok(py.detach(|| {
+        arithmetic_asian_price_mc(
+            option_type,
+            strike,
+            spot,
+            rate,
+            vol,
+            expiry,
+            steps,
+            num_paths,
+            seed,
+        )
+    }))
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_geometric_asian_price_mc(
+    py: Python<'_>,
     strike: &AsianStrike,
     spot: f64,
     rate: f64,
@@ -1415,23 +1523,36 @@ pub fn py_geometric_asian_price_mc(
 ) -> PyResult<(f64, f64)> {
     let option_type = parse_option_type(option_type)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported option type '{option_type}'")))?;
-    Ok(geometric_asian_price_mc(
-        option_type,
-        strike.to_core()?,
-        spot,
-        rate,
-        vol,
-        expiry,
-        steps.max(1),
-        num_paths,
-        seed,
-    ))
+    let strike = strike.to_core()?;
+    if let CoreAsianStrike::Fixed(value) = strike {
+        require_non_negative("strike", value)?;
+    }
+    require_positive("spot", spot)?;
+    require_finite("rate", rate)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+    require_count("steps", steps, 1)?;
+    require_count("num_paths", num_paths, 1)?;
+    Ok(py.detach(|| {
+        geometric_asian_price_mc(
+            option_type,
+            strike,
+            spot,
+            rate,
+            vol,
+            expiry,
+            steps,
+            num_paths,
+            seed,
+        )
+    }))
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (autocall, spots, vols, corr_matrix, rate, div_yield, num_paths, num_steps, with_greeks=false))]
 pub fn py_price_autocallable(
+    py: Python<'_>,
     autocall: &Autocallable,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1442,30 +1563,36 @@ pub fn py_price_autocallable(
     num_steps: usize,
     with_greeks: bool,
 ) -> PyResult<PricingResult> {
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+    require_count("num_paths", num_paths, 1)?;
+    require_count("num_steps", num_steps, 1)?;
     let core = autocall.to_core();
-    let result = if with_greeks {
-        price_autocallable_with_greeks(
-            &core,
-            &spots,
-            &vols,
-            &corr_matrix,
-            rate,
-            div_yield,
-            num_paths,
-            num_steps,
-        )
-    } else {
-        price_autocallable(
-            &core,
-            &spots,
-            &vols,
-            &corr_matrix,
-            rate,
-            div_yield,
-            num_paths,
-            num_steps,
-        )
-    };
+    let result = py.detach(|| {
+        if with_greeks {
+            price_autocallable_with_greeks(
+                &core,
+                &spots,
+                &vols,
+                &corr_matrix,
+                rate,
+                div_yield,
+                num_paths,
+                num_steps,
+            )
+        } else {
+            price_autocallable(
+                &core,
+                &spots,
+                &vols,
+                &corr_matrix,
+                rate,
+                div_yield,
+                num_paths,
+                num_steps,
+            )
+        }
+    });
     if !result.price.is_finite() {
         return Err(PyValueError::new_err(
             "autocallable pricing failed: invalid inputs produced a non-finite price",
@@ -1477,6 +1604,7 @@ pub fn py_price_autocallable(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_autocallable_sensitivities(
+    py: Python<'_>,
     autocall: &Autocallable,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1486,16 +1614,23 @@ pub fn py_autocallable_sensitivities(
     num_paths: usize,
     num_steps: usize,
 ) -> PyResult<AutocallableSensitivities> {
-    autocallable_sensitivities(
-        &autocall.to_core(),
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        div_yield,
-        num_paths,
-        num_steps,
-    )
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+    require_count("num_paths", num_paths, 1)?;
+    require_count("num_steps", num_steps, 1)?;
+    let core = autocall.to_core();
+    py.detach(|| {
+        autocallable_sensitivities(
+            &core,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            div_yield,
+            num_paths,
+            num_steps,
+        )
+    })
     .map(AutocallableSensitivities::from_core)
     .map_err(pricing_error_to_pyerr)
 }
@@ -1504,6 +1639,7 @@ pub fn py_autocallable_sensitivities(
 #[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (phoenix, spots, vols, corr_matrix, rate, div_yield, num_paths, num_steps, with_greeks=false))]
 pub fn py_price_phoenix_autocallable(
+    py: Python<'_>,
     phoenix: &PhoenixAutocallable,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1514,30 +1650,36 @@ pub fn py_price_phoenix_autocallable(
     num_steps: usize,
     with_greeks: bool,
 ) -> PyResult<PricingResult> {
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+    require_count("num_paths", num_paths, 1)?;
+    require_count("num_steps", num_steps, 1)?;
     let core = phoenix.to_core();
-    let result = if with_greeks {
-        price_phoenix_autocallable_with_greeks(
-            &core,
-            &spots,
-            &vols,
-            &corr_matrix,
-            rate,
-            div_yield,
-            num_paths,
-            num_steps,
-        )
-    } else {
-        price_phoenix_autocallable(
-            &core,
-            &spots,
-            &vols,
-            &corr_matrix,
-            rate,
-            div_yield,
-            num_paths,
-            num_steps,
-        )
-    };
+    let result = py.detach(|| {
+        if with_greeks {
+            price_phoenix_autocallable_with_greeks(
+                &core,
+                &spots,
+                &vols,
+                &corr_matrix,
+                rate,
+                div_yield,
+                num_paths,
+                num_steps,
+            )
+        } else {
+            price_phoenix_autocallable(
+                &core,
+                &spots,
+                &vols,
+                &corr_matrix,
+                rate,
+                div_yield,
+                num_paths,
+                num_steps,
+            )
+        }
+    });
     if !result.price.is_finite() {
         return Err(PyValueError::new_err(
             "phoenix autocallable pricing failed: invalid inputs produced a non-finite price",
@@ -1549,6 +1691,7 @@ pub fn py_price_phoenix_autocallable(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_phoenix_autocallable_sensitivities(
+    py: Python<'_>,
     phoenix: &PhoenixAutocallable,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1558,16 +1701,23 @@ pub fn py_phoenix_autocallable_sensitivities(
     num_paths: usize,
     num_steps: usize,
 ) -> PyResult<AutocallableSensitivities> {
-    phoenix_autocallable_sensitivities(
-        &phoenix.to_core(),
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        div_yield,
-        num_paths,
-        num_steps,
-    )
+    require_finite("rate", rate)?;
+    require_finite("div_yield", div_yield)?;
+    require_count("num_paths", num_paths, 1)?;
+    require_count("num_steps", num_steps, 1)?;
+    let core = phoenix.to_core();
+    py.detach(|| {
+        phoenix_autocallable_sensitivities(
+            &core,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            div_yield,
+            num_paths,
+            num_steps,
+        )
+    })
     .map(AutocallableSensitivities::from_core)
     .map_err(pricing_error_to_pyerr)
 }
@@ -1575,6 +1725,7 @@ pub fn py_phoenix_autocallable_sensitivities(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_price_basket_mc(
+    py: Python<'_>,
     basket: &BasketOption,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1583,20 +1734,31 @@ pub fn py_price_basket_mc(
     dividends: Vec<f64>,
     num_paths: usize,
 ) -> PyResult<PricingResult> {
-    Ok(PricingResult::from_core(price_basket_mc(
-        &basket.to_core()?,
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        &dividends,
-        num_paths,
-    )))
+    require_finite("rate", rate)?;
+    let basket = basket.to_core()?;
+    let result = py.detach(|| {
+        price_basket_mc(
+            &basket,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            &dividends,
+            num_paths,
+        )
+    });
+    if !result.price.is_finite() || result.stderr.is_some_and(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err(
+            "basket pricing failed: invalid inputs produced a non-finite result",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_price_basket_mc_with_copula(
+    py: Python<'_>,
     basket: &BasketOption,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1606,21 +1768,33 @@ pub fn py_price_basket_mc_with_copula(
     num_paths: usize,
     copula: &BasketCopula,
 ) -> PyResult<PricingResult> {
-    Ok(PricingResult::from_core(price_basket_mc_with_copula(
-        &basket.to_core()?,
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        &dividends,
-        num_paths,
-        copula.to_core()?,
-    )))
+    require_finite("rate", rate)?;
+    let basket = basket.to_core()?;
+    let copula = copula.to_core()?;
+    let result = py.detach(|| {
+        price_basket_mc_with_copula(
+            &basket,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            &dividends,
+            num_paths,
+            copula,
+        )
+    });
+    if !result.price.is_finite() || result.stderr.is_some_and(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err(
+            "basket pricing failed: invalid inputs produced a non-finite result",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_price_basket_mc_with_factor_model(
+    py: Python<'_>,
     basket: &BasketOption,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1630,16 +1804,28 @@ pub fn py_price_basket_mc_with_factor_model(
     num_paths: usize,
     copula: &BasketCopula,
 ) -> PyResult<PricingResult> {
-    Ok(PricingResult::from_core(price_basket_mc_with_factor_model(
-        &basket.to_core()?,
-        &spots,
-        &vols,
-        &factor_model.to_core()?,
-        rate,
-        &dividends,
-        num_paths,
-        copula.to_core()?,
-    )))
+    require_finite("rate", rate)?;
+    let basket = basket.to_core()?;
+    let factor_model = factor_model.to_core()?;
+    let copula = copula.to_core()?;
+    let result = py.detach(|| {
+        price_basket_mc_with_factor_model(
+            &basket,
+            &spots,
+            &vols,
+            &factor_model,
+            rate,
+            &dividends,
+            num_paths,
+            copula,
+        )
+    });
+    if !result.price.is_finite() || result.stderr.is_some_and(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err(
+            "basket pricing failed: invalid inputs produced a non-finite result",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]
@@ -1668,6 +1854,7 @@ pub fn py_price_basket_moment_matching(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_price_outperformance_basket_mc(
+    py: Python<'_>,
     option: &OutperformanceBasketOption,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1676,20 +1863,31 @@ pub fn py_price_outperformance_basket_mc(
     dividends: Vec<f64>,
     num_paths: usize,
 ) -> PyResult<PricingResult> {
-    Ok(PricingResult::from_core(price_outperformance_basket_mc(
-        &option.to_core()?,
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        &dividends,
-        num_paths,
-    )))
+    require_finite("rate", rate)?;
+    let option = option.to_core()?;
+    let result = py.detach(|| {
+        price_outperformance_basket_mc(
+            &option,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            &dividends,
+            num_paths,
+        )
+    });
+    if !result.price.is_finite() || result.stderr.is_some_and(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err(
+            "outperformance basket pricing failed: invalid inputs produced a non-finite result",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_price_quanto_basket_mc(
+    py: Python<'_>,
     option: &QuantoBasketOption,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1697,14 +1895,16 @@ pub fn py_price_quanto_basket_mc(
     dividends: Vec<f64>,
     num_paths: usize,
 ) -> PyResult<PricingResult> {
-    Ok(PricingResult::from_core(price_quanto_basket_mc(
-        &option.to_core()?,
-        &spots,
-        &vols,
-        &corr_matrix,
-        &dividends,
-        num_paths,
-    )))
+    let option = option.to_core()?;
+    let result = py.detach(|| {
+        price_quanto_basket_mc(&option, &spots, &vols, &corr_matrix, &dividends, num_paths)
+    });
+    if !result.price.is_finite() || result.stderr.is_some_and(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err(
+            "quanto basket pricing failed: invalid inputs produced a non-finite result",
+        ));
+    }
+    Ok(PricingResult::from_core(result))
 }
 
 #[pyfunction]
@@ -1722,6 +1922,7 @@ pub fn py_stressed_correlation_matrix(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_basket_sensitivities(
+    py: Python<'_>,
     basket: &BasketOption,
     spots: Vec<f64>,
     vols: Vec<f64>,
@@ -1730,15 +1931,19 @@ pub fn py_basket_sensitivities(
     dividends: Vec<f64>,
     num_paths: usize,
 ) -> PyResult<BasketSensitivities> {
-    basket_sensitivities(
-        &basket.to_core()?,
-        &spots,
-        &vols,
-        &corr_matrix,
-        rate,
-        &dividends,
-        num_paths,
-    )
+    require_finite("rate", rate)?;
+    let basket = basket.to_core()?;
+    py.detach(|| {
+        basket_sensitivities(
+            &basket,
+            &spots,
+            &vols,
+            &corr_matrix,
+            rate,
+            &dividends,
+            num_paths,
+        )
+    })
     .map(BasketSensitivities::from_core)
     .map_err(pricing_error_to_pyerr)
 }
@@ -1746,6 +1951,7 @@ pub fn py_basket_sensitivities(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_bermudan_price(
+    py: Python<'_>,
     spot: f64,
     strike: f64,
     expiry: f64,
@@ -1759,25 +1965,40 @@ pub fn py_bermudan_price(
 ) -> PyResult<f64> {
     let option_type = parse_option_type(option_type)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported option type '{option_type}'")))?;
-    catch_unwind_py(|| {
-        longstaff_schwartz_bermudan(
-            option_type,
-            spot,
-            strike,
-            rate,
-            vol,
-            expiry,
-            steps,
-            &exercise_steps,
-            num_paths,
-            seed,
-        )
+    require_positive("spot", spot)?;
+    require_positive("strike", strike)?;
+    require_finite("rate", rate)?;
+    require_non_negative("vol", vol)?;
+    require_non_negative("expiry", expiry)?;
+    require_count("steps", steps, 2)?;
+    require_count("num_paths", num_paths, 3)?;
+    if exercise_steps.iter().any(|step| *step > steps) {
+        return Err(PyValueError::new_err(
+            "exercise_steps must not exceed steps",
+        ));
+    }
+    py.detach(|| {
+        catch_unwind_py(|| {
+            longstaff_schwartz_bermudan(
+                option_type,
+                spot,
+                strike,
+                rate,
+                vol,
+                expiry,
+                steps,
+                &exercise_steps,
+                num_paths,
+                seed,
+            )
+        })
     })
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_range_accrual_mc_price(
+    py: Python<'_>,
     instrument: &RangeAccrual,
     r0: f64,
     kappa: f64,
@@ -1787,16 +2008,25 @@ pub fn py_range_accrual_mc_price(
     num_paths: usize,
     seed: u64,
 ) -> PyResult<RangeAccrualResult> {
-    range_accrual_mc_price(
-        &instrument.to_core(),
-        r0,
-        kappa,
-        theta,
-        sigma,
-        discount_rate,
-        num_paths,
-        seed,
-    )
+    require_finite("r0", r0)?;
+    require_non_negative("kappa", kappa)?;
+    require_finite("theta", theta)?;
+    require_non_negative("sigma", sigma)?;
+    require_finite("discount_rate", discount_rate)?;
+    require_count("num_paths", num_paths, 1)?;
+    let instrument = instrument.to_core();
+    py.detach(|| {
+        range_accrual_mc_price(
+            &instrument,
+            r0,
+            kappa,
+            theta,
+            sigma,
+            discount_rate,
+            num_paths,
+            seed,
+        )
+    })
     .map(RangeAccrualResult::from_core)
     .map_err(string_error_to_pyerr)
 }
@@ -1804,6 +2034,7 @@ pub fn py_range_accrual_mc_price(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_dual_range_accrual_mc_price(
+    py: Python<'_>,
     instrument: &DualRangeAccrual,
     r1_0: f64,
     r2_0: f64,
@@ -1818,21 +2049,38 @@ pub fn py_dual_range_accrual_mc_price(
     num_paths: usize,
     seed: u64,
 ) -> PyResult<RangeAccrualResult> {
-    dual_range_accrual_mc_price(
-        &instrument.to_core(),
-        r1_0,
-        r2_0,
-        kappa1,
-        theta1,
-        sigma1,
-        kappa2,
-        theta2,
-        sigma2,
-        rho,
-        discount_rate,
-        num_paths,
-        seed,
-    )
+    require_finite("r1_0", r1_0)?;
+    require_finite("r2_0", r2_0)?;
+    require_non_negative("kappa1", kappa1)?;
+    require_finite("theta1", theta1)?;
+    require_non_negative("sigma1", sigma1)?;
+    require_non_negative("kappa2", kappa2)?;
+    require_finite("theta2", theta2)?;
+    require_non_negative("sigma2", sigma2)?;
+    require_finite("rho", rho)?;
+    if !(-1.0..=1.0).contains(&rho) {
+        return Err(PyValueError::new_err("rho must be in [-1, 1]"));
+    }
+    require_finite("discount_rate", discount_rate)?;
+    require_count("num_paths", num_paths, 1)?;
+    let instrument = instrument.to_core();
+    py.detach(|| {
+        dual_range_accrual_mc_price(
+            &instrument,
+            r1_0,
+            r2_0,
+            kappa1,
+            theta1,
+            sigma1,
+            kappa2,
+            theta2,
+            sigma2,
+            rho,
+            discount_rate,
+            num_paths,
+            seed,
+        )
+    })
     .map(RangeAccrualResult::from_core)
     .map_err(string_error_to_pyerr)
 }
@@ -1840,6 +2088,7 @@ pub fn py_dual_range_accrual_mc_price(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_range_accrual_rate_delta(
+    py: Python<'_>,
     instrument: &RangeAccrual,
     r0: f64,
     kappa: f64,
@@ -1850,17 +2099,27 @@ pub fn py_range_accrual_rate_delta(
     seed: u64,
     bump: f64,
 ) -> PyResult<f64> {
-    range_accrual_rate_delta(
-        &instrument.to_core(),
-        r0,
-        kappa,
-        theta,
-        sigma,
-        discount_rate,
-        num_paths,
-        seed,
-        bump,
-    )
+    require_finite("r0", r0)?;
+    require_non_negative("kappa", kappa)?;
+    require_finite("theta", theta)?;
+    require_non_negative("sigma", sigma)?;
+    require_finite("discount_rate", discount_rate)?;
+    require_count("num_paths", num_paths, 1)?;
+    require_positive("bump", bump)?;
+    let instrument = instrument.to_core();
+    py.detach(|| {
+        range_accrual_rate_delta(
+            &instrument,
+            r0,
+            kappa,
+            theta,
+            sigma,
+            discount_rate,
+            num_paths,
+            seed,
+            bump,
+        )
+    })
     .map_err(string_error_to_pyerr)
 }
 
@@ -1893,6 +2152,7 @@ pub fn py_european_abandonment_put(option: &AbandonmentOption) -> PyResult<f64> 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_tarf_mc_price(
+    py: Python<'_>,
     tarf: &Tarf,
     spot: f64,
     rate: f64,
@@ -1901,22 +2161,18 @@ pub fn py_tarf_mc_price(
     num_paths: usize,
     seed: u64,
 ) -> PyResult<TarfPricingResult> {
-    tarf_mc_price(
-        &tarf.to_core()?,
-        spot,
-        rate,
-        dividend_yield,
-        vol,
-        num_paths,
-        seed,
-    )
-    .map(TarfPricingResult::from_core)
-    .map_err(string_error_to_pyerr)
+    require_finite("rate", rate)?;
+    require_finite("dividend_yield", dividend_yield)?;
+    let tarf = tarf.to_core()?;
+    py.detach(|| tarf_mc_price(&tarf, spot, rate, dividend_yield, vol, num_paths, seed))
+        .map(TarfPricingResult::from_core)
+        .map_err(string_error_to_pyerr)
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_tarf_delta(
+    py: Python<'_>,
     tarf: &Tarf,
     spot: f64,
     rate: f64,
@@ -1926,22 +2182,29 @@ pub fn py_tarf_delta(
     seed: u64,
     bump: f64,
 ) -> PyResult<f64> {
-    tarf_delta(
-        &tarf.to_core()?,
-        spot,
-        rate,
-        dividend_yield,
-        vol,
-        num_paths,
-        seed,
-        bump,
-    )
+    require_finite("rate", rate)?;
+    require_finite("dividend_yield", dividend_yield)?;
+    require_positive("bump", bump)?;
+    let tarf = tarf.to_core()?;
+    py.detach(|| {
+        tarf_delta(
+            &tarf,
+            spot,
+            rate,
+            dividend_yield,
+            vol,
+            num_paths,
+            seed,
+            bump,
+        )
+    })
     .map_err(string_error_to_pyerr)
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn py_tarf_vega(
+    py: Python<'_>,
     tarf: &Tarf,
     spot: f64,
     rate: f64,
@@ -1951,16 +2214,22 @@ pub fn py_tarf_vega(
     seed: u64,
     bump: f64,
 ) -> PyResult<f64> {
-    tarf_vega(
-        &tarf.to_core()?,
-        spot,
-        rate,
-        dividend_yield,
-        vol,
-        num_paths,
-        seed,
-        bump,
-    )
+    require_finite("rate", rate)?;
+    require_finite("dividend_yield", dividend_yield)?;
+    require_positive("bump", bump)?;
+    let tarf = tarf.to_core()?;
+    py.detach(|| {
+        tarf_vega(
+            &tarf,
+            spot,
+            rate,
+            dividend_yield,
+            vol,
+            num_paths,
+            seed,
+            bump,
+        )
+    })
     .map_err(string_error_to_pyerr)
 }
 

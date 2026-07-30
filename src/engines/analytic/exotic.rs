@@ -34,59 +34,35 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
         instrument: &ExoticOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         let mut diagnostics = crate::core::Diagnostics::new();
 
         let price = match instrument {
             ExoticOption::LookbackFloating(spec) => {
-                let vol = market.vol_for(market.spot, spec.expiry.max(1.0e-12));
-                if vol <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market volatility must be > 0".to_string(),
-                    ));
-                }
+                let vol = market.checked_vol_for(market.spot, spec.expiry.max(1.0e-12))?;
                 diagnostics.insert("vol", vol);
                 floating_lookback_price(spec, market, vol)
             }
             ExoticOption::LookbackFixed(spec) => {
-                let vol = market.vol_for(spec.strike, spec.expiry.max(1.0e-12));
-                if vol <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market volatility must be > 0".to_string(),
-                    ));
-                }
+                let vol = market.checked_vol_for(spec.strike, spec.expiry.max(1.0e-12))?;
                 diagnostics.insert("vol", vol);
                 fixed_lookback_price(spec, market, vol)
             }
             ExoticOption::Chooser(spec) => {
-                let vol = market.vol_for(spec.strike, spec.expiry.max(1.0e-12));
-                if vol <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market volatility must be > 0".to_string(),
-                    ));
-                }
+                let vol = market.checked_vol_for(spec.strike, spec.expiry.max(1.0e-12))?;
                 diagnostics.insert("vol", vol);
                 chooser_price(spec, market, vol)
             }
             ExoticOption::Quanto(spec) => {
-                let vol = market.vol_for(spec.strike, spec.expiry.max(1.0e-12));
-                if vol <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market volatility must be > 0".to_string(),
-                    ));
-                }
+                let vol = market.checked_vol_for(spec.strike, spec.expiry.max(1.0e-12))?;
                 diagnostics.insert("vol", vol);
                 quanto_price(spec, market, vol)
             }
             ExoticOption::Compound(spec) => {
-                let vol =
-                    market.vol_for(spec.underlying_strike, spec.underlying_expiry.max(1.0e-12));
-                if vol <= 0.0 {
-                    return Err(PricingError::InvalidInput(
-                        "market volatility must be > 0".to_string(),
-                    ));
-                }
+                let vol = market
+                    .checked_vol_for(spec.underlying_strike, spec.underlying_expiry.max(1.0e-12))?;
                 diagnostics.insert("vol", vol);
                 compound_price(spec, market, vol)?
             }

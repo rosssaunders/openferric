@@ -71,6 +71,7 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
         instrument: &SwingOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if self.steps == 0 {
@@ -90,12 +91,7 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
             ));
         }
 
-        let vol = market.vol_for(instrument.strike, maturity);
-        if vol <= 0.0 || !vol.is_finite() {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be finite and > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, maturity)?;
 
         let dt = maturity / self.steps as f64;
         let u = (vol * dt.sqrt()).exp();

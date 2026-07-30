@@ -269,6 +269,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
         instrument: &DoubleBarrierOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if self.series_terms == 0 {
@@ -313,12 +314,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
             });
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
         let q = market.effective_dividend_yield(instrument.expiry);
 
         let vanilla = bs_price_with_dividend(

@@ -14,6 +14,57 @@ use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 use crate::math::{black_scholes_price_greeks_aad, normal_cdf, normal_pdf};
 
+#[inline]
+fn invalid_inputs(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    vol: f64,
+    expiry: f64,
+) -> bool {
+    !spot.is_finite()
+        || !strike.is_finite()
+        || !rate.is_finite()
+        || !dividend_yield.is_finite()
+        || !vol.is_finite()
+        || !expiry.is_finite()
+        || spot < 0.0
+        || strike < 0.0
+        || vol < 0.0
+        || (spot == 0.0 && strike == 0.0)
+}
+
+#[inline]
+fn deterministic_delta_theta_rho(
+    option_type: OptionType,
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    expiry: f64,
+) -> (f64, f64, f64) {
+    let df_r = (-rate * expiry).exp();
+    let df_q = (-dividend_yield * expiry).exp();
+    let forward_value = spot * df_q - strike * df_r;
+
+    match forward_value.partial_cmp(&0.0) {
+        Some(std::cmp::Ordering::Greater) if option_type == OptionType::Call => (
+            df_q,
+            dividend_yield * spot * df_q - rate * strike * df_r,
+            strike * expiry * df_r,
+        ),
+        Some(std::cmp::Ordering::Less) if option_type == OptionType::Put => (
+            -df_q,
+            -dividend_yield * spot * df_q + rate * strike * df_r,
+            -strike * expiry * df_r,
+        ),
+        Some(std::cmp::Ordering::Equal) => (f64::NAN, f64::NAN, f64::NAN),
+        Some(_) => (0.0, 0.0, 0.0),
+        None => (f64::NAN, f64::NAN, f64::NAN),
+    }
+}
+
 /// Analytic Black-Scholes engine for European vanilla options.
 #[derive(Debug, Clone, Default)]
 pub struct BlackScholesEngine;
@@ -52,10 +103,7 @@ fn d1_d2(
     vol: f64,
     expiry: f64,
 ) -> (f64, f64) {
-    let sig_sqrt_t = vol * expiry.sqrt();
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-        / sig_sqrt_t;
-    (d1, d1 - sig_sqrt_t)
+    super::bs_inline::stable_d1_d2(spot, strike, rate, dividend_yield, vol, expiry)
 }
 
 #[inline]
@@ -68,16 +116,55 @@ pub fn bs_price(
     vol: f64,
     expiry: f64,
 ) -> f64 {
+    if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry) {
+        return f64::NAN;
+    }
     if expiry <= 0.0 {
         return intrinsic(option_type, spot, strike);
     }
     let df_r = (-rate * expiry).exp();
     let df_q = (-dividend_yield * expiry).exp();
-    if vol <= 0.0 {
+    if spot == 0.0 {
+        return if matches!(option_type, OptionType::Call) {
+            0.0
+        } else {
+            strike * df_r
+        };
+    }
+    if strike == 0.0 {
+        return if matches!(option_type, OptionType::Call) {
+            spot * df_q
+        } else {
+            0.0
+        };
+    }
+    if vol == 0.0 {
         return match option_type {
             OptionType::Call => (spot * df_q - strike * df_r).max(0.0),
             OptionType::Put => (strike * df_r - spot * df_q).max(0.0),
         };
+    }
+    if !(spot * df_q).is_finite() || !(strike * df_r).is_finite() {
+        return super::bs_inline::stable_short_total_vol_price(
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            matches!(option_type, OptionType::Call),
+        );
+    }
+    if vol * expiry.sqrt() <= super::bs_inline::ACCURATE_CDF_TOTAL_VOL {
+        return super::bs_inline::stable_short_total_vol_price(
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            matches!(option_type, OptionType::Call),
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -116,8 +203,22 @@ pub fn bs_delta(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 {
+    if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry) {
+        return f64::NAN;
+    }
+    if expiry <= 0.0 {
         return 0.0;
+    }
+    if vol == 0.0 || spot == 0.0 || strike == 0.0 {
+        return deterministic_delta_theta_rho(
+            option_type,
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            expiry,
+        )
+        .0;
     }
     let (d1, _) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
     let df_q = (-dividend_yield * expiry).exp();
@@ -136,7 +237,24 @@ pub fn bs_gamma(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 || spot <= 0.0 {
+    if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry) {
+        return f64::NAN;
+    }
+    if expiry <= 0.0 {
+        return 0.0;
+    }
+    if vol == 0.0 {
+        let (delta, _, _) = deterministic_delta_theta_rho(
+            OptionType::Call,
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            expiry,
+        );
+        return if delta.is_nan() { f64::NAN } else { 0.0 };
+    }
+    if spot == 0.0 || strike == 0.0 {
         return 0.0;
     }
     let (d1, _) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
@@ -153,7 +271,24 @@ pub fn bs_vega(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 || spot <= 0.0 {
+    if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry) {
+        return f64::NAN;
+    }
+    if expiry <= 0.0 {
+        return 0.0;
+    }
+    if vol == 0.0 {
+        let (delta, _, _) = deterministic_delta_theta_rho(
+            OptionType::Call,
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            expiry,
+        );
+        return if delta.is_nan() { f64::NAN } else { 0.0 };
+    }
+    if spot == 0.0 || strike == 0.0 {
         return 0.0;
     }
     let (d1, _) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
@@ -171,8 +306,22 @@ pub fn bs_theta(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 || spot <= 0.0 {
+    if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry) {
+        return f64::NAN;
+    }
+    if expiry <= 0.0 {
         return 0.0;
+    }
+    if vol == 0.0 || spot == 0.0 || strike == 0.0 {
+        return deterministic_delta_theta_rho(
+            option_type,
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            expiry,
+        )
+        .1;
     }
     let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
     let sqrt_t = expiry.sqrt();
@@ -202,8 +351,22 @@ pub fn bs_rho(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 || spot <= 0.0 {
+    if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry) {
+        return f64::NAN;
+    }
+    if expiry <= 0.0 {
         return 0.0;
+    }
+    if vol == 0.0 || spot == 0.0 || strike == 0.0 {
+        return deterministic_delta_theta_rho(
+            option_type,
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            expiry,
+        )
+        .2;
     }
     let (_, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
     let df_r = (-rate * expiry).exp();
@@ -230,12 +393,30 @@ fn bs_price_greeks_with_dividend(
     vol: f64,
     expiry: f64,
 ) -> (f64, Greeks, f64, f64) {
+    if spot == 0.0 || strike == 0.0 {
+        let d = if spot == 0.0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+        return (
+            bs_price(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+            Greeks {
+                delta: bs_delta(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+                gamma: bs_gamma(spot, strike, rate, dividend_yield, vol, expiry),
+                vega: bs_vega(spot, strike, rate, dividend_yield, vol, expiry),
+                theta: bs_theta(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+                rho: bs_rho(option_type, spot, strike, rate, dividend_yield, vol, expiry),
+            },
+            d,
+            d,
+        );
+    }
+
     // Shared intermediates — computed exactly once.
     let sqrt_t = expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-        / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
+    let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
 
     let df_r = (-rate * expiry).exp();
     let df_q = (-dividend_yield * expiry).exp();
@@ -244,17 +425,32 @@ fn bs_price_greeks_with_dividend(
     let nd2 = norm_cdf(d2);
     let pdf_d1 = norm_pdf(d1);
 
-    // Price: compute call, derive put via put-call parity.
+    // Price: compute call, derive put via put-call parity except where that
+    // subtraction would erase tiny but representable time value.
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
     let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
+    let sensitive_price = (sig_sqrt_t <= super::bs_inline::ACCURATE_CDF_TOTAL_VOL
+        || !s_df_q.is_finite()
+        || !k_df_r.is_finite())
+    .then(|| {
+        super::bs_inline::stable_short_total_vol_price(
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            matches!(option_type, OptionType::Call),
+        )
+    });
     let theta_common = -s_df_q * pdf_d1 * vol / (2.0 * sqrt_t);
 
     let (price, delta, theta) = match option_type {
         OptionType::Call => {
             let d = df_q * nd1;
             let th = theta_common + dividend_yield * s_df_q * nd1 - rate * k_df_r * nd2;
-            (call, d, th)
+            (sensitive_price.unwrap_or(call), d, th)
         }
         OptionType::Put => {
             let nmd1 = 1.0 - nd1;
@@ -262,7 +458,7 @@ fn bs_price_greeks_with_dividend(
             let p = call - s_df_q + k_df_r;
             let d = df_q * (nd1 - 1.0);
             let th = theta_common - dividend_yield * s_df_q * nmd1 + rate * k_df_r * nmd2;
-            (p, d, th)
+            (sensitive_price.unwrap_or(p), d, th)
         }
     };
 
@@ -294,18 +490,12 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
         instrument: &VanillaOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
 
         if !matches!(instrument.exercise, ExerciseStyle::European) {
             return Err(PricingError::InvalidInput(
                 "BlackScholesEngine supports European exercise only".to_string(),
-            ));
-        }
-
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
             ));
         }
 
@@ -323,6 +513,8 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
                 diagnostics: crate::core::Diagnostics::new(),
             });
         }
+
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let (spot, dividend_yield) = if market.has_discrete_dividends() {
             (market.prepaid_forward_spot(instrument.expiry), 0.0)
@@ -342,8 +534,12 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
-        diagnostics.insert_key(crate::core::DiagKey::D1, d1);
-        diagnostics.insert_key(crate::core::DiagKey::D2, d2);
+        if d1.is_finite() {
+            diagnostics.insert_key(crate::core::DiagKey::D1, d1);
+        }
+        if d2.is_finite() {
+            diagnostics.insert_key(crate::core::DiagKey::D2, d2);
+        }
 
         Ok(PricingResult {
             price,
@@ -358,6 +554,7 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
         instrument: &VanillaOption,
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
+        market.validate()?;
         instrument.validate()?;
         if !matches!(instrument.exercise, ExerciseStyle::European) {
             return Err(PricingError::InvalidInput(
@@ -365,12 +562,22 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             ));
         }
 
-        let vol = market.vol_for(instrument.strike, instrument.expiry);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
+        if instrument.expiry <= 0.0 {
+            return Ok(PricingResult {
+                price: intrinsic(instrument.option_type, market.spot, instrument.strike),
+                stderr: None,
+                greeks: Some(Greeks {
+                    delta: 0.0,
+                    gamma: 0.0,
+                    vega: 0.0,
+                    theta: 0.0,
+                    rho: 0.0,
+                }),
+                diagnostics: crate::core::Diagnostics::new(),
+            });
         }
+
+        let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let (spot, dividend_yield) = if market.has_discrete_dividends() {
             (market.prepaid_forward_spot(instrument.expiry), 0.0)
@@ -402,8 +609,12 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
-        diagnostics.insert_key(crate::core::DiagKey::D1, d1);
-        diagnostics.insert_key(crate::core::DiagKey::D2, d2);
+        if d1.is_finite() {
+            diagnostics.insert_key(crate::core::DiagKey::D1, d1);
+        }
+        if d2.is_finite() {
+            diagnostics.insert_key(crate::core::DiagKey::D2, d2);
+        }
 
         Ok(PricingResult {
             price,

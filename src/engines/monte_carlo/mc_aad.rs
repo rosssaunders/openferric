@@ -5,7 +5,7 @@
 //! - forward-mode AAD through Heston Euler simulation (delta)
 
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingError, PricingResult};
-use crate::engines::monte_carlo::mc_engine::MonteCarloPricingEngine;
+use crate::engines::monte_carlo::mc_engine::{MonteCarloPricingEngine, RunningMoments};
 use crate::instruments::VanillaOption;
 use crate::market::Market;
 use crate::math::aad::{AadTape, Dual, TapeCheckpoint};
@@ -78,6 +78,7 @@ pub fn mc_european_pathwise_aad(
     market: &Market,
 ) -> Result<PricingResult, PricingError> {
     instrument.validate()?;
+    market.validate()?;
     if !matches!(instrument.exercise, ExerciseStyle::European) {
         return Err(PricingError::InvalidInput(
             "mc pathwise AAD supports European exercise only".to_string(),
@@ -111,12 +112,7 @@ pub fn mc_european_pathwise_aad(
         });
     }
 
-    let vol = market.vol_for(instrument.strike, instrument.expiry);
-    if vol <= 0.0 || !vol.is_finite() {
-        return Err(PricingError::InvalidInput(
-            "market volatility must be finite and > 0".to_string(),
-        ));
-    }
+    let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
     let antithetic = matches!(
         engine.variance_reduction,
@@ -132,8 +128,7 @@ pub fn mc_european_pathwise_aad(
     let cp0 = tape.checkpoint();
 
     let mut normals = vec![0.0_f64; engine.num_steps];
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
+    let mut price_stats = RunningMoments::default();
     let mut grad_sum = [0.0_f64; 4];
     let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
 
@@ -183,22 +178,15 @@ pub fn mc_european_pathwise_aad(
             (pv0, g0)
         };
 
-        sum += pv;
-        sum_sq += pv * pv;
+        price_stats.record(pv);
         for j in 0..4 {
             grad_sum[j] += grads[j];
         }
     }
 
     let n = samples as f64;
-    let mean = sum / n;
-    let variance = if samples > 1 {
-        // Clamp to guard against catastrophic cancellation producing a tiny
-        // negative value (and a NaN stderr after sqrt).
-        (sum_sq - sum * sum / n).max(0.0) / (n - 1.0)
-    } else {
-        0.0
-    };
+    let mean = price_stats.mean();
+    let variance = price_stats.sample_variance();
     let stderr = (variance / n).sqrt();
 
     let mut diagnostics = crate::core::Diagnostics::new();
@@ -434,6 +422,28 @@ mod tests {
         );
         assert!((price - ref_price).abs() < 1e-10);
         assert!((greeks.delta - ref_delta).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pathwise_aad_retains_near_deterministic_sampling_error() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.0)
+            .dividend_yield(0.0)
+            .flat_vol(1.0e-10)
+            .build()
+            .unwrap();
+        let option = VanillaOption::european_call(1.0, 1.0);
+        let result = mc_european_pathwise_aad(
+            &MonteCarloPricingEngine::new(20_000, 1, 42),
+            &option,
+            &market,
+        )
+        .unwrap();
+        let stderr = result.stderr.unwrap();
+        assert!(stderr.is_finite());
+        assert!(stderr > 0.0, "stderr={stderr}");
+        assert!(stderr < 1.0e-9, "stderr={stderr}");
     }
 
     #[test]

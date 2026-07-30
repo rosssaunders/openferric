@@ -41,6 +41,51 @@ pub unsafe fn store_f64x2(values: &mut [f64], i: usize, v: float64x2_t) {
     unsafe { vst1q_f64(values.as_mut_ptr().add(i), v) };
 }
 
+#[inline]
+unsafe fn repair_exp_subnormal_lanes(
+    input: float64x2_t,
+    result: float64x2_t,
+    below_normal_range: uint64x2_t,
+) -> float64x2_t {
+    // `vmaxvq_u64` is not exposed by Rust's AArch64 intrinsics. Extracting
+    // both mask lanes is portable across the supported AArch64 toolchains.
+    if (vgetq_lane_u64::<0>(below_normal_range) | vgetq_lane_u64::<1>(below_normal_range)) == 0 {
+        return result;
+    }
+
+    let mut inputs = [0.0_f64; 2];
+    let mut outputs = [0.0_f64; 2];
+    vst1q_f64(inputs.as_mut_ptr(), input);
+    vst1q_f64(outputs.as_mut_ptr(), result);
+    for lane in 0..2 {
+        if inputs[lane] < -708.396_418_532_264_1 {
+            outputs[lane] = inputs[lane].exp();
+        }
+    }
+    vld1q_f64(outputs.as_ptr())
+}
+
+#[inline]
+unsafe fn repair_ln_subnormal_lanes(input: float64x2_t, result: float64x2_t) -> float64x2_t {
+    let positive = vcgtq_f64(input, vdupq_n_f64(0.0));
+    let below_normal = vcltq_f64(input, vdupq_n_f64(f64::MIN_POSITIVE));
+    let subnormal = vandq_u64(positive, below_normal);
+    if (vgetq_lane_u64::<0>(subnormal) | vgetq_lane_u64::<1>(subnormal)) == 0 {
+        return result;
+    }
+
+    let mut inputs = [0.0_f64; 2];
+    let mut outputs = [0.0_f64; 2];
+    vst1q_f64(inputs.as_mut_ptr(), input);
+    vst1q_f64(outputs.as_mut_ptr(), result);
+    for lane in 0..2 {
+        if inputs[lane] > 0.0 && inputs[lane] < f64::MIN_POSITIVE {
+            outputs[lane] = inputs[lane].ln();
+        }
+    }
+    vld1q_f64(outputs.as_ptr())
+}
+
 /// Vectorized exp(x) for NEON f64x2 using degree-11 Taylor with range reduction.
 ///
 /// Matches the AVX2 `exp_f64x4` algorithm from `simd_math.rs`, ported to 2-lane NEON.
@@ -48,12 +93,13 @@ pub unsafe fn store_f64x2(values: &mut [f64], i: usize, v: float64x2_t) {
 /// finite range `[-700, 700]`.
 #[inline]
 pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
+    let input = x;
     // Clamp to avoid overflow/underflow
     let max_x = vdupq_n_f64(709.782_712_893_384);
     let min_x = vdupq_n_f64(-708.396_418_532_264_1);
     // Inputs beyond ln(f64::MAX) must overflow to +inf like std::exp.
-    // Inputs below the clamp threshold (incl. -inf) must flush to 0.0 instead
-    // of returning exp(min_x) ~ 2.2e-308, and NaN must propagate.
+    // Lanes whose exact result is subnormal are repaired below, and NaN must
+    // propagate.
     // vceqq_f64(x, x) is false only for NaN lanes.
     let overflow = vcgtq_f64(x, max_x);
     let underflow = vcltq_f64(x, min_x);
@@ -113,7 +159,8 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
 
     let y = vbslq_f64(overflow, vdupq_n_f64(f64::INFINITY), y);
     let y = vbslq_f64(underflow, vdupq_n_f64(0.0), y);
-    vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y)
+    let y = vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y);
+    repair_exp_subnormal_lanes(input, y, underflow)
 }
 
 /// Faster vectorized exp(x) for NEON f64x2 using a degree-7 polynomial.
@@ -126,6 +173,7 @@ pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
 /// The caller must ensure NEON is available; it is part of the AArch64 baseline.
 #[inline]
 pub unsafe fn fast_exp_f64x2(x: float64x2_t) -> float64x2_t {
+    let input = x;
     let max_x = vdupq_n_f64(709.782_712_893_384);
     let min_x = vdupq_n_f64(-708.396_418_532_264_1);
     let overflow = vcgtq_f64(x, max_x);
@@ -173,7 +221,8 @@ pub unsafe fn fast_exp_f64x2(x: float64x2_t) -> float64x2_t {
 
     let y = vbslq_f64(overflow, vdupq_n_f64(f64::INFINITY), y);
     let y = vbslq_f64(underflow, vdupq_n_f64(0.0), y);
-    vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y)
+    let y = vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y);
+    repair_exp_subnormal_lanes(input, y, underflow)
 }
 
 /// Vectorized ln(x) for NEON f64x2 using fdlibm kernel with IEEE 754 bit extraction.
@@ -182,7 +231,7 @@ pub unsafe fn fast_exp_f64x2(x: float64x2_t) -> float64x2_t {
 #[inline]
 pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     let one = vdupq_n_f64(1.0);
-    let sqrt_half = vdupq_n_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let sqrt_two = vdupq_n_f64(std::f64::consts::SQRT_2);
 
     // Extract exponent and mantissa via IEEE 754 bit manipulation
     let x_bits: uint64x2_t = std::mem::transmute(x);
@@ -202,14 +251,14 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     k_lanes[1] = (exp_u64[1] as i64 - 1023) as f64;
     let mut k = vld1q_f64(k_lanes.as_ptr());
 
-    // Fold m into [sqrt(1/2), sqrt(2)] for better accuracy
-    let adjust = vcltq_f64(m, sqrt_half);
+    // Fold m from [1, 2) into [sqrt(1/2), sqrt(2)). Values at or above
+    // sqrt(2) are halved and their binary exponent incremented.
+    let adjust = vcgeq_f64(m, sqrt_two);
     let adjust_bits: uint64x2_t = std::mem::transmute(adjust);
-    // If m < sqrt(1/2), double m and decrement k
-    let m_doubled = vaddq_f64(m, m);
-    let k_minus_one = vsubq_f64(k, one);
-    m = vbslq_f64(adjust_bits, m_doubled, m);
-    k = vbslq_f64(adjust_bits, k_minus_one, k);
+    let m_halved = vmulq_f64(m, vdupq_n_f64(0.5));
+    let k_plus_one = vaddq_f64(k, one);
+    m = vbslq_f64(adjust_bits, m_halved, m);
+    k = vbslq_f64(adjust_bits, k_plus_one, k);
 
     // f = m - 1, s = f / (2 + f)
     let f = vsubq_f64(m, one);
@@ -261,7 +310,8 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     y = vbslq_f64(eq_zero, vdupq_n_f64(f64::NEG_INFINITY), y);
     y = vbslq_f64(neg, vdupq_n_f64(f64::NAN), y);
     y = vbslq_f64(is_inf, vdupq_n_f64(f64::INFINITY), y);
-    vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y)
+    y = vbslq_f64(nan_mask, vdupq_n_f64(f64::NAN), y);
+    repair_ln_subnormal_lanes(x, y)
 }
 
 #[inline]
@@ -290,11 +340,16 @@ pub unsafe fn norm_cdf_f64x2(x: float64x2_t) -> float64x2_t {
     let approx = vsubq_f64(one, vmulq_f64(unsafe { norm_pdf_f64x2(z) }, poly));
     let reflected = vsubq_f64(one, approx);
     let neg_mask = vcltq_f64(x, zero);
-    vbslq_f64(neg_mask, reflected, approx)
+    let result = vbslq_f64(neg_mask, reflected, approx);
+    let is_zero = vceqq_f64(x, zero);
+    vbslq_f64(is_zero, vdupq_n_f64(0.5), result)
 }
 
 #[inline]
 fn normal_cdf_scalar(x: f64) -> f64 {
+    if x == 0.0 {
+        return 0.5;
+    }
     let z = x.abs();
     let t = 1.0 / (1.0 + P * z);
     let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
@@ -312,7 +367,10 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
             (strike - spot).max(0.0)
         };
     }
-    if vol <= 0.0 {
+    if vol < 0.0 {
+        return f64::NAN;
+    }
+    if vol == 0.0 {
         // Deterministic (zero-vol) limit with t > 0: discounted forward
         // intrinsic e^{-rT} (S e^{(r-q)T} - K)^+ (put analogue likewise),
         // not the undiscounted spot intrinsic.
@@ -327,13 +385,6 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
 
     let df_r = (-r * t).exp();
     let df_q = (-q * t).exp();
-    if vol <= 0.0 {
-        return if is_call {
-            (spot * df_q - strike * df_r).max(0.0)
-        } else {
-            (strike * df_r - spot * df_q).max(0.0)
-        };
-    }
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
@@ -461,11 +512,13 @@ mod tests {
     const FAST_EXP_RELATIVE_ERROR_BOUND: f64 = 8e-9;
 
     /// Special inputs covering underflow, overflow, infinities and NaN.
-    const EXP_LN_SPECIALS: [f64; 9] = [
+    const EXP_LN_SPECIALS: [f64; 11] = [
         f64::NEG_INFINITY,
         -1e308,
         -710.0,
         -708.5,
+        f64::from_bits(1),
+        f64::from_bits((1_u64 << 52) - 1),
         0.0,
         709.5,
         709.9,
@@ -473,9 +526,8 @@ mod tests {
         f64::NAN,
     ];
 
-    /// Compare a SIMD exp result against `std::f64::exp`. Below the kernel's
-    /// clamp threshold (~-708.4) std may return a subnormal while the SIMD
-    /// path flushes to +0.0; both count as zero at working precision.
+    /// Compare a SIMD exp result against `std::f64::exp`. Rare subnormal lanes
+    /// use the scalar repair path and therefore must match bit-for-bit.
     fn check_exp_special(x: f64, got: f64, tolerance: f64) {
         let expected = x.exp();
         if expected.is_nan() {
@@ -483,9 +535,10 @@ mod tests {
         } else if expected.is_infinite() {
             assert_eq!(got, expected, "exp({x}) = {got}, expected {expected}");
         } else if expected < f64::MIN_POSITIVE {
-            assert!(
-                (0.0..=f64::MIN_POSITIVE).contains(&got),
-                "exp({x}) = {got}, expected ~0 (std: {expected})"
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "exp({x}) = {got}, expected subnormal {expected}"
             );
         } else {
             let rel = ((got - expected) / expected).abs();
@@ -502,12 +555,47 @@ mod tests {
             assert!(got.is_nan(), "ln({x}) = {got}, expected NaN");
         } else if expected.is_infinite() {
             assert_eq!(got, expected, "ln({x}) = {got}, expected {expected}");
+        } else if x > 0.0 && x < f64::MIN_POSITIVE {
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "ln({x}) = {got}, expected repaired subnormal result {expected}"
+            );
         } else {
             let abs_err = (got - expected).abs();
+            let tolerance = 8.0 * f64::EPSILON * expected.abs().max(1.0);
             assert!(
-                abs_err <= 1e-9,
-                "ln({x}) = {got}, expected {expected}, abs_err={abs_err}"
+                abs_err <= tolerance,
+                "ln({x}) = {got}, expected {expected}, abs_err={abs_err}, tolerance={tolerance}"
             );
+        }
+    }
+
+    fn assert_dense_ln_accuracy() {
+        const SAMPLES: usize = 16_385;
+        const EXPONENTS: [i32; 7] = [-1000, -100, -1, 0, 1, 100, 1000];
+
+        for exponent in EXPONENTS {
+            let scale = 2.0_f64.powi(exponent);
+            for base in (0..SAMPLES).step_by(2) {
+                let mut input = [1.0_f64; 2];
+                let valid_lanes = (SAMPLES - base).min(2);
+                for (lane, value) in input.iter_mut().take(valid_lanes).enumerate() {
+                    let fraction = (base + lane) as f64 / SAMPLES as f64;
+                    *value = (1.0 + fraction) * scale;
+                }
+
+                let mut out = [0.0_f64; 2];
+                // SAFETY: AArch64 guarantees NEON and both arrays contain
+                // two lanes.
+                unsafe {
+                    let x = load_f64x2(&input, 0);
+                    store_f64x2(&mut out, 0, simd_ln_f64x2(x));
+                }
+                for lane in 0..valid_lanes {
+                    check_ln_special(input[lane], out[lane]);
+                }
+            }
         }
     }
 
@@ -615,5 +703,13 @@ mod tests {
                 check_ln_special(x, out[i]);
             }
         }
+    }
+
+    #[test]
+    fn simd_ln_f64x2_dense_accuracy_bound() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+        assert_dense_ln_accuracy();
     }
 }

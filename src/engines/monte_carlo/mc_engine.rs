@@ -25,6 +25,8 @@ use crate::math::fast_rng::{
     FastRng, FastRngKind, Xoshiro256PlusPlus, resolve_stream_seed, sample_standard_normal,
     uniform_open01,
 };
+#[cfg(feature = "parallel")]
+use crate::mc::simulation::{estimated_parallel_work_savings, should_auto_parallelize_path};
 use crate::mc::{
     ControlVariate, CpuExecutionPolicy, GbmPathGenerator, MonteCarloEngine, PathGenerator,
 };
@@ -80,14 +82,62 @@ fn vanilla_payoff(option_type: crate::core::OptionType, spot: f64, strike: f64) 
     }
 }
 
-#[inline]
-fn nonnegative_sample_variance(sum: f64, sum_sq: f64, count: usize) -> f64 {
-    if count > 1 {
-        let n = count as f64;
-        let variance = (sum_sq - sum * sum / n) / (n - 1.0);
+/// Mergeable centered moments using the Welford/Chan recurrences.
+///
+/// Keeping `M2 = Σ(x-mean)²` avoids the catastrophic cancellation in
+/// `Σx² - (Σx)²/n` for nearly deterministic Monte Carlo payoffs.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RunningMoments {
+    count: usize,
+    mean: f64,
+    m2: f64,
+}
+
+impl RunningMoments {
+    #[inline(always)]
+    pub(crate) fn record(&mut self, value: f64) {
+        self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = value - self.mean;
+        self.m2 += delta * delta2;
+    }
+
+    #[inline]
+    pub(crate) fn merge(&mut self, other: Self) {
+        if other.count == 0 {
+            return;
+        }
+        if self.count == 0 {
+            *self = other;
+            return;
+        }
+        let lhs_count = self.count as f64;
+        let rhs_count = other.count as f64;
+        let total_count = lhs_count + rhs_count;
+        let delta = other.mean - self.mean;
+        self.mean += delta * (rhs_count / total_count);
+        self.m2 += other.m2 + delta * delta * (lhs_count * rhs_count / total_count);
+        self.count += other.count;
+    }
+
+    #[inline]
+    pub(crate) fn count(self) -> usize {
+        self.count
+    }
+
+    #[inline]
+    pub(crate) fn mean(self) -> f64 {
+        if self.count == 0 { f64::NAN } else { self.mean }
+    }
+
+    #[inline]
+    pub(crate) fn sample_variance(self) -> f64 {
+        if self.count <= 1 {
+            return 0.0;
+        }
+        let variance = self.m2 / (self.count as f64 - 1.0);
         if variance < 0.0 { 0.0 } else { variance }
-    } else {
-        0.0
     }
 }
 
@@ -239,7 +289,10 @@ pub fn mc_european_with_arena(
         };
     }
 
-    if instrument.validate().is_err() || !matches!(instrument.exercise, ExerciseStyle::European) {
+    if instrument.validate().is_err()
+        || market.validate().is_err()
+        || !matches!(instrument.exercise, ExerciseStyle::European)
+    {
         return PricingResult {
             price: f64::NAN,
             stderr: None,
@@ -342,28 +395,14 @@ pub fn mc_european_with_arena(
         i += 1;
     }
 
-    let n = n_paths as f64;
     let payoffs = &payoff_buffer[..n_paths];
-    // Kahan summation for improved numerical accuracy (the FMA is free).
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
-    let mut comp = 0.0_f64;
-    let mut comp_sq = 0.0_f64;
+    let mut stats = RunningMoments::default();
     for &v in payoffs {
-        // Kahan summation for sum
-        let y = v - comp;
-        let t = sum + y;
-        comp = (t - sum) - y;
-        sum = t;
-        // Kahan summation for sum_sq
-        let v2 = v * v;
-        let y2 = v2 - comp_sq;
-        let t2 = sum_sq + y2;
-        comp_sq = (t2 - sum_sq) - y2;
-        sum_sq = t2;
+        stats.record(v);
     }
-    let mean = sum / n;
-    let variance = nonnegative_sample_variance(sum, sum_sq, n_paths);
+    let n = stats.count() as f64;
+    let mean = stats.mean();
+    let variance = stats.sample_variance();
 
     let mut diagnostics = crate::core::Diagnostics::new();
     diagnostics.insert_key(crate::core::DiagKey::NumPaths, n_paths as f64);
@@ -474,35 +513,23 @@ unsafe fn mc_exact_avx2_inner(
     }
 }
 
-const AUTO_SIMD_MIN_PATHS: usize = 512;
-#[cfg(feature = "parallel")]
-const AUTO_PARALLEL_MIN_WORK_ITEMS: usize = 32_768;
 #[cfg(all(feature = "gpu", not(target_family = "wasm")))]
 const AUTO_GPU_MIN_PATHS: usize = 1_000_000;
 const EXACT_PARALLEL_CHUNK_SAMPLES: usize = 4_096;
+#[cfg(feature = "parallel")]
+const EXACT_PARALLEL_MIN_SAVED_SAMPLES: usize = 1_024;
 
-#[derive(Debug, Clone, Copy, Default)]
-struct ExactTerminalStats {
-    sum: f64,
-    sum_sq: f64,
-    count: usize,
+/// Exact-terminal SIMD is cheap enough that Rayon must remove at least a
+/// quarter of one 4,096-sample chunk from the serial critical path. The
+/// `mc_exact_terminal_rayon_crossover` benchmark brackets this boundary at
+/// 5,119/5,120 effective samples for 2-thread and host-sized pools.
+#[cfg(feature = "parallel")]
+fn should_auto_parallelize_exact_terminal(samples: usize, threads: usize) -> bool {
+    estimated_parallel_work_savings(samples, 1, EXACT_PARALLEL_CHUNK_SAMPLES, threads)
+        >= EXACT_PARALLEL_MIN_SAVED_SAMPLES
 }
 
-impl ExactTerminalStats {
-    #[inline(always)]
-    fn record(&mut self, payoff: f64) {
-        self.sum += payoff;
-        self.sum_sq += payoff * payoff;
-        self.count += 1;
-    }
-
-    #[inline]
-    fn merge(&mut self, other: Self) {
-        self.sum += other.sum;
-        self.sum_sq += other.sum_sq;
-        self.count += other.count;
-    }
-}
+type ExactTerminalStats = RunningMoments;
 
 #[derive(Debug, Clone, Copy)]
 struct ExactTerminalParameters {
@@ -1013,9 +1040,9 @@ pub struct MonteCarloPricingEngine {
     /// RNG seed.
     pub seed: u64,
     /// Pseudo-random number generator backend.
-    pub rng_kind: FastRngKind,
+    pub(crate) rng_kind: FastRngKind,
     /// Reproducible stream splitting mode.
-    pub reproducible: bool,
+    pub(crate) reproducible: bool,
     /// Variance reduction configuration.
     pub variance_reduction: VarianceReduction,
     /// Approximation accuracy tier for SIMD math (exp, inverse CDF).
@@ -1046,6 +1073,16 @@ impl MonteCarloPricingEngine {
         self
     }
 
+    /// Returns the configured random-number generator.
+    pub fn rng_kind(&self) -> FastRngKind {
+        self.rng_kind
+    }
+
+    /// Returns whether seeded stream splitting is reproducible.
+    pub fn is_reproducible(&self) -> bool {
+        self.reproducible
+    }
+
     /// Chooses RNG backend for path simulation.
     pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
         self.rng_kind = rng_kind;
@@ -1058,7 +1095,10 @@ impl MonteCarloPricingEngine {
     /// Uses a reproducible seed.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
-        self.reproducible = true;
+        // ThreadRng deliberately ignores deterministic seeds. Preserve that
+        // backend choice, but never advertise the resulting stream as
+        // reproducible.
+        self.reproducible = !matches!(self.rng_kind, FastRngKind::ThreadRng);
         self
     }
 
@@ -1111,6 +1151,15 @@ impl MonteCarloPricingEngine {
             )
     }
 
+    #[inline]
+    fn effective_samples(&self) -> usize {
+        if matches!(self.variance_reduction, VarianceReduction::Antithetic) {
+            self.num_paths.div_ceil(2)
+        } else {
+            self.num_paths
+        }
+    }
+
     #[cfg(all(feature = "gpu", not(target_family = "wasm")))]
     fn gpu_request_eligibility(
         &self,
@@ -1138,23 +1187,42 @@ impl MonteCarloPricingEngine {
         Ok(())
     }
 
+    #[cfg(all(feature = "gpu", not(target_family = "wasm")))]
+    fn should_auto_select_gpu(
+        &self,
+        vanilla: Option<&VanillaOption>,
+        market: &Market,
+        gpu_ready: bool,
+    ) -> bool {
+        gpu_ready
+            && self.num_paths >= AUTO_GPU_MIN_PATHS
+            && vanilla.is_some_and(|vanilla| self.gpu_request_eligibility(vanilla, market).is_ok())
+    }
+
     fn auto_cpu_backend(&self, exact_terminal: bool) -> ExecutionBackend {
+        let samples = self.effective_samples();
         #[cfg(feature = "parallel")]
         {
-            let work_items = self.num_paths.saturating_mul(self.num_steps.max(1));
-            if rayon::current_num_threads() > 1
-                && if exact_terminal {
-                    self.num_paths >= AUTO_PARALLEL_MIN_WORK_ITEMS
-                } else {
-                    work_items >= AUTO_PARALLEL_MIN_WORK_ITEMS
-                }
-            {
+            let threads = rayon::current_num_threads();
+            let use_parallel = if exact_terminal {
+                should_auto_parallelize_exact_terminal(samples, threads)
+            } else {
+                // The higher-level engine currently constructs a one-stream
+                // GBM generator for non-exact pricing.
+                should_auto_parallelize_path(samples, self.num_steps, 1, threads)
+            };
+            if use_parallel {
                 return ExecutionBackend::Parallel;
             }
         }
 
-        if exact_terminal && available_simd_width_f64() > 1 && self.num_paths >= AUTO_SIMD_MIN_PATHS
-        {
+        // Exact-terminal SIMD has no separate allocation/setup pass. Its
+        // vector kernel becomes useful as soon as at least one complete native
+        // vector is available; below that point execution is entirely the
+        // scalar tail. Tying the crossover to native width also avoids an
+        // x86-specific magic path count on NEON and AVX-512.
+        let simd_width = available_simd_width_f64();
+        if exact_terminal && simd_width > 1 && samples >= simd_width {
             ExecutionBackend::Simd
         } else {
             ExecutionBackend::Scalar
@@ -1220,10 +1288,7 @@ impl MonteCarloPricingEngine {
             )),
             ExecutionPolicy::Auto => {
                 #[cfg(all(feature = "gpu", not(target_family = "wasm")))]
-                if self.num_paths >= AUTO_GPU_MIN_PATHS
-                    && vanilla.is_some_and(|vanilla| {
-                        self.gpu_request_eligibility(vanilla, market).is_ok()
-                    })
+                if self.should_auto_select_gpu(vanilla, market, crate::engines::gpu::gpu_is_ready())
                 {
                     return Ok(ExecutionBackend::Gpu);
                 }
@@ -1244,8 +1309,6 @@ impl MonteCarloPricingEngine {
         // S0 simulated with drift r-q, allowing the q-free GPU API to preserve
         // continuous-dividend semantics.
         let adjusted_spot = market.spot * (-market.dividend_yield * instrument.expiry).exp();
-        // Fold both halves so all 64 seed bits affect the shader's u32 seed.
-        let gpu_seed = (self.seed as u32) ^ ((self.seed >> 32) as u32);
         let result = crate::engines::gpu::mc_european_gpu(
             adjusted_spot,
             instrument.strike,
@@ -1254,7 +1317,7 @@ impl MonteCarloPricingEngine {
             instrument.expiry,
             self.num_paths,
             self.num_steps,
-            gpu_seed,
+            self.seed,
             matches!(instrument.option_type, OptionType::Call),
         )?;
 
@@ -1294,11 +1357,7 @@ impl MonteCarloPricingEngine {
         backend: ExecutionBackend,
     ) -> PricingResult {
         let antithetic = matches!(self.variance_reduction, VarianceReduction::Antithetic);
-        let samples = if antithetic {
-            self.num_paths.div_ceil(2)
-        } else {
-            self.num_paths
-        };
+        let samples = self.effective_samples();
         let maturity = instrument.expiry;
         let parameters = ExactTerminalParameters {
             option_type: instrument.option_type,
@@ -1314,13 +1373,13 @@ impl MonteCarloPricingEngine {
             accuracy_tier: self.effective_accuracy_tier(),
         };
         let stats = exact_terminal_stats(&parameters, samples, backend);
-        let n = stats.count as f64;
-        let mean = stats.sum / n;
-        let variance = nonnegative_sample_variance(stats.sum, stats.sum_sq, stats.count);
+        let n = stats.count() as f64;
+        let mean = stats.mean();
+        let variance = stats.sample_variance();
         let discount = (-market.rate * maturity).exp();
         let available_vector_width = available_simd_width_f64();
         let vector_width = if matches!(backend, ExecutionBackend::Scalar)
-            || stats.count < available_vector_width
+            || stats.count() < available_vector_width
         {
             1
         } else {
@@ -1371,9 +1430,9 @@ pub struct ArithmeticAsianMC {
     /// RNG seed.
     pub seed: u64,
     /// Pseudo-random number generator backend.
-    pub rng_kind: FastRngKind,
+    pub(crate) rng_kind: FastRngKind,
     /// Reproducible stream splitting mode.
-    pub reproducible: bool,
+    pub(crate) reproducible: bool,
     /// Enables geometric-Asian control variate.
     pub control_variate: bool,
 }
@@ -1397,6 +1456,16 @@ impl ArithmeticAsianMC {
         self
     }
 
+    /// Returns the configured random-number generator.
+    pub fn rng_kind(&self) -> FastRngKind {
+        self.rng_kind
+    }
+
+    /// Returns whether seeded stream splitting is reproducible.
+    pub fn is_reproducible(&self) -> bool {
+        self.reproducible
+    }
+
     /// Chooses RNG backend for path simulation.
     pub fn with_rng_kind(mut self, rng_kind: FastRngKind) -> Self {
         self.rng_kind = rng_kind;
@@ -1409,7 +1478,7 @@ impl ArithmeticAsianMC {
     /// Uses a reproducible seed.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
-        self.reproducible = true;
+        self.reproducible = !matches!(self.rng_kind, FastRngKind::ThreadRng);
         self
     }
 
@@ -1434,6 +1503,7 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
         market: &Market,
     ) -> Result<PricingResult, PricingError> {
         instrument.validate()?;
+        market.validate()?;
 
         if instrument.asian.averaging != Averaging::Arithmetic {
             return Err(PricingError::InvalidInput(
@@ -1457,12 +1527,7 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
         }
 
         let maturity = instrument.expiry;
-        let vol = market.vol_for(instrument.strike, maturity);
-        if vol <= 0.0 || !vol.is_finite() {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be finite and > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(instrument.strike, maturity)?;
 
         let generator = GbmPathGenerator {
             model: Gbm {
@@ -1566,6 +1631,7 @@ where
 {
     fn price(&self, instrument: &T, market: &Market) -> Result<PricingResult, PricingError> {
         instrument.validate_for_mc()?;
+        market.validate()?;
 
         if self.num_paths == 0 {
             return Err(PricingError::InvalidInput(
@@ -1605,12 +1671,7 @@ where
         }
 
         let ref_strike = instrument.reference_strike(market.spot).max(1e-12);
-        let vol = market.vol_for(ref_strike, maturity);
-        if vol <= 0.0 {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(ref_strike, maturity)?;
 
         let resolved_backend = self.resolve_execution_backend(instrument, market)?;
         #[cfg(all(feature = "gpu", not(target_family = "wasm")))]
@@ -1751,14 +1812,28 @@ mod tests {
     use crate::math::arena::PricingArena;
 
     #[test]
-    fn sample_variance_clamps_negative_roundoff() {
+    fn centered_moments_preserve_constant_and_nan_semantics() {
         let value = 3.162_277_660_168_379_6e-25;
-        let values = [value; 3];
-        let sum = values.iter().sum::<f64>();
-        let sum_sq = values.iter().map(|value| value * value).sum::<f64>();
+        let mut stats = RunningMoments::default();
+        for sample in [value; 3] {
+            stats.record(sample);
+        }
+        assert_eq!(stats.sample_variance(), 0.0);
 
-        assert_eq!(nonnegative_sample_variance(sum, sum_sq, values.len()), 0.0);
-        assert!(nonnegative_sample_variance(f64::NAN, sum_sq, values.len()).is_nan());
+        stats.record(f64::NAN);
+        assert!(stats.mean().is_nan());
+        assert!(stats.sample_variance().is_nan());
+    }
+
+    #[test]
+    fn centered_moments_preserve_small_nonzero_variance() {
+        let mut stats = RunningMoments::default();
+        for sample in [100.0 - 2.0e-10, 100.0 - 1.0e-10, 100.0, 100.0 + 1.0e-10] {
+            stats.record(sample);
+        }
+        assert!(stats.sample_variance().is_finite());
+        assert!(stats.sample_variance() > 0.0);
+        assert!(stats.sample_variance() < 1.0e-18);
     }
 
     #[test]
@@ -1785,6 +1860,86 @@ mod tests {
             bs,
             rel_err
         );
+    }
+
+    #[test]
+    fn near_deterministic_exact_terminal_has_finite_nonzero_stderr() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.0)
+            .dividend_yield(0.0)
+            .flat_vol(1.0e-10)
+            .build()
+            .unwrap();
+        let option = VanillaOption::european_call(1.0, 1.0);
+        let result = MonteCarloPricingEngine::new(100_000, 1, 123)
+            .with_execution_policy(ExecutionPolicy::Scalar)
+            .price(&option, &market)
+            .unwrap();
+        let stderr = result.stderr.unwrap();
+        assert!(stderr.is_finite());
+        assert!(stderr > 0.0, "stderr={stderr}");
+        assert!(stderr < 1.0e-9, "stderr={stderr}");
+    }
+
+    #[test]
+    fn thread_rng_never_claims_seeded_reproducibility() {
+        for engine in [
+            MonteCarloPricingEngine::new(32, 1, 1)
+                .with_thread_rng()
+                .with_seed(42),
+            MonteCarloPricingEngine::new(32, 1, 1)
+                .with_seed(42)
+                .with_thread_rng(),
+        ] {
+            assert_eq!(engine.rng_kind, FastRngKind::ThreadRng);
+            assert!(!engine.reproducible);
+        }
+
+        for engine in [
+            ArithmeticAsianMC::new(32, 4, 1)
+                .with_thread_rng()
+                .with_seed(42),
+            ArithmeticAsianMC::new(32, 4, 1)
+                .with_seed(42)
+                .with_thread_rng(),
+        ] {
+            assert_eq!(engine.rng_kind, FastRngKind::ThreadRng);
+            assert!(!engine.reproducible);
+        }
+    }
+
+    #[test]
+    fn pricing_boundary_revalidates_directly_constructed_market() {
+        let valid = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .dividend_yield(0.01)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let option = VanillaOption::european_call(100.0, 1.0);
+        let engine = MonteCarloPricingEngine::new(256, 1, 42);
+        for invalid in [
+            Market {
+                spot: f64::NAN,
+                ..valid.clone()
+            },
+            Market {
+                rate: f64::INFINITY,
+                ..valid.clone()
+            },
+            Market {
+                dividend_yield: f64::NEG_INFINITY,
+                ..valid.clone()
+            },
+            Market {
+                vol: crate::market::VolSource::Flat(f64::NAN),
+                ..valid.clone()
+            },
+        ] {
+            assert!(engine.price(&option, &invalid).is_err());
+        }
     }
 
     #[test]
@@ -2171,10 +2326,14 @@ mod tests {
         );
 
         let auto = MonteCarloPricingEngine::new(AUTO_GPU_MIN_PATHS, 16, 42);
-        assert_eq!(
-            auto.resolve_execution_backend(&option, &market)
-                .expect("auto resolution"),
-            ExecutionBackend::Gpu
+        assert!(!auto.should_auto_select_gpu(Some(&option), &market, false));
+        assert!(auto.should_auto_select_gpu(Some(&option), &market, true));
+        assert!(
+            !MonteCarloPricingEngine::new(AUTO_GPU_MIN_PATHS - 1, 16, 42).should_auto_select_gpu(
+                Some(&option),
+                &market,
+                true
+            )
         );
 
         for invalid in [
@@ -2313,6 +2472,176 @@ mod tests {
                 .expect("parallel policy accepts an exact-terminal scalar tail");
             assert_eq!(parallel.diagnostics.get("vector_width"), Some(&1.0));
         }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn auto_simd_dispatch_uses_effective_samples_at_native_vector_boundary() {
+        let width = available_simd_width_f64();
+        if width == 1 {
+            return;
+        }
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let option = VanillaOption::european_call(100.0, 1.0);
+
+        for (variance_reduction, requested_below, requested_at) in [
+            (VarianceReduction::None, width - 1, width),
+            (
+                VarianceReduction::Antithetic,
+                2 * (width - 1),
+                2 * width - 1,
+            ),
+        ] {
+            let below = MonteCarloPricingEngine::new(requested_below, 1, 42)
+                .with_variance_reduction(variance_reduction.clone())
+                .resolve_execution_backend(&option, &market)
+                .unwrap();
+            let at = MonteCarloPricingEngine::new(requested_at, 1, 42)
+                .with_variance_reduction(variance_reduction)
+                .resolve_execution_backend(&option, &market)
+                .unwrap();
+            assert_eq!(below, ExecutionBackend::Scalar);
+            assert_eq!(at, ExecutionBackend::Simd);
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn auto_exact_terminal_rayon_boundary_uses_effective_samples_and_pool_size() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let option = VanillaOption::european_call(100.0, 1.0);
+        let host_threads = rayon::current_num_threads();
+        let mut pool_sizes = vec![1_usize, 2, host_threads];
+        pool_sizes.sort_unstable();
+        pool_sizes.dedup();
+
+        for threads in pool_sizes {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for (variance_reduction, requested_below, requested_at) in [
+                (VarianceReduction::None, 5_119, 5_120),
+                (VarianceReduction::Antithetic, 2 * 5_119, 2 * 5_120 - 1),
+            ] {
+                let resolve = |paths| {
+                    MonteCarloPricingEngine::new(paths, 1, 42)
+                        .with_variance_reduction(variance_reduction.clone())
+                        .resolve_execution_backend(&option, &market)
+                        .unwrap()
+                };
+                let (below, at) =
+                    pool.install(|| (resolve(requested_below), resolve(requested_at)));
+                assert_ne!(below, ExecutionBackend::Parallel);
+                if threads == 1 {
+                    assert_ne!(at, ExecutionBackend::Parallel);
+                } else {
+                    assert_eq!(at, ExecutionBackend::Parallel);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn auto_path_rayon_boundary_uses_effective_samples_and_pool_size() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let option = VanillaOption::american_put(100.0, 1.0);
+        let host_threads = rayon::current_num_threads();
+        let mut pool_sizes = vec![1_usize, 2, host_threads];
+        pool_sizes.sort_unstable();
+        pool_sizes.dedup();
+
+        for threads in pool_sizes {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let (effective_below, effective_at) =
+                if threads <= 2 { (511, 512) } else { (767, 768) };
+            for (variance_reduction, requested_below, requested_at) in [
+                (VarianceReduction::None, effective_below, effective_at),
+                (
+                    VarianceReduction::Antithetic,
+                    2 * effective_below,
+                    2 * effective_at - 1,
+                ),
+            ] {
+                let resolve = |paths| {
+                    MonteCarloPricingEngine::new(paths, 1, 42)
+                        .with_variance_reduction(variance_reduction.clone())
+                        .resolve_execution_backend(&option, &market)
+                        .unwrap()
+                };
+                let (below, at) =
+                    pool.install(|| (resolve(requested_below), resolve(requested_at)));
+                assert_eq!(below, ExecutionBackend::Scalar);
+                if threads == 1 {
+                    assert_eq!(at, ExecutionBackend::Scalar);
+                } else {
+                    assert_eq!(at, ExecutionBackend::Parallel);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn auto_accuracy_avoids_fast_tier_bias_in_low_variance_case() {
+        if available_simd_width_f64() == 1 {
+            return;
+        }
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(-0.5 * std::f64::consts::LN_2)
+            .dividend_yield(0.0)
+            .flat_vol(1.0e-4)
+            .build()
+            .unwrap();
+        let option = VanillaOption::european_call(1.0, 1.0);
+        let base = MonteCarloPricingEngine::new(16_384, 1, 42)
+            .with_variance_reduction(VarianceReduction::Antithetic);
+        let scalar = base
+            .clone()
+            .with_execution_policy(ExecutionPolicy::Scalar)
+            .price(&option, &market)
+            .unwrap();
+        let fast = base
+            .clone()
+            .with_execution_policy(ExecutionPolicy::Simd)
+            .with_accuracy_tier(AccuracyTier::Fast)
+            .price(&option, &market)
+            .unwrap();
+        let automatic = base.price(&option, &market).unwrap();
+
+        let fast_bias = (fast.price - scalar.price).abs();
+        let auto_bias = (automatic.price - scalar.price).abs();
+        assert_eq!(AccuracyTier::for_mc(16_384, 1), AccuracyTier::High);
+        assert!(
+            fast_bias > 5.0 * fast.stderr.unwrap(),
+            "fast_bias={fast_bias:e}, stderr={:?}",
+            fast.stderr
+        );
+        assert!(auto_bias < 1.0e-10, "auto_bias={auto_bias:e}");
+        assert!(
+            auto_bias < fast_bias * 1.0e-3,
+            "auto_bias={auto_bias:e}, fast_bias={fast_bias:e}"
+        );
     }
 
     #[cfg(feature = "parallel")]

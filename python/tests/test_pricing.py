@@ -4,12 +4,14 @@ import math
 
 import numpy as np
 import pytest
-from conftest import ABS_TOL, REL_TOL, is_nan
+from conftest import ABS_TOL, REL_TOL, assert_releases_gil, is_nan
 from openferric import (
     AnalyticEngine,
+    AsianStrike,
     Autocallable,
     bs_price_batch,
     py_american_price,
+    py_arithmetic_asian_price_mc,
     py_barrier_price,
     py_bs_greeks,
     py_bs_price,
@@ -21,6 +23,24 @@ from openferric import (
     py_price_autocallable,
     py_spread_price,
 )
+
+
+def test_free_monte_carlo_pricer_releases_gil():
+    result = assert_releases_gil(
+        lambda: py_arithmetic_asian_price_mc(
+            AsianStrike.fixed(100.0),
+            spot=100.0,
+            rate=0.05,
+            vol=0.2,
+            expiry=1.0,
+            steps=32,
+            num_paths=200_000,
+            seed=42,
+            option_type="call",
+        )
+    )
+    assert all(math.isfinite(value) for value in result)
+
 
 # =========================================================================
 # 1. py_bs_price
@@ -76,6 +96,97 @@ class TestBsPrice:
                 1.0,
                 True,
             )
+
+    def test_numpy_batch_accepts_empty_arrays(self):
+        values = bs_price_batch(
+            np.array([], dtype=np.float64),
+            np.array([], dtype=np.float64),
+            0.05,
+            0.0,
+            0.2,
+            1.0,
+            True,
+        )
+        assert values.dtype == np.float64
+        assert values.shape == (0,)
+
+    def test_numpy_batch_rejects_non_contiguous_arrays(self):
+        base = np.array([80.0, 90.0, 100.0, 110.0], dtype=np.float64)
+        with pytest.raises(ValueError, match="spots must be a contiguous"):
+            bs_price_batch(base[::2], np.array([100.0, 100.0]), 0.05, 0.0, 0.2, 1.0, True)
+        with pytest.raises(ValueError, match="strikes must be a contiguous"):
+            bs_price_batch(np.array([80.0, 100.0]), base[::2], 0.05, 0.0, 0.2, 1.0, True)
+
+    @pytest.mark.parametrize("length", [1, 2, 3, 4, 5, 7, 8, 9, 15, 17])
+    def test_numpy_batch_simd_tails_match_scalar(self, length):
+        spots = np.linspace(70.0, 130.0, length, dtype=np.float64)
+        strikes = np.linspace(95.0, 105.0, length, dtype=np.float64)
+        actual = bs_price_batch(spots, strikes, 0.05, 0.0, 0.2, 1.0, True)
+        expected = np.array(
+            [py_bs_price(float(spot), float(strike), 1.0, 0.2, 0.05, "call") for spot, strike in zip(spots, strikes)]
+        )
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=5e-5)
+
+    @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])
+    @pytest.mark.parametrize("input_name", ["spots", "strikes"])
+    def test_numpy_batch_rejects_non_finite_array_values(self, input_name, bad_value):
+        inputs = {
+            "spots": np.array([100.0], dtype=np.float64),
+            "strikes": np.array([100.0], dtype=np.float64),
+        }
+        inputs[input_name][0] = bad_value
+        with pytest.raises(ValueError, match=input_name):
+            bs_price_batch(**inputs, rate=0.05, dividend_yield=0.0, vol=0.2, expiry=1.0, is_call=True)
+
+    @pytest.mark.parametrize(
+        ("input_name", "bad_value"),
+        [
+            ("rate", math.nan),
+            ("rate", math.inf),
+            ("dividend_yield", math.nan),
+            ("dividend_yield", -math.inf),
+            ("vol", math.nan),
+            ("vol", math.inf),
+            ("vol", -0.1),
+            ("expiry", math.nan),
+            ("expiry", math.inf),
+            ("expiry", -0.1),
+        ],
+    )
+    def test_numpy_batch_rejects_invalid_scalar_values(self, input_name, bad_value):
+        inputs = dict(
+            spots=np.array([100.0], dtype=np.float64),
+            strikes=np.array([100.0], dtype=np.float64),
+            rate=0.05,
+            dividend_yield=0.0,
+            vol=0.2,
+            expiry=1.0,
+            is_call=True,
+        )
+        inputs[input_name] = bad_value
+        with pytest.raises(ValueError, match=input_name):
+            bs_price_batch(**inputs)
+
+    def test_numpy_batch_handles_zero_vol_and_expiry_deterministically(self):
+        spots = np.array([80.0, 100.0, 120.0])
+        strikes = np.array([100.0, 100.0, 100.0])
+
+        zero_expiry = bs_price_batch(spots, strikes, 0.05, 0.02, 0.2, 0.0, True)
+        np.testing.assert_array_equal(zero_expiry, np.array([0.0, 0.0, 20.0]))
+
+        zero_vol = bs_price_batch(spots, strikes, 0.05, 0.02, 0.0, 1.0, True)
+        expected = np.maximum(spots * math.exp(-0.02) - strikes * math.exp(-0.05), 0.0)
+        np.testing.assert_allclose(zero_vol, expected, rtol=0.0, atol=1e-12)
+
+    def test_large_numpy_batch_releases_gil(self):
+        length = 2_000_003
+        spots = np.linspace(80.0, 120.0, length, dtype=np.float64)
+        strikes = np.full(length, 100.0, dtype=np.float64)
+
+        values = assert_releases_gil(lambda: bs_price_batch(spots, strikes, 0.05, 0.0, 0.2, 1.0, True))
+
+        assert values.shape == (length,)
+        assert np.isfinite(values[[0, -1]]).all()
 
 
 # =========================================================================

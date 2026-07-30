@@ -29,9 +29,9 @@ pub struct MonteCarloGreeksEngine {
     /// Relative bump for tangent-style pathwise gamma central differencing.
     pub spot_bump_rel: f64,
     /// Pseudo-random number generator backend.
-    pub rng_kind: FastRngKind,
+    pub(crate) rng_kind: FastRngKind,
     /// Reproducible stream splitting mode.
-    pub reproducible: bool,
+    pub(crate) reproducible: bool,
 }
 
 impl MonteCarloGreeksEngine {
@@ -53,6 +53,16 @@ impl MonteCarloGreeksEngine {
         self
     }
 
+    /// Returns the configured random-number generator.
+    pub fn rng_kind(&self) -> FastRngKind {
+        self.rng_kind
+    }
+
+    /// Returns whether seeded stream splitting is reproducible.
+    pub fn is_reproducible(&self) -> bool {
+        self.reproducible
+    }
+
     /// Sets the relative bump used in pathwise gamma estimation.
     pub fn with_spot_bump_rel(mut self, spot_bump_rel: f64) -> Self {
         self.spot_bump_rel = spot_bump_rel.max(1.0e-6);
@@ -71,7 +81,7 @@ impl MonteCarloGreeksEngine {
     /// Uses a reproducible seed.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
-        self.reproducible = true;
+        self.reproducible = !matches!(self.rng_kind, FastRngKind::ThreadRng);
         self
     }
 
@@ -131,6 +141,7 @@ impl MonteCarloGreeksEngine {
         market: &Market,
     ) -> Result<MonteCarloGreekEstimate, PricingError> {
         instrument.validate()?;
+        market.validate()?;
         if !matches!(instrument.exercise, ExerciseStyle::European) {
             return Err(PricingError::InvalidInput(
                 "MonteCarloGreeksEngine supports European exercise only".to_string(),
@@ -161,12 +172,7 @@ impl MonteCarloGreeksEngine {
 
         let strike = instrument.strike;
         let maturity = instrument.expiry;
-        let vol = market.vol_for(strike, maturity);
-        if vol <= 0.0 || !vol.is_finite() {
-            return Err(PricingError::InvalidInput(
-                "market volatility must be finite and > 0".to_string(),
-            ));
-        }
+        let vol = market.checked_vol_for(strike, maturity)?;
 
         let rate = market.rate;
         let dividend = market.effective_dividend_yield(maturity);
@@ -188,10 +194,8 @@ impl MonteCarloGreeksEngine {
         let reproducible = self.reproducible;
         let base_seed = self.seed;
 
-        let simulate_sample = |i: usize| {
-            let seed = resolve_stream_seed(base_seed, i, reproducible);
-            let mut rng = FastRng::from_seed(rng_kind, seed);
-            let z = sample_standard_normal(&mut rng);
+        let simulate_sample = |rng: &mut FastRng| {
+            let z = sample_standard_normal(rng);
             let base = single_path_contribution(
                 instrument.option_type,
                 z,
@@ -240,14 +244,30 @@ impl MonteCarloGreeksEngine {
                 lr_vega: lhs.lr_vega + rhs.lr_vega,
             };
 
+        const CHUNK_SAMPLES: usize = 256;
+        let chunk_count = samples.div_ceil(CHUNK_SAMPLES);
+        let simulate_chunk = |chunk_index: usize| {
+            let seed = resolve_stream_seed(base_seed, chunk_index, reproducible);
+            let mut rng = FastRng::from_seed(rng_kind, seed);
+            let start = chunk_index * CHUNK_SAMPLES;
+            let end = (start + CHUNK_SAMPLES).min(samples);
+            (start..end)
+                .map(|_| simulate_sample(&mut rng))
+                .fold(MonteCarloGreekEstimate::default(), add_estimates)
+        };
+
         #[cfg(feature = "parallel")]
-        let sums = (0..samples)
+        let partials = (0..chunk_count)
             .into_par_iter()
-            .map(simulate_sample)
-            .reduce(MonteCarloGreekEstimate::default, add_estimates);
+            .map(simulate_chunk)
+            .collect::<Vec<_>>();
         #[cfg(not(feature = "parallel"))]
-        let sums = (0..samples)
-            .map(simulate_sample)
+        let partials = (0..chunk_count).map(simulate_chunk).collect::<Vec<_>>();
+
+        // Indexed collection and an ordered final fold make the reduction tree
+        // independent of the Rayon pool and scheduler.
+        let sums = partials
+            .into_iter()
             .fold(MonteCarloGreekEstimate::default(), add_estimates);
 
         let n = samples as f64;
@@ -415,5 +435,43 @@ mod tests {
         assert!((pw.delta - 0.6368).abs() / 0.6368 < 0.02);
         assert!((pw.gamma - 0.01876).abs() / 0.01876 < 0.20);
         assert!((lr.vega - 37.524).abs() / 37.524 < 0.05);
+    }
+
+    #[test]
+    fn thread_rng_never_claims_seeded_reproducibility() {
+        for engine in [
+            MonteCarloGreeksEngine::new(32, 1)
+                .with_thread_rng()
+                .with_seed(42),
+            MonteCarloGreeksEngine::new(32, 1)
+                .with_seed(42)
+                .with_thread_rng(),
+        ] {
+            assert_eq!(engine.rng_kind, FastRngKind::ThreadRng);
+            assert!(!engine.reproducible);
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn seeded_results_are_bitwise_independent_of_rayon_pool_size() {
+        let (option, market) = setup_case();
+        let engine = MonteCarloGreeksEngine::new(100_003, 42);
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    (
+                        engine.estimate_pathwise(&option, &market).unwrap(),
+                        engine.estimate_likelihood_ratio(&option, &market).unwrap(),
+                    )
+                })
+        };
+        let one = run(1);
+        for threads in [2, 3, 4, 8] {
+            assert_eq!(one, run(threads), "pool size {threads}");
+        }
     }
 }
