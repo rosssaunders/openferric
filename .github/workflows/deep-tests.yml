@@ -34,6 +34,9 @@ jobs:
       - name: Fuzz trade JSON
         run: cargo fuzz run trade_json -- -max_total_time=120
 
+      - name: Fuzz compiled-product JSON validation
+        run: cargo fuzz run compiled_product_json -- -max_total_time=120
+
   miri:
     name: Miri unsafe-kernel checks
     runs-on: ubuntu-latest
@@ -69,6 +72,7 @@ jobs:
             --package openferric \
             --features accelerated-native \
             --file src/core/engine.rs \
+            --file src/dsl/ir.rs \
             --file src/pricing/european.rs \
             --file src/engines/analytic/bs_simd.rs \
             --timeout-multiplier 3 \

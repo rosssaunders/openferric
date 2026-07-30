@@ -11,11 +11,12 @@ use crate::dsl::eval::evaluate_product_with_plan_batch_neon;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use crate::dsl::eval::evaluate_product_with_plan_batch_x86;
 use crate::dsl::eval::{
-    ProductExecutionPlan, build_execution_plan, evaluate_product_with_plan_in_place,
+    ProductExecutionPlan, build_execution_plan_for_validated_product,
+    evaluate_product_with_plan_in_place,
 };
-use crate::dsl::ir::CompiledProduct;
+use crate::dsl::ir::{CompiledProduct, UnderlyingType};
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
-use crate::dsl::jit::{JitEvaluationScratch, JitProductEvaluator};
+use crate::dsl::jit::{JitEvaluationScratch, JitProductEvaluator, jit_platform_supported};
 use crate::dsl::market::{AssetMarketData, MultiAssetMarket};
 use crate::engines::monte_carlo::correlated_mc::{
     cholesky_for_correlation, sample_correlated_normals_cholesky_with_scratch,
@@ -52,6 +53,24 @@ enum AssetStepper {
         exp_neg_a_dt: f64,
         vol_step: f64,
     },
+}
+
+fn market_asset_type(asset: &AssetMarketData) -> UnderlyingType {
+    match asset {
+        AssetMarketData::Equity { .. } => UnderlyingType::Equity,
+        AssetMarketData::Fx { .. } => UnderlyingType::Fx,
+        AssetMarketData::Commodity { .. } => UnderlyingType::Commodity,
+        AssetMarketData::Rate { .. } => UnderlyingType::Rate,
+    }
+}
+
+fn underlying_type_name(underlying_type: UnderlyingType) -> &'static str {
+    match underlying_type {
+        UnderlyingType::Equity => "equity",
+        UnderlyingType::Fx => "FX",
+        UnderlyingType::Commodity => "commodity",
+        UnderlyingType::Rate => "rate",
+    }
 }
 
 impl AssetStepper {
@@ -364,7 +383,14 @@ impl DslMonteCarloEngine {
             ExecutionPolicy::Jit => {
                 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
                 {
-                    Ok(ExecutionBackend::Jit)
+                    if jit_platform_supported() {
+                        Ok(ExecutionBackend::Jit)
+                    } else {
+                        Err(PricingError::InvalidInput(format!(
+                            "JIT execution is unsupported on {}; the current native backend requires x86_64",
+                            std::env::consts::ARCH
+                        )))
+                    }
                 }
                 #[cfg(not(all(feature = "jit", not(target_family = "wasm"))))]
                 {
@@ -379,7 +405,10 @@ impl DslMonteCarloEngine {
                 // non-SIMD build, JIT compilation is amortized only for a
                 // sufficiently large path count.
                 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
-                if !simd_available && self.num_paths >= MIN_AUTO_JIT_PATHS {
+                if jit_platform_supported()
+                    && !simd_available
+                    && self.num_paths >= MIN_AUTO_JIT_PATHS
+                {
                     return Ok(ExecutionBackend::Jit);
                 }
 
@@ -443,7 +472,28 @@ impl DslMonteCarloEngine {
         market: &MultiAssetMarket,
         execution_policy: ExecutionPolicy,
     ) -> Result<PricingResult, PricingError> {
+        product.validate()?;
         market.validate()?;
+
+        if market.assets.len() != product.num_underlyings {
+            return Err(PricingError::InvalidInput(format!(
+                "market has {} assets, but product declares {} underlyings",
+                market.assets.len(),
+                product.num_underlyings
+            )));
+        }
+        for underlying in &product.underlyings {
+            let market_type = market_asset_type(&market.assets[underlying.asset_index]);
+            if underlying.underlying_type != market_type {
+                return Err(PricingError::InvalidInput(format!(
+                    "product underlying '{}' at asset index {} declares {}, but the market provides {} data",
+                    underlying.name,
+                    underlying.asset_index,
+                    underlying_type_name(underlying.underlying_type),
+                    underlying_type_name(market_type)
+                )));
+            }
+        }
 
         if self.num_paths == 0 {
             return Err(PricingError::InvalidInput(
@@ -475,7 +525,7 @@ impl DslMonteCarloEngine {
             ExecutionBackend::Scalar | ExecutionBackend::Simd | ExecutionBackend::Parallel
         ) {
             Some((
-                build_execution_plan(product, n_steps, market.rate)
+                build_execution_plan_for_validated_product(product, n_steps, market.rate)
                     .map_err(|e| PricingError::NumericalError(e.to_string()))?,
                 product.max_local_slots(),
             ))
@@ -578,6 +628,11 @@ impl DslMonteCarloEngine {
         let mean = chunk_stats.mean_pv;
         let variance = chunk_stats.sample_variance();
         let stderr = (variance / n).sqrt();
+        if !mean.is_finite() || !stderr.is_finite() {
+            return Err(PricingError::NumericalError(
+                "DSL evaluation produced a non-finite price or standard error".to_string(),
+            ));
+        }
 
         let mut diagnostics = Diagnostics::new();
         diagnostics.insert_key(DiagKey::NumPaths, n);
@@ -1519,6 +1574,146 @@ mod tests {
     }
 
     #[test]
+    fn price_rejects_product_market_dimension_mismatch() {
+        let mut product = make_forward_product();
+        product.num_underlyings = 2;
+        product.underlyings.push(UnderlyingDef {
+            name: "SX5E".to_string(),
+            asset_index: 1,
+            underlying_type: Default::default(),
+        });
+        let one_asset_market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
+        let engine = DslMonteCarloEngine::new(16, 4, 42);
+
+        let error = engine
+            .price_multi_asset_with_policy(&product, &one_asset_market, ExecutionPolicy::Scalar)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("product declares 2"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn single_market_for_type(underlying_type: UnderlyingType) -> MultiAssetMarket {
+        let asset = match underlying_type {
+            UnderlyingType::Equity => AssetMarketData::Equity {
+                spot: 100.0,
+                vol: 0.2,
+                dividend_yield: 0.01,
+            },
+            UnderlyingType::Fx => AssetMarketData::Fx {
+                spot: 1.1,
+                vol: 0.15,
+                domestic_rate: 0.03,
+                foreign_rate: 0.02,
+            },
+            UnderlyingType::Commodity => AssetMarketData::Commodity {
+                spot: 75.0,
+                vol: 0.3,
+                convenience_yield: 0.01,
+                kappa: 1.0,
+                mu: 75.0_f64.ln(),
+            },
+            UnderlyingType::Rate => AssetMarketData::Rate {
+                initial_rate: 0.03,
+                vol: 0.01,
+                mean_reversion: 0.1,
+                long_run_mean: 0.04,
+            },
+        };
+        MultiAssetMarket {
+            assets: vec![asset],
+            correlation: vec![vec![1.0]],
+            rate: 0.03,
+        }
+    }
+
+    #[test]
+    fn price_rejects_underlying_market_type_mismatches_for_all_variants() {
+        let cases = [
+            (UnderlyingType::Equity, UnderlyingType::Fx),
+            (UnderlyingType::Fx, UnderlyingType::Commodity),
+            (UnderlyingType::Commodity, UnderlyingType::Rate),
+            (UnderlyingType::Rate, UnderlyingType::Equity),
+        ];
+        let engine = DslMonteCarloEngine::new(16, 4, 42);
+
+        for (declared_type, market_type) in cases {
+            let mut product = make_forward_product();
+            product.underlyings[0].name = "TEST".to_string();
+            product.underlyings[0].underlying_type = declared_type;
+            let market = single_market_for_type(market_type);
+
+            let error = engine
+                .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Scalar)
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("'TEST'"), "unexpected error: {message}");
+            assert!(
+                message.contains("asset index 0"),
+                "unexpected error: {message}"
+            );
+            assert!(
+                message.contains(underlying_type_name(declared_type)),
+                "unexpected error: {message}"
+            );
+            assert!(
+                message.contains(underlying_type_name(market_type)),
+                "unexpected error: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_cashflow_without_underlying_allows_any_market_variant() {
+        let mut product = make_constant_product(10.0);
+        product.underlyings.clear();
+        let market = single_market_for_type(UnderlyingType::Rate);
+        let engine = DslMonteCarloEngine::new(16, 4, 42);
+
+        let result = engine
+            .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Scalar)
+            .unwrap();
+        let expected = 10.0 * (-market.rate).exp();
+        assert!((result.price - expected).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn pricing_backends_reject_non_finite_results() {
+        let mut product = make_constant_product(1.0);
+        product.schedules[0].body = vec![Statement::Redeem {
+            amount: Expr::Call {
+                func: BuiltinFn::Exp,
+                args: vec![Expr::Literal(Value::F64(1_000.0))],
+            },
+        }];
+        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
+        let engine = DslMonteCarloEngine::new(16, 4, 42);
+
+        let mut policies = vec![ExecutionPolicy::Scalar];
+        if engine
+            .resolve_execution_backend(ExecutionPolicy::Simd)
+            .is_ok()
+        {
+            policies.push(ExecutionPolicy::Simd);
+        }
+        #[cfg(feature = "parallel")]
+        policies.push(ExecutionPolicy::Parallel);
+        #[cfg(all(feature = "jit", not(target_family = "wasm"), target_arch = "x86_64"))]
+        policies.push(ExecutionPolicy::Jit);
+
+        for policy in policies {
+            let error = engine
+                .price_multi_asset_with_policy(&product, &market, policy)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("non-finite"),
+                "{policy:?} returned unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn forward_product_prices_near_forward() {
         let product = make_forward_product();
         let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.02);
@@ -1853,7 +2048,12 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "jit", feature = "parallel", not(target_family = "wasm")))]
+    #[cfg(all(
+        feature = "jit",
+        feature = "parallel",
+        not(target_family = "wasm"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn explicit_jit_is_reproducible_across_pool_sizes() {
         let product = make_forward_product();
@@ -1880,7 +2080,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    #[cfg(all(feature = "jit", not(target_family = "wasm"), target_arch = "x86_64"))]
     #[test]
     fn explicit_jit_policy_matches_scalar_and_reports_backend() {
         let product = make_forward_product();
@@ -1910,7 +2110,8 @@ mod tests {
         feature = "jit",
         not(feature = "simd"),
         not(feature = "parallel"),
-        not(target_family = "wasm")
+        not(target_family = "wasm"),
+        target_arch = "x86_64"
     ))]
     #[test]
     fn auto_jit_policy_uses_conservative_path_threshold() {
@@ -1931,7 +2132,31 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    #[cfg(all(
+        feature = "jit",
+        not(target_family = "wasm"),
+        not(target_arch = "x86_64")
+    ))]
+    #[test]
+    fn unsupported_jit_policy_returns_error_and_auto_avoids_jit() {
+        let engine = DslMonteCarloEngine::new(MIN_AUTO_JIT_PATHS, 32, 42);
+
+        let error = engine
+            .resolve_execution_backend(ExecutionPolicy::Jit)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported"),
+            "unexpected error: {error}"
+        );
+        assert_ne!(
+            engine
+                .resolve_execution_backend(ExecutionPolicy::Auto)
+                .unwrap(),
+            ExecutionBackend::Jit
+        );
+    }
+
+    #[cfg(all(feature = "jit", not(target_family = "wasm"), target_arch = "x86_64"))]
     #[test]
     fn prepared_jit_evaluator_cache_reuses_identical_plan() {
         let product = make_forward_product();
@@ -1940,7 +2165,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
     }
 
-    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    #[cfg(all(feature = "jit", not(target_family = "wasm"), target_arch = "x86_64"))]
     #[test]
     fn prepared_jit_evaluator_cache_retains_alternating_plans() {
         let first_product = make_forward_product();

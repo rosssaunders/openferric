@@ -1,8 +1,9 @@
 use numpy::{PyArray1, PyReadonlyArray1};
 use openferric_core::core::{Greeks as CoreGreeks, PricingEngine, PricingError};
 use openferric_core::engines::analytic::{
-    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine, bs_price_batch,
-    kirk_spread_price, margrabe_exchange_price,
+    DigitalAnalyticEngine, ExoticAnalyticEngine, GarmanKohlhagenEngine,
+    black76_price as validated_black76_price, bs_price_batch, kirk_spread_price,
+    margrabe_exchange_price,
 };
 use openferric_core::greeks::black_scholes_merton_greeks;
 use openferric_core::instruments::{
@@ -37,7 +38,7 @@ use openferric_core::pricing::discrete_div::{
     escrowed_dividend_adjusted_spot_mixed, european_price_discrete_div,
     european_price_discrete_div_mixed, forward_price_discrete_div,
 };
-use openferric_core::pricing::european::{black_76_price, black_scholes_price};
+use openferric_core::pricing::european::black_scholes_price;
 use openferric_core::pricing::payoff::strategy_intrinsic_pnl;
 use openferric_core::pricing::range_accrual::{
     RangeAccrualResult as CoreRangeAccrualResult, dual_range_accrual_mc_price,
@@ -970,12 +971,17 @@ pub fn py_black76_price(
     vol: f64,
     rate: f64,
     option_type: &str,
-) -> f64 {
-    let Some(option_type) = parse_option_type(option_type) else {
-        return f64::NAN;
-    };
-
-    black_76_price(option_type, forward, strike, rate, vol, expiry)
+) -> PyResult<f64> {
+    let option_type = parse_option_type(option_type)
+        .ok_or_else(|| PyValueError::new_err("option_type must be 'call' or 'put'"))?;
+    let price = validated_black76_price(option_type, forward, strike, rate, vol, expiry)
+        .map_err(pricing_error_to_pyerr)?;
+    if !price.is_finite() {
+        return Err(PyValueError::new_err(
+            "Black-76 price is non-finite for the supplied inputs",
+        ));
+    }
+    Ok(price)
 }
 
 #[pyfunction]

@@ -13,6 +13,7 @@ from openferric import (
     py_american_price,
     py_arithmetic_asian_price_mc,
     py_barrier_price,
+    py_black76_price,
     py_bs_greeks,
     py_bs_price,
     py_digital_price,
@@ -187,6 +188,63 @@ class TestBsPrice:
 
         assert values.shape == (length,)
         assert np.isfinite(values[[0, -1]]).all()
+
+
+class TestLegacyBlack76Price:
+    def test_matches_validated_analytic_entry_point(self):
+        legacy = py_black76_price(
+            forward=103.0,
+            strike=100.0,
+            expiry=1.25,
+            vol=0.24,
+            rate=0.03,
+            option_type="call",
+        )
+        validated = AnalyticEngine.black76_price(
+            option_type="call",
+            forward=103.0,
+            strike=100.0,
+            rate=0.03,
+            vol=0.24,
+            expiry=1.25,
+        )
+        assert legacy == validated
+
+    @pytest.mark.parametrize(
+        ("input_name", "bad_value"),
+        [
+            ("forward", -1.0),
+            ("forward", math.nan),
+            ("strike", 0.0),
+            ("strike", math.inf),
+            ("expiry", -1.0),
+            ("expiry", math.nan),
+            ("vol", -0.1),
+            ("vol", math.inf),
+            ("rate", math.nan),
+            ("rate", math.inf),
+        ],
+    )
+    def test_rejects_invalid_numeric_domain(self, input_name, bad_value):
+        inputs = dict(
+            forward=100.0,
+            strike=100.0,
+            expiry=1.0,
+            vol=0.2,
+            rate=0.03,
+            option_type="call",
+        )
+        inputs[input_name] = bad_value
+        with pytest.raises(ValueError):
+            py_black76_price(**inputs)
+
+    def test_rejects_invalid_option_type(self):
+        with pytest.raises(ValueError, match="option_type"):
+            py_black76_price(100.0, 100.0, 1.0, 0.2, 0.03, "straddle")
+
+    def test_rejects_non_finite_computed_price(self):
+        with pytest.raises(ValueError, match="non-finite"):
+            py_black76_price(100.0, 100.0, 1.0, 0.2, -1e308, "call")
 
 
 # =========================================================================

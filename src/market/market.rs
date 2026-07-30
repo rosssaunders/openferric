@@ -149,10 +149,10 @@ impl SampledVolSurface {
             let mut row = Vec::with_capacity(strikes.len());
             for &strike in &strikes {
                 let v = surface.vol(strike, expiry);
-                // Preserve non-finite outputs so MarketBuilder/Market::validate
-                // can reject the source instead of silently replacing bad
-                // market data with an arbitrary volatility.
-                row.push(if v.is_finite() { v.max(1.0e-8) } else { v });
+                // Preserve the source value so MarketBuilder/Market::validate
+                // rejects non-finite and non-positive market data rather than
+                // silently replacing it with an arbitrary volatility.
+                row.push(v);
             }
             vols.push(row);
         }
@@ -566,6 +566,15 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct ConstantTraitObjectSurface(f64);
+
+    impl VolSurface for ConstantTraitObjectSurface {
+        fn vol(&self, _strike: f64, _expiry: f64) -> f64 {
+            self.0
+        }
+    }
+
     #[test]
     fn market_builder_rejects_non_finite_inputs() {
         let cases: Vec<(&str, MarketBuilder)> = vec![
@@ -661,6 +670,17 @@ mod tests {
             .vol_surface(Box::new(NonFiniteVolSurface))
             .build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn market_builder_does_not_clamp_non_positive_trait_object_surface_outputs() {
+        for value in [0.0, -0.2] {
+            let result = Market::builder()
+                .spot(100.0)
+                .vol_surface(Box::new(ConstantTraitObjectSurface(value)))
+                .build();
+            assert!(result.is_err(), "surface value {value} must be rejected");
+        }
     }
 
     #[test]

@@ -9,13 +9,72 @@
 //! Numerical considerations: enforce positivity and no-arbitrage constraints, and guard root-finding with robust brackets for wings or short maturities.
 //!
 //! When to use: use these tools for smile/surface construction and implied-vol inversion; choose local/stochastic-vol models when dynamics, not just static fits, are needed.
-use crate::math::normal_pdf;
+use crate::engines::analytic::black_scholes::bs_vega;
 use crate::pricing::OptionType;
 use crate::pricing::european::black_scholes_price;
 use crate::vol::jaeckel::implied_vol_jaeckel;
 #[cfg(test)]
 use rand::RngExt;
 use std::f64::consts::PI;
+
+#[allow(clippy::too_many_arguments)]
+fn validate_implied_vol_inputs(
+    option_type: OptionType,
+    s: f64,
+    k: f64,
+    r: f64,
+    t: f64,
+    market_price: f64,
+    tol: f64,
+) -> Result<(f64, f64, f64), String> {
+    if !s.is_finite()
+        || !k.is_finite()
+        || !r.is_finite()
+        || !t.is_finite()
+        || !market_price.is_finite()
+        || !tol.is_finite()
+    {
+        return Err("inputs and tol must be finite".to_string());
+    }
+    if s <= 0.0 || k <= 0.0 {
+        return Err("s and k must be > 0".to_string());
+    }
+    if t <= 0.0 {
+        return Err("t must be > 0".to_string());
+    }
+    if market_price < 0.0 {
+        return Err("market_price must be >= 0".to_string());
+    }
+    if tol <= 0.0 {
+        return Err("tol must be > 0".to_string());
+    }
+
+    let df = (-r * t).exp();
+    let intrinsic = match option_type {
+        OptionType::Call => (s - k * df).max(0.0),
+        OptionType::Put => (k * df - s).max(0.0),
+    };
+    let upper = match option_type {
+        OptionType::Call => s,
+        OptionType::Put => k * df,
+    };
+    if !intrinsic.is_finite() || !upper.is_finite() {
+        return Err("discounted no-arbitrage bounds must be finite".to_string());
+    }
+
+    // Bound checks need to tolerate rounding at the scale of the bound, but
+    // convergence and the zero-vol decision must not inherit that potentially
+    // enormous slack.
+    let bounds_slack = 32.0 * f64::EPSILON * (1.0 + intrinsic.abs().max(upper.abs()));
+    if market_price < intrinsic - bounds_slack || market_price > upper + bounds_slack {
+        return Err(format!(
+            "market_price out of no-arbitrage bounds: price={market_price}, intrinsic={intrinsic}, upper={upper}"
+        ));
+    }
+
+    let residual_tolerance = tol.max(32.0 * f64::EPSILON * (1.0 + market_price.abs()));
+    Ok((intrinsic, upper, residual_tolerance))
+}
 
 /// Produces a bounded positive volatility seed from option time value and moneyness.
 ///
@@ -96,40 +155,10 @@ pub fn implied_vol(
     tol: f64,
     max_iter: usize,
 ) -> Result<f64, String> {
-    if !s.is_finite()
-        || !k.is_finite()
-        || !r.is_finite()
-        || !t.is_finite()
-        || !market_price.is_finite()
-    {
-        return Err("inputs must be finite".to_string());
-    }
-    if s <= 0.0 || k <= 0.0 {
-        return Err("s and k must be > 0".to_string());
-    }
-    if t <= 0.0 {
-        return Err("t must be > 0".to_string());
-    }
-    if market_price < 0.0 {
-        return Err("market_price must be >= 0".to_string());
-    }
-
-    let df = (-r * t).exp();
-    let intrinsic = match option_type {
-        OptionType::Call => (s - k * df).max(0.0),
-        OptionType::Put => (k * df - s).max(0.0),
-    };
-    let upper = match option_type {
-        OptionType::Call => s,
-        OptionType::Put => k * df,
-    };
-    let price_tol = 32.0 * f64::EPSILON * (1.0 + upper.abs());
-    if market_price < intrinsic - price_tol || market_price > upper + price_tol {
-        return Err(format!(
-            "market_price out of no-arbitrage bounds: price={market_price}, intrinsic={intrinsic}, upper={upper}"
-        ));
-    }
-    if market_price <= intrinsic + price_tol {
+    let (intrinsic, _, residual_tolerance) =
+        validate_implied_vol_inputs(option_type, s, k, r, t, market_price, tol)?;
+    let zero_vol_tolerance = tol.max(32.0 * f64::EPSILON * (1.0 + intrinsic.abs()));
+    if market_price <= intrinsic + zero_vol_tolerance {
         return Ok(0.0);
     }
 
@@ -142,7 +171,10 @@ pub fn implied_vol(
             && iv.is_finite()
             && iv >= 0.0
         {
-            return Ok(iv);
+            let residual = black_scholes_price(option_type, s, k, r, iv, t) - market_price;
+            if residual.is_finite() && residual.abs() <= residual_tolerance {
+                return Ok(iv);
+            }
         }
     }
 
@@ -175,33 +207,25 @@ pub fn implied_vol_newton(
     tol: f64,
     max_iter: usize,
 ) -> Result<f64, String> {
-    if t <= 0.0 {
-        return Err("t must be > 0".to_string());
-    }
-    if market_price < 0.0 {
-        return Err("market_price must be >= 0".to_string());
-    }
-    if market_price == 0.0 {
+    let (intrinsic, _, residual_tolerance) =
+        validate_implied_vol_inputs(option_type, s, k, r, t, market_price, tol)?;
+    let zero_vol_tolerance = tol.max(32.0 * f64::EPSILON * (1.0 + intrinsic.abs()));
+    if market_price <= intrinsic + zero_vol_tolerance {
         return Ok(0.0);
     }
 
     let mut sigma = lets_be_rational_initial_guess(option_type, s, k, r, t, market_price);
 
-    // Pre-compute loop-invariant values.
-    let sqrt_t = t.sqrt();
-    let ln_sk = (s / k).ln();
     for _ in 0..max_iter {
         let price = black_scholes_price(option_type, s, k, r, sigma, t);
         let diff = price - market_price;
-        if diff.abs() < tol {
+        if diff.is_finite() && diff.abs() <= residual_tolerance {
             return Ok(sigma);
         }
 
-        let sig_sqrt_t = sigma * sqrt_t;
-        let d1 = (ln_sk + (0.5 * sigma).mul_add(sigma, r) * t) / sig_sqrt_t;
-        let vega = s * normal_pdf(d1) * sqrt_t;
+        let vega = bs_vega(s, k, r, 0.0, sigma, t);
 
-        if vega.abs() < 1e-10 {
+        if !vega.is_finite() || vega.abs() < 1e-10 {
             break;
         }
 
@@ -213,7 +237,7 @@ pub fn implied_vol_newton(
     // f(lo) <= 0 <= f(hi); otherwise the market price is unattainable on
     // [lo, hi] (e.g. true vol > 5.0) and returning a midpoint would be
     // silently wrong.
-    let mut lo = 1e-6;
+    let mut lo = 0.0;
     let mut hi = 5.0;
     let mut flo = black_scholes_price(option_type, s, k, r, lo, t) - market_price;
     let fhi = black_scholes_price(option_type, s, k, r, hi, t) - market_price;
@@ -224,7 +248,7 @@ pub fn implied_vol_newton(
     if fhi == 0.0 {
         return Ok(hi);
     }
-    if flo * fhi > 0.0 {
+    if (flo > 0.0) == (fhi > 0.0) {
         return Err(format!(
             "implied vol not bracketed in [{lo}, {hi}]: market_price={market_price} is unattainable"
         ));
@@ -234,11 +258,11 @@ pub fn implied_vol_newton(
         let mid = 0.5 * (lo + hi);
         let fm = black_scholes_price(option_type, s, k, r, mid, t) - market_price;
 
-        if fm.abs() < tol {
+        if fm.is_finite() && fm.abs() <= residual_tolerance {
             return Ok(mid);
         }
 
-        if flo * fm <= 0.0 {
+        if (flo > 0.0) != (fm > 0.0) {
             hi = mid;
         } else {
             lo = mid;
@@ -246,7 +270,15 @@ pub fn implied_vol_newton(
         }
     }
 
-    Ok(0.5 * (lo + hi))
+    let candidate = 0.5 * (lo + hi);
+    let residual = black_scholes_price(option_type, s, k, r, candidate, t) - market_price;
+    if residual.is_finite() && residual.abs() <= residual_tolerance {
+        Ok(candidate)
+    } else {
+        Err(format!(
+            "implied vol did not converge: sigma={candidate}, residual={residual}, tolerance={residual_tolerance}"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +351,66 @@ mod tests {
         let repriced = black_scholes_price(option_type, s, k, r, iv, t);
 
         assert_relative_eq!(repriced, market_price, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn deep_tail_price_round_trips_without_scale_dependent_zero_classification() {
+        // Independent 100-decimal erfc price for S=5e18, K=1e18, sigma=.2.
+        const MARKET_PRICE: f64 = 22.752_884_600_977_636;
+        for solver in [implied_vol, implied_vol_newton] {
+            let iv = solver(
+                OptionType::Put,
+                5.0e18,
+                1.0e18,
+                0.0,
+                1.0,
+                MARKET_PRICE,
+                1.0e-12,
+                100,
+            )
+            .unwrap();
+            assert!((iv - 0.2).abs() <= 2.0e-13, "iv={iv:.17e}");
+            let repriced = black_scholes_price(OptionType::Put, 5.0e18, 1.0e18, 0.0, iv, 1.0);
+            assert!(
+                (repriced - MARKET_PRICE).abs() <= 1.0e-10,
+                "iv={iv:.17e} repriced={repriced:.17e}"
+            );
+        }
+    }
+
+    #[test]
+    fn bisection_and_tolerance_contract_require_a_verified_residual() {
+        let market_price = black_scholes_price(OptionType::Call, 100.0, 105.0, 0.01, 0.37, 2.0);
+        let iv = implied_vol_newton(
+            OptionType::Call,
+            100.0,
+            105.0,
+            0.01,
+            2.0,
+            market_price,
+            1.0e-13,
+            0,
+        )
+        .unwrap();
+        let residual =
+            black_scholes_price(OptionType::Call, 100.0, 105.0, 0.01, iv, 2.0) - market_price;
+        assert!(residual.abs() <= 1.0e-13, "residual={residual}");
+
+        for invalid_tol in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                implied_vol_newton(
+                    OptionType::Call,
+                    100.0,
+                    105.0,
+                    0.01,
+                    2.0,
+                    market_price,
+                    invalid_tol,
+                    10,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

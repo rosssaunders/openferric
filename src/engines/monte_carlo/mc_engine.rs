@@ -1216,11 +1216,10 @@ impl MonteCarloPricingEngine {
             }
         }
 
-        // Exact-terminal SIMD has no separate allocation/setup pass. Its
-        // vector kernel becomes useful as soon as at least one complete native
-        // vector is available; below that point execution is entirely the
-        // scalar tail. Tying the crossover to native width also avoids an
-        // x86-specific magic path count on NEON and AVX-512.
+        // Exact-terminal SIMD has no separate allocation/setup pass. Keep the
+        // portable native-width policy until stable benchmarks exist for each
+        // supported CPU generation; one host's crossover must not silently
+        // change dispatch on other machines.
         let simd_width = available_simd_width_f64();
         if exact_terminal && simd_width > 1 && samples >= simd_width {
             ExecutionBackend::Simd
@@ -2481,6 +2480,7 @@ mod tests {
         if width == 1 {
             return;
         }
+        let minimum_samples = width;
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -2489,22 +2489,42 @@ mod tests {
             .unwrap();
         let option = VanillaOption::european_call(100.0, 1.0);
 
+        #[cfg(feature = "parallel")]
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+
         for (variance_reduction, requested_below, requested_at) in [
-            (VarianceReduction::None, width - 1, width),
+            (
+                VarianceReduction::None,
+                minimum_samples - 1,
+                minimum_samples,
+            ),
             (
                 VarianceReduction::Antithetic,
-                2 * (width - 1),
-                2 * width - 1,
+                2 * (minimum_samples - 1),
+                2 * minimum_samples - 1,
             ),
         ] {
-            let below = MonteCarloPricingEngine::new(requested_below, 1, 42)
-                .with_variance_reduction(variance_reduction.clone())
-                .resolve_execution_backend(&option, &market)
-                .unwrap();
-            let at = MonteCarloPricingEngine::new(requested_at, 1, 42)
-                .with_variance_reduction(variance_reduction)
-                .resolve_execution_backend(&option, &market)
-                .unwrap();
+            let resolve = |paths, variance_reduction| {
+                MonteCarloPricingEngine::new(paths, 1, 42)
+                    .with_variance_reduction(variance_reduction)
+                    .resolve_execution_backend(&option, &market)
+                    .unwrap()
+            };
+            #[cfg(feature = "parallel")]
+            let (below, at) = pool.install(|| {
+                (
+                    resolve(requested_below, variance_reduction.clone()),
+                    resolve(requested_at, variance_reduction),
+                )
+            });
+            #[cfg(not(feature = "parallel"))]
+            let (below, at) = (
+                resolve(requested_below, variance_reduction.clone()),
+                resolve(requested_at, variance_reduction),
+            );
             assert_eq!(below, ExecutionBackend::Scalar);
             assert_eq!(at, ExecutionBackend::Simd);
         }

@@ -130,20 +130,30 @@ pub fn black_scholes_merton_greeks(
 
     let delta = match option_type {
         OptionType::Call => df_q * normal_cdf(d1),
-        OptionType::Put => df_q * (normal_cdf(d1) - 1.0),
+        OptionType::Put => -df_q * normal_cdf(-d1),
     };
 
-    let gamma = df_q * normal_pdf(d1) / (s * sigma * sqrt_t);
+    let gamma = crate::engines::analytic::bs_inline::stable_gamma(
+        df_q * normal_pdf(d1),
+        s,
+        sigma,
+        sqrt_t,
+        d1,
+        -q * t,
+    );
     let vega = s * df_q * normal_pdf(d1) * sqrt_t;
+    let theta_common = crate::engines::analytic::bs_inline::stable_theta_diffusion(
+        s * df_q * normal_pdf(d1),
+        sigma,
+        sqrt_t,
+    );
 
     let theta = match option_type {
         OptionType::Call => {
-            -s * df_q * normal_pdf(d1) * sigma / (2.0 * sqrt_t) - r * k * df_r * normal_cdf(d2)
-                + q * s * df_q * normal_cdf(d1)
+            theta_common - r * k * df_r * normal_cdf(d2) + q * s * df_q * normal_cdf(d1)
         }
         OptionType::Put => {
-            -s * df_q * normal_pdf(d1) * sigma / (2.0 * sqrt_t) + r * k * df_r * normal_cdf(-d2)
-                - q * s * df_q * normal_cdf(-d1)
+            theta_common + r * k * df_r * normal_cdf(-d2) - q * s * df_q * normal_cdf(-d1)
         }
     };
 

@@ -4,11 +4,219 @@ use crate::error::{
     check_batch_lengths, js_error, require_finite, require_non_negative, require_positive,
 };
 use openferric::core::types::{BarrierDirection, BarrierStyle, OptionType};
+use openferric::engines::analytic::{
+    black76_greeks as validated_black76_greeks, black76_price as validated_black76_price,
+};
 use openferric::greeks::black_scholes_merton_greeks;
-use openferric::math::{normal_cdf, normal_pdf};
+use openferric::math::normal_pdf;
 use openferric::pricing::barrier::barrier_price_closed_form_with_carry_and_rebate;
-use openferric::pricing::european::{black_76_price, black_scholes_price};
+use openferric::pricing::european::black_scholes_price;
 use openferric::vol::implied::implied_vol;
+
+#[inline]
+fn input_label(scalar_name: &str, batch_name: &str, index: Option<usize>) -> String {
+    match index {
+        Some(index) => format!("{batch_name}[{index}]"),
+        None => scalar_name.to_string(),
+    }
+}
+
+#[inline]
+fn validate_finite_input(
+    scalar_name: &str,
+    batch_name: &str,
+    index: Option<usize>,
+    value: f64,
+) -> Result<(), String> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` must be finite",
+            input_label(scalar_name, batch_name, index)
+        ))
+    }
+}
+
+#[inline]
+fn validate_positive_input(
+    scalar_name: &str,
+    batch_name: &str,
+    index: Option<usize>,
+    value: f64,
+) -> Result<(), String> {
+    validate_finite_input(scalar_name, batch_name, index, value)?;
+    if value > 0.0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` must be positive",
+            input_label(scalar_name, batch_name, index)
+        ))
+    }
+}
+
+#[inline]
+fn validate_non_negative_input(
+    scalar_name: &str,
+    batch_name: &str,
+    index: Option<usize>,
+    value: f64,
+) -> Result<(), String> {
+    validate_finite_input(scalar_name, batch_name, index, value)?;
+    if value >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` must be non-negative",
+            input_label(scalar_name, batch_name, index)
+        ))
+    }
+}
+
+#[inline]
+fn checked_finite_output(name: &str, index: Option<usize>, value: f64) -> Result<f64, String> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        let output = match index {
+            Some(index) => format!("{name}[{index}]"),
+            None => name.to_string(),
+        };
+        Err(format!("`{output}` is non-finite for the supplied inputs"))
+    }
+}
+
+#[inline]
+fn checked_option_flag(index: usize, value: u8) -> Result<bool, String> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(format!(
+            "`is_calls[{index}]` must be 0 for a put or 1 for a call"
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_bs_price(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    div_yield: f64,
+    vol: f64,
+    maturity: f64,
+    is_call: bool,
+    index: Option<usize>,
+) -> Result<f64, String> {
+    validate_positive_input("spot", "spots", index, spot)?;
+    validate_positive_input("strike", "strikes", index, strike)?;
+    validate_non_negative_input("vol", "vols", index, vol)?;
+    validate_non_negative_input("maturity", "maturities", index, maturity)?;
+    validate_finite_input("rate", "rates", index, rate)?;
+    validate_finite_input("div_yield", "div_yields", index, div_yield)?;
+
+    let option_type = if is_call {
+        OptionType::Call
+    } else {
+        OptionType::Put
+    };
+    let adjusted_spot = spot * (-div_yield * maturity).exp();
+    if !adjusted_spot.is_finite() {
+        let location = index.map_or_else(
+            || "adjusted spot".to_string(),
+            |index| format!("adjusted spot at batch index {index}"),
+        );
+        return Err(format!(
+            "`{location}` is non-finite for the supplied inputs"
+        ));
+    }
+    checked_finite_output(
+        "price",
+        index,
+        black_scholes_price(option_type, adjusted_spot, strike, rate, vol, maturity),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_bsm_greeks(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    div_yield: f64,
+    vol: f64,
+    expiry: f64,
+    is_call: bool,
+    index: Option<usize>,
+) -> Result<[f64; 7], String> {
+    validate_positive_input("spot", "spots", index, spot)?;
+    validate_positive_input("strike", "strikes", index, strike)?;
+    validate_non_negative_input("vol", "vols", index, vol)?;
+    validate_non_negative_input("expiry", "expiries", index, expiry)?;
+    validate_finite_input("rate", "rates", index, rate)?;
+    validate_finite_input("div_yield", "div_yields", index, div_yield)?;
+
+    let option_type = if is_call {
+        OptionType::Call
+    } else {
+        OptionType::Put
+    };
+    let greeks =
+        black_scholes_merton_greeks(option_type, spot, strike, rate, div_yield, vol, expiry);
+    let values = [
+        greeks.delta,
+        greeks.gamma,
+        greeks.vega,
+        greeks.theta,
+        greeks.rho,
+        greeks.vanna,
+        greeks.volga,
+    ];
+    if let Some((greek_index, _)) = values
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        const NAMES: [&str; 7] = ["delta", "gamma", "vega", "theta", "rho", "vanna", "volga"];
+        let location = index.map_or_else(
+            || format!("greeks.{}", NAMES[greek_index]),
+            |index| format!("greeks[{index}].{}", NAMES[greek_index]),
+        );
+        return Err(format!(
+            "`{location}` is non-finite for the supplied inputs"
+        ));
+    }
+    Ok(values)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_black76_price(
+    forward: f64,
+    strike: f64,
+    rate: f64,
+    vol: f64,
+    maturity: f64,
+    is_call: bool,
+    index: Option<usize>,
+) -> Result<f64, String> {
+    validate_positive_input("forward", "forwards", index, forward)?;
+    validate_positive_input("strike", "strikes", index, strike)?;
+    validate_finite_input("rate", "rates", index, rate)?;
+    validate_non_negative_input("vol", "vols", index, vol)?;
+    validate_non_negative_input("maturity", "maturities", index, maturity)?;
+
+    let option_type = if is_call {
+        OptionType::Call
+    } else {
+        OptionType::Put
+    };
+    let price = validated_black76_price(option_type, forward, strike, rate, vol, maturity)
+        .map_err(|error| match index {
+            Some(index) => format!("Black-76 input at batch index {index} is invalid: {error}"),
+            None => format!("Black-76 input is invalid: {error}"),
+        })?;
+    checked_finite_output("price", index, price)
+}
 
 /// Black-Scholes European option price.
 #[wasm_bindgen]
@@ -21,21 +229,7 @@ pub fn bs_price(
     maturity: f64,
     is_call: bool,
 ) -> Result<f64, JsValue> {
-    require_positive("spot", spot)?;
-    require_positive("strike", strike)?;
-    require_non_negative("vol", vol)?;
-    require_non_negative("maturity", maturity)?;
-    require_finite("rate", rate)?;
-    require_finite("div_yield", div_yield)?;
-
-    let ot = if is_call {
-        OptionType::Call
-    } else {
-        OptionType::Put
-    };
-    // Adjust for continuous dividend yield: S_adj = S * e^{-q*T}
-    let s_adj = spot * (-div_yield * maturity).exp();
-    Ok(black_scholes_price(ot, s_adj, strike, rate, vol, maturity))
+    checked_bs_price(spot, strike, rate, div_yield, vol, maturity, is_call, None).map_err(js_error)
 }
 
 /// Black-Scholes implied volatility.
@@ -77,67 +271,104 @@ pub fn bsm_greeks_wasm(
     expiry: f64,
     is_call: bool,
 ) -> Result<Vec<f64>, JsValue> {
-    require_positive("spot", spot)?;
-    require_positive("strike", strike)?;
-    require_non_negative("vol", vol)?;
-    require_non_negative("expiry", expiry)?;
-    require_finite("rate", rate)?;
-    require_finite("div_yield", div_yield)?;
+    checked_bsm_greeks(spot, strike, rate, div_yield, vol, expiry, is_call, None)
+        .map(Vec::from)
+        .map_err(js_error)
+}
+
+#[inline]
+fn stable_black76_d1_d2(forward: f64, strike: f64, vol: f64, expiry: f64) -> (f64, f64) {
+    let relative_moneyness = (forward - strike) / strike;
+    let log_moneyness = if relative_moneyness.abs() <= 0.5 {
+        relative_moneyness.ln_1p()
+    } else {
+        forward.ln() - strike.ln()
+    };
+    let width = vol * expiry.sqrt();
+    let midpoint = if width != 0.0 {
+        log_moneyness / width
+    } else if log_moneyness == 0.0 {
+        0.0
+    } else {
+        let log_width = vol.ln() + 0.5 * expiry.ln();
+        log_moneyness.signum() * (log_moneyness.abs().ln() - log_width).exp()
+    };
+    let half_width = 0.5 * width;
+    (midpoint + half_width, midpoint - half_width)
+}
+
+#[inline]
+fn black76_vanna_volga(
+    forward: f64,
+    strike: f64,
+    rate: f64,
+    vol: f64,
+    expiry: f64,
+    vega: f64,
+) -> (f64, f64) {
+    if vol <= 0.0 || expiry <= 0.0 {
+        return (0.0, 0.0);
+    }
+
+    let (d1, d2) = stable_black76_d1_d2(forward, strike, vol, expiry);
+    let df = (-rate * expiry).exp();
+    let pdf_d1 = normal_pdf(d1);
+    let vanna = -df * pdf_d1 * d2 / vol;
+    let volga = vega * d1 * d2 / vol;
+    (vanna, volga)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_black76_greeks(
+    forward: f64,
+    strike: f64,
+    rate: f64,
+    vol: f64,
+    expiry: f64,
+    is_call: bool,
+    index: Option<usize>,
+) -> Result<[f64; 7], String> {
+    validate_positive_input("forward", "forwards", index, forward)?;
+    validate_positive_input("strike", "strikes", index, strike)?;
+    validate_finite_input("rate", "rates", index, rate)?;
+    validate_non_negative_input("vol", "vols", index, vol)?;
+    validate_non_negative_input("expiry", "expiries", index, expiry)?;
 
     let option_type = if is_call {
         OptionType::Call
     } else {
         OptionType::Put
     };
-    let g = black_scholes_merton_greeks(option_type, spot, strike, rate, div_yield, vol, expiry);
-    Ok(vec![
-        g.delta, g.gamma, g.vega, g.theta, g.rho, g.vanna, g.volga,
-    ])
-}
-
-#[inline]
-fn black76_greeks_7(
-    option_type: OptionType,
-    forward: f64,
-    strike: f64,
-    rate: f64,
-    vol: f64,
-    expiry: f64,
-) -> [f64; 7] {
-    if forward <= 0.0 || strike <= 0.0 || vol <= 0.0 || expiry <= 0.0 {
-        return [0.0; 7];
+    let greeks = validated_black76_greeks(option_type, forward, strike, rate, vol, expiry)
+        .map_err(|error| match index {
+            Some(index) => format!("Black-76 input at batch index {index} is invalid: {error}"),
+            None => format!("Black-76 input is invalid: {error}"),
+        })?;
+    let (vanna, volga) = black76_vanna_volga(forward, strike, rate, vol, expiry, greeks.vega);
+    let values = [
+        greeks.delta,
+        greeks.gamma,
+        greeks.vega,
+        greeks.theta,
+        greeks.rho,
+        vanna,
+        volga,
+    ];
+    if let Some((greek_index, _)) = values
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        const NAMES: [&str; 7] = ["delta", "gamma", "vega", "theta", "rho", "vanna", "volga"];
+        let location = index.map_or_else(
+            || format!("greeks.{}", NAMES[greek_index]),
+            |index| format!("greeks[{index}].{}", NAMES[greek_index]),
+        );
+        return Err(format!(
+            "`{location}` is non-finite for the supplied inputs"
+        ));
     }
-
-    let sqrt_t = expiry.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((forward / strike).ln() + 0.5 * vol * vol * expiry) / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-
-    let df = (-rate * expiry).exp();
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let pdf_d1 = normal_pdf(d1);
-
-    let call = df * (forward * nd1 - strike * nd2);
-    let put = call - df * (forward - strike);
-    let price = match option_type {
-        OptionType::Call => call,
-        OptionType::Put => put,
-    };
-
-    let delta = match option_type {
-        OptionType::Call => df * nd1,
-        OptionType::Put => df * (nd1 - 1.0),
-    };
-    let gamma = df * pdf_d1 / (forward * vol * sqrt_t);
-    let vega = df * forward * pdf_d1 * sqrt_t;
-    let theta = rate.mul_add(price, -(df * forward * pdf_d1 * vol / (2.0 * sqrt_t)));
-    // Rho here is dV/dr with forward held fixed.
-    let rho = -expiry * price;
-    let vanna = -df * pdf_d1 * d2 / vol;
-    let volga = vega * d1 * d2 / vol;
-
-    [delta, gamma, vega, theta, rho, vanna, volga]
+    Ok(values)
 }
 
 /// Batch Black-Scholes pricing: one WASM call for N options.
@@ -172,20 +403,20 @@ pub fn bs_price_batch_wasm(
 
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let ot = if is_calls[i] != 0 {
-            OptionType::Call
-        } else {
-            OptionType::Put
-        };
-        let s_adj = spots[i] * (-div_yields[i] * maturities[i]).exp();
-        out.push(black_scholes_price(
-            ot,
-            s_adj,
-            strikes[i],
-            rates[i],
-            vols[i],
-            maturities[i],
-        ));
+        let is_call = checked_option_flag(i, is_calls[i]).map_err(js_error)?;
+        out.push(
+            checked_bs_price(
+                spots[i],
+                strikes[i],
+                rates[i],
+                div_yields[i],
+                vols[i],
+                maturities[i],
+                is_call,
+                Some(i),
+            )
+            .map_err(js_error)?,
+        );
     }
     Ok(out)
 }
@@ -212,9 +443,19 @@ pub fn bs_price_uniform_batch_wasm(
     require_non_negative("vol", vol)?;
     require_non_negative("maturity", maturity)?;
 
-    Ok(openferric::engines::analytic::bs_price_batch(
+    for index in 0..spots.len() {
+        validate_positive_input("spot", "spots", Some(index), spots[index]).map_err(js_error)?;
+        validate_positive_input("strike", "strikes", Some(index), strikes[index])
+            .map_err(js_error)?;
+    }
+
+    let prices = openferric::engines::analytic::bs_price_batch(
         spots, strikes, rate, div_yield, vol, maturity, is_call,
-    ))
+    );
+    for (index, &price) in prices.iter().enumerate() {
+        checked_finite_output("price", Some(index), price).map_err(js_error)?;
+    }
+    Ok(prices)
 }
 
 /// Batch Black-Scholes delta, gamma, vega, and theta with uniform parameters.
@@ -238,12 +479,26 @@ pub fn bsm_greeks_uniform_batch_wasm(
     require_non_negative("vol", vol)?;
     require_non_negative("expiry", expiry)?;
 
+    for index in 0..spots.len() {
+        validate_positive_input("spot", "spots", Some(index), spots[index]).map_err(js_error)?;
+        validate_positive_input("strike", "strikes", Some(index), strikes[index])
+            .map_err(js_error)?;
+    }
+
     let (delta, gamma, vega, theta) = openferric::engines::analytic::bs_greeks_batch(
         spots, strikes, rate, div_yield, vol, expiry, is_call,
     );
     let mut out = Vec::with_capacity(spots.len() * 4);
     for index in 0..spots.len() {
-        out.extend_from_slice(&[delta[index], gamma[index], vega[index], theta[index]]);
+        let values = [delta[index], gamma[index], vega[index], theta[index]];
+        for (greek_name, value) in ["delta", "gamma", "vega", "theta"].into_iter().zip(values) {
+            if !value.is_finite() {
+                return Err(js_error(format!(
+                    "`greeks[{index}].{greek_name}` is non-finite for the supplied inputs"
+                )));
+            }
+        }
+        out.extend_from_slice(&values);
     }
     Ok(out)
 }
@@ -278,19 +533,19 @@ pub fn black76_price_batch_wasm(
 
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let ot = if is_calls[i] != 0 {
-            OptionType::Call
-        } else {
-            OptionType::Put
-        };
-        out.push(black_76_price(
-            ot,
-            forwards[i],
-            strikes[i],
-            rates[i],
-            vols[i],
-            maturities[i],
-        ));
+        let is_call = checked_option_flag(i, is_calls[i]).map_err(js_error)?;
+        out.push(
+            checked_black76_price(
+                forwards[i],
+                strikes[i],
+                rates[i],
+                vols[i],
+                maturities[i],
+                is_call,
+                Some(i),
+            )
+            .map_err(js_error)?,
+        );
     }
     Ok(out)
 }
@@ -328,27 +583,19 @@ pub fn bsm_greeks_batch_wasm(
 
     let mut out = Vec::with_capacity(n * 7);
     for i in 0..n {
-        let ot = if is_calls[i] != 0 {
-            OptionType::Call
-        } else {
-            OptionType::Put
-        };
-        let g = black_scholes_merton_greeks(
-            ot,
+        let is_call = checked_option_flag(i, is_calls[i]).map_err(js_error)?;
+        let greeks = checked_bsm_greeks(
             spots[i],
             strikes[i],
             rates[i],
             div_yields[i],
             vols[i],
             expiries[i],
-        );
-        out.push(g.delta);
-        out.push(g.gamma);
-        out.push(g.vega);
-        out.push(g.theta);
-        out.push(g.rho);
-        out.push(g.vanna);
-        out.push(g.volga);
+            is_call,
+            Some(i),
+        )
+        .map_err(js_error)?;
+        out.extend_from_slice(&greeks);
     }
     Ok(out)
 }
@@ -386,13 +633,18 @@ pub fn black76_greeks_batch_wasm(
 
     let mut out = Vec::with_capacity(n * 7);
     for i in 0..n {
-        let ot = if is_calls[i] != 0 {
-            OptionType::Call
-        } else {
-            OptionType::Put
-        };
-        let g = black76_greeks_7(ot, forwards[i], strikes[i], rates[i], vols[i], expiries[i]);
-        out.extend_from_slice(&g);
+        let is_call = checked_option_flag(i, is_calls[i]).map_err(js_error)?;
+        let greeks = checked_black76_greeks(
+            forwards[i],
+            strikes[i],
+            rates[i],
+            vols[i],
+            expiries[i],
+            is_call,
+            Some(i),
+        )
+        .map_err(js_error)?;
+        out.extend_from_slice(&greeks);
     }
     Ok(out)
 }
@@ -442,6 +694,80 @@ pub fn barrier_price(
 }
 
 /// Simple fixed-rate bond dirty price using flat yield discounting.
+fn checked_bond_price(
+    face_value: f64,
+    coupon_rate: f64,
+    maturity_years: f64,
+    yield_rate: f64,
+    frequency: u32,
+) -> Result<f64, String> {
+    validate_positive_input("face_value", "face_values", None, face_value)?;
+    validate_non_negative_input("coupon_rate", "coupon_rates", None, coupon_rate)?;
+    validate_positive_input("maturity_years", "maturities", None, maturity_years)?;
+    validate_finite_input("yield_rate", "yield_rates", None, yield_rate)?;
+    if frequency == 0 {
+        return Err("`frequency` must be positive".to_string());
+    }
+
+    let frequency_f64 = f64::from(frequency);
+    let raw_periods = maturity_years * frequency_f64;
+    if !raw_periods.is_finite() {
+        return Err("`maturity_years * frequency` must be finite".to_string());
+    }
+    let periods = raw_periods.round();
+    if periods < 1.0 {
+        return Err(
+            "`maturity_years * frequency` must produce at least one coupon period".to_string(),
+        );
+    }
+    // Above 2^53, f64 cannot represent every integer period count exactly.
+    if periods > 9_007_199_254_740_992.0 {
+        return Err("coupon period count exceeds the exactly representable range".to_string());
+    }
+    // Allow ordinary multiplication roundoff, but never let a scale-relative
+    // tolerance grow large enough to classify a representable fractional
+    // period as an integer.
+    let period_tolerance = (8.0 * f64::EPSILON * raw_periods.abs().max(1.0)).min(0.25);
+    if (raw_periods - periods).abs() > period_tolerance {
+        return Err(
+            "`maturity_years * frequency` must be a whole number of coupon periods".to_string(),
+        );
+    }
+
+    let rate_per_period = yield_rate / frequency_f64;
+    let discount_base = 1.0 + rate_per_period;
+    if !discount_base.is_finite() || discount_base <= 0.0 {
+        return Err("`1 + yield_rate / frequency` must be finite and positive".to_string());
+    }
+
+    let coupon = face_value * coupon_rate / frequency_f64;
+    if !coupon.is_finite() {
+        return Err("coupon payment is non-finite for the supplied inputs".to_string());
+    }
+
+    let price = if rate_per_period == 0.0 {
+        coupon.mul_add(periods, face_value)
+    } else {
+        // Geometric-series closed form. exp_m1 avoids cancellation when the
+        // per-period yield is close to zero.
+        let discount_exponent = -periods * rate_per_period.ln_1p();
+        let maturity_discount = discount_exponent.exp();
+        let annuity_factor = -discount_exponent.exp_m1() / rate_per_period;
+        let coupon_pv = if coupon == 0.0 {
+            0.0
+        } else {
+            coupon * annuity_factor
+        };
+        face_value.mul_add(maturity_discount, coupon_pv)
+    };
+
+    if !price.is_finite() || price < 0.0 {
+        Err("bond price is non-finite or negative for the supplied inputs".to_string())
+    } else {
+        Ok(price)
+    }
+}
+
 #[wasm_bindgen]
 pub fn bond_price(
     face_value: f64,
@@ -450,25 +776,14 @@ pub fn bond_price(
     yield_rate: f64,
     frequency: u32,
 ) -> Result<f64, JsValue> {
-    require_positive("face_value", face_value)?;
-    require_non_negative("coupon_rate", coupon_rate)?;
-    require_positive("maturity_years", maturity_years)?;
-    require_finite("yield_rate", yield_rate)?;
-    if frequency == 0 {
-        return Err(js_error("`frequency` must be positive"));
-    }
-    let freq = frequency as f64;
-    let coupon = face_value * coupon_rate / freq;
-    let n_periods = (maturity_years * freq).round() as u32;
-    let r_per = yield_rate / freq;
-
-    let mut pv = 0.0;
-    for i in 1..=n_periods {
-        let df = (1.0 + r_per).powi(-(i as i32));
-        pv += coupon * df;
-    }
-    pv += face_value * (1.0 + r_per).powi(-(n_periods as i32));
-    Ok(pv)
+    checked_bond_price(
+        face_value,
+        coupon_rate,
+        maturity_years,
+        yield_rate,
+        frequency,
+    )
+    .map_err(js_error)
 }
 
 #[cfg(test)]
@@ -584,6 +899,41 @@ mod tests {
     }
 
     #[test]
+    fn checked_scalar_and_batch_bs_validation_are_consistent_and_indexed() {
+        let scalar = checked_bs_price(-1.0, 100.0, 0.05, 0.0, 0.2, 1.0, true, None)
+            .expect_err("negative scalar spot must be rejected");
+        let batch = checked_bs_price(-1.0, 100.0, 0.05, 0.0, 0.2, 1.0, true, Some(3))
+            .expect_err("negative batch spot must be rejected");
+        assert!(scalar.contains("`spot`"));
+        assert!(batch.contains("`spots[3]`"));
+
+        let scalar = checked_bsm_greeks(100.0, 100.0, 0.05, 0.0, f64::NAN, 1.0, true, None)
+            .expect_err("non-finite scalar volatility must be rejected");
+        let batch = checked_bsm_greeks(100.0, 100.0, 0.05, 0.0, f64::NAN, 1.0, true, Some(4))
+            .expect_err("non-finite batch volatility must be rejected");
+        assert!(scalar.contains("`vol`"));
+        assert!(batch.contains("`vols[4]`"));
+    }
+
+    #[test]
+    fn batch_option_flags_accept_only_documented_zero_or_one_values() {
+        assert!(!checked_option_flag(0, 0).unwrap());
+        assert!(checked_option_flag(1, 1).unwrap());
+        let error = checked_option_flag(3, 2).unwrap_err();
+        assert!(error.contains("`is_calls[3]`"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn checked_pricing_rejects_non_finite_results() {
+        let bs = checked_bs_price(100.0, 100.0, -f64::MAX, 0.0, 0.2, 1.0, false, None);
+        assert!(bs.is_err());
+
+        let black76 = checked_black76_price(100.0, 100.0, -f64::MAX, 0.2, 1.0, true, Some(2))
+            .expect_err("overflowing discount factor must not cross the WASM ABI");
+        assert!(black76.contains("price[2]"));
+    }
+
+    #[test]
     fn batch_length_mismatch_is_rejected() {
         let err = crate::error::batch_length_error("spots", 2, &[("strikes", 1)]).unwrap_err();
         assert!(err.contains("strikes"));
@@ -635,6 +985,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn checked_black76_rejects_invalid_domains_with_batch_index() {
+        let price = checked_black76_price(-1.0, 100.0, 0.03, 0.2, 1.0, true, Some(6))
+            .expect_err("negative forward must be rejected");
+        assert!(price.contains("`forwards[6]`"));
+
+        let greeks = checked_black76_greeks(100.0, 100.0, 0.03, -0.2, 1.0, true, Some(7))
+            .expect_err("negative volatility must be rejected");
+        assert!(greeks.contains("`vols[7]`"));
+    }
+
     // -- black76_greeks_batch_wasm --
 
     #[test]
@@ -663,6 +1024,28 @@ mod tests {
         }
         assert!(black[3].is_finite());
         assert!(black[4].is_finite());
+    }
+
+    #[test]
+    fn black76_deep_tail_put_greeks_use_stable_core_values() {
+        let actual = checked_black76_greeks(5.0e18, 1.0e18, 0.0, 0.2, 1.0, false, Some(0)).unwrap();
+        // Independent SciPy ndtr references for the Black-76 formulas.
+        let expected = [
+            -1.862_397_753_202_606_3e-16,
+            1.539_548_175_331_966_1e-33,
+            7.697_740_876_659_831e3,
+            -7.697_740_876_659_832e2,
+            -2.275_288_460_097_726_8e1,
+            -6.117_540_594_728_432e-14,
+            2.492_038_143_976_294_4e6,
+        ];
+        for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+            let relative_error = ((actual - expected) / expected).abs();
+            assert!(
+                relative_error <= 2.0e-11,
+                "Greek {index}: actual={actual:.17e}, expected={expected:.17e}, relative_error={relative_error:.3e}"
+            );
+        }
     }
 
     // -- barrier_price --
@@ -711,5 +1094,52 @@ mod tests {
         // Coupon < yield → discount
         let price = bond_price(1000.0, 0.03, 10.0, 0.05, 2).unwrap();
         assert!(price < 1000.0);
+    }
+
+    #[test]
+    fn bond_price_zero_yield_uses_exact_coupon_sum() {
+        let price = checked_bond_price(1_000.0, 0.06, 10.0, 0.0, 2).unwrap();
+        assert_eq!(price, 1_600.0);
+    }
+
+    #[test]
+    fn bond_price_requires_a_valid_coupon_schedule_and_discount_base() {
+        assert!(
+            checked_bond_price(1_000.0, 0.05, 0.1, 0.05, 2)
+                .unwrap_err()
+                .contains("at least one")
+        );
+        assert!(
+            checked_bond_price(1_000.0, 0.05, 1.25, 0.05, 2)
+                .unwrap_err()
+                .contains("whole number")
+        );
+        assert!(
+            checked_bond_price(1_000.0, 0.05, 1.0, -2.0, 2)
+                .unwrap_err()
+                .contains("positive")
+        );
+
+        let large_half_period = 1_000_000_000_000_000.5_f64;
+        assert_eq!(large_half_period.fract(), 0.5);
+        assert!(
+            checked_bond_price(1_000.0, 0.05, large_half_period, 0.05, 1)
+                .unwrap_err()
+                .contains("whole number")
+        );
+    }
+
+    #[test]
+    fn bond_price_large_period_count_is_finite_without_period_iteration() {
+        let price = checked_bond_price(1_000.0, 0.05, 1_000_000.0, 0.05, 365)
+            .expect("closed-form annuity should handle a large integral period count");
+        assert!(price.is_finite());
+        assert!(price > 0.0);
+    }
+
+    #[test]
+    fn bond_price_rejects_overflowing_result() {
+        let result = checked_bond_price(f64::MAX, f64::MAX, 1.0, 0.0, 1);
+        assert!(result.is_err());
     }
 }

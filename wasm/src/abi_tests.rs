@@ -55,6 +55,116 @@ fn slice_and_vector_exports_preserve_shape_and_values() {
 }
 
 #[wasm_bindgen_test]
+fn scalar_and_batch_pricing_reject_the_same_invalid_domains() {
+    let scalar_error = pricing::bs_price(-1.0, 100.0, 0.03, 0.0, 0.2, 1.0, true)
+        .expect_err("negative scalar spot must be rejected")
+        .as_string()
+        .expect("validation error must contain a JavaScript string");
+    assert!(scalar_error.contains("`spot`"));
+
+    let batch_error = pricing::bs_price_batch_wasm(
+        &[100.0, -1.0],
+        &[100.0, 100.0],
+        &[0.03, 0.03],
+        &[0.0, 0.0],
+        &[0.2, 0.2],
+        &[1.0, 1.0],
+        &[1, 1],
+    )
+    .expect_err("negative batch spot must be rejected")
+    .as_string()
+    .expect("validation error must contain a JavaScript string");
+    assert!(batch_error.contains("`spots[1]`"));
+
+    let uniform_error = pricing::bs_price_uniform_batch_wasm(
+        &[100.0, f64::NAN],
+        &[100.0, 100.0],
+        0.03,
+        0.0,
+        0.2,
+        1.0,
+        true,
+    )
+    .expect_err("non-finite uniform-batch spot must be rejected")
+    .as_string()
+    .expect("validation error must contain a JavaScript string");
+    assert!(uniform_error.contains("`spots[1]`"));
+
+    let flag_error =
+        pricing::bs_price_batch_wasm(&[100.0], &[100.0], &[0.03], &[0.0], &[0.2], &[1.0], &[2])
+            .expect_err("batch option flags outside 0/1 must be rejected")
+            .as_string()
+            .expect("validation error must contain a JavaScript string");
+    assert!(flag_error.contains("`is_calls[0]`"));
+}
+
+#[wasm_bindgen_test]
+fn greek_and_black76_batches_report_the_invalid_element() {
+    let greek_error = pricing::bsm_greeks_batch_wasm(
+        &[100.0, 100.0],
+        &[100.0, 100.0],
+        &[0.03, 0.03],
+        &[0.0, 0.0],
+        &[0.2, f64::NAN],
+        &[1.0, 1.0],
+        &[1, 1],
+    )
+    .expect_err("non-finite batch volatility must be rejected")
+    .as_string()
+    .expect("validation error must contain a JavaScript string");
+    assert!(greek_error.contains("`vols[1]`"));
+
+    let black_price_error = pricing::black76_price_batch_wasm(
+        &[100.0, -1.0],
+        &[100.0, 100.0],
+        &[0.03, 0.03],
+        &[0.2, 0.2],
+        &[1.0, 1.0],
+        &[1, 1],
+    )
+    .expect_err("negative Black-76 forward must be rejected")
+    .as_string()
+    .expect("validation error must contain a JavaScript string");
+    assert!(black_price_error.contains("`forwards[1]`"));
+
+    let black_greek_error = pricing::black76_greeks_batch_wasm(
+        &[100.0, 100.0],
+        &[100.0, 100.0],
+        &[0.03, f64::INFINITY],
+        &[0.2, 0.2],
+        &[1.0, 1.0],
+        &[1, 1],
+    )
+    .expect_err("non-finite Black-76 rate must be rejected")
+    .as_string()
+    .expect("validation error must contain a JavaScript string");
+    assert!(black_greek_error.contains("`rates[1]`"));
+}
+
+#[wasm_bindgen_test]
+fn black76_deep_tail_put_greeks_remain_representable_through_wasm() {
+    let actual =
+        pricing::black76_greeks_batch_wasm(&[5.0e18], &[1.0e18], &[0.0], &[0.2], &[1.0], &[0])
+            .expect("valid deep-tail Black-76 put");
+    let expected = [
+        -1.862_397_753_202_606_3e-16,
+        1.539_548_175_331_966_1e-33,
+        7.697_740_876_659_831e3,
+        -7.697_740_876_659_832e2,
+        -2.275_288_460_097_726_8e1,
+        -6.117_540_594_728_432e-14,
+        2.492_038_143_976_294_4e6,
+    ];
+    for (index, (&actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let relative_error = ((actual - expected) / expected).abs();
+        assert!(
+            relative_error <= 2.0e-11,
+            "Greek {index}: actual={actual:.17e}, expected={expected:.17e}, relative_error={relative_error:.3e}"
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 fn empty_slices_and_invalid_dsl_are_well_defined() {
     let empty = pricing::bs_price_batch_wasm(&[], &[], &[], &[], &[], &[], &[])
         .expect("empty arrays have matching lengths");

@@ -1,6 +1,7 @@
 name: Benchmarks
 
 on:
+  pull_request:
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * 1"
@@ -11,9 +12,16 @@ permissions:
 jobs:
   cpu:
     name: Stable CPU benchmark
+    # Stable hosts are currently reserved for scheduled/manual runs. Keeping
+    # pull requests off unavailable self-hosted labels avoids indefinitely
+    # queued checks; the hosted ARM64 sweep below supplies the PR regression
+    # signal.
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, linux, x64, openferric-benchmark]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@1.94.0
@@ -23,22 +31,49 @@ jobs:
       - name: Self-test benchmark regression gate
         run: python3 scripts/test-check-criterion-regression.py
 
+      - name: Resolve distinct benchmark revisions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=2 origin main:refs/remotes/origin/main
+          candidate_sha="$(git rev-parse HEAD)"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            baseline_sha="${PR_BASE_SHA}"
+            git fetch --no-tags --depth=1 origin "${baseline_sha}"
+          else
+            baseline_sha="$(git rev-parse refs/remotes/origin/main)"
+            if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+              baseline_sha="$(git rev-parse "${candidate_sha}^")"
+            fi
+          fi
+          git cat-file -e "${baseline_sha}^{commit}"
+          if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+            echo "Benchmark baseline and candidate resolve to the same commit" >&2
+            exit 1
+          fi
+          echo "BENCHMARK_BASE_SHA=${baseline_sha}" >> "${GITHUB_ENV}"
+          echo "BENCHMARK_CANDIDATE_SHA=${candidate_sha}" >> "${GITHUB_ENV}"
+
       - name: Record runner provenance
         run: |
           mkdir -p target/benchmark-metadata
           rustc -Vv > target/benchmark-metadata/rustc.txt
           lscpu > target/benchmark-metadata/lscpu.txt
-          git rev-parse HEAD > target/benchmark-metadata/commit.txt
+          printf '%s\n' "${BENCHMARK_BASE_SHA}" \
+            > target/benchmark-metadata/baseline-commit.txt
+          printf '%s\n' "${BENCHMARK_CANDIDATE_SHA}" \
+            > target/benchmark-metadata/candidate-commit.txt
 
-      - name: Benchmark origin/main on the same CPU host
+      - name: Benchmark the base revision on the same CPU host
         run: |
-          set -o pipefail
+          set -euo pipefail
           rm -rf "${GITHUB_WORKSPACE}/target/criterion"
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          baseline_dir="${RUNNER_TEMP}/openferric-main-cpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          git worktree add --detach "${baseline_dir}" refs/remotes/origin/main
+          baseline_dir="${RUNNER_TEMP}/openferric-base-cpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "${baseline_dir}" "${BENCHMARK_BASE_SHA}"
           trap 'git worktree remove --force "${baseline_dir}"' EXIT
-          # Use the current benchmark harness against main's library so newly
+          # Use the current benchmark harness against the base library so newly
           # added crossover groups have a like-for-like first baseline.
           cp "${GITHUB_WORKSPACE}/benches/simd_bench.rs" \
             "${baseline_dir}/benches/simd_bench.rs"
@@ -50,7 +85,7 @@ jobs:
               RUSTFLAGS="" \
               cargo bench --locked -p openferric --features parallel,simd,jit -- \
                 --noplot --save-baseline main
-          ) 2>&1 | tee target/benchmark-metadata/cpu-main-baseline.log
+          ) 2>&1 | tee target/benchmark-metadata/cpu-base-baseline.log
 
       - name: Run scalar and accelerated benchmarks
         run: |
@@ -91,9 +126,12 @@ jobs:
 
   gpu:
     name: Stable GPU benchmark
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, linux, x64, gpu, openferric-benchmark]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@1.94.0
@@ -103,11 +141,39 @@ jobs:
       - name: Self-test benchmark regression gate
         run: python3 scripts/test-check-criterion-regression.py
 
+      - name: Resolve distinct benchmark revisions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=2 origin main:refs/remotes/origin/main
+          candidate_sha="$(git rev-parse HEAD)"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            baseline_sha="${PR_BASE_SHA}"
+            git fetch --no-tags --depth=1 origin "${baseline_sha}"
+          else
+            baseline_sha="$(git rev-parse refs/remotes/origin/main)"
+            if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+              baseline_sha="$(git rev-parse "${candidate_sha}^")"
+            fi
+          fi
+          git cat-file -e "${baseline_sha}^{commit}"
+          if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+            echo "Benchmark baseline and candidate resolve to the same commit" >&2
+            exit 1
+          fi
+          echo "BENCHMARK_BASE_SHA=${baseline_sha}" >> "${GITHUB_ENV}"
+          echo "BENCHMARK_CANDIDATE_SHA=${candidate_sha}" >> "${GITHUB_ENV}"
+
       - name: Record GPU runner provenance
         run: |
           mkdir -p target/benchmark-metadata
           rustc -Vv > target/benchmark-metadata/rustc.txt
-          git rev-parse HEAD > target/benchmark-metadata/commit.txt
+          printf '%s\n' "${BENCHMARK_BASE_SHA}" \
+            > target/benchmark-metadata/baseline-commit.txt
+          printf '%s\n' "${BENCHMARK_CANDIDATE_SHA}" \
+            > target/benchmark-metadata/candidate-commit.txt
           uname -a > target/benchmark-metadata/system.txt
           if command -v lspci >/dev/null 2>&1; then
             lspci -nn | grep -Ei 'vga|3d|display' > target/benchmark-metadata/gpu-pci.txt || true
@@ -123,13 +189,12 @@ jobs:
               > target/benchmark-metadata/amd-rocm.txt 2>&1 || true
           fi
 
-      - name: Benchmark origin/main on the same GPU host
+      - name: Benchmark the base revision on the same GPU host
         run: |
-          set -o pipefail
+          set -euo pipefail
           rm -rf "${GITHUB_WORKSPACE}/target/criterion"
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          baseline_dir="${RUNNER_TEMP}/openferric-main-gpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          git worktree add --detach "${baseline_dir}" refs/remotes/origin/main
+          baseline_dir="${RUNNER_TEMP}/openferric-base-gpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "${baseline_dir}" "${BENCHMARK_BASE_SHA}"
           trap 'git worktree remove --force "${baseline_dir}"' EXIT
           (
             cd "${baseline_dir}"
@@ -139,10 +204,10 @@ jobs:
               cargo bench --locked -p openferric --bench gpu_bench \
                 --features gpu,parallel,simd -- \
                 --noplot --save-baseline main
-          ) 2>&1 | tee target/benchmark-metadata/gpu-main-baseline.log
+          ) 2>&1 | tee target/benchmark-metadata/gpu-base-baseline.log
           if grep -q 'Criterion.rs ERROR:' \
-            target/benchmark-metadata/gpu-main-baseline.log; then
-            echo "Criterion reported an error while recording the main baseline" >&2
+            target/benchmark-metadata/gpu-base-baseline.log; then
+            echo "Criterion reported an error while recording the base baseline" >&2
             exit 1
           fi
           find target/criterion/gpu_terminal_european \
@@ -176,6 +241,105 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: criterion-gpu-${{ github.sha }}
+          path: |
+            target/criterion
+            target/benchmark-metadata
+          retention-days: 90
+
+  arm64:
+    name: Linux ARM64 exact-terminal sweep
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Self-test benchmark regression gate
+        run: python3 scripts/test-check-criterion-regression.py
+
+      - name: Resolve distinct benchmark revisions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=2 origin main:refs/remotes/origin/main
+          candidate_sha="$(git rev-parse HEAD)"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            baseline_sha="${PR_BASE_SHA}"
+            git fetch --no-tags --depth=1 origin "${baseline_sha}"
+          else
+            baseline_sha="$(git rev-parse refs/remotes/origin/main)"
+            if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+              baseline_sha="$(git rev-parse "${candidate_sha}^")"
+            fi
+          fi
+          git cat-file -e "${baseline_sha}^{commit}"
+          if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+            echo "Benchmark baseline and candidate resolve to the same commit" >&2
+            exit 1
+          fi
+          echo "BENCHMARK_BASE_SHA=${baseline_sha}" >> "${GITHUB_ENV}"
+          echo "BENCHMARK_CANDIDATE_SHA=${candidate_sha}" >> "${GITHUB_ENV}"
+
+      - name: Record ARM runner provenance
+        run: |
+          mkdir -p target/benchmark-metadata
+          rustc -Vv > target/benchmark-metadata/rustc.txt
+          lscpu > target/benchmark-metadata/lscpu.txt
+          printf '%s\n' "${BENCHMARK_BASE_SHA}" \
+            > target/benchmark-metadata/baseline-commit.txt
+          printf '%s\n' "${BENCHMARK_CANDIDATE_SHA}" \
+            > target/benchmark-metadata/candidate-commit.txt
+
+      - name: Benchmark the base revision across the Linux ARM64 bracket
+        run: |
+          set -euo pipefail
+          rm -rf "${GITHUB_WORKSPACE}/target/criterion"
+          baseline_dir="${RUNNER_TEMP}/openferric-base-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "${baseline_dir}" "${BENCHMARK_BASE_SHA}"
+          trap 'git worktree remove --force "${baseline_dir}"' EXIT
+          cp "${GITHUB_WORKSPACE}/benches/hot_paths_bench.rs" \
+            "${baseline_dir}/benches/hot_paths_bench.rs"
+          (
+            cd "${baseline_dir}"
+            CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" \
+              RUSTFLAGS="" \
+              cargo bench --locked -p openferric --bench hot_paths_bench \
+                --features simd -- \
+                'mc_exact_terminal_auto_crossover/(scalar|simd|auto)/(4096|8192|16384)$' \
+                --noplot --save-baseline main
+          ) 2>&1 | tee target/benchmark-metadata/arm64-base-baseline.log
+
+      - name: Benchmark the candidate across the Linux ARM64 bracket
+        run: |
+          set -euo pipefail
+          cargo bench --locked -p openferric --bench hot_paths_bench \
+            --features simd -- \
+            'mc_exact_terminal_auto_crossover/(scalar|simd|auto)/(4096|8192|16384)$' \
+            --noplot --save-baseline candidate \
+            2>&1 | tee target/benchmark-metadata/arm64-candidate.log
+          python3 scripts/check-criterion-regression.py \
+            target/criterion/mc_exact_terminal_auto_crossover \
+            --baseline main \
+            --current candidate \
+            --expected-benchmarks 9 \
+            --max-regression-percent 20
+        env:
+          RUSTFLAGS: ""
+
+      - name: Upload ARM Criterion history
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-arm64-${{ github.sha }}
           path: |
             target/criterion
             target/benchmark-metadata

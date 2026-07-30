@@ -24,17 +24,34 @@ const A4: f64 = -1.821_255_978;
 const A5: f64 = 1.330_274_429;
 const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
 
+/// Broadcasts `value` to both lanes of an AArch64 NEON vector.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
 #[inline]
 pub unsafe fn splat_f64x2(value: f64) -> float64x2_t {
     vdupq_n_f64(value)
 }
 
+/// Loads two adjacent values starting at `i`.
+///
+/// # Safety
+///
+/// The caller must execute this where NEON is available and ensure that
+/// `values[i..]` contains at least two elements.
 #[inline]
 pub unsafe fn load_f64x2(values: &[f64], i: usize) -> float64x2_t {
     // SAFETY: caller guarantees there are at least 2 elements starting at `i`.
     unsafe { vld1q_f64(values.as_ptr().add(i)) }
 }
 
+/// Stores both lanes of `v` starting at `i`.
+///
+/// # Safety
+///
+/// The caller must execute this where NEON is available and ensure that
+/// `values[i..]` contains at least two elements.
 #[inline]
 pub unsafe fn store_f64x2(values: &mut [f64], i: usize, v: float64x2_t) {
     // SAFETY: caller guarantees there are at least 2 elements starting at `i`.
@@ -91,6 +108,10 @@ unsafe fn repair_ln_subnormal_lanes(input: float64x2_t, result: float64x2_t) -> 
 /// Matches the AVX2 `exp_f64x4` algorithm from `simd_math.rs`, ported to 2-lane NEON.
 /// Dense differential tests bound relative error by `2e-14` over the practical
 /// finite range `[-700, 700]`.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
 #[inline]
 pub unsafe fn simd_exp_f64x2(x: float64x2_t) -> float64x2_t {
     let input = x;
@@ -228,6 +249,10 @@ pub unsafe fn fast_exp_f64x2(x: float64x2_t) -> float64x2_t {
 /// Vectorized ln(x) for NEON f64x2 using fdlibm kernel with IEEE 754 bit extraction.
 ///
 /// Matches the AVX2 `ln_f64x4` algorithm from `simd_math.rs`, ported to 2-lane NEON.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
 #[inline]
 pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     let one = vdupq_n_f64(1.0);
@@ -254,11 +279,10 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     // Fold m from [1, 2) into [sqrt(1/2), sqrt(2)). Values at or above
     // sqrt(2) are halved and their binary exponent incremented.
     let adjust = vcgeq_f64(m, sqrt_two);
-    let adjust_bits: uint64x2_t = std::mem::transmute(adjust);
     let m_halved = vmulq_f64(m, vdupq_n_f64(0.5));
     let k_plus_one = vaddq_f64(k, one);
-    m = vbslq_f64(adjust_bits, m_halved, m);
-    k = vbslq_f64(adjust_bits, k_plus_one, k);
+    m = vbslq_f64(adjust, m_halved, m);
+    k = vbslq_f64(adjust, k_plus_one, k);
 
     // f = m - 1, s = f / (2 + f)
     let f = vsubq_f64(m, one);
@@ -314,6 +338,11 @@ pub unsafe fn simd_ln_f64x2(x: float64x2_t) -> float64x2_t {
     repair_ln_subnormal_lanes(x, y)
 }
 
+/// Evaluates the standard-normal density in both vector lanes.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
 #[inline]
 pub unsafe fn norm_pdf_f64x2(x: float64x2_t) -> float64x2_t {
     let exponent = vmulq_f64(vdupq_n_f64(-0.5), vmulq_f64(x, x));
@@ -322,6 +351,11 @@ pub unsafe fn norm_pdf_f64x2(x: float64x2_t) -> float64x2_t {
     })
 }
 
+/// Evaluates the standard-normal cumulative distribution in both vector lanes.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
 #[inline]
 pub unsafe fn norm_cdf_f64x2(x: float64x2_t) -> float64x2_t {
     let one = vdupq_n_f64(1.0);
@@ -346,58 +380,28 @@ pub unsafe fn norm_cdf_f64x2(x: float64x2_t) -> float64x2_t {
 }
 
 #[inline]
-fn normal_cdf_scalar(x: f64) -> f64 {
-    if x == 0.0 {
-        return 0.5;
-    }
-    let z = x.abs();
-    let t = 1.0 / (1.0 + P * z);
-    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
-    let pdf = INV_SQRT_2PI * (-0.5 * z * z).exp();
-    let approx = 1.0 - pdf * poly;
-    if x < 0.0 { 1.0 - approx } else { approx }
-}
-
-#[inline]
 fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
-    if t <= 0.0 {
-        return if is_call {
-            (spot - strike).max(0.0)
+    crate::engines::analytic::black_scholes::bs_price(
+        if is_call {
+            crate::core::OptionType::Call
         } else {
-            (strike - spot).max(0.0)
-        };
-    }
-    if vol < 0.0 {
-        return f64::NAN;
-    }
-    if vol == 0.0 {
-        // Deterministic (zero-vol) limit with t > 0: discounted forward
-        // intrinsic e^{-rT} (S e^{(r-q)T} - K)^+ (put analogue likewise),
-        // not the undiscounted spot intrinsic.
-        let fwd = spot * ((r - q) * t).exp();
-        let df_r = (-r * t).exp();
-        return if is_call {
-            df_r * (fwd - strike).max(0.0)
-        } else {
-            df_r * (strike - fwd).max(0.0)
-        };
-    }
-
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
-
-    let sqrt_t = t.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (r - q + 0.5 * vol * vol) * t) / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-
-    if is_call {
-        spot * df_q * normal_cdf_scalar(d1) - strike * df_r * normal_cdf_scalar(d2)
-    } else {
-        strike * df_r * normal_cdf_scalar(-d2) - spot * df_q * normal_cdf_scalar(-d1)
-    }
+            crate::core::OptionType::Put
+        },
+        spot,
+        strike,
+        r,
+        q,
+        vol,
+        t,
+    )
 }
 
+/// Prices a homogeneous Black-Scholes batch with AArch64 NEON where safe.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
+/// `spots` and `strikes` must have identical lengths.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn bs_price_neon_batch(
     spots: &[f64],
@@ -421,6 +425,12 @@ pub unsafe fn bs_price_neon_batch(
     out
 }
 
+/// Writes a homogeneous Black-Scholes batch using AArch64 NEON where safe.
+///
+/// # Safety
+///
+/// The caller must execute this on an AArch64 target where NEON is available.
+/// `spots`, `strikes`, and `out` must have identical lengths.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn bs_price_neon_batch_into(
     spots: &[f64],
@@ -443,7 +453,17 @@ pub unsafe fn bs_price_neon_batch_into(
         "output and input slices must have identical lengths",
     );
 
-    if t <= 0.0 || vol <= 0.0 {
+    let vector_drift = (r - q + 0.5 * vol * vol) * t;
+    let requires_scalar = t <= 0.0
+        || vol <= 0.0
+        || !vector_drift.is_finite()
+        || spots.iter().zip(strikes.iter()).any(|(&spot, &strike)| {
+            !(spot / strike).is_finite()
+                || crate::engines::analytic::bs_inline::requires_stable_price(
+                    spot, strike, r, q, vol, t, is_call,
+                )
+        });
+    if requires_scalar {
         for i in 0..spots.len() {
             out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
         }

@@ -4,7 +4,7 @@
 //! and produces a finite price under standard market conditions.
 
 use openferric::dsl::{AssetMarketData, DslMonteCarloEngine, MultiAssetMarket, parse_and_compile};
-#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+#[cfg(all(feature = "jit", target_arch = "x86_64"))]
 use openferric::dsl::{JitProductEvaluator, eval::evaluate_product};
 
 fn single_asset_market() -> MultiAssetMarket {
@@ -231,7 +231,7 @@ fn example_30_napoleon() {
     test_example("30_napoleon.of", &two_asset_market());
 }
 
-#[cfg(all(feature = "jit", not(target_family = "wasm")))]
+#[cfg(all(feature = "jit", target_arch = "x86_64"))]
 #[test]
 fn every_example_matches_interpreter_with_jit() {
     let mut files = std::fs::read_dir("examples/dsl")

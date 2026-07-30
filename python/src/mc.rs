@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -34,38 +34,23 @@ fn rng_kind_name(kind: FastRngKind) -> &'static str {
 
 fn python_path_evaluator(
     callable: Py<PyAny>,
-) -> (core_mc::PathEvaluator, Arc<Mutex<Option<String>>>) {
-    let error = Arc::new(Mutex::new(None::<String>));
-    let error_slot = Arc::clone(&error);
-
-    let evaluator = Arc::new(move |path: &[f64]| -> f64 {
+    callback_name: &'static str,
+) -> core_mc::FalliblePathEvaluator<PyErr> {
+    Arc::new(move |path: &[f64]| -> PyResult<f64> {
         Python::attach(|py| {
             let bound = callable.bind(py);
-            match bound.call1((path.to_vec(),)) {
-                Ok(result) => match result.extract::<f64>() {
-                    Ok(value) => value,
-                    Err(err) => {
-                        if let Ok(mut slot) = error_slot.lock()
-                            && slot.is_none()
-                        {
-                            *slot = Some(err.to_string());
-                        }
-                        f64::NAN
-                    }
-                },
-                Err(err) => {
-                    if let Ok(mut slot) = error_slot.lock()
-                        && slot.is_none()
-                    {
-                        *slot = Some(err.to_string());
-                    }
-                    f64::NAN
-                }
+            let value = bound
+                .call1((path.to_vec(),))
+                .and_then(|result| result.extract::<f64>())?;
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(py_value_error(format!(
+                    "{callback_name} must return a finite float"
+                )))
             }
         })
-    });
-
-    (evaluator, error)
+    })
 }
 
 #[pyclass(module = "openferric", from_py_object)]
@@ -235,6 +220,11 @@ impl Clone for ControlVariate {
 impl ControlVariate {
     #[new]
     fn new(py: Python<'_>, expected: f64, evaluator: Py<PyAny>) -> PyResult<Self> {
+        if !expected.is_finite() {
+            return Err(py_value_error(
+                "control variate expected value must be finite",
+            ));
+        }
         if !evaluator.bind(py).is_callable() {
             return Err(py_value_error("control variate evaluator must be callable"));
         }
@@ -274,7 +264,7 @@ impl MonteCarloEngine {
         &self,
     ) -> (
         core_mc::MonteCarloEngine,
-        Option<Arc<Mutex<Option<String>>>>,
+        Option<core_mc::FallibleControlVariate<PyErr>>,
     ) {
         let mut inner = core_mc::MonteCarloEngine::new(self.num_paths, self.seed)
             .with_antithetic(self.antithetic)
@@ -284,33 +274,33 @@ impl MonteCarloEngine {
             inner = inner.with_randomized_streams();
         }
 
-        let mut control_error = None;
-        if let Some(control) = &self.control_variate {
+        let control_variate = self.control_variate.as_ref().map(|control| {
             let callable = Python::attach(|py| control.evaluator.clone_ref(py));
-            let (evaluator, error) = python_path_evaluator(callable);
-            inner = inner.with_control_variate(core_mc::ControlVariate {
+            core_mc::FallibleControlVariate {
                 expected: control.expected,
-                evaluator,
-            });
-            control_error = Some(error);
-        }
+                evaluator: python_path_evaluator(callable, "control variate callback"),
+            }
+        });
 
-        (inner, control_error)
+        (inner, control_variate)
     }
 }
 
 #[pymethods]
 impl MonteCarloEngine {
     #[new]
-    fn new(num_paths: usize, seed: u64) -> Self {
-        Self {
+    fn new(num_paths: usize, seed: u64) -> PyResult<Self> {
+        if num_paths == 0 {
+            return Err(py_value_error("num_paths must be > 0"));
+        }
+        Ok(Self {
             num_paths,
             antithetic: false,
             control_variate: None,
             seed,
             rng_kind: FastRngKind::Xoshiro256PlusPlus,
             reproducible: true,
-        }
+        })
     }
 
     #[getter]
@@ -389,31 +379,27 @@ impl MonteCarloEngine {
         if !payoff.bind(py).is_callable() {
             return Err(py_value_error("payoff must be callable"));
         }
-        let (core_engine, control_error) = self.to_core();
+        if !discount_factor.is_finite() || discount_factor < 0.0 {
+            return Err(py_value_error(
+                "discount_factor must be finite and non-negative",
+            ));
+        }
+        let (core_engine, control_variate) = self.to_core();
         // Python callbacks serialize on the GIL and may carry observable
         // side effects, so preserve deterministic callback order rather than
         // dispatching them from Rayon workers.
         let core_engine = core_engine.with_execution_policy(core_mc::CpuExecutionPolicy::Scalar);
-        let (payoff_fn, payoff_error) = python_path_evaluator(payoff);
+        let payoff_fn = python_path_evaluator(payoff, "payoff callback");
         // The Rust simulation owns the hot loop. Release the GIL while it is
         // running; Python callbacks briefly re-attach only when invoked.
-        let result = py.detach(|| {
-            core_engine.run(
+        py.detach(|| {
+            core_engine.run_fallible(
                 &generator.inner,
                 move |path| payoff_fn(path),
                 discount_factor,
+                control_variate,
             )
-        });
-
-        if let Some(message) = payoff_error.lock().ok().and_then(|slot| slot.clone()) {
-            return Err(py_value_error(message));
-        }
-        if let Some(message) =
-            control_error.and_then(|slot| slot.lock().ok().and_then(|guard| guard.clone()))
-        {
-            return Err(py_value_error(message));
-        }
-        Ok(result)
+        })
     }
 
     fn run_heston(
@@ -426,28 +412,24 @@ impl MonteCarloEngine {
         if !payoff.bind(py).is_callable() {
             return Err(py_value_error("payoff must be callable"));
         }
-        let (core_engine, control_error) = self.to_core();
+        if !discount_factor.is_finite() || discount_factor < 0.0 {
+            return Err(py_value_error(
+                "discount_factor must be finite and non-negative",
+            ));
+        }
+        let (core_engine, control_variate) = self.to_core();
         let core_engine = core_engine.with_execution_policy(core_mc::CpuExecutionPolicy::Scalar);
-        let (payoff_fn, payoff_error) = python_path_evaluator(payoff);
+        let payoff_fn = python_path_evaluator(payoff, "payoff callback");
         // The Rust simulation owns the hot loop. Release the GIL while it is
         // running; Python callbacks briefly re-attach only when invoked.
-        let result = py.detach(|| {
-            core_engine.run(
+        py.detach(|| {
+            core_engine.run_fallible(
                 &generator.inner,
                 move |path| payoff_fn(path),
                 discount_factor,
+                control_variate,
             )
-        });
-
-        if let Some(message) = payoff_error.lock().ok().and_then(|slot| slot.clone()) {
-            return Err(py_value_error(message));
-        }
-        if let Some(message) =
-            control_error.and_then(|slot| slot.lock().ok().and_then(|guard| guard.clone()))
-        {
-            return Err(py_value_error(message));
-        }
-        Ok(result)
+        })
     }
 
     fn __repr__(&self) -> String {

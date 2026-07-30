@@ -27,6 +27,24 @@ pub(crate) fn stable_log_spot_strike(spot: f64, strike: f64) -> f64 {
     }
 }
 
+/// `(rate - dividend_yield) * expiry` without first overflowing the rate
+/// difference when multiplication by a small expiry would bring it back into
+/// range.
+#[inline]
+pub(crate) fn stable_carry(rate: f64, dividend_yield: f64, expiry: f64) -> f64 {
+    let direct = (rate - dividend_yield) * expiry;
+    if direct.is_finite() {
+        direct
+    } else {
+        let scaled_separately = rate * expiry - dividend_yield * expiry;
+        if scaled_separately.is_finite() {
+            scaled_separately
+        } else {
+            direct
+        }
+    }
+}
+
 /// Black-Scholes `d1`/`d2` with a log-domain total-volatility division when
 /// `vol * sqrt(expiry)` rounds to zero.
 #[inline]
@@ -39,17 +57,91 @@ pub(crate) fn stable_d1_d2(
     expiry: f64,
 ) -> (f64, f64) {
     let width = vol * expiry.sqrt();
-    let numerator = stable_log_spot_strike(spot, strike)
-        + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry;
-    let d1 = if width != 0.0 {
-        numerator / width
-    } else if numerator == 0.0 {
+    let log_forward_moneyness =
+        stable_log_spot_strike(spot, strike) + stable_carry(rate, dividend_yield, expiry);
+    let midpoint = if width != 0.0 {
+        log_forward_moneyness / width
+    } else if log_forward_moneyness == 0.0 {
         0.0
     } else {
         let log_width = vol.ln() + 0.5 * expiry.ln();
-        numerator.signum() * (numerator.abs().ln() - log_width).exp()
+        log_forward_moneyness.signum() * (log_forward_moneyness.abs().ln() - log_width).exp()
     };
-    (d1, d1 - width)
+    let half_width = 0.5 * width;
+    (midpoint + half_width, midpoint - half_width)
+}
+
+/// Scale the Black-Scholes gamma numerator by `spot * vol * sqrt(expiry)`.
+///
+/// The ordinary arithmetic path is retained for common inputs. If its PDF or
+/// denominator underflows/overflows, reconstruct gamma from logarithms so
+/// `0 / 0` does not become NaN and a representable subnormal result is not
+/// erased.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn stable_gamma(
+    numerator: f64,
+    spot: f64,
+    vol: f64,
+    sqrt_expiry: f64,
+    d1: f64,
+    log_discount: f64,
+) -> f64 {
+    let grouped_denominator = (spot * vol) * sqrt_expiry;
+    if grouped_denominator.is_finite() && grouped_denominator != 0.0 {
+        let gamma = numerator / grouped_denominator;
+        if gamma.is_finite() && gamma != 0.0 {
+            return gamma;
+        }
+    }
+
+    let log_pdf = -0.5 * d1 * d1 - 0.5 * std::f64::consts::TAU.ln();
+    let log_total_vol = vol.ln() + sqrt_expiry.ln();
+    (log_discount + log_pdf - spot.ln() - log_total_vol).exp()
+}
+
+/// Black-Scholes diffusion theta term
+/// `-scale * vol / (2 * sqrt(expiry))` with multiplication ordered to retain
+/// subnormal volatilities and a fallback for overflowing scales.
+#[inline]
+pub(crate) fn stable_theta_diffusion(scale: f64, vol: f64, sqrt_expiry: f64) -> f64 {
+    let grouped_numerator = scale * vol;
+    if grouped_numerator.is_finite() && grouped_numerator != 0.0 {
+        -(0.5 * grouped_numerator) / sqrt_expiry
+    } else {
+        -(scale / sqrt_expiry) * (0.5 * vol)
+    }
+}
+
+/// Whether the ordinary two-CDF formula would lose a representable option
+/// value through cancellation, or cannot safely form its discounted scales.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn requires_stable_price(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    vol: f64,
+    expiry: f64,
+    is_call: bool,
+) -> bool {
+    let width = vol * expiry.sqrt();
+    if width <= ACCURATE_CDF_TOTAL_VOL
+        || !(spot * (-dividend_yield * expiry).exp()).is_finite()
+        || !(strike * (-rate * expiry).exp()).is_finite()
+    {
+        return true;
+    }
+
+    let log_forward_moneyness =
+        stable_log_spot_strike(spot, strike) + stable_carry(rate, dividend_yield, expiry);
+    let midpoint = log_forward_moneyness / width;
+    if is_call {
+        midpoint <= -LOG_DOMAIN_TAIL_MIDPOINT
+    } else {
+        midpoint >= LOG_DOMAIN_TAIL_MIDPOINT
+    }
 }
 
 #[inline]
@@ -170,12 +262,42 @@ pub(crate) fn stable_short_total_vol_price(
         log_width + sum_over_width.ln()
     }
 
+    #[inline]
+    fn mills_ratio(value: f64) -> f64 {
+        let density = normal_pdf(value);
+        let tail = normal_cdf(-value);
+        if density > 0.0 && tail > 0.0 {
+            return tail / density;
+        }
+
+        let inverse_sq = 1.0 / (value * value);
+        let mut term = 1.0 / value;
+        let mut sum = term;
+        let mut previous_abs = term.abs();
+        let mut odd = 1.0;
+        for _ in 0..128 {
+            let next = term * (-odd * inverse_sq);
+            if next.abs() >= previous_abs {
+                break;
+            }
+            let updated = sum + next;
+            if updated == sum {
+                break;
+            }
+            sum = updated;
+            term = next;
+            previous_abs = next.abs();
+            odd += 2.0;
+        }
+        sum
+    }
+
     // Division rounds an adjacent-f64 ratio much more coarsely than the
     // original spot/strike difference. Use log1p in the near-ATM region and
     // separate logarithms outside it to avoid both that loss and ratio
     // overflow for finite extreme inputs.
     let log_forward_moneyness =
-        stable_log_spot_strike(spot, strike) + (rate - dividend_yield) * expiry;
+        stable_log_spot_strike(spot, strike) + stable_carry(rate, dividend_yield, expiry);
     let sqrt_t = expiry.sqrt();
     let width = vol * sqrt_t;
     let log_width = vol.ln() + 0.5 * expiry.ln();
@@ -205,12 +327,16 @@ pub(crate) fn stable_short_total_vol_price(
     // finite spot or strike would bring the option value back into range.
     // Price the OTM leg as a log-domain difference and recover the ITM leg
     // through put-call parity.
-    if midpoint.abs() >= LOG_DOMAIN_TAIL_MIDPOINT {
+    let absolute_midpoint = midpoint.abs();
+    let lower = absolute_midpoint - 0.5 * width;
+    if absolute_midpoint >= LOG_DOMAIN_TAIL_MIDPOINT && lower > 0.0 {
         let log_discounted_strike = strike.ln() - rate * expiry;
-        let absolute_midpoint = midpoint.abs();
-        let lower = absolute_midpoint - 0.5 * width;
         let upper = absolute_midpoint + 0.5 * width;
-        let log_mills_difference = log_mills_ratio_difference(lower, width, log_width);
+        let log_mills_difference = if lower >= LOG_DOMAIN_TAIL_MIDPOINT {
+            log_mills_ratio_difference(lower, width, log_width)
+        } else {
+            (mills_ratio(lower) - mills_ratio(upper)).ln()
+        };
         let (call, put) = if log_forward_moneyness < 0.0 {
             let log_call =
                 log_discounted_strike - 0.5 * upper * upper - 0.5 * std::f64::consts::TAU.ln()
@@ -348,20 +474,7 @@ fn bs_price_scalar_reference(
             (strike * df_r - spot * df_q).max(0.0)
         };
     }
-    if !(spot * df_q).is_finite() || !(strike * df_r).is_finite() {
-        return stable_short_total_vol_price(
-            spot,
-            strike,
-            rate,
-            dividend_yield,
-            vol,
-            expiry,
-            is_call,
-        );
-    }
-
-    let sig_sqrt_t = vol * expiry.sqrt();
-    if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL {
+    if requires_stable_price(spot, strike, rate, dividend_yield, vol, expiry, is_call) {
         return stable_short_total_vol_price(
             spot,
             strike,
@@ -408,16 +521,12 @@ pub fn bs_price_asm(
     expiry: f64,
     is_call: bool,
 ) -> f64 {
-    let nonfinite_discount_scale = expiry > 0.0
-        && ((spot * (-dividend_yield * expiry).exp()).is_infinite()
-            || (strike * (-rate * expiry).exp()).is_infinite());
     if invalid_inputs(spot, strike, rate, dividend_yield, vol, expiry)
         || expiry <= 0.0
         || vol == 0.0
         || spot == 0.0
         || strike == 0.0
-        || vol * expiry.sqrt() <= ACCURATE_CDF_TOTAL_VOL
-        || nonfinite_discount_scale
+        || requires_stable_price(spot, strike, rate, dividend_yield, vol, expiry, is_call)
     {
         return bs_price_scalar_reference(spot, strike, rate, dividend_yield, vol, expiry, is_call);
     }
@@ -476,25 +585,12 @@ unsafe fn bs_price_asm_impl(
     let sig_sqrt_t = vol * sqrt_t;
     let ln_sk = stable_log_spot_strike(spot, strike);
 
-    let mut drift_t = (rate - dividend_yield) * expiry;
-    let vol2 = vol * vol;
-    let half_t = 0.5 * expiry;
-    // SAFETY: executed only with AVX/FMA enabled by target_feature and runtime detection.
-    unsafe {
-        asm!(
-            "vfmadd231sd {acc}, {vol2}, {half_t}",
-            acc = inout(xmm_reg) drift_t,
-            vol2 = in(xmm_reg) vol2,
-            half_t = in(xmm_reg) half_t,
-            options(pure, nomem, nostack),
-        );
-    }
-
     let (d1, d2) = if sig_sqrt_t == 0.0 {
         stable_d1_d2(spot, strike, rate, dividend_yield, vol, expiry)
     } else {
-        let d1 = (ln_sk + drift_t) / sig_sqrt_t;
-        (d1, d1 - sig_sqrt_t)
+        let midpoint = ln_sk / sig_sqrt_t + stable_carry(rate, dividend_yield, expiry) / sig_sqrt_t;
+        let half_width = 0.5 * sig_sqrt_t;
+        (midpoint + half_width, midpoint - half_width)
     };
 
     // Compute call, derive put via put-call parity to halve CDF evaluations.
@@ -530,5 +626,46 @@ mod tests {
                 "s={s} k={k} r={r} q={q} vol={vol} t={t} is_call={is_call} fast={fast} ref={reference}",
             );
         }
+    }
+
+    #[test]
+    fn deep_otm_put_preserves_high_precision_tail_value() {
+        // 100-decimal mpmath/erfc reference, evaluated independently from the
+        // production CDF and pricing implementation.
+        const EXPECTED: f64 = 22.752_884_600_977_636;
+        let price = bs_price_scalar_reference(5.0e18, 1.0e18, 0.0, 0.0, 0.2, 1.0, false);
+        let relative_error = ((price - EXPECTED) / EXPECTED).abs();
+        assert!(
+            relative_error <= 2.0e-12,
+            "price={price:.17e} expected={EXPECTED:.17e} rel={relative_error}"
+        );
+    }
+
+    #[test]
+    fn finite_total_volatility_survives_sigma_squared_overflow() {
+        // sigma^2 overflows, but sigma*sqrt(T) is exactly order one.
+        const EXPECTED: f64 = 38.292_492_254_802_62;
+        let (d1, d2) = stable_d1_d2(100.0, 100.0, 0.0, 0.0, 1.0e155, 1.0e-310);
+        assert!((d1 - 0.5).abs() <= 2.0e-14, "d1={d1}");
+        assert!((d2 + 0.5).abs() <= 2.0e-14, "d2={d2}");
+
+        let price = bs_price_scalar_reference(100.0, 100.0, 0.0, 0.0, 1.0e155, 1.0e-310, true);
+        assert!(
+            (price - EXPECTED).abs() <= 2.0e-12,
+            "price={price:.17e} expected={EXPECTED:.17e}"
+        );
+    }
+
+    #[test]
+    fn wide_distribution_does_not_use_mills_expansion_outside_the_tail() {
+        // Here midpoint=8.1 but d2=0.1. The 100-decimal erfc reference must
+        // use the central formula, not the asymptotic Mills expansion.
+        const EXPECTED: f64 = 0.435_610_762_433_962_74;
+        let price =
+            bs_price_scalar_reference(1.925_594_579_148_456_7e56, 1.0, 0.0, 0.0, 16.0, 1.0, false);
+        assert!(
+            (price - EXPECTED).abs() <= 2.0e-15,
+            "price={price:.17e} expected={EXPECTED:.17e}"
+        );
     }
 }
