@@ -145,15 +145,18 @@ pub fn bs_price(
         };
     }
     let is_call = matches!(option_type, OptionType::Call);
-    if super::bs_inline::requires_stable_price(
-        spot,
-        strike,
+    // Hoisted guard: reuses the discount factors above and yields the same
+    // d1/d2 the ordinary formula needs, so the stability check costs no extra
+    // transcendentals on the fast path.
+    let invariants = super::bs_inline::StablePriceInvariants::with_discounts(
         rate,
         dividend_yield,
         vol,
         expiry,
-        is_call,
-    ) {
+        df_r,
+        df_q,
+    );
+    let Some((d1, d2)) = invariants.ordinary_d1_d2(spot, strike, is_call) else {
         return super::bs_inline::stable_short_total_vol_price(
             spot,
             strike,
@@ -163,11 +166,11 @@ pub fn bs_price(
             expiry,
             is_call,
         );
-    }
+    };
 
     #[cfg(target_arch = "x86_64")]
     if super::bs_inline::has_fma_bs_kernel() {
-        return super::bs_inline::bs_price_asm(
+        return super::bs_inline::bs_price_asm_prechecked(
             spot,
             strike,
             rate,
@@ -178,7 +181,6 @@ pub fn bs_price(
         );
     }
 
-    let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
     // Compute call, derive put via put-call parity to halve CDF evaluations.
     let nd1 = norm_cdf(d1);
     let nd2 = norm_cdf(d2);
@@ -421,10 +423,24 @@ fn bs_price_greeks_with_dividend(
 
     // Shared intermediates — computed exactly once.
     let sqrt_t = expiry.sqrt();
-    let (d1, d2) = d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
-
     let df_r = (-rate * expiry).exp();
     let df_q = (-dividend_yield * expiry).exp();
+    let is_call = matches!(option_type, OptionType::Call);
+
+    // Hoisted guard: shares the discount factors above and hands back the
+    // ordinary d1/d2 directly, falling back to the log-domain form only for
+    // sensitive elements.
+    let invariants = super::bs_inline::StablePriceInvariants::with_discounts(
+        rate,
+        dividend_yield,
+        vol,
+        expiry,
+        df_r,
+        df_q,
+    );
+    let ordinary = invariants.ordinary_d1_d2(spot, strike, is_call);
+    let (d1, d2) =
+        ordinary.unwrap_or_else(|| d1_d2(spot, strike, rate, dividend_yield, vol, expiry));
 
     let nd1 = norm_cdf(d1);
     let nd2 = norm_cdf(d2);
@@ -435,17 +451,7 @@ fn bs_price_greeks_with_dividend(
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
     let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
-    let is_call = matches!(option_type, OptionType::Call);
-    let sensitive_price = super::bs_inline::requires_stable_price(
-        spot,
-        strike,
-        rate,
-        dividend_yield,
-        vol,
-        expiry,
-        is_call,
-    )
-    .then(|| {
+    let sensitive_price = ordinary.is_none().then(|| {
         super::bs_inline::stable_short_total_vol_price(
             spot,
             strike,

@@ -381,19 +381,11 @@ pub unsafe fn norm_cdf_f64x2(x: float64x2_t) -> float64x2_t {
 
 #[inline]
 fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
-    crate::engines::analytic::black_scholes::bs_price(
-        if is_call {
-            crate::core::OptionType::Call
-        } else {
-            crate::core::OptionType::Put
-        },
-        spot,
-        strike,
-        r,
-        q,
-        vol,
-        t,
-    )
+    // Must stay CDF-consistent with the NEON vector body (A&S
+    // `normal_cdf_approx`), like the AVX2/AVX-512 tails: routing the tail
+    // through the accurate-CDF pricer makes the last element of an odd-length
+    // batch differ from the lane-computed value by ~1e-5.
+    crate::engines::analytic::bs_simd::bs_price_scalar(spot, strike, r, q, vol, t, is_call)
 }
 
 /// Prices a homogeneous Black-Scholes batch with AArch64 NEON where safe.
@@ -454,14 +446,14 @@ pub unsafe fn bs_price_neon_batch_into(
     );
 
     let vector_drift = (r - q + 0.5 * vol * vol) * t;
+    // Hoisted guard: the sqrt/exp/carry terms are uniform across the batch.
+    let invariants = crate::engines::analytic::bs_inline::StablePriceInvariants::new(r, q, vol, t)
+        .with_ratio_fast_pass();
     let requires_scalar = t <= 0.0
         || vol <= 0.0
         || !vector_drift.is_finite()
         || spots.iter().zip(strikes.iter()).any(|(&spot, &strike)| {
-            !(spot / strike).is_finite()
-                || crate::engines::analytic::bs_inline::requires_stable_price(
-                    spot, strike, r, q, vol, t, is_call,
-                )
+            !(spot / strike).is_finite() || invariants.requires_stable(spot, strike, is_call)
         });
     if requires_scalar {
         for i in 0..spots.len() {

@@ -50,17 +50,58 @@ impl VolSurface for crate::vol::surface::VolSurface {
 }
 
 /// Serializable sampled volatility surface using bilinear interpolation.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+///
+/// Grid validation is cached: the first successful [`validate`] marks the
+/// surface so later calls (one per engine `price` boundary) are O(1) instead
+/// of rescanning the whole grid. The token is skipped by serde and reset by
+/// `clone`, so deserialized, hand-built, and cloned-then-modified surfaces
+/// are always re-checked. Mutating the public fields of an already-validated
+/// surface in place is not detected — build a new surface (or clone first)
+/// instead.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SampledVolSurface {
     pub strikes: Vec<f64>,
     pub expiries: Vec<f64>,
     pub vols: Vec<Vec<f64>>,
+    #[serde(skip)]
+    validated: std::sync::atomic::AtomicBool,
+}
+
+impl Clone for SampledVolSurface {
+    fn clone(&self) -> Self {
+        // Reset the token: bump-and-reprice flows clone then mutate, and a
+        // carried token would let the mutation skip validation.
+        Self {
+            strikes: self.strikes.clone(),
+            expiries: self.expiries.clone(),
+            vols: self.vols.clone(),
+            validated: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl PartialEq for SampledVolSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.strikes == other.strikes && self.expiries == other.expiries && self.vols == other.vols
+    }
 }
 
 impl SampledVolSurface {
     /// Validates a sampled surface, including values that may have entered
     /// through deserialization rather than [`SampledVolSurface::new`].
     pub fn validate(&self) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        if self.validated.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.validate_grid()?;
+        // Racing validators recompute the same deterministic result; Relaxed
+        // is enough for a monotonic set-once flag.
+        self.validated.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn validate_grid(&self) -> Result<(), String> {
         if self.strikes.len() < 2 || self.expiries.len() < 2 {
             return Err("sampled surface requires >= 2 strikes and >= 2 expiries".to_string());
         }
@@ -107,6 +148,7 @@ impl SampledVolSurface {
             strikes,
             expiries,
             vols,
+            validated: std::sync::atomic::AtomicBool::new(false),
         };
         surface.validate()?;
         Ok(surface)
@@ -161,6 +203,7 @@ impl SampledVolSurface {
             strikes,
             expiries,
             vols,
+            validated: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -655,12 +698,28 @@ mod tests {
 
     #[test]
     fn deserialized_sampled_surface_shape_and_finiteness_are_revalidated() {
-        let surface = SampledVolSurface {
-            strikes: vec![90.0, f64::NAN],
-            expiries: vec![0.5, 1.0],
-            vols: vec![vec![0.2, 0.21], vec![0.22, 0.23]],
-        };
+        let json =
+            r#"{"strikes":[90.0,100.0],"expiries":[0.5,1.0],"vols":[[0.2,0.21],[0.22,-0.23]]}"#;
+        let surface: SampledVolSurface = serde_json::from_str(json).unwrap();
         assert!(surface.validate().is_err());
+    }
+
+    #[test]
+    fn sampled_surface_validation_cache_is_reset_on_clone() {
+        let surface = SampledVolSurface::new(
+            vec![90.0, 100.0],
+            vec![0.5, 1.0],
+            vec![vec![0.2, 0.21], vec![0.22, 0.23]],
+        )
+        .unwrap();
+        // Cached fast path stays Ok on repeat validation.
+        assert!(surface.validate().is_ok());
+        assert!(surface.validate().is_ok());
+
+        // A clone must re-check, so mutations after cloning are caught.
+        let mut mutated = surface.clone();
+        mutated.vols[1][0] = -0.5;
+        assert!(mutated.validate().is_err());
     }
 
     #[test]

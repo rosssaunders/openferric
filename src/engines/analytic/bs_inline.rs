@@ -113,6 +113,144 @@ pub(crate) fn stable_theta_diffusion(scale: f64, vol: f64, sqrt_expiry: f64) -> 
     }
 }
 
+/// Batch-invariant terms of [`requires_stable_price`], hoisted so a loop over
+/// options sharing `(rate, dividend_yield, vol, expiry)` pays the sqrt, exp,
+/// and carry setup once and each element only one log-moneyness evaluation.
+pub(crate) struct StablePriceInvariants {
+    width: f64,
+    carry: f64,
+    pub(crate) df_r: f64,
+    pub(crate) df_q: f64,
+    always_stable: bool,
+    /// `S/K` at the call-side tail boundary `midpoint == -8`; spot/strike
+    /// ratios safely above it cannot be a call deep tail.
+    call_tail_bound: f64,
+    /// `S/K` at the put-side tail boundary `midpoint == +8`.
+    put_tail_bound: f64,
+    /// Both ratio bounds are finite and positive, so the multiply-and-compare
+    /// fast pass is usable.
+    tail_bounds_usable: bool,
+}
+
+/// Relative margin around the ratio bounds inside which the guard falls back
+/// to the exact log-domain test, so fast-pass conclusions are always certain
+/// despite rounding differences between `exp`-bound and `ln`-based forms.
+const TAIL_BOUND_MARGIN: f64 = 1.0e-9;
+
+impl StablePriceInvariants {
+    #[inline]
+    pub(crate) fn new(rate: f64, dividend_yield: f64, vol: f64, expiry: f64) -> Self {
+        Self::with_discounts(
+            rate,
+            dividend_yield,
+            vol,
+            expiry,
+            (-rate * expiry).exp(),
+            (-dividend_yield * expiry).exp(),
+        )
+    }
+
+    /// Variant for callers that already hold the discount factors.
+    #[inline]
+    pub(crate) fn with_discounts(
+        rate: f64,
+        dividend_yield: f64,
+        vol: f64,
+        expiry: f64,
+        df_r: f64,
+        df_q: f64,
+    ) -> Self {
+        let width = vol * expiry.sqrt();
+        Self {
+            width,
+            carry: stable_carry(rate, dividend_yield, expiry),
+            df_r,
+            df_q,
+            always_stable: width <= ACCURATE_CDF_TOTAL_VOL,
+            call_tail_bound: f64::NAN,
+            put_tail_bound: f64::NAN,
+            tail_bounds_usable: false,
+        }
+    }
+
+    /// Enables the multiply-and-compare tail fast pass in
+    /// [`Self::requires_stable`]. Costs two `exp` evaluations, so it pays for
+    /// itself only when the guard runs over a batch; single-shot callers that
+    /// consume [`Self::ordinary_d1_d2`] should skip it.
+    #[inline]
+    pub(crate) fn with_ratio_fast_pass(mut self) -> Self {
+        let call_tail_bound = ((-LOG_DOMAIN_TAIL_MIDPOINT) * self.width - self.carry).exp();
+        let put_tail_bound = (LOG_DOMAIN_TAIL_MIDPOINT * self.width - self.carry).exp();
+        self.call_tail_bound = call_tail_bound;
+        self.put_tail_bound = put_tail_bound;
+        self.tail_bounds_usable = call_tail_bound.is_finite()
+            && call_tail_bound > 0.0
+            && put_tail_bound.is_finite()
+            && put_tail_bound > 0.0;
+        self
+    }
+
+    #[inline]
+    pub(crate) fn requires_stable(&self, spot: f64, strike: f64, is_call: bool) -> bool {
+        if self.always_stable
+            || !(spot * self.df_q).is_finite()
+            || !(strike * self.df_r).is_finite()
+        {
+            return true;
+        }
+        // Fast pass: a spot/strike ratio safely inside the tail bounds cannot
+        // be a deep tail, decided with one multiply and compare instead of a
+        // log evaluation. Only certain conclusions short-circuit; ratios near
+        // or beyond a bound (and unusable bounds) take the exact test, so the
+        // routing decision is always identical to the log-domain form.
+        if self.tail_bounds_usable {
+            if is_call {
+                if spot > strike * (self.call_tail_bound * (1.0 + TAIL_BOUND_MARGIN)) {
+                    return false;
+                }
+            } else if spot < strike * (self.put_tail_bound * (1.0 - TAIL_BOUND_MARGIN)) {
+                return false;
+            }
+        }
+        let midpoint = (stable_log_spot_strike(spot, strike) + self.carry) / self.width;
+        if is_call {
+            midpoint <= -LOG_DOMAIN_TAIL_MIDPOINT
+        } else {
+            midpoint >= LOG_DOMAIN_TAIL_MIDPOINT
+        }
+    }
+
+    /// `Some((d1, d2))` when the ordinary two-CDF formula is safe for this
+    /// element, computed with the same operation order as [`stable_d1_d2`]'s
+    /// nonzero-width branch so results are bit-identical; `None` when the
+    /// element must take the stable scalar path.
+    #[inline]
+    pub(crate) fn ordinary_d1_d2(
+        &self,
+        spot: f64,
+        strike: f64,
+        is_call: bool,
+    ) -> Option<(f64, f64)> {
+        if self.always_stable
+            || !(spot * self.df_q).is_finite()
+            || !(strike * self.df_r).is_finite()
+        {
+            return None;
+        }
+        let midpoint = (stable_log_spot_strike(spot, strike) + self.carry) / self.width;
+        let deep_tail = if is_call {
+            midpoint <= -LOG_DOMAIN_TAIL_MIDPOINT
+        } else {
+            midpoint >= LOG_DOMAIN_TAIL_MIDPOINT
+        };
+        if deep_tail {
+            return None;
+        }
+        let half_width = 0.5 * self.width;
+        Some((midpoint + half_width, midpoint - half_width))
+    }
+}
+
 /// Whether the ordinary two-CDF formula would lose a representable option
 /// value through cancellation, or cannot safely form its discounted scales.
 #[allow(clippy::too_many_arguments)]
@@ -126,22 +264,8 @@ pub(crate) fn requires_stable_price(
     expiry: f64,
     is_call: bool,
 ) -> bool {
-    let width = vol * expiry.sqrt();
-    if width <= ACCURATE_CDF_TOTAL_VOL
-        || !(spot * (-dividend_yield * expiry).exp()).is_finite()
-        || !(strike * (-rate * expiry).exp()).is_finite()
-    {
-        return true;
-    }
-
-    let log_forward_moneyness =
-        stable_log_spot_strike(spot, strike) + stable_carry(rate, dividend_yield, expiry);
-    let midpoint = log_forward_moneyness / width;
-    if is_call {
-        midpoint <= -LOG_DOMAIN_TAIL_MIDPOINT
-    } else {
-        midpoint >= LOG_DOMAIN_TAIL_MIDPOINT
-    }
+    StablePriceInvariants::new(rate, dividend_yield, vol, expiry)
+        .requires_stable(spot, strike, is_call)
 }
 
 #[inline]
@@ -544,6 +668,26 @@ pub fn bs_price_asm(
     bs_price_scalar_reference(spot, strike, rate, dividend_yield, vol, expiry, is_call)
 }
 
+/// x86 kernel entry for inputs already validated and tail-routed by
+/// [`crate::engines::analytic::black_scholes::bs_price`]; skips the duplicate
+/// guard in [`bs_price_asm`]. The caller must have checked
+/// [`has_fma_bs_kernel`].
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn bs_price_asm_prechecked(
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    vol: f64,
+    expiry: f64,
+    is_call: bool,
+) -> f64 {
+    // SAFETY: the caller verified AVX/FMA support via `has_fma_bs_kernel`.
+    unsafe { bs_price_asm_impl(spot, strike, rate, dividend_yield, vol, expiry, is_call) }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx,fma")]
@@ -607,6 +751,47 @@ unsafe fn bs_price_asm_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ratio_fast_pass_matches_log_domain_tail_decision() {
+        let (r, q, t) = (0.02_f64, 0.01_f64, 1.5_f64);
+        for vol in [0.05_f64, 0.2, 0.8] {
+            let plain = StablePriceInvariants::new(r, q, vol, t);
+            let invariants = StablePriceInvariants::new(r, q, vol, t).with_ratio_fast_pass();
+            let width = vol * t.sqrt();
+            let carry = stable_carry(r, q, t);
+            // Midpoints across and tightly around the ±8 tail boundary.
+            for midpoint_target in [
+                -12.0_f64, -8.001, -8.0, -7.999, -4.0, 0.0, 4.0, 7.999, 8.0, 8.001, 12.0,
+            ] {
+                let strike = 100.0_f64;
+                let spot = strike * (midpoint_target * width - carry).exp();
+                let midpoint = (stable_log_spot_strike(spot, strike) + carry) / width;
+                for is_call in [true, false] {
+                    let exact = if is_call {
+                        midpoint <= -LOG_DOMAIN_TAIL_MIDPOINT
+                    } else {
+                        midpoint >= LOG_DOMAIN_TAIL_MIDPOINT
+                    };
+                    assert_eq!(
+                        invariants.requires_stable(spot, strike, is_call),
+                        exact,
+                        "fast-pass mismatch vol={vol} midpoint={midpoint} is_call={is_call}"
+                    );
+                    assert_eq!(
+                        plain.requires_stable(spot, strike, is_call),
+                        exact,
+                        "plain-guard mismatch vol={vol} midpoint={midpoint} is_call={is_call}"
+                    );
+                    assert_eq!(
+                        invariants.ordinary_d1_d2(spot, strike, is_call).is_none(),
+                        exact,
+                        "ordinary_d1_d2 mismatch vol={vol} midpoint={midpoint} is_call={is_call}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn asm_wrapper_matches_reference_price_within_1e14() {

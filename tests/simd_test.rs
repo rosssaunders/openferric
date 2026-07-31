@@ -1721,4 +1721,28 @@ mod neon_tests {
             }
         }
     }
+
+    #[test]
+    fn neon_odd_length_tail_matches_vector_lanes() {
+        use openferric::engines::analytic::bs_simd::bs_price_batch;
+
+        let (s, k, r, q, vol, t) = (100.0_f64, 105.0_f64, 0.02, 0.0, 0.2, 1.0);
+        for &is_call in &[true, false] {
+            for n in [9usize, 17, 33] {
+                let spots = vec![s; n];
+                let strikes = vec![k; n];
+                let out = bs_price_batch(&spots, &strikes, r, q, vol, t, is_call);
+                let lane = out[0];
+                for (i, &price) in out.iter().enumerate() {
+                    // The scalar tail shares the vector body's A&S CDF family;
+                    // only ULP-level ln/FMA grouping differences remain.
+                    assert!(
+                        (price - lane).abs() <= 1e-12 * lane.abs(),
+                        "n={n} is_call={is_call} idx {i}: tail={price} lane={lane} diff={}",
+                        (price - lane).abs()
+                    );
+                }
+            }
+        }
+    }
 }
