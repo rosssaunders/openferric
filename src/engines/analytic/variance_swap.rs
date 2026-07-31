@@ -192,8 +192,8 @@ pub fn volatility_swap_mtm(
 
     let expected_realized_vol = instrument
         .observed_realized_var
-        .unwrap_or(fair_variance)
-        .sqrt();
+        .map(f64::sqrt)
+        .unwrap_or(fair_volatility);
     let payoff = instrument.notional_vega * (expected_realized_vol - instrument.strike_vol);
 
     Ok((-rate * instrument.expiry).exp() * payoff)
@@ -304,5 +304,29 @@ mod tests {
 
         assert_relative_eq!(fair_variance, 0.04, epsilon = 2e-4);
         assert_relative_eq!(fair_volatility, 0.20, epsilon = 5e-4);
+    }
+
+    #[test]
+    fn volatility_swap_at_convexity_adjusted_strike_marks_to_zero() {
+        let fair_variance = 0.04;
+        let var_of_var = 1.0e-4;
+        let fair_volatility =
+            fair_volatility_strike_from_variance(fair_variance, var_of_var).unwrap();
+        assert!(fair_volatility < fair_variance.sqrt());
+
+        let quotes = flat_surface_quotes(100.0, 0.01, 0.20, 1.0);
+        let swap = VolatilitySwap::new(1_000.0, fair_volatility, 1.0, quotes, var_of_var);
+        let mtm = volatility_swap_mtm(&swap, fair_variance, fair_volatility, 0.01).unwrap();
+        assert_relative_eq!(mtm, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn volatility_swap_seasoned_mtm_uses_observed_realized_vol() {
+        let quotes = flat_surface_quotes(100.0, 0.02, 0.20, 0.5);
+        let swap =
+            VolatilitySwap::new(100.0, 0.25, 0.5, quotes, 1.0e-4).with_observed_realized_var(0.09);
+        let mtm = volatility_swap_mtm(&swap, 0.04, 0.19, 0.02).unwrap();
+        let expected = (-0.02_f64 * 0.5).exp() * 100.0 * (0.3 - 0.25);
+        assert_relative_eq!(mtm, expected, epsilon = 1e-12);
     }
 }

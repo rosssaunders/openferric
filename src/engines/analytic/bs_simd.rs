@@ -82,8 +82,12 @@ fn batch_requires_scalar(
     t: f64,
     is_call: bool,
 ) -> bool {
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
+    // Hoist the guard's sqrt/exp/carry setup out of the per-element scan; the
+    // ratio fast pass then decides most elements with a multiply and compare.
+    let invariants =
+        super::bs_inline::StablePriceInvariants::new(r, q, vol, t).with_ratio_fast_pass();
+    let df_r = invariants.df_r;
+    let df_q = invariants.df_q;
     let vector_drift = (0.5 * vol).mul_add(vol, r - q) * t;
     !r.is_finite()
         || !q.is_finite()
@@ -98,7 +102,7 @@ fn batch_requires_scalar(
                 || !(spot * df_q).is_finite()
                 || !(strike * df_r).is_finite()
                 || !(spot / strike).is_finite()
-                || super::bs_inline::requires_stable_price(spot, strike, r, q, vol, t, is_call)
+                || invariants.requires_stable(spot, strike, is_call)
         })
 }
 
@@ -266,8 +270,9 @@ pub fn bs_price_batch_into(
     assert_eq!(spots.len(), out.len(), "output length must match input");
     let backend = selected_price_backend(spots, strikes, r, q, vol, t, is_call);
     if matches!(backend, BatchSimdBackend::Scalar) {
+        let invariants = super::bs_inline::StablePriceInvariants::new(r, q, vol, t);
         for i in 0..spots.len() {
-            out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+            out[i] = bs_price_scalar_with(&invariants, spots[i], strikes[i], r, q, vol, t, is_call);
         }
         return;
     }
@@ -303,8 +308,9 @@ pub fn bs_price_batch_into(
         _ => {}
     }
 
+    let invariants = super::bs_inline::StablePriceInvariants::new(r, q, vol, t);
     for i in 0..spots.len() {
-        out[i] = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+        out[i] = bs_price_scalar_with(&invariants, spots[i], strikes[i], r, q, vol, t, is_call);
     }
 }
 
@@ -366,8 +372,10 @@ pub fn bs_greeks_batch_into(
         || !simd_is_worthwhile(n, backend)
         || batch_requires_scalar(spots, strikes, r, q, vol, t, is_call)
     {
+        let invariants = super::bs_inline::StablePriceInvariants::new(r, q, vol, t);
         for i in 0..n {
-            let (d, g, v, th) = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+            let (d, g, v, th) =
+                bs_greeks_scalar_with(&invariants, spots[i], strikes[i], r, q, vol, t, is_call);
             delta[i] = d;
             gamma[i] = g;
             vega[i] = v;
@@ -417,8 +425,10 @@ pub fn bs_greeks_batch_into(
         _ => {}
     }
 
+    let invariants = super::bs_inline::StablePriceInvariants::new(r, q, vol, t);
     for i in 0..n {
-        let (d, g, v, th) = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+        let (d, g, v, th) =
+            bs_greeks_scalar_with(&invariants, spots[i], strikes[i], r, q, vol, t, is_call);
         delta[i] = d;
         gamma[i] = g;
         vega[i] = v;
@@ -426,8 +436,38 @@ pub fn bs_greeks_batch_into(
     }
 }
 
+// Shared by every batch backend's scalar route and tail loop (including the
+// NEON path in `math::simd_neon`): tails must use the same `normal_cdf_approx`
+// family as the vector bodies, or odd-length batches price their last element
+// with a different CDF than the lanes.
 #[inline]
-fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
+pub(crate) fn bs_price_scalar(
+    spot: f64,
+    strike: f64,
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> f64 {
+    let invariants = super::bs_inline::StablePriceInvariants::new(r, q, vol, t);
+    bs_price_scalar_with(&invariants, spot, strike, r, q, vol, t, is_call)
+}
+
+/// Core of [`bs_price_scalar`] taking hoisted batch invariants, so scalar
+/// loops over a homogeneous batch pay the sqrt/exp/carry setup once.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn bs_price_scalar_with(
+    invariants: &super::bs_inline::StablePriceInvariants,
+    spot: f64,
+    strike: f64,
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> f64 {
     if !spot.is_finite()
         || !strike.is_finite()
         || !r.is_finite()
@@ -449,8 +489,8 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
         };
     }
 
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
+    let df_r = invariants.df_r;
+    let df_q = invariants.df_q;
     if spot == 0.0 {
         return if is_call { 0.0 } else { strike * df_r };
     }
@@ -464,10 +504,9 @@ fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_
             (strike * df_r - spot * df_q).max(0.0)
         };
     }
-    if super::bs_inline::requires_stable_price(spot, strike, r, q, vol, t, is_call) {
+    let Some((d1, d2)) = invariants.ordinary_d1_d2(spot, strike, is_call) else {
         return super::bs_inline::stable_short_total_vol_price(spot, strike, r, q, vol, t, is_call);
-    }
-    let (d1, d2) = super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t);
+    };
 
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
@@ -493,6 +532,23 @@ fn bs_greeks_scalar(
     t: f64,
     is_call: bool,
 ) -> (f64, f64, f64, f64) {
+    let invariants = super::bs_inline::StablePriceInvariants::new(r, q, vol, t);
+    bs_greeks_scalar_with(&invariants, spot, strike, r, q, vol, t, is_call)
+}
+
+/// Core of [`bs_greeks_scalar`] taking hoisted batch invariants.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn bs_greeks_scalar_with(
+    invariants: &super::bs_inline::StablePriceInvariants,
+    spot: f64,
+    strike: f64,
+    r: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+    is_call: bool,
+) -> (f64, f64, f64, f64) {
     if !spot.is_finite()
         || !strike.is_finite()
         || !r.is_finite()
@@ -510,8 +566,8 @@ fn bs_greeks_scalar(
         return (0.0, 0.0, 0.0, 0.0);
     }
 
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
+    let df_r = invariants.df_r;
+    let df_q = invariants.df_q;
     if spot == 0.0 {
         return if is_call {
             (0.0, 0.0, 0.0, 0.0)
@@ -547,14 +603,14 @@ fn bs_greeks_scalar(
 
     let sqrt_t = t.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
-    let (d1, d2) = super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t);
+    let ordinary = invariants.ordinary_d1_d2(spot, strike, is_call);
+    let (d1, d2) =
+        ordinary.unwrap_or_else(|| super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t));
 
     let pdf = normal_pdf_scalar(d1);
 
     // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
-    let cdf = if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL
-        || super::bs_inline::requires_stable_price(spot, strike, r, q, vol, t, is_call)
-    {
+    let cdf = if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL || ordinary.is_none() {
         accurate_norm_cdf
     } else {
         normal_cdf_approx
