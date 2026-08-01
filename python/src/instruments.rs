@@ -3180,6 +3180,28 @@ impl Tarf {
         }
     }
 
+    /// Decumulator TARF: `ko_barrier` is a downside barrier and must be below
+    /// the strike (or `float('inf')` for no barrier).
+    #[staticmethod]
+    fn decumulator(
+        strike: f64,
+        notional_per_fixing: f64,
+        ko_barrier: f64,
+        target_profit: f64,
+        downside_leverage: f64,
+        fixing_times: Vec<f64>,
+    ) -> Self {
+        Self {
+            strike,
+            notional_per_fixing,
+            ko_barrier,
+            target_profit,
+            downside_leverage,
+            fixing_times,
+            tarf_type: "decumulator".to_string(),
+        }
+    }
+
     fn validate(&self) -> PyResult<()> {
         self.to_core()?.validate().map_err(map_err_string)
     }
