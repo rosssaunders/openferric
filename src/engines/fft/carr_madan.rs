@@ -26,6 +26,18 @@ pub const DEFAULT_ALPHA: f64 = 1.5;
 /// Default Carr-Madan frequency spacing.
 pub const DEFAULT_ETA: f64 = 0.25;
 const REAL_FFT_EPS: f64 = 1e-14;
+/// Smallest damping alpha the automatic admissibility fallback will accept.
+const MIN_ADMISSIBLE_ALPHA: f64 = 0.1;
+/// Relative safety margin on the damping moment when auto-selecting a
+/// fallback alpha. A moment that exists only marginally (e.g. VG with the
+/// quadratic denominator barely positive) makes `E[S_T^(alpha+1)]` blow up
+/// and the trapezoid quadrature cannot resolve the resulting integrand peak,
+/// so fallback alphas must sit safely inside the admissible region.
+const FALLBACK_MOMENT_MARGIN: f64 = 1.05;
+/// Upper bound on the FFT size the admissibility fallback may grow to when it
+/// refines the frequency grid alongside a reduced alpha (2^18 complex samples
+/// = 4 MiB per buffer).
+const MAX_FALLBACK_FFT_N: usize = 1 << 18;
 
 /// Carr-Madan FFT configuration.
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +114,12 @@ pub struct CarrMadanContext {
 
 impl CarrMadanContext {
     /// Builds a reusable pricing context for a fixed model/market configuration.
+    ///
+    /// The requested damping `params.alpha` is validated against the model's
+    /// exponential moments: if `E[S_T^(alpha+1)]` is not finite the context
+    /// automatically falls back to the largest admissible smaller alpha and
+    /// errors when none exists. The effective parameters are reported by
+    /// [`CarrMadanContext::params`].
     pub fn new<C: CharacteristicFunction>(
         cf: &C,
         rate: f64,
@@ -109,7 +127,6 @@ impl CarrMadanContext {
         spot: f64,
         params: CarrMadanParams,
     ) -> Result<Self, String> {
-        params.validate()?;
         if !spot.is_finite() || spot <= 0.0 {
             return Err("carr-madan context requires spot > 0".to_string());
         }
@@ -117,7 +134,8 @@ impl CarrMadanContext {
             return Err("carr-madan context requires maturity >= 0".to_string());
         }
 
-        let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
+        let params = resolve_admissible_params(cf, params)?;
+        let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params)?;
         Ok(Self {
             rate,
             maturity,
@@ -190,20 +208,100 @@ fn quadrature_weight(index: usize, eta: f64) -> f64 {
 /// Re-sync interval for accumulated phase rotation to bound floating-point drift.
 const PHASE_RESYNC_INTERVAL: usize = 128;
 
+/// Resolves damping-admissible Carr-Madan parameters for the given model.
+///
+/// Carr-Madan damping with `alpha` requires `E[S_T^(alpha+1)]` to be finite
+/// (Carr & Madan 1999); an inadmissible alpha makes the damped integrand
+/// non-integrable and the transform returns garbage (zero or below-intrinsic
+/// calls) rather than failing. When the requested alpha is inadmissible this
+/// halves alpha until an admissible value is found (floor
+/// `MIN_ADMISSIBLE_ALPHA`) and errors out when none exists.
+///
+/// A reduced alpha sharpens the damped integrand's peak near `v = 0` (the
+/// denominator `alpha^2 + alpha - v^2 + i(2alpha+1)v` has magnitude
+/// `~alpha(alpha+1)` at the origin, so the peak width scales with alpha).
+/// The requested eta was chosen for the requested alpha and under-resolves
+/// that sharper peak — with the default eta = 0.25 an alpha of 0.1875 leaves
+/// a strike-independent quadrature error of ~0.9 currency units (a 10x error
+/// on OTM puts recovered via parity). Fallback params therefore refine eta by
+/// the same factor alpha was reduced by and grow n to preserve the frequency
+/// range, capped at [`MAX_FALLBACK_FFT_N`].
+pub(crate) fn resolve_admissible_params<C: CharacteristicFunction>(
+    cf: &C,
+    params: CarrMadanParams,
+) -> Result<CarrMadanParams, String> {
+    params.validate()?;
+    if cf.moment_exists(params.alpha + 1.0) {
+        return Ok(params);
+    }
+
+    // Auto-selected alphas demand a small moment margin so the fallback never
+    // lands razor-thin against the model's moment-explosion boundary.
+    let fallback_admissible = |alpha: f64| cf.moment_exists((alpha + 1.0) * FALLBACK_MOMENT_MARGIN);
+
+    // Refines the frequency grid for a fallback alpha: eta shrinks by the
+    // alpha-reduction factor and n grows to keep the integration range
+    // `n * eta` unchanged. n stays a power of two; if the cap binds, eta is
+    // only refined by the granted factor so the range never shrinks.
+    let refine_grid = |alpha: f64| -> CarrMadanParams {
+        let factor = (params.alpha / alpha).ceil() as usize;
+        let factor = factor.next_power_of_two().max(1);
+        let n = params
+            .n
+            .saturating_mul(factor)
+            .min(MAX_FALLBACK_FFT_N)
+            .max(params.n);
+        let granted = (n / params.n).max(1);
+        CarrMadanParams {
+            n,
+            eta: params.eta / granted as f64,
+            alpha,
+        }
+    };
+
+    let mut alpha = 0.5 * params.alpha;
+    while alpha > MIN_ADMISSIBLE_ALPHA {
+        if fallback_admissible(alpha) {
+            return Ok(refine_grid(alpha));
+        }
+        alpha *= 0.5;
+    }
+    if params.alpha > MIN_ADMISSIBLE_ALPHA && fallback_admissible(MIN_ADMISSIBLE_ALPHA) {
+        return Ok(refine_grid(MIN_ADMISSIBLE_ALPHA));
+    }
+
+    Err(format!(
+        "carr-madan damping alpha={} is inadmissible: E[S_T^{}] is not finite for this model \
+         and no fallback alpha down to {} is admissible; the model's exponential moments \
+         explode, so FFT call prices would be meaningless",
+        params.alpha,
+        params.alpha + 1.0,
+        MIN_ADMISSIBLE_ALPHA
+    ))
+}
+
 pub(crate) fn build_weighted_frequency_samples<C: CharacteristicFunction>(
     cf: &C,
     rate: f64,
     maturity: f64,
     params: CarrMadanParams,
-) -> Vec<Complex<f64>> {
+) -> Result<Vec<Complex<f64>>, String> {
     let mut out = vec![Complex::new(0.0, 0.0); params.n];
     for (j, out_j) in out.iter_mut().enumerate() {
         let vj = j as f64 * params.eta;
         let uj = Complex::new(vj, -(params.alpha + 1.0));
         let psi = modified_cf(cf, uj, rate, maturity, params.alpha);
+        if !psi.is_finite() {
+            return Err(format!(
+                "carr-madan integrand is non-finite at frequency v={vj} (alpha={}): the \
+                 characteristic function overflowed or is undefined on the damping contour; \
+                 check model parameters",
+                params.alpha
+            ));
+        }
         *out_j = psi * quadrature_weight(j, params.eta);
     }
-    out
+    Ok(out)
 }
 
 #[inline]
@@ -250,7 +348,7 @@ fn decode_fft_output(
     transformed: Vec<Complex<f64>>,
     params: CarrMadanParams,
     k0: f64,
-) -> Vec<(f64, f64)> {
+) -> Result<Vec<(f64, f64)>, String> {
     let lambda = params.lambda();
     // Pre-compute the exponential decay exp(-alpha * k) via accumulation.
     // k = k0 + m * lambda, so exp(-alpha * k) = exp(-alpha * k0) * exp(-alpha * lambda)^m.
@@ -262,11 +360,20 @@ fn decode_fft_output(
     let mut out = Vec::with_capacity(params.n);
     for (m, z) in transformed.into_iter().enumerate() {
         let strike = (k0 + m as f64 * lambda).exp();
-        let call = (exp_alpha_k * z.re * inv_pi).max(0.0);
-        out.push((strike, call));
+        let call = exp_alpha_k * z.re * inv_pi;
+        if !call.is_finite() {
+            return Err(format!(
+                "carr-madan FFT produced a non-finite call price at strike {strike}: \
+                 characteristic function values overflowed on the damping contour"
+            ));
+        }
+        // Only small negative truncation noise in the far wings is clamped;
+        // non-finite values are propagated as errors above instead of being
+        // masked to zero.
+        out.push((strike, call.max(0.0)));
         exp_alpha_k *= exp_step;
     }
-    out
+    Ok(out)
 }
 
 fn carr_madan_fft_from_weighted_samples(
@@ -290,7 +397,7 @@ fn carr_madan_fft_from_weighted_samples(
     let mut fft_input = weighted_samples.to_vec();
     apply_phase_in_place(&mut fft_input, params.eta, k0);
     let transformed = transform_fft_input(fft_input, allow_real_fft);
-    Ok(decode_fft_output(transformed, params, k0))
+    decode_fft_output(transformed, params, k0)
 }
 
 fn carr_madan_fft_impl<C: CharacteristicFunction>(
@@ -301,14 +408,14 @@ fn carr_madan_fft_impl<C: CharacteristicFunction>(
     params: CarrMadanParams,
     allow_real_fft: bool,
 ) -> Result<Vec<(f64, f64)>, String> {
-    params.validate()?;
     if !spot.is_finite() || spot <= 0.0 {
         return Err("carr-madan requires spot > 0".to_string());
     }
     if !maturity.is_finite() || maturity < 0.0 {
         return Err("carr-madan requires maturity >= 0".to_string());
     }
-    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
+    let params = resolve_admissible_params(cf, params)?;
+    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params)?;
     carr_madan_fft_from_weighted_samples(&weighted_samples, spot, params, allow_real_fft)
 }
 
@@ -390,13 +497,13 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
     spot: f64,
     params: CarrMadanParams,
 ) -> Result<Vec<CarrMadanGreeksPoint>, String> {
-    params.validate()?;
     if !spot.is_finite() || spot <= 0.0 {
         return Err("carr-madan greeks require spot > 0".to_string());
     }
     if !maturity.is_finite() || maturity < 0.0 {
         return Err("carr-madan greeks require maturity >= 0".to_string());
     }
+    let params = resolve_admissible_params(cf, params)?;
 
     let lambda = params.lambda();
     let b = 0.5 * params.n as f64 * lambda;
@@ -460,6 +567,19 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
             x_dvol[j] = common * cf.dcf_dvol(uj).expect("dcf_dvol should be available");
         }
 
+        if !x_price[j].is_finite()
+            || !x_d1[j].is_finite()
+            || !x_d2[j].is_finite()
+            || !x_dvol[j].is_finite()
+        {
+            return Err(format!(
+                "carr-madan greeks integrand is non-finite at frequency v={vj} (alpha={}): the \
+                 characteristic function overflowed or is undefined on the damping contour; \
+                 check model parameters",
+                params.alpha
+            ));
+        }
+
         phase *= phase_step;
     }
 
@@ -485,7 +605,14 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
         let strike = (k0 + m as f64 * lambda).exp();
         let pref = exp_alpha_k * inv_pi;
 
-        let call = (pref * x_price[m].re).max(0.0);
+        let raw_call = pref * x_price[m].re;
+        if !raw_call.is_finite() {
+            return Err(format!(
+                "carr-madan greeks FFT produced a non-finite call price at strike {strike}"
+            ));
+        }
+        // Clamp only finite negative truncation noise; non-finite values error above.
+        let call = raw_call.max(0.0);
 
         let dcdx = if supports_d1 {
             pref * x_d1[m].re
@@ -526,6 +653,11 @@ pub fn carr_madan_fft_greeks<C: CharacteristicFunction>(
 }
 
 /// Fallible Heston FFT API.
+///
+/// When the default damping alpha is inadmissible for the given parameters
+/// (the `(alpha+1)`-th spot moment explodes), a smaller admissible alpha is
+/// selected automatically; if none exists this returns an error instead of
+/// silently producing zero or below-intrinsic call prices.
 #[allow(clippy::too_many_arguments)]
 pub fn try_heston_price_fft(
     spot: f64,
@@ -558,7 +690,9 @@ pub fn try_heston_price_fft(
 
 /// Heston FFT convenience API.
 ///
-/// Prices all strikes simultaneously. Invalid inputs return an empty vector.
+/// Prices all strikes simultaneously. Invalid inputs — including parameter
+/// sets whose damping moment explodes and admits no fallback alpha — return
+/// an empty vector; use [`try_heston_price_fft`] for the error message.
 #[allow(clippy::too_many_arguments)]
 pub fn heston_price_fft(
     spot: f64,

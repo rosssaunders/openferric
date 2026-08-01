@@ -20,8 +20,9 @@ use crate::core::{
 };
 use crate::engines::monte_carlo::mc_engine::RunningMoments;
 use crate::engines::monte_carlo::simulate_gbm_paths_soa;
+use crate::engines::tree::binomial::{escrowed_exercise_adjustments, escrowed_root_spot};
 use crate::instruments::{BarrierOption, BermudanOption, VanillaOption};
-use crate::market::Market;
+use crate::market::{DividendEvent, Market};
 use crate::math::fast_norm::beasley_springer_moro_inv_cdf;
 use crate::math::fast_rng::{Xoshiro256PlusPlus, uniform_open01};
 use crate::models::Heston;
@@ -185,14 +186,19 @@ impl QuadraticRegressionSums {
     }
 }
 
+/// Regression sums over in-the-money paths.
+///
+/// `filter_strike` decides moneyness on the simulated (possibly escrowed)
+/// path level, while `scale` normalizes the regression basis; the two differ
+/// when discrete dividends shift the effective exercise strike per step.
 fn regression_sums(
     spots: &[f64],
     values: &[f64],
     option_type: OptionType,
-    strike: f64,
+    filter_strike: f64,
+    scale: f64,
 ) -> QuadraticRegressionSums {
     debug_assert_eq!(spots.len(), values.len());
-    let scale = strike;
 
     #[cfg(feature = "parallel")]
     if spots.len() >= 8_192 {
@@ -205,7 +211,7 @@ fn regression_sums(
             .map(|(spot_chunk, value_chunk)| {
                 let mut sums = QuadraticRegressionSums::default();
                 for (&spot, &value) in spot_chunk.iter().zip(value_chunk) {
-                    if intrinsic(option_type, spot, strike) > 0.0 {
+                    if intrinsic(option_type, spot, filter_strike) > 0.0 {
                         sums.add(spot / scale, value / scale);
                     }
                 }
@@ -221,7 +227,7 @@ fn regression_sums(
 
     let mut sums = QuadraticRegressionSums::default();
     for (&spot, &value) in spots.iter().zip(values) {
-        if intrinsic(option_type, spot, strike) > 0.0 {
+        if intrinsic(option_type, spot, filter_strike) > 0.0 {
             sums.add(spot / scale, value / scale);
         }
     }
@@ -280,6 +286,25 @@ fn boundary_from_exercised(option_type: OptionType, exercised_spots: &[f64]) -> 
 }
 
 impl LongstaffSchwartzEngine {
+    /// Escrowed-model reconstruction table `(prop, cash)` per uniform time
+    /// step, or `None` when the market carries no discrete dividends.
+    ///
+    /// Simulated Bermudan paths hold the escrowed spot `S*`; the observed
+    /// spot at step `ti` is `S = (S* + cash) / prop`.
+    fn escrowed_recon_table(&self, market: &Market, expiry: f64) -> Option<Vec<(f64, f64)>> {
+        if !market.has_discrete_dividends() {
+            return None;
+        }
+        Some(
+            (0..=self.num_steps)
+                .map(|ti| {
+                    let t = expiry * ti as f64 / self.num_steps as f64;
+                    market.escrowed_reconstruction(t, expiry)
+                })
+                .collect(),
+        )
+    }
+
     fn simulate_bermudan_paths(
         &self,
         instrument: &BermudanOption,
@@ -288,8 +313,10 @@ impl LongstaffSchwartzEngine {
     ) -> Result<(Vec<f64>, usize), PricingError> {
         let dt = instrument.expiry / self.num_steps as f64;
         let sqrt_dt = dt.sqrt();
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let drift_rn = market.rate - effective_dividend_yield;
+        // Escrowed discrete-dividend model: simulate the escrowed spot S*
+        // with the true continuous yield only (no dividend smear).
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let drift_rn = market.rate - market.dividend_yield;
         let raw_stride = self.num_steps + 1;
         let stride = (raw_stride + 7) & !7;
         let mut paths = vec![0.0_f64; self.num_paths * stride];
@@ -302,7 +329,7 @@ impl LongstaffSchwartzEngine {
                 let step_vol = vol * sqrt_dt;
                 for pi in 0..self.num_paths {
                     let base = pi * stride;
-                    paths[base] = market.spot;
+                    paths[base] = spot0;
                     for ti in 1..=self.num_steps {
                         let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
                         paths[base + ti] = paths[base + ti - 1] * step_vol.mul_add(z, drift).exp();
@@ -310,13 +337,23 @@ impl LongstaffSchwartzEngine {
                 }
             }
             LsmDynamics::LocalVolEuler => {
+                // The local-vol surface is quoted in observed-spot space, so
+                // reconstruct S from the escrowed state for lookups.
+                let recon = self.escrowed_recon_table(market, instrument.expiry);
                 for pi in 0..self.num_paths {
                     let base = pi * stride;
-                    let mut s = market.spot;
+                    let mut s = spot0;
                     paths[base] = s;
                     for ti in 1..=self.num_steps {
                         let t = (ti as f64 * dt).max(1.0e-8);
-                        let sigma = market.checked_vol_for(s.max(1.0e-8), t)?;
+                        let s_obs = match &recon {
+                            Some(table) => {
+                                let (prop, cash) = table[ti - 1];
+                                (s + cash) / prop
+                            }
+                            None => s,
+                        };
+                        let sigma = market.checked_vol_for(s_obs.max(1.0e-8), t)?;
                         let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
                         let drift = (drift_rn - 0.5 * sigma * sigma) * dt;
                         s *= (drift + sigma * sqrt_dt * z).exp();
@@ -347,7 +384,7 @@ impl LongstaffSchwartzEngine {
                 }
                 for pi in 0..self.num_paths {
                     let base = pi * stride;
-                    let mut s = market.spot;
+                    let mut s = spot0;
                     let mut v = v0;
                     paths[base] = s;
                     for ti in 1..=self.num_steps {
@@ -397,6 +434,9 @@ impl LongstaffSchwartzEngine {
             PricingError::InvalidInput("bermudan schedule cannot be empty".to_string())
         })?;
         let (paths, stride) = self.simulate_bermudan_paths(instrument, market, terminal_strike)?;
+        // Paths hold the escrowed spot S*; exercise decisions reconstruct the
+        // observed spot per step (identity without discrete dividends).
+        let recon = self.escrowed_recon_table(market, instrument.expiry);
 
         let dt = instrument.expiry / self.num_steps as f64;
         let disc = (-market.rate * dt).exp();
@@ -437,9 +477,16 @@ impl LongstaffSchwartzEngine {
                 continue;
             };
 
+            // Escrowed model: intrinsic((S*+A)/P, K) == intrinsic(S*, K*P-A)/P.
+            // The regression keeps S* as its basis variable — the observed
+            // spot is an affine map of S*, so the quadratic space is the same.
+            let (prop, cash) = recon.as_ref().map_or((1.0, 0.0), |table| table[ti]);
+            let ex_strike = strike.mul_add(prop, -cash);
+            let ex_scale = 1.0 / prop;
+
             itm.clear();
             itm.extend((0..self.num_paths).filter(|&idx| {
-                intrinsic(instrument.option_type, paths[idx * stride + ti], strike) > 0.0
+                intrinsic(instrument.option_type, paths[idx * stride + ti], ex_strike) > 0.0
             }));
 
             if itm.len() < 3 {
@@ -462,10 +509,11 @@ impl LongstaffSchwartzEngine {
                     * (beta[0]
                         + beta[1] * normalized_spot
                         + beta[2] * normalized_spot * normalized_spot);
-                let exercise = intrinsic(instrument.option_type, s, strike);
+                let exercise = intrinsic(instrument.option_type, s, ex_strike) * ex_scale;
                 if exercise > continuation {
                     values[idx] = exercise;
-                    exercised_spots.push(s);
+                    // Report boundary diagnostics in observed-spot units.
+                    exercised_spots.push((s + cash) / prop);
                 }
             }
 
@@ -537,17 +585,27 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
         let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let dt = instrument.expiry / self.num_steps as f64;
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
         let disc = (-market.rate * dt).exp();
+
+        // Escrowed discrete-dividend model: simulate the escrowed spot S*
+        // with the true continuous yield only, and strike-adjust exercise
+        // payoffs per step (identity without a schedule).
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let exercise_adj = escrowed_exercise_adjustments(
+            market,
+            instrument.strike,
+            instrument.expiry,
+            self.num_steps,
+        );
 
         // LSM regression reads one exercise date across every path. Store the
         // paths time-major so those scans are contiguous and let the shared SoA
         // simulator select AVX-512, AVX2/FMA, NEON, or scalar generation at
         // runtime.
         let paths = simulate_gbm_paths_soa(
-            market.spot,
+            spot0,
             market.rate,
-            effective_dividend_yield,
+            market.dividend_yield,
             vol,
             instrument.expiry,
             self.num_paths,
@@ -590,8 +648,19 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 continue;
             }
 
+            // Escrowed model: intrinsic((S*+A)/P, K) == intrinsic(S*, K*P-A)/P.
+            let (ex_strike, ex_scale) = exercise_adj
+                .as_ref()
+                .map_or((instrument.strike, 1.0), |adj| adj[ti]);
+
             let spots = &paths.levels[ti];
-            let sums = regression_sums(spots, &values, instrument.option_type, instrument.strike);
+            let sums = regression_sums(
+                spots,
+                &values,
+                instrument.option_type,
+                ex_strike,
+                instrument.strike,
+            );
             if sums.count < 3 {
                 continue;
             }
@@ -604,7 +673,8 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                     .par_iter_mut()
                     .zip(spots.par_iter())
                     .for_each(|(value, &spot)| {
-                        let exercise = intrinsic(instrument.option_type, spot, instrument.strike);
+                        let exercise =
+                            intrinsic(instrument.option_type, spot, ex_strike) * ex_scale;
                         if exercise > 0.0 {
                             let normalized_spot = spot / instrument.strike;
                             let continuation = instrument.strike
@@ -620,7 +690,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             }
 
             for (value, &spot) in values.iter_mut().zip(spots) {
-                let exercise = intrinsic(instrument.option_type, spot, instrument.strike);
+                let exercise = intrinsic(instrument.option_type, spot, ex_strike) * ex_scale;
                 if exercise > 0.0 {
                     let normalized_spot = spot / instrument.strike;
                     let continuation = instrument.strike
@@ -684,8 +754,18 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
         let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
         let dt = instrument.expiry / self.num_steps as f64;
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let drift = (market.rate - effective_dividend_yield - 0.5 * vol * vol) * dt;
+        // Barrier monitoring depends on the observed spot path, so discrete
+        // dividends are applied as true ex-date drops on the simulated path
+        // (spot model, matching the vanilla Monte Carlo barrier engine)
+        // instead of being smeared into an effective continuous yield.
+        let drift = (market.rate - market.dividend_yield - 0.5 * vol * vol) * dt;
+        let div_events: Vec<DividendEvent> = market
+            .dividends()
+            .events()
+            .iter()
+            .copied()
+            .filter(|ev| ev.time <= instrument.expiry + 1.0e-12)
+            .collect();
         let step_vol = vol * dt.sqrt();
         let discount = (-market.rate * instrument.expiry).exp();
 
@@ -707,6 +787,7 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
 
         for _ in 0..self.num_paths {
             path[0] = market.spot;
+            let mut ev_idx = 0usize;
 
             if use_simd {
                 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -717,12 +798,24 @@ impl PricingEngine<BarrierOption> for LongstaffSchwartzEngine {
                     );
                 }
                 for ti in 0..self.num_steps {
-                    path[ti + 1] = path[ti] * step_vol.mul_add(normal_buf[ti], drift).exp();
+                    let mut s = path[ti] * step_vol.mul_add(normal_buf[ti], drift).exp();
+                    let t = (ti + 1) as f64 * dt;
+                    while ev_idx < div_events.len() && div_events[ev_idx].time <= t + 1.0e-12 {
+                        s = div_events[ev_idx].apply_jump(s);
+                        ev_idx += 1;
+                    }
+                    path[ti + 1] = s;
                 }
             } else {
                 for ti in 0..self.num_steps {
                     let z = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-                    path[ti + 1] = path[ti] * step_vol.mul_add(z, drift).exp();
+                    let mut s = path[ti] * step_vol.mul_add(z, drift).exp();
+                    let t = (ti + 1) as f64 * dt;
+                    while ev_idx < div_events.len() && div_events[ev_idx].time <= t + 1.0e-12 {
+                        s = div_events[ev_idx].apply_jump(s);
+                        ev_idx += 1;
+                    }
+                    path[ti + 1] = s;
                 }
             }
 

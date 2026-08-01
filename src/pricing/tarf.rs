@@ -32,6 +32,16 @@ pub struct TarfPricingResult {
 
 /// Price a TARF via Monte Carlo simulation under GBM dynamics.
 ///
+/// # Conventions
+/// * KO direction is type-aware: a `Standard` TARF knocks out when spot fixes
+///   at or above `ko_barrier` (upside barrier); a `Decumulator` knocks out
+///   when spot fixes at or below it (downside barrier). `f64::INFINITY` means
+///   "no KO barrier" for both types.
+/// * The KO check runs before the fixing P&L: the breaching fixing pays
+///   nothing and all remaining fixings are cancelled.
+/// * Target termination uses the full-gain convention: the fixing that
+///   reaches `target_profit` pays its full uncapped gain before termination.
+///
 /// # Arguments
 /// * `tarf` - TARF instrument definition
 /// * `spot` - Current spot price
@@ -63,6 +73,11 @@ pub fn tarf_mc_price(
     let n_fix = tarf.fixing_times.len();
     let mut rng = StdRng::seed_from_u64(seed);
 
+    // `f64::INFINITY` is the universal "no KO barrier" sentinel for both TARF
+    // types. The explicit finiteness guard matters on the decumulator side:
+    // without it, `s <= INFINITY` would knock out every path at fixing 1.
+    let ko_active = tarf.ko_barrier.is_finite();
+
     let mut sum_pv = 0.0;
     let mut sum_pv2 = 0.0;
     let mut total_fixings = 0.0;
@@ -89,8 +104,15 @@ pub fn tarf_mc_price(
             let z: f64 = StandardNormal.sample(&mut rng);
             s *= ((rate - dividend_yield - 0.5 * vol * vol) * dt + vol * dt.sqrt() * z).exp();
 
-            // Check KO barrier
-            if s >= tarf.ko_barrier {
+            // Check KO barrier before the fixing P&L (the breaching fixing
+            // pays nothing). Direction is type-aware: Standard knocks out on
+            // the upside, Decumulator on the downside.
+            let knocked_out = ko_active
+                && match tarf.tarf_type {
+                    TarfType::Standard => s >= tarf.ko_barrier,
+                    TarfType::Decumulator => s <= tarf.ko_barrier,
+                };
+            if knocked_out {
                 ko_hits += 1;
                 terminated = true;
                 fixings_used = i + 1;
@@ -127,7 +149,8 @@ pub fn tarf_mc_price(
                 accumulated_profit += pnl;
             }
 
-            // Check target profit
+            // Check target profit (full-gain convention: the full uncapped
+            // pnl of this fixing was already added to path_pv above).
             if accumulated_profit >= tarf.target_profit {
                 target_hits += 1;
                 terminated = true;
@@ -281,17 +304,48 @@ mod tests {
         assert!(delta.is_finite());
     }
 
+    fn make_decumulator_tarf() -> Tarf {
+        // Weekly fixings for 1 year; downside KO barrier below the strike.
+        let fixing_times: Vec<f64> = (1..=52).map(|w| w as f64 / 52.0).collect();
+        Tarf::decumulator(
+            100.0,   // strike
+            1000.0,  // notional per fixing
+            80.0,    // downside KO barrier
+            50000.0, // target profit
+            2.0,     // 2x leverage on the losing side
+            fixing_times,
+        )
+    }
+
     #[test]
     fn tarf_decumulator_differs_from_standard() {
-        let mut tarf = make_standard_tarf();
-        let std_price = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.15, 5000, 42)
+        let std_price = tarf_mc_price(&make_standard_tarf(), 100.0, 0.03, 0.0, 0.15, 5000, 42)
             .unwrap()
             .price;
-        tarf.tarf_type = TarfType::Decumulator;
-        let dec_price = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.15, 5000, 42)
+        let dec_price = tarf_mc_price(&make_decumulator_tarf(), 100.0, 0.03, 0.0, 0.15, 5000, 42)
             .unwrap()
             .price;
         // Standard and decumulator should give different values
         assert!((std_price - dec_price).abs() > 0.01);
+    }
+
+    #[test]
+    fn tarf_decumulator_does_not_knock_out_immediately() {
+        // Regression for the inverted KO direction: the old code applied the
+        // upside check `s >= ko_barrier` to decumulators, so a downside
+        // barrier at 80 with spot 100 knocked out every path at fixing 1
+        // (prob_ko = 1, avg_fixings = 1, price = 0).
+        let result =
+            tarf_mc_price(&make_decumulator_tarf(), 100.0, 0.03, 0.0, 0.15, 5000, 42).unwrap();
+        assert!(result.prob_ko_hit < 0.9);
+        assert!(result.avg_fixings > 2.0);
+        assert!(result.price.abs() > 1.0);
+    }
+
+    #[test]
+    fn tarf_rejects_barrier_on_wrong_side() {
+        let mut tarf = make_standard_tarf();
+        tarf.tarf_type = TarfType::Decumulator; // upside barrier 120 now invalid
+        assert!(tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.15, 100, 42).is_err());
     }
 }

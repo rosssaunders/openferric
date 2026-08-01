@@ -14,6 +14,24 @@ use crate::instruments::convertible::ConvertibleBond;
 use crate::market::Market;
 
 /// CRR-style binomial engine for convertible bonds.
+///
+/// # Model conventions
+///
+/// - **Always callable / always puttable:** `call_price` and `put_price` are
+///   flat levels modeled as exercisable at *every* interior time step; there
+///   is no call-protection (hard/soft no-call) schedule. In particular, a
+///   `call_price` below `face_value` means the issuer may redeem below par at
+///   any time, so a straight (zero-conversion-ratio) bond collapses to the
+///   present value of the call price rather than of face.
+/// - **Maturity redemption:** at maturity the bond redeems at `face_value`
+///   (best of redemption, conversion, and any put floor). The issuer call
+///   does not cap the terminal payoff: a call right is meaningless once the
+///   bond has matured.
+/// - **Flat credit spread:** `credit_spread` is applied uniformly when
+///   discounting the hold (continuation) value. This is a simplification
+///   relative to Tsiveriotis-Fernandes, which splits the node value into
+///   equity and debt components discounted at different rates; bond-like
+///   convertibles will therefore price differently from a TF model.
 #[derive(Debug, Clone)]
 pub struct ConvertibleBinomialEngine {
     /// Number of time steps.
@@ -91,13 +109,14 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
 
         let conversion_value = instrument.conversion_ratio * market.spot;
         if instrument.maturity <= 0.0 {
-            let redemption = instrument.face_value;
-            let price = apply_embedded_features(
-                redemption,
-                conversion_value,
-                instrument.put_price,
-                instrument.call_price,
-            );
+            // A matured bond redeems at face value: the issuer call right is
+            // meaningless at expiry and must not cap redemption. The holder
+            // still takes the best of redemption, immediate conversion, and
+            // the put floor.
+            let mut price = instrument.face_value.max(conversion_value);
+            if let Some(put) = instrument.put_price {
+                price = price.max(put);
+            }
             let mut diagnostics = crate::core::Diagnostics::new();
             diagnostics.insert("npv", price);
             diagnostics.insert("conversion_value", conversion_value);
@@ -148,14 +167,17 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
         {
             let mut st = market.spot * d.powi(self.steps as i32);
             for value in values.iter_mut() {
-                let continuation = instrument.face_value;
+                // Terminal payoff: redemption at face vs conversion (plus the
+                // put floor). The issuer call is not applied at maturity — the
+                // bond redeems at face, so a call price below face cannot cap
+                // the terminal payoff. The always-exercisable call still binds
+                // at every interior step, so this affects the price only at
+                // O(dt). Note the final coupon is paid regardless and enters
+                // through the continuation value one step earlier.
+                let redemption = instrument.face_value;
                 let conversion = instrument.conversion_ratio * st;
-                *value = apply_embedded_features(
-                    continuation,
-                    conversion,
-                    instrument.put_price,
-                    instrument.call_price,
-                );
+                *value =
+                    apply_embedded_features(redemption, conversion, instrument.put_price, None);
                 st *= ratio;
             }
         }
@@ -277,6 +299,33 @@ mod tests {
         // Without forced conversion the call caps the hold value.
         let value = apply_embedded_features(130.0, 80.0, None, Some(110.0));
         assert_eq!(value, 110.0);
+    }
+
+    #[test]
+    fn expired_bond_with_call_below_face_redeems_at_face() {
+        // A matured bond redeems at face; an issuer call at 90 < face 100 is
+        // meaningless at expiry and must not cap redemption. Previously this
+        // returned min(face, call) = 90.
+        let market = ql_test_market();
+        let engine = ConvertibleBinomialEngine::new(0.0);
+
+        let bond = ConvertibleBond::new(100.0, 0.0, 0.0, 0.0, Some(90.0), None);
+        let price = engine.price(&bond, &market).unwrap().price;
+        assert_eq!(price, 100.0, "matured bond must redeem at face");
+    }
+
+    #[test]
+    fn expired_bond_takes_best_of_face_conversion_and_put() {
+        let market = ql_test_market(); // spot = 100
+        let engine = ConvertibleBinomialEngine::new(0.0);
+
+        // Conversion value 1.5 * 100 = 150 dominates face 100.
+        let converting = ConvertibleBond::new(100.0, 0.0, 0.0, 1.5, Some(90.0), None);
+        assert_eq!(engine.price(&converting, &market).unwrap().price, 150.0);
+
+        // Put floor 120 dominates face 100 when conversion is worthless.
+        let puttable = ConvertibleBond::new(100.0, 0.0, 0.0, 0.0, None, Some(120.0));
+        assert_eq!(engine.price(&puttable, &market).unwrap().price, 120.0);
     }
 
     #[test]

@@ -12,6 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, PricingResult};
+use crate::engines::tree::binomial::{escrowed_exercise_adjustments, escrowed_root_spot};
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 use crate::math::arena::PricingArena;
@@ -66,6 +67,7 @@ fn rollback_american_binomial(
     d: f64,
     p: f64,
     disc: f64,
+    exercise_adj: Option<&[(f64, f64)]>,
 ) -> f64 {
     debug_assert!(values.len() > steps);
 
@@ -75,6 +77,8 @@ fn rollback_american_binomial(
     let one_minus_p = 1.0 - p;
 
     // Terminal payoffs: start at spot0 * d^steps, multiply by ratio each step.
+    // With discrete dividends the lattice carries the escrowed spot S*; no
+    // dividends remain at expiry, so the terminal payoff needs no adjustment.
     {
         let mut st = spot0 * d.powi(steps as i32);
         for value in values.iter_mut().take(steps + 1) {
@@ -86,10 +90,12 @@ fn rollback_american_binomial(
     // Rollback: maintain base = spot0 * d^i via multiplicative update.
     let mut base = spot0 * d.powi((steps - 1) as i32);
     for i in (0..steps).rev() {
+        // Escrowed model: intrinsic((S* + A)/P, K) == intrinsic(S*, K*P - A) / P.
+        let (ex_strike, ex_scale) = exercise_adj.map_or((strike, 1.0), |adj| adj[i]);
         let mut st = base;
         for j in 0..=i {
             let continuation = disc * (p * values[j + 1] + one_minus_p * values[j]);
-            let exercise = intrinsic(option_type, st, strike);
+            let exercise = intrinsic(option_type, st, ex_strike) * ex_scale;
             values[j] = continuation.max(exercise);
             st *= ratio;
         }
@@ -134,8 +140,12 @@ impl PricingEngine<VanillaOption> for AmericanBinomialEngine {
         let dt = instrument.expiry / self.steps as f64;
         let u = (vol * dt.sqrt()).exp();
         let d = 1.0 / u;
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let growth = ((market.rate - effective_dividend_yield) * dt).exp();
+        // Escrowed discrete-dividend model: diffuse S* with the true
+        // continuous yield only and strike-adjust the exercise payoffs.
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let exercise_adj =
+            escrowed_exercise_adjustments(market, instrument.strike, instrument.expiry, self.steps);
+        let growth = ((market.rate - market.dividend_yield) * dt).exp();
         let p = (growth - d) / (u - d);
         if !(0.0..=1.0).contains(&p) || !p.is_finite() {
             return Err(PricingError::NumericalError(
@@ -150,26 +160,28 @@ impl PricingEngine<VanillaOption> for AmericanBinomialEngine {
             rollback_american_binomial(
                 values,
                 self.steps,
-                market.spot,
+                spot0,
                 instrument.strike,
                 instrument.option_type,
                 u,
                 d,
                 p,
                 disc,
+                exercise_adj.as_deref(),
             )
         } else {
             let mut values = vec![0.0_f64; self.steps + 1];
             rollback_american_binomial(
                 &mut values,
                 self.steps,
-                market.spot,
+                spot0,
                 instrument.strike,
                 instrument.option_type,
                 u,
                 d,
                 p,
                 disc,
+                exercise_adj.as_deref(),
             )
         };
 

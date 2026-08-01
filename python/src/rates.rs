@@ -1127,6 +1127,10 @@ impl FixedRateBond {
         self.to_core().dirty_price(&curve.inner)
     }
 
+    fn dirty_price_at(&self, curve: &YieldCurve, settlement: f64) -> f64 {
+        self.to_core().dirty_price_at(&curve.inner, settlement)
+    }
+
     fn clean_price(&self, curve: &YieldCurve, settlement: f64) -> f64 {
         self.to_core().clean_price(&curve.inner, settlement)
     }

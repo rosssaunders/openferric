@@ -13,10 +13,39 @@ use num_complex::Complex;
 
 use crate::math::gamma::gamma;
 
+/// Relative imaginary-part tolerance for the default numerical moment probe.
+///
+/// When `E[S_T^m]` exists, `phi(-i*m)` is a positive real; legitimate models
+/// evaluate it with imaginary contamination on the order of f64 rounding
+/// (observed <= 1e-12 relative), while moment explosions and principal-branch
+/// crossings produce imaginary parts comparable to the real part.
+const MOMENT_PROBE_IM_TOL: f64 = 1e-8;
+
 /// Characteristic function interface for log-spot models.
 pub trait CharacteristicFunction {
     /// Returns the characteristic function value `phi(u)`.
     fn cf(&self, u: Complex<f64>) -> Complex<f64>;
+
+    /// Returns `true` when the exponential moment `E[S_T^order] = phi(-i*order)` is finite.
+    ///
+    /// Carr-Madan damping with parameter `alpha` requires the `(alpha + 1)`-th
+    /// moment of the underlying to be finite (Carr & Madan 1999, Section 2);
+    /// otherwise the damped integrand is not integrable and the transform
+    /// silently produces garbage prices.
+    ///
+    /// The default implementation probes the characteristic function at
+    /// `u = -i * order`. A finite moment evaluates to a positive real number;
+    /// a non-finite value, a non-positive real part, or a significant
+    /// imaginary part signals a moment explosion or a principal-branch
+    /// crossing on the damping contour. Models with closed-form moment bounds
+    /// should override this with the exact condition.
+    fn moment_exists(&self, order: f64) -> bool {
+        if !order.is_finite() {
+            return false;
+        }
+        let probe = self.cf(Complex::new(0.0, -order));
+        probe.is_finite() && probe.re > 0.0 && probe.im.abs() <= MOMENT_PROBE_IM_TOL * probe.re
+    }
 
     /// Optional derivative wrt log-spot (`x = ln(S0)`).
     fn dcf_dlog_spot(&self, _u: Complex<f64>) -> Option<Complex<f64>> {
@@ -63,6 +92,11 @@ impl CharacteristicFunction for BlackScholesCharFn {
         let drift = self.ln_spot + (self.rate - self.dividend_yield - 0.5 * sigma2) * self.maturity;
         let exponent = i * u * drift - 0.5 * sigma2 * u * u * self.maturity;
         exponent.exp()
+    }
+
+    fn moment_exists(&self, order: f64) -> bool {
+        // The lognormal distribution has finite moments of every order.
+        order.is_finite()
     }
 
     fn dcf_dlog_spot(&self, u: Complex<f64>) -> Option<Complex<f64>> {
@@ -221,6 +255,18 @@ impl CharacteristicFunction for VarianceGammaCharFn {
         drift_term * vg_term
     }
 
+    fn moment_exists(&self, order: f64) -> bool {
+        // E[S_T^m] is finite iff the CF denominator stays positive at u = -i*m:
+        // 1 - theta*nu*m - 0.5*sigma^2*nu*m^2 > 0 (Madan, Carr & Chang 1998).
+        // When it is negative, denom^(-T/nu) continues onto the principal branch
+        // and returns finite but meaningless values.
+        order.is_finite()
+            && 1.0
+                - self.theta * self.nu * order
+                - 0.5 * self.sigma * self.sigma * self.nu * order * order
+                > 0.0
+    }
+
     fn dcf_dlog_spot(&self, u: Complex<f64>) -> Option<Complex<f64>> {
         let i = Complex::new(0.0, 1.0);
         Some(i * u * self.cf(u))
@@ -317,6 +363,14 @@ impl CharacteristicFunction for CgmyCharFn {
         log_phi.exp()
     }
 
+    fn moment_exists(&self, order: f64) -> bool {
+        // Tempered-stable exponential moments: E[e^{m*X}] < inf iff -G < m < M
+        // (Carr, Geman, Madan & Yor 2002). At m >= M the base of
+        // (M - i*u)^Y turns negative real on the contour and powc crosses the
+        // principal branch cut.
+        order.is_finite() && order < self.m && order > -self.g
+    }
+
     fn dcf_dlog_spot(&self, u: Complex<f64>) -> Option<Complex<f64>> {
         let i = Complex::new(0.0, 1.0);
         Some(i * u * self.cf(u))
@@ -402,6 +456,14 @@ impl CharacteristicFunction for NigCharFn {
         log_phi.exp()
     }
 
+    fn moment_exists(&self, order: f64) -> bool {
+        // NIG exponential moments: E[e^{m*X}] < inf iff |beta + m| < alpha
+        // (Barndorff-Nielsen 1997). The risk-neutral constructor only enforces
+        // the martingale condition |beta + 1| < alpha, which does not cover
+        // higher damping moments.
+        order.is_finite() && (self.beta + order).abs() < self.alpha
+    }
+
     fn dcf_dlog_spot(&self, u: Complex<f64>) -> Option<Complex<f64>> {
         let i = Complex::new(0.0, 1.0);
         Some(i * u * self.cf(u))
@@ -439,5 +501,51 @@ mod tests {
 
         let bad = VarianceGammaCharFn::risk_neutral(100.0, 0.02, 0.0, 1.0, 1.0, 2.0, 2.0);
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn heston_moment_probe_flags_exploding_parameterization() {
+        // Moment-exploding set from the FFT admissibility audit: rho=+0.7,
+        // xi=1.5, T=5 has Andersen-Piterbarg discriminant
+        // beta^2 + xi^2*(m - m^2) = (-2.125)^2 + 2.25*(2.5 - 6.25) < 0 at
+        // m = 2.5 and the explosion time is below T=5.
+        let bad = HestonCharFn::new(100.0, 0.02, 0.0, 5.0, 0.04, 0.5, 0.04, 1.5, 0.7);
+        assert!(!bad.moment_exists(2.5));
+
+        // Healthy set (rho=-0.7, xi=0.4): discriminant 4.84 - 0.6 > 0, so the
+        // 2.5-th moment is finite for every maturity.
+        let good = HestonCharFn::new(100.0, 0.02, 0.0, 1.0, 0.04, 1.5, 0.04, 0.4, -0.7);
+        assert!(good.moment_exists(2.5));
+        assert!(good.moment_exists(1.0));
+    }
+
+    #[test]
+    fn vg_moment_bound_matches_quadratic_condition() {
+        // sigma=0.3, theta=0.3, nu=1.5: quadratic root at m = 1.7584..., so
+        // the Carr-Madan default damping moment 2.5 must be rejected
+        // (denominator 1 - 0.45*2.5 - 0.0675*6.25 = -0.546875).
+        let cf = VarianceGammaCharFn::risk_neutral(100.0, 0.02, 0.0, 1.0, 0.3, 0.3, 1.5)
+            .expect("martingale condition holds (0.4825 > 0)");
+        assert!(!cf.moment_exists(2.5));
+        assert!(cf.moment_exists(1.75));
+        assert!(!cf.moment_exists(1.76));
+    }
+
+    #[test]
+    fn cgmy_moment_bound_requires_order_below_m() {
+        let cf = CgmyCharFn::risk_neutral(100.0, 0.02, 0.0, 1.0, 0.5, 5.0, 1.2, 0.5)
+            .expect("constructor only requires M > 1");
+        assert!(!cf.moment_exists(2.5));
+        assert!(!cf.moment_exists(1.2));
+        assert!(cf.moment_exists(1.1));
+    }
+
+    #[test]
+    fn nig_moment_bound_requires_shifted_beta_inside_alpha() {
+        let cf = NigCharFn::risk_neutral(100.0, 0.02, 0.0, 1.0, 2.0, 0.5, 0.5)
+            .expect("constructor only requires |beta + 1| < alpha");
+        assert!(!cf.moment_exists(2.5));
+        assert!(!cf.moment_exists(1.5));
+        assert!(cf.moment_exists(1.4));
     }
 }

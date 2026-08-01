@@ -13,7 +13,9 @@ use std::f64::consts::PI;
 
 use num_complex::Complex;
 
-use super::carr_madan::{CarrMadanParams, build_weighted_frequency_samples};
+use super::carr_madan::{
+    CarrMadanParams, build_weighted_frequency_samples, resolve_admissible_params,
+};
 use super::char_fn::CharacteristicFunction;
 use super::fft_core::{fft_forward, fft_inverse};
 
@@ -65,6 +67,10 @@ pub fn frft(input: &[Complex<f64>], beta: f64) -> Vec<Complex<f64>> {
 }
 
 /// Carr-Madan with FRFT on a uniform log-strike grid.
+///
+/// The damping alpha is validated against the model's exponential moments and
+/// automatically reduced to an admissible value when necessary; errors when
+/// no admissible alpha exists.
 pub fn carr_madan_frft_grid<C: CharacteristicFunction>(
     cf: &C,
     rate: f64,
@@ -73,7 +79,8 @@ pub fn carr_madan_frft_grid<C: CharacteristicFunction>(
     log_strike_spacing: f64,
     params: CarrMadanParams,
 ) -> Result<Vec<(f64, f64)>, String> {
-    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
+    let params = resolve_admissible_params(cf, params)?;
+    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params)?;
     carr_madan_frft_grid_from_weighted_samples(
         &weighted_samples,
         log_strike_start,
@@ -124,8 +131,15 @@ fn carr_madan_frft_grid_from_weighted_samples(
     for (m, z) in transformed.into_iter().enumerate() {
         let k = log_strike_start + m as f64 * log_strike_spacing;
         let strike = k.exp();
-        let call = ((-params.alpha * k).exp() * z.re / PI).max(0.0);
-        out.push((strike, call));
+        let call = (-params.alpha * k).exp() * z.re / PI;
+        if !call.is_finite() {
+            return Err(format!(
+                "carr-madan FRFT produced a non-finite call price at strike {strike}: \
+                 characteristic function values overflowed on the damping contour"
+            ));
+        }
+        // Clamp only finite negative truncation noise; non-finite values error above.
+        out.push((strike, call.max(0.0)));
     }
 
     Ok(out)
@@ -136,7 +150,7 @@ fn direct_carr_madan_at_log_strike(
     eta: f64,
     alpha: f64,
     log_strike: f64,
-) -> f64 {
+) -> Result<f64, String> {
     let i = Complex::new(0.0, 1.0);
     let mut sum = Complex::new(0.0, 0.0);
 
@@ -145,7 +159,15 @@ fn direct_carr_madan_at_log_strike(
         sum += *sample * (-i * vj * log_strike).exp();
     }
 
-    ((-alpha * log_strike).exp() * sum.re / PI).max(0.0)
+    let call = (-alpha * log_strike).exp() * sum.re / PI;
+    if !call.is_finite() {
+        return Err(format!(
+            "carr-madan direct summation produced a non-finite call price at log-strike \
+             {log_strike}: characteristic function values overflowed on the damping contour"
+        ));
+    }
+    // Clamp only finite negative truncation noise; non-finite values error above.
+    Ok(call.max(0.0))
 }
 
 fn has_uniform_spacing(values: &[f64], tol: f64) -> Option<f64> {
@@ -172,6 +194,10 @@ fn has_uniform_spacing(values: &[f64], tol: f64) -> Option<f64> {
 ///
 /// - Uses FRFT when strikes are uniformly spaced in log-strike.
 /// - Falls back to direct Carr-Madan summation otherwise.
+///
+/// The damping alpha is validated against the model's exponential moments and
+/// automatically reduced to an admissible value when necessary; errors when
+/// no admissible alpha exists.
 pub fn carr_madan_price_at_strikes<C: CharacteristicFunction>(
     cf: &C,
     rate: f64,
@@ -180,7 +206,8 @@ pub fn carr_madan_price_at_strikes<C: CharacteristicFunction>(
     strikes: &[f64],
     params: CarrMadanParams,
 ) -> Result<Vec<(f64, f64)>, String> {
-    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params);
+    let params = resolve_admissible_params(cf, params)?;
+    let weighted_samples = build_weighted_frequency_samples(cf, rate, maturity, params)?;
     carr_madan_price_at_strikes_with_samples(&weighted_samples, strikes, params)
 }
 
@@ -233,7 +260,7 @@ pub fn carr_madan_price_at_strikes_with_samples(
 
     for (orig_idx, strike, log_k) in indexed {
         let price =
-            direct_carr_madan_at_log_strike(weighted_samples, params.eta, params.alpha, log_k);
+            direct_carr_madan_at_log_strike(weighted_samples, params.eta, params.alpha, log_k)?;
         out[orig_idx] = (strike, price);
     }
 

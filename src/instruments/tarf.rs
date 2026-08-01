@@ -21,22 +21,48 @@
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TarfType {
     /// Standard TARF: accumulate on upside, leverage on downside.
+    /// The spot KO barrier is an *upside* barrier: the structure knocks out
+    /// when spot fixes at or above `ko_barrier`.
     Standard,
-    /// Decumulator: sell (rather than buy) at each fixing.
+    /// Decumulator: sell (rather than buy) at each fixing, gaining when spot
+    /// falls below the strike. The spot KO barrier is a *downside* barrier:
+    /// the structure knocks out when spot fixes at or below `ko_barrier`.
     Decumulator,
 }
 
 /// Accumulator / TARF instrument.
+///
+/// # Conventions
+///
+/// - **KO direction is type-aware.** For [`TarfType::Standard`] the KO barrier
+///   is an upside barrier (`spot >= ko_barrier` terminates); for
+///   [`TarfType::Decumulator`] it is a downside barrier (`spot <= ko_barrier`
+///   terminates). A finite barrier must lie strictly on the correct side of the
+///   strike (above for `Standard`, below for `Decumulator`); `validate()`
+///   enforces this.
+/// - **No-barrier sentinel.** `f64::INFINITY` means "no KO barrier" for *both*
+///   types (the pricing loop guards the direction check with `is_finite()`, so
+///   an infinite barrier never triggers a decumulator downside KO).
+/// - **KO precedes the fixing P&L.** On a KO breach the breaching fixing pays
+///   nothing and all remaining fixings are cancelled.
+/// - **Full-gain target convention.** On the fixing that reaches
+///   `target_profit`, the full uncapped fixing gain is paid before termination
+///   (as opposed to no-gain or capped-gain conventions, which are not
+///   currently representable).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tarf {
     /// Forward strike.
     pub strike: f64,
     /// Notional per fixing period.
     pub notional_per_fixing: f64,
-    /// Knock-out barrier (if spot breaches this on upside, structure terminates).
-    /// Set to `f64::INFINITY` for no KO barrier.
+    /// Spot knock-out barrier; the structure terminates when spot breaches it
+    /// at a fixing. Direction depends on `tarf_type`: upside
+    /// (`spot >= ko_barrier`) for `Standard`, downside (`spot <= ko_barrier`)
+    /// for `Decumulator`. Set to `f64::INFINITY` for no KO barrier (both
+    /// types). The breaching fixing itself pays nothing.
     pub ko_barrier: f64,
-    /// Target profit level for early termination.
+    /// Target profit level for early termination. The fixing that reaches the
+    /// target pays its full uncapped gain (full-gain convention).
     pub target_profit: f64,
     /// Leverage ratio on downside (typically 2x).
     pub downside_leverage: f64,
@@ -63,6 +89,31 @@ impl Tarf {
         if self.ko_barrier.is_nan() || self.ko_barrier <= 0.0 {
             return Err("ko_barrier must be > 0 and not NaN".to_string());
         }
+        // A finite barrier must sit strictly on the KO side of the strike for
+        // the product type; `f64::INFINITY` is the "no barrier" sentinel for
+        // both types.
+        if self.ko_barrier.is_finite() {
+            match self.tarf_type {
+                TarfType::Standard => {
+                    if self.ko_barrier <= self.strike {
+                        return Err(
+                            "ko_barrier must be > strike for a standard TARF (upside KO); \
+                             use f64::INFINITY for no barrier"
+                                .to_string(),
+                        );
+                    }
+                }
+                TarfType::Decumulator => {
+                    if self.ko_barrier >= self.strike {
+                        return Err(
+                            "ko_barrier must be < strike for a decumulator TARF (downside KO); \
+                             use f64::INFINITY for no barrier"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
         if self.fixing_times.is_empty() {
             return Err("fixing_times must be non-empty".to_string());
         }
@@ -79,7 +130,8 @@ impl Tarf {
         Ok(())
     }
 
-    /// Standard TARF with common defaults.
+    /// Standard TARF with common defaults. `ko_barrier` is an upside barrier
+    /// and must be above the strike (or `f64::INFINITY` for no barrier).
     pub fn standard(
         strike: f64,
         notional_per_fixing: f64,
@@ -96,6 +148,28 @@ impl Tarf {
             downside_leverage,
             fixing_times,
             tarf_type: TarfType::Standard,
+        }
+    }
+
+    /// Decumulator TARF with common defaults. `ko_barrier` is a downside
+    /// barrier and must be below the strike (or `f64::INFINITY` for no
+    /// barrier).
+    pub fn decumulator(
+        strike: f64,
+        notional_per_fixing: f64,
+        ko_barrier: f64,
+        target_profit: f64,
+        downside_leverage: f64,
+        fixing_times: Vec<f64>,
+    ) -> Self {
+        Self {
+            strike,
+            notional_per_fixing,
+            ko_barrier,
+            target_profit,
+            downside_leverage,
+            fixing_times,
+            tarf_type: TarfType::Decumulator,
         }
     }
 }
@@ -178,8 +252,54 @@ mod tests {
 
     #[test]
     fn validate_allows_infinite_ko_barrier() {
+        // INFINITY is the universal "no KO barrier" sentinel for both types.
         let mut tarf = valid_tarf();
         tarf.ko_barrier = f64::INFINITY;
         assert!(tarf.validate().is_ok());
+        tarf.tarf_type = TarfType::Decumulator;
+        assert!(tarf.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_decumulator_with_downside_barrier() {
+        let tarf = Tarf::decumulator(
+            100.0,
+            1000.0,
+            80.0,
+            50_000.0,
+            2.0,
+            vec![0.25, 0.5, 0.75, 1.0],
+        );
+        assert!(tarf.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_barrier_on_wrong_side_of_strike() {
+        // Standard KO is an upside barrier: must be strictly above strike.
+        let mut standard = valid_tarf();
+        standard.ko_barrier = 80.0;
+        assert!(
+            standard.validate().is_err(),
+            "downside barrier must be rejected for a standard TARF"
+        );
+        standard.ko_barrier = standard.strike;
+        assert!(
+            standard.validate().is_err(),
+            "barrier equal to strike must be rejected for a standard TARF"
+        );
+
+        // Decumulator KO is a downside barrier: must be strictly below strike.
+        let mut dec = valid_tarf();
+        dec.tarf_type = TarfType::Decumulator;
+        dec.ko_barrier = 120.0;
+        assert!(
+            dec.validate().is_err(),
+            "upside barrier must be rejected for a decumulator TARF"
+        );
+        dec.ko_barrier = dec.strike;
+        assert!(
+            dec.validate().is_err(),
+            "barrier equal to strike must be rejected for a decumulator TARF"
+        );
     }
 }

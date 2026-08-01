@@ -312,11 +312,33 @@ fn accrued_interest_basic_cases() {
     assert_relative_eq!(bond.accrued_interest(0.25), half_coupon, epsilon = 1.0e-12);
 }
 
-/// Clean price = dirty price - accrued interest.
+/// Clean price = dirty price at settlement - accrued interest, with the
+/// settlement dirty price anchored to a hand computation.
+///
+/// The dirty price at settlement `s` is the value AT `s` of the cashflows
+/// paid strictly after `s`: sum_{t > s} CF(t) * DF(0, t) / DF(0, s).
+///
+/// Anchor (hand-computed): 5y 6% semiannual bond, face 100, flat 5%
+/// continuously-compounded curve, s = 0.25:
+///   dirty(0.25)   = sum_{t in {0.5, 1.0, .., 4.5}} 3 * exp(-0.05 (t - 0.25))
+///                   + 103 * exp(-0.05 (5 - 0.25))  = 105.402903895
+///   accrued(0.25) = 3 * 0.25 / 0.5                 = 1.5
+///   clean(0.25)   = 105.402903895 - 1.5            = 103.902903895
+/// (The pre-fix implementation discounted every cashflow to t=0 instead of
+/// to settlement: 104.093568 dirty / 102.593568 clean.)
 #[test]
-fn clean_price_equals_dirty_minus_accrued() {
+fn clean_price_equals_settlement_dirty_minus_accrued() {
     let rate = 0.05;
-    let curve = flat_curve(rate, 12.0);
+    // Quarter-year node spacing so both the 0.25 settlement and the
+    // half-year coupon grid lie inside the node range and log-linear
+    // interpolation reproduces exp(-r t) exactly (no extrapolation).
+    let points: Vec<(f64, f64)> = (1..=21)
+        .map(|i| {
+            let t = i as f64 * 0.25;
+            (t, (-rate * t).exp())
+        })
+        .collect();
+    let curve = YieldCurve::new(points);
 
     let bond = FixedRateBond {
         face_value: 100.0,
@@ -327,9 +349,19 @@ fn clean_price_equals_dirty_minus_accrued() {
     };
 
     let settlement = 0.25;
-    let dirty = bond.dirty_price(&curve);
+    let dirty = bond.dirty_price_at(&curve, settlement);
     let accrued = bond.accrued_interest(settlement);
     let clean = bond.clean_price(&curve, settlement);
 
+    assert_relative_eq!(dirty, 105.402903895, epsilon = 1.0e-9);
+    assert_relative_eq!(accrued, 1.5, epsilon = 1.0e-12);
     assert_relative_eq!(clean, dirty - accrued, epsilon = 1.0e-12);
+    assert_relative_eq!(clean, 103.902903895, epsilon = 1.0e-9);
+
+    // Settlement 0 degenerates to today's dirty price (accrued(0) = 0).
+    assert_relative_eq!(
+        bond.clean_price(&curve, 0.0),
+        bond.dirty_price(&curve),
+        epsilon = 1.0e-12
+    );
 }
