@@ -29,7 +29,8 @@ pub struct CdoTranche {
 pub struct SyntheticCdo {
     /// Number of names in the reference pool.
     pub num_names: usize,
-    /// Flat pool spread proxy used as a constant hazard level in this LHP approximation.
+    /// Flat pool par spread in decimal (e.g. 0.01 for 100 bps). Converted to a
+    /// constant hazard rate via the credit triangle `h = s / (1 - R)`.
     pub pool_spread: f64,
     /// Recovery rate.
     pub recovery_rate: f64,
@@ -79,8 +80,13 @@ impl CdoTranche {
 }
 
 impl SyntheticCdo {
+    /// Constant pool hazard rate implied by the pool par spread via the credit
+    /// triangle `h = s / (1 - R)`, matching `credit::isda::hazard_from_par_spread`.
+    ///
+    /// Guards recovery internally (returns 0 unless `0 <= R < 1`) because this
+    /// method is public and callable without validation having run.
     pub fn hazard_rate(&self) -> f64 {
-        self.pool_spread.max(0.0)
+        crate::credit::isda::hazard_from_par_spread(self.pool_spread, self.recovery_rate)
     }
 
     pub fn default_probability(&self, t: f64) -> f64 {
@@ -183,7 +189,8 @@ impl SyntheticCdo {
     }
 
     fn discount_factor(&self, t: f64) -> f64 {
-        (-self.risk_free_rate.max(0.0) * t.max(0.0)).exp()
+        // Any finite (including negative) flat rate is admissible.
+        (-self.risk_free_rate * t.max(0.0)).exp()
     }
 
     fn is_valid(&self) -> bool {
@@ -356,22 +363,78 @@ mod tests {
         let spread_senior_bps = cdo.fair_spread(&senior) * 1.0e4;
         assert!(spread_equity_bps > spread_mezz_bps);
         assert!(spread_mezz_bps > spread_senior_bps);
+        // Ranges recentred after fixing hazard_rate() to use the credit
+        // triangle h = s/(1-R). With s=100bp, R=0.4, rho=0.30, r=5%, 5y
+        // quarterly the fair spreads are approximately equity 2490 bps,
+        // mezz 780 bps, senior 29 bps.
         assert!(
-            (500.0..=1700.0).contains(&spread_equity_bps),
+            (2000.0..=3000.0).contains(&spread_equity_bps),
             "equity spread: {spread_equity_bps:.2} bps"
         );
         assert!(
-            (100.0..=450.0).contains(&spread_mezz_bps),
+            (550.0..=1000.0).contains(&spread_mezz_bps),
             "mezz spread: {spread_mezz_bps:.2} bps"
         );
         assert!(
-            (10.0..=60.0).contains(&spread_senior_bps),
+            (15.0..=60.0).contains(&spread_senior_bps),
             "senior spread: {spread_senior_bps:.2} bps"
         );
 
         let tranche_sum = el_equity + el_mezz + el_senior;
         let portfolio_el = cdo.portfolio_expected_loss(t);
         assert_relative_eq!(tranche_sum, portfolio_el, epsilon = 4.0e-3);
+    }
+
+    fn audit_cdo() -> SyntheticCdo {
+        SyntheticCdo {
+            num_names: 125,
+            pool_spread: 0.01,
+            recovery_rate: 0.4,
+            correlation: 0.30,
+            risk_free_rate: 0.05,
+            maturity: 5.0,
+            payment_freq: 4,
+        }
+    }
+
+    #[test]
+    fn hazard_rate_uses_credit_triangle() {
+        let cdo = audit_cdo();
+        // Credit triangle (O'Kane 2008, Ch. 5): h = s / (1 - R) = 0.01 / 0.6.
+        assert_relative_eq!(cdo.hazard_rate(), 0.01 / 0.6, epsilon = 1.0e-15);
+        // Must agree exactly with the crate's canonical conversion.
+        assert_relative_eq!(
+            cdo.hazard_rate(),
+            crate::credit::isda::hazard_from_par_spread(cdo.pool_spread, cdo.recovery_rate),
+            epsilon = 0.0
+        );
+    }
+
+    #[test]
+    fn hazard_rate_guards_degenerate_recovery() {
+        let mut cdo = audit_cdo();
+        cdo.recovery_rate = 1.0;
+        assert_eq!(cdo.hazard_rate(), 0.0);
+        cdo.recovery_rate = -0.1;
+        assert_eq!(cdo.hazard_rate(), 0.0);
+        // Negative spread floors at zero hazard.
+        cdo.recovery_rate = 0.4;
+        cdo.pool_spread = -0.01;
+        assert_eq!(cdo.hazard_rate(), 0.0);
+    }
+
+    #[test]
+    fn discount_factor_honours_negative_rates() {
+        let mut cdo = audit_cdo();
+        cdo.risk_free_rate = -0.02;
+        // DF(t) = exp(-r t) = exp(0.02 * 2) for r = -2%; the old code floored
+        // the rate at 0 and returned exp(0) = 1.
+        assert_relative_eq!(
+            cdo.discount_factor(2.0),
+            (0.02_f64 * 2.0).exp(),
+            epsilon = 1.0e-15
+        );
+        assert!(cdo.discount_factor(2.0) > 1.0);
     }
 
     #[test]
