@@ -282,7 +282,14 @@ impl PricingEngine<TwoAssetCorrelationOption> for RainbowAnalyticEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_relative_eq;
+
+    fn assert_close_to_scipy(actual: f64, expected: f64, label: &str) {
+        let tolerance = 512.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.15}, SciPy={expected:.15}, tolerance={tolerance:.3e}"
+        );
+    }
 
     #[test]
     fn best_and_worst_of_two_match_stulz_reference_values() {
@@ -314,8 +321,10 @@ mod tests {
         let best_price = best_of_two_call_price(&best).unwrap();
         let worst_price = worst_of_two_call_price(&worst).unwrap();
 
-        assert_relative_eq!(best_price, 15.5185, epsilon = 5e-3);
-        assert_relative_eq!(worst_price, 5.3826, epsilon = 5e-3);
+        // Independent SciPy adaptive quadrature of the bivariate-normal Stulz
+        // formula (epsabs=epsrel=2e-14), rather than the rounded book values.
+        assert_close_to_scipy(best_price, 15.518527744651877, "best-of-two call");
+        assert_close_to_scipy(worst_price, 5.3826393997192525, "worst-of-two call");
     }
 
     #[test]
@@ -353,7 +362,10 @@ mod tests {
         let c2 =
             black_scholes_call_with_dividend(best.s2, best.k, best.r, best.q2, best.vol2, best.t);
 
-        assert_relative_eq!(best_price + worst_price, c1 + c2, epsilon = 1e-10);
+        let lhs = best_price + worst_price;
+        let rhs = c1 + c2;
+        let roundoff = 128.0 * f64::EPSILON * lhs.abs().max(rhs.abs()).max(1.0);
+        assert!((lhs - rhs).abs() <= roundoff);
     }
 
     #[test]
@@ -390,6 +402,9 @@ mod tests {
             / (option.vol2 * sqrt_t);
         let prob_s2_above_k2 = normal_cdf(d2_2);
 
-        assert_relative_eq!(price, call1 * prob_s2_above_k2, epsilon = 2e-5);
+        let reduced = call1 * prob_s2_above_k2;
+        let roundoff = 256.0 * f64::EPSILON * price.abs().max(reduced.abs()).max(1.0);
+        assert!((price - reduced).abs() <= roundoff);
+        assert_close_to_scipy(price, 4.508300020405416, "zero-correlation reduction");
     }
 }

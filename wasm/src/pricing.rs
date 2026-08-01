@@ -797,13 +797,13 @@ mod tests {
     #[test]
     fn bs_price_atm_call() {
         let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
-        assert!((price - 10.4506).abs() < 0.01);
+        assert!((price - 10.450_583_572_185_565).abs() < 2.0e-12);
     }
 
     #[test]
     fn bs_price_atm_put() {
         let price = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false).unwrap();
-        assert!((price - 5.5735).abs() < 0.01);
+        assert!((price - 5.573_526_022_256_971).abs() < 2.0e-12);
     }
 
     #[test]
@@ -817,14 +817,13 @@ mod tests {
         let put = bs_price(s, k, r, q, 0.20, t, false).unwrap();
         let s_adj = s * (-q * t).exp();
         let parity = call - put - (s_adj - k * (-r * t).exp());
-        assert!(parity.abs() < 1e-8);
+        assert!(parity.abs() < 2.0e-12);
     }
 
     #[test]
     fn bs_price_with_dividend() {
-        let no_div = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         let with_div = bs_price(100.0, 100.0, 0.05, 0.03, 0.20, 1.0, true).unwrap();
-        assert!(with_div < no_div);
+        assert!((with_div - 8.652_528_553_942_709).abs() < 2.0e-12);
     }
 
     // -- bs_implied_vol --
@@ -834,7 +833,7 @@ mod tests {
         let vol = 0.25;
         let price = bs_price(100.0, 100.0, 0.05, 0.0, vol, 1.0, true).unwrap();
         let recovered = bs_implied_vol(price, 100.0, 100.0, 0.05, 0.0, 1.0, true).unwrap();
-        assert!((recovered - vol).abs() < 1e-4);
+        assert!((recovered - vol).abs() < 1.0e-12);
     }
 
     #[test]
@@ -842,7 +841,7 @@ mod tests {
         let vol = 0.30;
         let price = bs_price(100.0, 110.0, 0.03, 0.0, vol, 0.5, false).unwrap();
         let recovered = bs_implied_vol(price, 100.0, 110.0, 0.03, 0.0, 0.5, false).unwrap();
-        assert!((recovered - vol).abs() < 1e-3);
+        assert!((recovered - vol).abs() < 1.0e-12);
     }
 
     // -- bsm_greeks_wasm --
@@ -856,26 +855,25 @@ mod tests {
     #[test]
     fn bsm_greeks_call_delta_range() {
         let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
-        let delta = g[0];
-        assert!(delta > 0.0 && delta < 1.0);
+        assert!((g[0] - 0.636_830_651_175_619_1).abs() < 2.0e-14);
     }
 
     #[test]
     fn bsm_greeks_put_delta_negative() {
         let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, false).unwrap();
-        assert!(g[0] < 0.0);
+        assert!((g[0] + 0.363_169_348_824_380_9).abs() < 2.0e-14);
     }
 
     #[test]
     fn bsm_greeks_gamma_positive() {
         let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
-        assert!(g[1] > 0.0);
+        assert!((g[1] - 0.018_762_017_345_846_895).abs() < 2.0e-15);
     }
 
     #[test]
     fn bsm_greeks_vega_positive() {
         let g = bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
-        assert!(g[2] > 0.0);
+        assert!((g[2] - 37.524_034_691_693_79).abs() < 2.0e-12);
     }
 
     // -- bs_price_batch_wasm --
@@ -1052,9 +1050,9 @@ mod tests {
 
     #[test]
     fn barrier_up_out_call_less_than_vanilla() {
-        let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
         let bp = barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true).unwrap();
-        assert!(bp > 0.0 && bp < vanilla);
+        // QuantLib 1.43 AnalyticBarrierEngine reference.
+        assert!((bp - 1.176_065_399_650_372_7).abs() < 2.0e-11);
     }
 
     #[test]
@@ -1063,37 +1061,36 @@ mod tests {
         let out_p =
             barrier_price(100.0, 100.0, 120.0, 0.05, 0.0, 0.20, 1.0, "up-out", true).unwrap();
         let vanilla = bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).unwrap();
-        assert!((in_p + out_p - vanilla).abs() < 1e-3);
+        assert!((in_p - 9.274_518_172_535_206).abs() < 2.0e-11);
+        assert!((out_p - 1.176_065_399_650_372_7).abs() < 2.0e-11);
+        assert!((in_p + out_p - vanilla).abs() < 2.0e-12);
     }
 
     #[test]
     fn barrier_down_in_put() {
         let price =
             barrier_price(100.0, 100.0, 80.0, 0.05, 0.0, 0.20, 1.0, "down-in", false).unwrap();
-        assert!(price > 0.0);
+        assert!((price - 3.952_510_513_175_199_4).abs() < 2.0e-11);
     }
 
     // -- bond_price --
 
     #[test]
     fn bond_price_par() {
-        // When coupon rate == yield rate, bond price ≈ face value
         let price = bond_price(1000.0, 0.05, 10.0, 0.05, 2).unwrap();
-        assert!((price - 1000.0).abs() < 0.01);
+        assert!((price - 1000.0).abs() < 2.0e-12);
     }
 
     #[test]
     fn bond_price_premium() {
-        // Coupon > yield → premium
         let price = bond_price(1000.0, 0.08, 10.0, 0.05, 2).unwrap();
-        assert!(price > 1000.0);
+        assert!((price - 1_233.837_434_284_703_7).abs() < 2.0e-12);
     }
 
     #[test]
     fn bond_price_discount() {
-        // Coupon < yield → discount
         let price = bond_price(1000.0, 0.03, 10.0, 0.05, 2).unwrap();
-        assert!(price < 1000.0);
+        assert!((price - 844.108_377_143_533_2).abs() < 2.0e-12);
     }
 
     #[test]

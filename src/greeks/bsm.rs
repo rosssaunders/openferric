@@ -312,46 +312,72 @@ mod tests {
         let fd = finite_difference_greeks(&pricer, s, k, r, sigma, t, 1e-3, 1e-4, 1e-4, 1e-4);
         let cf = black_scholes_merton_greeks(OptionType::Call, s, k, r, q, sigma, t);
 
-        assert!((fd.delta - cf.delta).abs() < 2e-4);
-        assert!((fd.gamma - cf.gamma).abs() < 2e-4);
-        assert!((fd.vega - cf.vega).abs() < 4e-3);
-        assert!((fd.theta - cf.theta).abs() < 1e-2);
-        assert!((fd.rho - cf.rho).abs() < 5e-3);
-        assert!((fd.vanna - cf.vanna).abs() < 4e-3);
-        assert!((fd.volga - cf.volga).abs() < 1e-2);
+        // Measured central-difference truncation plus IEEE-754 roundoff at the
+        // stated bumps. These are numerical-method budgets around an exact
+        // analytic oracle, not broad price/Greek acceptance ranges.
+        for (name, actual, expected, budget) in [
+            ("delta", fd.delta, cf.delta, 1.0e-6),
+            ("gamma", fd.gamma, cf.gamma, 1.0e-5),
+            ("vega", fd.vega, cf.vega, 1.0e-5),
+            ("theta", fd.theta, cf.theta, 1.0e-5),
+            ("rho", fd.rho, cf.rho, 1.0e-5),
+            ("vanna", fd.vanna, cf.vanna, 1.0e-4),
+            ("volga", fd.volga, cf.volga, 1.0e-4),
+        ] {
+            let err = (actual - expected).abs();
+            assert!(
+                err <= budget,
+                "{name}: actual={actual} expected={expected} err={err}"
+            );
+        }
     }
 
     #[test]
-    fn finite_difference_greeks_are_finite_near_degenerate_inputs() {
+    fn near_degenerate_finite_differences_match_deterministic_reduction_exactly() {
         let pricer = |s: f64, k: f64, r: f64, v: f64, t: f64| {
             black_scholes_price(OptionType::Call, s, k, r, v, t)
+        };
+        let deterministic_oracle = |s: f64, k: f64, r: f64, _v: f64, t: f64| {
+            // This test is deep ITM at every bumped node, so the exact
+            // zero-volatility Black-Scholes reduction is S - K exp(-rT).
+            s - k * (-r * t).exp()
         };
 
         // sigma -> 0 and t -> 0: clamped down-bumps used to be divided by the
         // nominal symmetric spacing, corrupting the Greeks.
         let (s, k, r, sigma, t) = (100.0, 90.0, 0.05, 1.0e-9, 1.0e-9);
-        let fd = finite_difference_greeks(&pricer, s, k, r, sigma, t, 1e-3, 1e-4, 1e-4, 1e-4);
+        let bumps = (1e-3, 1e-4, 1e-4, 1e-4);
+        let fd = finite_difference_greeks(
+            &pricer, s, k, r, sigma, t, bumps.0, bumps.1, bumps.2, bumps.3,
+        );
+        let exact_reduction = finite_difference_greeks(
+            &deterministic_oracle,
+            s,
+            k,
+            r,
+            sigma,
+            t,
+            bumps.0,
+            bumps.1,
+            bumps.2,
+            bumps.3,
+        );
 
-        for (name, v) in [
-            ("delta", fd.delta),
-            ("gamma", fd.gamma),
-            ("vega", fd.vega),
-            ("theta", fd.theta),
-            ("rho", fd.rho),
-            ("vanna", fd.vanna),
-            ("volga", fd.volga),
+        for (name, actual, expected) in [
+            ("delta", fd.delta, exact_reduction.delta),
+            ("gamma", fd.gamma, exact_reduction.gamma),
+            ("vega", fd.vega, exact_reduction.vega),
+            ("theta", fd.theta, exact_reduction.theta),
+            ("rho", fd.rho, exact_reduction.rho),
+            ("vanna", fd.vanna, exact_reduction.vanna),
+            ("volga", fd.volga, exact_reduction.volga),
         ] {
-            assert!(v.is_finite(), "{name}={v} not finite");
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "{name}: actual={actual} deterministic={expected}"
+            );
         }
-
-        // Analytic deterministic limits for a deep-ITM call as sigma, t -> 0:
-        // delta -> 1, gamma -> 0, vega -> 0, theta -> -r*K (continuous comp).
-        assert!((fd.delta - 1.0).abs() < 1e-6, "delta={}", fd.delta);
-        assert!(fd.gamma.abs() < 1e-6, "gamma={}", fd.gamma);
-        assert!(fd.vega.abs() < 1e-3, "vega={}", fd.vega);
-        assert!((fd.theta + r * k).abs() < 1e-2, "theta={}", fd.theta);
-        assert!(fd.volga.abs() < 1.0, "volga={}", fd.volga);
-        assert!(fd.vanna.abs() < 1.0, "vanna={}", fd.vanna);
     }
 
     #[test]
@@ -360,31 +386,46 @@ mod tests {
         // S=100, K=100, r=0.05, q=0.0, T=1.0, vol=0.20.
         let g = black_scholes_merton_greeks(OptionType::Call, 100.0, 100.0, 0.05, 0.0, 0.20, 1.0);
 
-        assert!((g.delta - 0.6368).abs() < 5e-4);
-        assert!((g.gamma - 0.01876).abs() < 5e-5);
-        assert!((g.theta - -6.414).abs() < 5e-3);
-        assert!((g.vega - 37.524).abs() < 5e-3);
-        // Different conventions/day-count setups in references can shift rho slightly.
-        assert!((g.rho - 51.522).abs() < 2.0);
+        assert!((g.delta - 0.636_830_651_175_619_1).abs() < 2.0e-14);
+        assert!((g.gamma - 0.018_762_017_345_846_895).abs() < 2.0e-15);
+        assert!((g.theta + 6.414_027_546_438_197).abs() < 2.0e-12);
+        assert!((g.vega - 37.524_034_691_693_79).abs() < 2.0e-12);
+        assert!((g.rho - 53.232_481_545_376_345).abs() < 2.0e-12);
+        assert!((g.vanna + 0.281_430_260_187_703_45).abs() < 2.0e-14);
+        assert!((g.volga - 9.850_059_106_569_622).abs() < 2.0e-12);
     }
 
     #[test]
-    fn bump_and_reprice_returns_consistent_base() {
+    fn bump_and_reprice_returns_every_requested_analytic_node_exactly() {
         let pricer = |s: f64, k: f64, r: f64, sigma: f64, t: f64| {
             black_scholes_price(OptionType::Put, s, k, r, sigma, t)
         };
 
-        let (base, _s_up, _r_up, _v_up, _t_up, _s_dn) =
-            bump_and_reprice(&pricer, 100.0, 95.0, 0.03, 0.22, 0.8, 0.1, 1e-4, 1e-4, 1e-4);
-
-        let ref_price = black_scholes_price(OptionType::Put, 100.0, 95.0, 0.03, 0.22, 0.8);
-        assert!((base - ref_price).abs() < 1e-12);
+        let actual = bump_and_reprice(&pricer, 100.0, 95.0, 0.03, 0.22, 0.8, 0.1, 1e-4, 1e-4, 1e-4);
+        let expected = (
+            pricer(100.0, 95.0, 0.03, 0.22, 0.8),
+            pricer(100.1, 95.0, 0.03, 0.22, 0.8),
+            pricer(100.0, 95.0, 0.0301, 0.22, 0.8),
+            pricer(100.0, 95.0, 0.03, 0.2201, 0.8),
+            pricer(100.0, 95.0, 0.03, 0.22, 0.8001),
+            pricer(99.9, 95.0, 0.03, 0.22, 0.8),
+        );
+        for (name, got, want) in [
+            ("base", actual.0, expected.0),
+            ("spot up", actual.1, expected.1),
+            ("rate up", actual.2, expected.2),
+            ("volatility up", actual.3, expected.3),
+            ("maturity up", actual.4, expected.4),
+            ("spot down", actual.5, expected.5),
+        ] {
+            assert_eq!(got.to_bits(), want.to_bits(), "{name}");
+        }
     }
 
     #[test]
     fn volga_equals_vomma_alias() {
         let g = black_scholes_merton_greeks(OptionType::Call, 100.0, 100.0, 0.03, 0.01, 0.25, 0.9);
-        assert!((g.volga - g.vomma()).abs() < 1e-12);
+        assert_eq!(g.volga.to_bits(), g.vomma().to_bits());
     }
 
     #[test]

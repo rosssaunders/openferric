@@ -186,7 +186,8 @@ mod tests {
             );
 
         assert_relative_eq!(margrabe, ratio_call, epsilon = 1e-10);
-        assert_relative_eq!(margrabe, 5.687_130_39, epsilon = 2e-5);
+        // Independent SciPy 1.17.1 normal-CDF evaluation.
+        assert_relative_eq!(margrabe, 5.687_142_248_583_889, epsilon = 2e-12);
     }
 
     #[test]
@@ -205,7 +206,8 @@ mod tests {
         };
 
         let kirk = kirk_spread_price(&option).unwrap();
-        assert_relative_eq!(kirk, 5.577_021_91, epsilon = 2e-5);
+        // Independent SciPy 1.17.1 normal-CDF evaluation.
+        assert_relative_eq!(kirk, 5.577_024_131_239_917, epsilon = 2e-12);
     }
 
     #[test]

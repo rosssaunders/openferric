@@ -284,9 +284,51 @@ pub fn implied_vol_newton(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_relative_eq;
+    use crate::math::normal_pdf;
     use rand::SeedableRng;
     use std::time::Instant;
+
+    #[allow(clippy::too_many_arguments)]
+    fn assert_conditioned_solution(
+        option_type: OptionType,
+        s: f64,
+        k: f64,
+        r: f64,
+        t: f64,
+        market_price: f64,
+        target_sigma: f64,
+        actual_sigma: f64,
+        requested_price_tol: f64,
+    ) {
+        let repriced = black_scholes_price(option_type, s, k, r, actual_sigma, t);
+        let arithmetic_budget =
+            256.0 * f64::EPSILON * s.abs().max(k.abs()).max(market_price.abs()).max(1.0);
+        let price_budget = requested_price_tol + arithmetic_budget;
+        let price_error = (repriced - market_price).abs();
+        assert!(
+            price_error <= price_budget,
+            "price residual={price_error:.3e}, budget={price_budget:.3e}, iv={actual_sigma}"
+        );
+
+        let vega = |sigma: f64| {
+            let d1 = ((s / k).ln() + (r + 0.5 * sigma * sigma) * t) / (sigma * t.sqrt());
+            s * normal_pdf(d1) * t.sqrt()
+        };
+        let min_vega = vega(target_sigma).min(vega(actual_sigma));
+        assert!(
+            min_vega > 0.0,
+            "implied-vol inversion is unidentifiable: vega={min_vega}"
+        );
+        // Convert the price-space stopping/roundoff budget through 1/vega.
+        // Factor two covers the negligible vega variation across the interval.
+        let volatility_budget =
+            2.0 * price_budget / min_vega + 256.0 * f64::EPSILON * target_sigma.abs().max(1.0);
+        let volatility_error = (actual_sigma - target_sigma).abs();
+        assert!(
+            volatility_error <= volatility_budget,
+            "iv error={volatility_error:.3e}, conditioning budget={volatility_budget:.3e}, vega={min_vega:.3e}"
+        );
+    }
 
     #[test]
     fn implied_vol_recovers_true_sigma_call() {
@@ -296,10 +338,9 @@ mod tests {
         let t = 1.0;
         let sigma = 0.2;
 
-        let price = black_scholes_price(OptionType::Call, s, k, r, sigma, t);
+        let price = 10.450_583_572_185_565; // scipy.stats.norm 1.17.1
         let iv = implied_vol_newton(OptionType::Call, s, k, r, t, price, 1e-12, 50).unwrap();
-
-        assert_relative_eq!(iv, sigma, epsilon = 1e-8);
+        assert_conditioned_solution(OptionType::Call, s, k, r, t, price, sigma, iv, 1e-12);
     }
 
     #[test]
@@ -310,10 +351,9 @@ mod tests {
         let t = 0.75;
         let sigma = 0.35;
 
-        let price = black_scholes_price(OptionType::Put, s, k, r, sigma, t);
+        let price = 17.165_301_671_102_554; // scipy.stats.norm 1.17.1
         let iv = implied_vol_newton(OptionType::Put, s, k, r, t, price, 1e-11, 100).unwrap();
-
-        assert_relative_eq!(iv, sigma, epsilon = 1e-7);
+        assert_conditioned_solution(OptionType::Put, s, k, r, t, price, sigma, iv, 1e-11);
     }
 
     #[test]
@@ -331,10 +371,10 @@ mod tests {
     }
 
     #[test]
-    fn lets_be_rational_guess_is_positive_and_reasonable() {
+    fn lets_be_rational_guess_matches_stated_formula() {
         let guess = lets_be_rational_initial_guess(OptionType::Call, 100.0, 100.0, 0.01, 1.0, 8.0);
-        assert!(guess > 0.0);
-        assert!(guess < 2.0);
+        let expected = 0.175_588_893_908_865_48;
+        assert!((guess - expected).abs() <= 16.0 * f64::EPSILON);
     }
 
     #[test]
@@ -346,11 +386,9 @@ mod tests {
         let t = 1.4;
         let sigma = 0.28;
 
-        let market_price = black_scholes_price(option_type, s, k, r, sigma, t);
+        let market_price = 12.863_683_005_880_631; // scipy.stats.norm 1.17.1
         let iv = implied_vol_newton(option_type, s, k, r, t, market_price, 1e-12, 100).unwrap();
-        let repriced = black_scholes_price(option_type, s, k, r, iv, t);
-
-        assert_relative_eq!(repriced, market_price, epsilon = 1e-9);
+        assert_conditioned_solution(option_type, s, k, r, t, market_price, sigma, iv, 1e-12);
     }
 
     #[test]
@@ -427,12 +465,7 @@ mod tests {
         for (option_type, s, k, r, sigma, t) in cases {
             let price = black_scholes_price(option_type, s, k, r, sigma, t);
             let iv = implied_vol(option_type, s, k, r, t, price, 1e-14, 32).unwrap();
-            let repriced = black_scholes_price(option_type, s, k, r, iv, t);
-            let err = (repriced - price).abs();
-            assert!(
-                err <= 1e-12 * price.max(1.0),
-                "option={option_type:?} s={s} k={k} r={r} t={t} sigma={sigma} iv={iv} err={err}"
-            );
+            assert_conditioned_solution(option_type, s, k, r, t, price, sigma, iv, 0.0);
         }
     }
 
@@ -452,9 +485,27 @@ mod tests {
                         let iv_j = implied_vol(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
                         let iv_n =
                             implied_vol_newton(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
-                        assert!(
-                            (iv_j - iv_n).abs() < 1e-10,
-                            "option={option_type:?} k={k} t={t} sigma={sigma} iv_j={iv_j} iv_n={iv_n}"
+                        assert_conditioned_solution(
+                            option_type,
+                            s,
+                            k,
+                            r,
+                            t,
+                            price,
+                            sigma,
+                            iv_j,
+                            0.0,
+                        );
+                        assert_conditioned_solution(
+                            option_type,
+                            s,
+                            k,
+                            r,
+                            t,
+                            price,
+                            sigma,
+                            iv_n,
+                            1e-12,
                         );
                     }
                 }
@@ -475,10 +526,7 @@ mod tests {
             for &option_type in &[OptionType::Call, OptionType::Put] {
                 let price = black_scholes_price(option_type, s, k, r, sigma, t);
                 let iv = implied_vol(option_type, s, k, r, t, price, 1e-12, 64).unwrap();
-                assert!(
-                    (iv - sigma).abs() < 1e-8,
-                    "ratio={ratio} option={option_type:?} iv={iv} sigma={sigma}"
-                );
+                assert_conditioned_solution(option_type, s, k, r, t, price, sigma, iv, 0.0);
             }
         }
     }
@@ -492,7 +540,7 @@ mod tests {
         for &t in &[0.001, 30.0] {
             let price = black_scholes_price(OptionType::Call, s, k, r, sigma, t);
             let iv = implied_vol(OptionType::Call, s, k, r, t, price, 1e-12, 64).unwrap();
-            assert!((iv - sigma).abs() < 1e-10, "t={t} iv={iv} sigma={sigma}");
+            assert_conditioned_solution(OptionType::Call, s, k, r, t, price, sigma, iv, 0.0);
         }
     }
 
@@ -505,7 +553,7 @@ mod tests {
         let sigma = 0.001;
         let price = black_scholes_price(OptionType::Call, s, k, r, sigma, t);
         let iv = implied_vol(OptionType::Call, s, k, r, t, price, 1e-14, 64).unwrap();
-        assert!((iv - sigma).abs() < 1e-9, "iv={iv} sigma={sigma}");
+        assert_conditioned_solution(OptionType::Call, s, k, r, t, price, sigma, iv, 0.0);
     }
 
     #[test]

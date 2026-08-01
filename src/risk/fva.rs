@@ -121,19 +121,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fva_is_negative_for_positive_exposure_and_spread() {
-        let times = vec![0.25, 0.5, 0.75, 1.0];
-        let funding_exposure = vec![100.0, 80.0, 60.0, 40.0];
-        let funding_spread = vec![0.01; 4];
+    fn fva_matches_discounted_right_endpoint_cashflows() {
+        let times = vec![0.25, 0.75, 1.5, 2.0];
+        let funding_exposure = vec![125.0, 90.0, 60.0, 35.0];
+        let funding_spread = vec![0.012, 0.0135, 0.015, 0.016];
         let discount_curve =
-            YieldCurve::new(times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect());
+            YieldCurve::new(times.iter().map(|&t| (t, (-0.027_f64 * t).exp())).collect());
 
         let fva = fva_from_profile(&times, &funding_exposure, &funding_spread, &discount_curve);
+
+        // Independent right-endpoint cashflow calculation:
+        // -sum_i spread_i * exposure_i * exp(-0.027 t_i) * (t_i - t_{i-1}).
+        // The non-uniform grid makes a left/right endpoint or constant-dt regression visible.
+        let expected = -1.881_288_794_612_424_6;
         assert!(
-            fva < 0.0,
-            "FVA should be negative (cost) for positive exposure"
+            (fva - expected).abs() <= 4.0 * f64::EPSILON,
+            "discounted right-endpoint FVA: expected {expected:.17}, got {fva:.17}"
         );
-        assert!(fva.is_finite());
     }
 
     #[test]
@@ -144,9 +148,7 @@ mod tests {
             ..Default::default()
         };
         let profile = funding_exposure_profile(&paths, &csa);
-        assert_eq!(profile.len(), 3);
-        // t=0: avg(max(10,0), max(-10,0)) = avg(10, 0) = 5
-        assert!((profile[0] - 5.0).abs() < 1e-10);
+        assert_eq!(profile, vec![5.0, 2.5, 30.0]);
     }
 
     #[test]
@@ -165,6 +167,7 @@ mod tests {
         let p_uncoll = funding_exposure_profile(&paths, &uncoll);
         let p_coll = funding_exposure_profile(&paths, &coll);
 
-        assert!(p_uncoll[0] > p_coll[0]);
+        assert_eq!(p_uncoll, vec![100.0; 4]);
+        assert_eq!(p_coll, vec![0.0; 4]);
     }
 }

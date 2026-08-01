@@ -32,7 +32,7 @@ fn variance_gamma_model_prices_quantlib_grid_set_1() {
     for ((strike, price), expected) in prices.iter().zip(expected) {
         let err = (price - expected).abs();
         assert!(
-            err < 0.5,
+            err < 5.0e-5,
             "strike={strike} expected={expected} got={price} err={err}"
         );
     }
@@ -62,7 +62,7 @@ fn variance_gamma_model_prices_quantlib_grid_set_2() {
     for ((strike, price), expected) in prices.iter().zip(expected) {
         let err = (price - expected).abs();
         assert!(
-            err < 0.5,
+            err < 7.0e-4,
             "strike={strike} expected={expected} got={price} err={err}"
         );
     }

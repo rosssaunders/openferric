@@ -378,63 +378,75 @@ mod tests {
         (option, market)
     }
 
-    #[test]
-    fn pathwise_delta_converges_to_closed_form_call_delta() {
-        let (option, market) = setup_case();
-        let engine = MonteCarloGreeksEngine::new(100_000, 42);
-        let greeks = engine.estimate_pathwise(&option, &market).unwrap();
+    fn mean_and_stderr(values: &[f64]) -> (f64, f64) {
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        let variance = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        (mean, (variance / n).sqrt())
+    }
 
-        let d1 = ((market.spot / option.strike).ln()
-            + (market.rate - market.dividend_yield + 0.5 * 0.20_f64 * 0.20_f64) * option.expiry)
-            / (0.20 * option.expiry.sqrt());
-        let analytical_delta = (-market.dividend_yield * option.expiry).exp() * normal_cdf(d1);
-
-        let rel_err = ((greeks.delta - analytical_delta) / analytical_delta).abs();
+    fn assert_within_four_stderr(label: &str, values: &[f64], expected: f64) {
+        let (mean, stderr) = mean_and_stderr(values);
+        let tolerance = 4.0 * stderr + 5.0e-13;
         assert!(
-            rel_err <= 0.02,
-            "pathwise delta error too high: mc={} cf={} rel_err={}",
-            greeks.delta,
-            analytical_delta,
-            rel_err
+            (mean - expected).abs() <= tolerance,
+            "{label}: mean={mean} expected={expected} batch_stderr={stderr} tolerance={tolerance}"
         );
     }
 
     #[test]
-    fn likelihood_ratio_vega_converges_to_closed_form_call_vega() {
+    fn mc_greek_estimators_match_closed_forms_with_batch_stderr() {
         let (option, market) = setup_case();
-        let engine = MonteCarloGreeksEngine::new(100_000, 42);
-        let greeks = engine.estimate_likelihood_ratio(&option, &market).unwrap();
-
-        let vol = 0.20;
+        let vol = 0.20_f64;
         let d1 = ((market.spot / option.strike).ln()
             + (market.rate - market.dividend_yield + 0.5 * vol * vol) * option.expiry)
             / (vol * option.expiry.sqrt());
+        let analytical_delta = (-market.dividend_yield * option.expiry).exp() * normal_cdf(d1);
+        let analytical_gamma = (-market.dividend_yield * option.expiry).exp() * normal_pdf(d1)
+            / (market.spot * vol * option.expiry.sqrt());
         let analytical_vega = market.spot
             * (-market.dividend_yield * option.expiry).exp()
             * normal_pdf(d1)
             * option.expiry.sqrt();
+        let bump = market.spot * 0.01;
+        let delta_at = |spot: f64| {
+            let bumped_d1 = ((spot / option.strike).ln()
+                + (market.rate - market.dividend_yield + 0.5 * vol * vol) * option.expiry)
+                / (vol * option.expiry.sqrt());
+            (-market.dividend_yield * option.expiry).exp() * normal_cdf(bumped_d1)
+        };
+        let finite_bump_gamma =
+            (delta_at(market.spot + bump) - delta_at(market.spot - bump)) / (2.0 * bump);
 
-        let rel_err = ((greeks.vega - analytical_vega) / analytical_vega).abs();
-        assert!(
-            rel_err <= 0.05,
-            "LR vega error too high: mc={} cf={} rel_err={}",
-            greeks.vega,
-            analytical_vega,
-            rel_err
+        let mut pathwise_delta = Vec::new();
+        let mut pathwise_gamma = Vec::new();
+        let mut lr_delta = Vec::new();
+        let mut lr_gamma = Vec::new();
+        let mut lr_vega = Vec::new();
+        for batch in 0..16_u64 {
+            let estimate = MonteCarloGreeksEngine::new(20_000, 0xA11C_E000 + batch)
+                .run_estimators(&option, &market)
+                .unwrap();
+            pathwise_delta.push(estimate.pathwise_delta);
+            pathwise_gamma.push(estimate.pathwise_gamma);
+            lr_delta.push(estimate.lr_delta);
+            lr_gamma.push(estimate.lr_gamma);
+            lr_vega.push(estimate.lr_vega);
+        }
+
+        assert_within_four_stderr("pathwise delta", &pathwise_delta, analytical_delta);
+        assert_within_four_stderr(
+            "pathwise finite-bump gamma",
+            &pathwise_gamma,
+            finite_bump_gamma,
         );
-    }
-
-    #[test]
-    fn quantlib_reference_values_are_reasonable() {
-        let (option, market) = setup_case();
-        let engine = MonteCarloGreeksEngine::new(100_000, 42);
-
-        let pw = engine.estimate_pathwise(&option, &market).unwrap();
-        let lr = engine.estimate_likelihood_ratio(&option, &market).unwrap();
-
-        assert!((pw.delta - 0.6368).abs() / 0.6368 < 0.02);
-        assert!((pw.gamma - 0.01876).abs() / 0.01876 < 0.20);
-        assert!((lr.vega - 37.524).abs() / 37.524 < 0.05);
+        assert_within_four_stderr("likelihood-ratio delta", &lr_delta, analytical_delta);
+        assert_within_four_stderr("likelihood-ratio gamma", &lr_gamma, analytical_gamma);
+        assert_within_four_stderr("likelihood-ratio vega", &lr_vega, analytical_vega);
     }
 
     #[test]

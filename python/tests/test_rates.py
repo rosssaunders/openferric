@@ -16,23 +16,25 @@ class TestSwaptionPrice:
 
     def test_payer_positive(self, swaption_params):
         price = py_swaption_price(**swaption_params, option_type="payer")
-        assert price > 0.0
+        # Independent SciPy 1.17.1 Black-76 evaluation on OpenFerric's
+        # documented annual fixed-leg schedule.
+        assert price == pytest.approx(9070.129921696538, abs=1e-8)
 
     def test_receiver_positive(self, swaption_params):
         price = py_swaption_price(**swaption_params, option_type="receiver")
-        assert price > 0.0
+        assert price == pytest.approx(7052.63808672894, abs=1e-8)
 
     def test_call_alias(self, swaption_params):
         """'call' should be same as 'payer'."""
         payer = py_swaption_price(**swaption_params, option_type="payer")
         call = py_swaption_price(**swaption_params, option_type="call")
-        assert payer == pytest.approx(call, rel=1e-10)
+        assert payer == call
 
     def test_put_alias(self, swaption_params):
         """'put' should be same as 'receiver'."""
         receiver = py_swaption_price(**swaption_params, option_type="receiver")
         put = py_swaption_price(**swaption_params, option_type="put")
-        assert receiver == pytest.approx(put, rel=1e-10)
+        assert receiver == put
 
     def test_higher_vol_higher_price(self, swaption_params):
         low_vol = py_swaption_price(**{**swaption_params, "vol": 0.10}, option_type="payer")
@@ -83,8 +85,8 @@ class TestForwardRateAgreement:
         fwd = (df1 / df2 - 1.0) / tau
         expected = notional * (fwd - fixed) * tau * df2
 
-        assert fra.forward_rate(curve) == pytest.approx(fwd, rel=1e-10)
-        assert fra.npv(curve) == pytest.approx(expected, rel=1e-10)
+        assert fra.forward_rate(curve) == pytest.approx(fwd, abs=32 * math.ulp(fwd))
+        assert fra.npv(curve) == pytest.approx(expected, abs=32 * math.ulp(expected))
         assert "valuation_date" in repr(fra)
 
     def test_omitted_valuation_date_anchors_at_start(self):
@@ -110,4 +112,4 @@ class TestForwardRateAgreement:
         df = math.exp(-r * tau)
         fwd = (1.0 / df - 1.0) / tau
         expected = 100.0 * (fwd - 0.02) * tau * df
-        assert fra.npv(curve) == pytest.approx(expected, rel=1e-10)
+        assert fra.npv(curve) == pytest.approx(expected, abs=32 * math.ulp(expected))

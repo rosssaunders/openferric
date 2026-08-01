@@ -820,7 +820,7 @@ mod tests {
         let yc = YieldCurve::new(vec![(1.0, 0.95), (2.0, 0.90)]);
         let mid = yc.discount_factor(1.5);
         let expected = (0.5 * 0.95_f64.ln() + 0.5 * 0.90_f64.ln()).exp();
-        assert_relative_eq!(mid, expected, epsilon = 1e-12);
+        assert_relative_eq!(mid, expected, epsilon = 8.0 * f64::EPSILON);
     }
 
     #[test]
@@ -837,7 +837,7 @@ mod tests {
         .unwrap();
 
         for t in [0.5, 2.0, 7.0, 10.0] {
-            assert_relative_eq!(yc.zero_rate(t), r, epsilon = 1e-10);
+            assert_relative_eq!(yc.zero_rate(t), r, epsilon = 8.0 * f64::EPSILON);
         }
     }
 
@@ -880,12 +880,12 @@ mod tests {
 
                     // Par rate recovery to root-finder precision.
                     let par = (1.0 - df_n) / annuity;
-                    assert_relative_eq!(par, rate, epsilon = 1.0e-10);
+                    assert_relative_eq!(par, rate, epsilon = 2.0e-14);
 
                     // Payer-swap NPV at the input rate is zero.
                     let npv = (1.0 - df_n) - rate * annuity;
                     assert!(
-                        npv.abs() < 1.0e-10,
+                        npv.abs() < 2.0e-14,
                         "method={method:?} freq={frequency} tenor={tenor}: npv={npv}"
                     );
                 }
@@ -901,19 +901,16 @@ mod tests {
         let swap_rates = vec![(1.0, 0.05), (2.0, 5.0), (3.0, 0.055)];
         let curve = YieldCurveBuilder::from_swap_rates(&swap_rates, 1);
 
-        assert_eq!(curve.tenors.len(), 2);
-        assert!(
-            curve.tenors.iter().all(|&(t, _)| (t - 2.0).abs() > 1.0e-9),
-            "degenerate 2y quote should not produce a pillar: {:?}",
-            curve.tenors
-        );
-        for &(_, df) in &curve.tenors {
-            assert!(df > 0.5 && df <= 1.0, "df={df}");
+        let expected = [(1.0, 0.9523809523809523), (3.0, 0.8512762682045161)];
+        assert_eq!(curve.tenors.len(), expected.len());
+        for ((t, df), (expected_t, expected_df)) in curve.tenors.iter().zip(expected) {
+            assert_eq!(*t, expected_t);
+            assert_relative_eq!(*df, expected_df, epsilon = 8.0 * f64::EPSILON);
         }
     }
 
     #[test]
-    fn curve_methods_produce_positive_discount_factors() {
+    fn curve_methods_match_full_precision_discount_factor_grid() {
         let points = vec![
             (0.5, 0.99),
             (1.0, 0.975),
@@ -922,26 +919,119 @@ mod tests {
             (10.0, 0.72),
         ];
 
-        let methods = [
-            YieldCurveInterpolationMethod::LogLinearDiscount,
-            YieldCurveInterpolationMethod::LinearZeroRate,
-            YieldCurveInterpolationMethod::MonotoneConvex,
-            YieldCurveInterpolationMethod::TensionSpline { tension: 0.25 },
-            YieldCurveInterpolationMethod::HermiteMonotone,
-            YieldCurveInterpolationMethod::LogCubicMonotone,
-            YieldCurveInterpolationMethod::NelsonSiegel,
-            YieldCurveInterpolationMethod::NelsonSiegelSvensson,
-            YieldCurveInterpolationMethod::SmithWilson {
-                ufr: 0.032,
-                alpha: 0.12,
-            },
+        let reference = [
+            (
+                YieldCurveInterpolationMethod::LogLinearDiscount,
+                [
+                    0.99498743710662,
+                    0.9824713736287689,
+                    0.9598828053465693,
+                    0.9157719902476119,
+                    0.7730345030975565,
+                    0.6027906976744186,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::LinearZeroRate,
+                [
+                    0.99498743710662,
+                    0.9831122934720339,
+                    0.9605951508602583,
+                    0.9169201119553432,
+                    0.7755300083893202,
+                    0.5868162551725005,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::MonotoneConvex,
+                [
+                    0.99498743710662,
+                    0.9834785082099724,
+                    0.9595032326537398,
+                    0.9153691663493935,
+                    0.775363811535863,
+                    0.5868162551725005,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::TensionSpline { tension: 0.25 },
+                [
+                    0.995048270822333,
+                    0.9832065904144044,
+                    0.9598439523204216,
+                    0.9153919566278957,
+                    0.7752054530064566,
+                    0.5927564492367893,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::HermiteMonotone,
+                [
+                    0.99498743710662,
+                    0.983339308320385,
+                    0.9599172531880658,
+                    0.9162403479900063,
+                    0.7751469274474556,
+                    0.5892778252405853,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::LogCubicMonotone,
+                [
+                    0.9955696251920502,
+                    0.982877158685213,
+                    0.9599393564407492,
+                    0.9161700248019815,
+                    0.7753449707523878,
+                    0.5950818900068225,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::NelsonSiegel,
+                [
+                    0.9956401198580614,
+                    0.9829702335570416,
+                    0.9597502989404639,
+                    0.9138934998793606,
+                    0.7762265968997839,
+                    0.6163943539335014,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::NelsonSiegelSvensson,
+                [
+                    0.9956869482014123,
+                    0.9828110652666151,
+                    0.9598971946647554,
+                    0.9164340169080677,
+                    0.7746202045835824,
+                    0.5901528859164018,
+                ],
+            ),
+            (
+                YieldCurveInterpolationMethod::SmithWilson {
+                    ufr: 0.032,
+                    alpha: 0.12,
+                },
+                [
+                    0.9963108946520928,
+                    0.9829049530263827,
+                    0.9596468259748827,
+                    0.9164494677292719,
+                    0.7742766437163286,
+                    0.589854334422862,
+                ],
+            ),
         ];
+        let query_grid = [0.25, 0.75, 1.5, 3.0, 8.0, 15.0];
 
-        for method in methods {
+        for (method, expected_grid) in reference {
             let yc = YieldCurve::new_with_settings(points.clone(), settings(method)).unwrap();
-            for t in [0.25, 0.75, 1.5, 3.0, 8.0, 15.0] {
-                let df = yc.discount_factor(t);
-                assert!(df > 0.0 && df <= 1.5, "method={method:?}, t={t}, df={df}");
+            for (t, expected) in query_grid.iter().zip(expected_grid) {
+                let df = yc.discount_factor(*t);
+                assert_relative_eq!(df, expected, epsilon = 5.0e-14);
+                // Positivity is supplemental to the exact method grid lock.
+                assert!(df > 0.0, "method={method:?}, t={t}, df={df}");
             }
         }
     }
@@ -954,6 +1044,15 @@ mod tests {
 
         let t = 3.5;
         let j = yc.zero_rate_jacobian(t).unwrap();
+        let reference = [
+            0.01658707561891917,
+            -0.18152764313829411,
+            -0.16696250406539329,
+            0.007423524273713426,
+        ];
+        for (got, expected) in j.iter().zip(reference) {
+            assert_relative_eq!(*got, expected, epsilon = 3.0e-12);
+        }
         let eps = 1.0e-6;
 
         for i in 0..points.len() {
@@ -966,7 +1065,10 @@ mod tests {
             let r_dn = YieldCurve::new_with_settings(dn, s).unwrap().zero_rate(t);
 
             let fd = (r_up - r_dn) / (2.0 * eps);
-            assert_relative_eq!(j[i], fd, epsilon = 2.0e-4);
+            // The curve Jacobian itself uses 1e-6 central input bumps. Against
+            // this independent reconstruction the measured worst discrepancy
+            // is 2.02e-9, replacing the former 2e-4 blanket tolerance.
+            assert_relative_eq!(j[i], fd, epsilon = 2.1e-9);
         }
     }
 

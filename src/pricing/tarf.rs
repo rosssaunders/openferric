@@ -348,4 +348,34 @@ mod tests {
         tarf.tarf_type = TarfType::Decumulator; // upside barrier 120 now invalid
         assert!(tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.15, 100, 42).is_err());
     }
+
+    #[test]
+    fn one_fixing_tarf_matches_black_scholes_decomposition() {
+        // With one fixing and no knock-out, the standard payoff is exactly
+        // N * (call - L * put); the decumulator is N * (put - L * call).
+        // The cached values were evaluated independently with SciPy 1.17.1's
+        // normal CDF for S=K=100, r=3%, q=0, sigma=15%, and T=1.
+        let mut tarf = Tarf::standard(100.0, 1_000.0, f64::INFINITY, 1.0, 2.0, vec![1.0]);
+
+        let standard = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.15, 250_000, 91).unwrap();
+        let expected_standard = -1_574.194_303_614_27;
+        assert!(
+            (standard.price - expected_standard).abs() <= 4.0 * standard.std_error,
+            "standard one-fixing TARF: price={} expected={} stderr={}",
+            standard.price,
+            expected_standard,
+            standard.std_error
+        );
+
+        tarf.tarf_type = TarfType::Decumulator;
+        let decumulator = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.15, 250_000, 91).unwrap();
+        let expected_decumulator = -10_440.534_239_061_77;
+        assert!(
+            (decumulator.price - expected_decumulator).abs() <= 4.0 * decumulator.std_error,
+            "one-fixing decumulator: price={} expected={} stderr={}",
+            decumulator.price,
+            expected_decumulator,
+            decumulator.std_error
+        );
+    }
 }

@@ -275,14 +275,9 @@ mod tests {
         let surface = FenglerSurface::new(&quotes, &fwd_curve);
         let violations = surface.check_arbitrage();
 
-        // Flat vol should have no violations.
-        let calendar: Vec<_> = violations
-            .iter()
-            .filter(|v| matches!(v, ArbitrageViolation::Calendar { .. }))
-            .collect();
         assert!(
-            calendar.is_empty(),
-            "flat vol should have no calendar arbitrage, got {calendar:?}"
+            violations.is_empty(),
+            "flat vol should have neither calendar nor butterfly arbitrage: {violations:?}"
         );
     }
 
@@ -298,10 +293,8 @@ mod tests {
             max_err = max_err.max((iv - v).abs());
         }
 
-        assert!(
-            max_err < 0.01,
-            "max implied vol error {max_err:.6} exceeds tolerance"
-        );
+        // A constant total-variance spline reproduces every quote to roundoff.
+        assert!(max_err <= 2.0e-15, "max implied vol error {max_err:.17e}");
     }
 
     #[test]
@@ -314,27 +307,32 @@ mod tests {
             for t_bp in [25, 50, 100, 200] {
                 let t = t_bp as f64 / 100.0;
                 let w = surface.total_variance(k, t);
-                assert!(w > 0.0, "total variance must be positive at k={k}, T={t}");
+                let expected = 0.20_f64.powi(2) * t;
+                assert!(
+                    (w - expected).abs() <= 4.0e-16,
+                    "flat-surface variance at k={k}, T={t}: {w} != {expected}"
+                );
             }
         }
     }
 
     #[test]
-    fn fengler_calendar_monotonicity() {
+    fn fengler_calendar_interpolation_and_extrapolation_are_exact() {
         let (quotes, fwd_curve) = synthetic_data();
         let surface = FenglerSurface::new(&quotes, &fwd_curve);
 
         for k_idx in -5..=5 {
             let k = k_idx as f64 * 0.1;
-            let mut prev_w = 0.0;
             for t_bp in [10, 25, 50, 75, 100, 150, 200] {
                 let t = t_bp as f64 / 100.0;
                 let w = surface.total_variance(k, t);
+                // The implementation holds total variance flat outside the
+                // quoted [0.25, 2.0] interval and interpolates it linearly inside.
+                let expected = 0.20_f64.powi(2) * t.clamp(0.25, 2.0);
                 assert!(
-                    w >= prev_w - 1e-8,
-                    "calendar violation at k={k}, T={t}: w={w} < prev={prev_w}"
+                    (w - expected).abs() <= 4.0e-16,
+                    "total variance at k={k}, T={t}: {w} != {expected}"
                 );
-                prev_w = w;
             }
         }
     }

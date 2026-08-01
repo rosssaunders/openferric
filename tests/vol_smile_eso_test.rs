@@ -2,9 +2,9 @@ use openferric::core::{OptionType, PricingEngine};
 use openferric::engines::tree::BinomialTreeEngine;
 use openferric::instruments::{EmployeeStockOption, VanillaOption};
 use openferric::market::Market;
+use openferric::math::normal_pdf;
 use openferric::pricing::european::black_scholes_price;
 use openferric::vol::builder::{MarketOptionQuote, VolSurfaceBuilder};
-use openferric::vol::implied::implied_vol_newton;
 use openferric::vol::mixture::{LognormalMixture, calibrate_lognormal_mixture};
 use openferric::vol::smile::{
     StickyStrikeSmile, VannaVolgaQuote, vanna_volga_pivot_strikes, vanna_volga_price,
@@ -35,6 +35,14 @@ fn sticky_strike_smile_is_monotone_in_equity_skew_wings() {
     let smile = StickyStrikeSmile::from_built_surface(&surface, expiry, strikes.clone())
         .expect("sticky-strike build succeeds");
 
+    for (&strike, &quoted_vol) in strikes.iter().zip(&vols) {
+        let recovered = smile.vol(strike);
+        assert!(
+            (recovered - quoted_vol).abs() <= 2.0e-9,
+            "strike={strike}: recovered_vol={recovered}, quoted_vol={quoted_vol}"
+        );
+    }
+
     let left_wing = [70.0, 80.0, 90.0, 100.0];
     for pair in left_wing.windows(2) {
         let v0 = smile.vol(pair[0]);
@@ -64,7 +72,7 @@ fn vanna_volga_matches_atm_mid_with_zero_adjustment_weight() {
 }
 
 #[test]
-fn two_component_mixture_fits_five_strike_smile_within_tenth_vol() {
+fn two_component_mixture_reprices_five_strike_smile() {
     let spot = 100.0;
     let rate = 0.01;
     let expiry = 1.0;
@@ -89,50 +97,46 @@ fn two_component_mixture_fits_five_strike_smile_within_tenth_vol() {
 
     for (k, market_price) in strikes.iter().zip(market_prices.iter()) {
         let fit_price = fitted.price(OptionType::Call, spot, *k, rate, expiry);
-
-        let vol_market = implied_vol_newton(
-            OptionType::Call,
-            spot,
-            *k,
-            rate,
-            expiry,
-            *market_price,
-            1e-10,
-            100,
-        )
-        .unwrap();
-
-        let vol_fit = implied_vol_newton(
-            OptionType::Call,
-            spot,
-            *k,
-            rate,
-            expiry,
-            fit_price,
-            1e-10,
-            100,
-        )
-        .unwrap();
-
         assert!(
-            (vol_market - vol_fit).abs() < 0.1,
-            "strike {k}: market vol {vol_market}, fit vol {vol_fit}"
+            (fit_price - market_price).abs() <= 1.0e-9,
+            "strike {k}: target price {market_price}, fit price {fit_price}, weights={:?}, vols={:?}",
+            fitted.weights,
+            fitted.vols
         );
     }
 }
 
 #[test]
-fn implied_density_from_mixture_is_non_negative_everywhere() {
+fn implied_density_from_mixture_matches_analytic_density() {
     let mix = LognormalMixture::new(vec![0.7, 0.3], vec![0.16, 0.31]).unwrap();
+    let spot: f64 = 100.0;
+    let rate: f64 = 0.01;
+    let expiry: f64 = 1.0;
 
     for k in (60..=140).step_by(5) {
-        let density = mix.implied_density(100.0, k as f64, 0.01, 1.0, 0.5);
-        assert!(density >= 0.0, "density at strike {k} was {density}");
+        let strike = k as f64;
+        let exact: f64 = mix
+            .weights
+            .iter()
+            .zip(&mix.vols)
+            .map(|(&weight, &sigma)| {
+                let d2 = ((spot / strike).ln() + (rate - 0.5 * sigma * sigma) * expiry)
+                    / (sigma * expiry.sqrt());
+                weight * normal_pdf(d2) / (strike * sigma * expiry.sqrt())
+            })
+            .sum();
+        let coarse = mix.implied_density(spot, strike, rate, expiry, 0.5);
+        let density = mix.implied_density(spot, strike, rate, expiry, 0.25);
+        let richardson_error = (coarse - density).abs() / 3.0;
+        assert!(
+            (density - exact).abs() <= 1.05 * richardson_error + 2.0e-12,
+            "density at strike {k}: finite_difference={density}, analytic={exact}, coarse={coarse}, Richardson error={richardson_error}"
+        );
     }
 }
 
 #[test]
-fn eso_value_is_less_than_plain_european_with_forfeiture_and_forced_exercise() {
+fn eso_with_forfeiture_and_forced_exercise_matches_independent_crr_reference() {
     let eso = EmployeeStockOption::new(
         OptionType::Call,
         100.0,
@@ -146,9 +150,11 @@ fn eso_value_is_less_than_plain_european_with_forfeiture_and_forced_exercise() {
     );
 
     let eso_value = eso.price_binomial(100.0, 0.03, 0.0, 0.30, 900).unwrap();
-    let euro = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.03, 0.30, 3.0);
-
-    assert!(eso_value < euro);
+    // Independently generated with a Python CRR backward recurrence using the
+    // same 900-step exercise dates, vesting date, forced-exercise boundary,
+    // and survival scaling.  A fixed-grid oracle avoids hiding the sizeable
+    // boundary-alignment oscillation behind a comparison range.
+    assert!((eso_value - 18.113_605_235_923_11).abs() <= 2.0e-10);
 }
 
 #[test]

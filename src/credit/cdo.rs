@@ -279,20 +279,44 @@ fn expected_tranche_loss_pool_fraction(
         tranche_loss * normal_pdf(m)
     };
 
-    let expected_loss = gauss_legendre_integrate(integrand, -8.0, 8.0, 96).unwrap_or_else(|_| {
-        // Coarse fallback in the unlikely case quadrature setup fails.
-        let n = 2_000usize;
-        let a = -8.0;
-        let b = 8.0;
-        let h = (b - a) / n as f64;
-        (0..n)
-            .map(|i| {
-                let x = a + (i as f64 + 0.5) * h;
-                integrand(x)
-            })
-            .sum::<f64>()
-            * h
-    });
+    // The tranche payoff has derivative discontinuities where conditional
+    // portfolio loss crosses attachment and detachment. A single fixed-order
+    // rule over [-8, 8] can straddle those kinks and materially misprice thin
+    // tranches. Split at both analytically known factor thresholds so each
+    // Gauss-Legendre interval contains a smooth integrand.
+    let mut split_points = vec![-8.0, 8.0];
+    for boundary in [attachment, detachment] {
+        if boundary > 0.0 && boundary < lgd {
+            let conditional_default = (boundary / lgd).clamp(1.0e-12, 1.0 - 1.0e-12);
+            let x = normal_inv_cdf(conditional_default);
+            let factor_threshold = (k - sqrt_one_minus_rho * x) / sqrt_rho;
+            if (-8.0..8.0).contains(&factor_threshold) {
+                split_points.push(factor_threshold);
+            }
+        }
+    }
+    split_points.sort_by(f64::total_cmp);
+    split_points.dedup_by(|a, b| (*a - *b).abs() <= 1.0e-12);
+
+    let expected_loss = split_points
+        .windows(2)
+        .map(|bounds| gauss_legendre_integrate(integrand, bounds[0], bounds[1], 96))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|pieces| pieces.into_iter().sum::<f64>())
+        .unwrap_or_else(|_| {
+            // Coarse fallback in the unlikely case quadrature setup fails.
+            let n = 2_000usize;
+            let a = -8.0;
+            let b = 8.0;
+            let h = (b - a) / n as f64;
+            (0..n)
+                .map(|i| {
+                    let x = a + (i as f64 + 0.5) * h;
+                    integrand(x)
+                })
+                .sum::<f64>()
+                * h
+        });
 
     expected_loss.clamp(0.0, width)
 }
@@ -351,8 +375,14 @@ mod tests {
             cdo.correlation,
         );
 
-        assert!(lf_equity > lf_mezz);
-        assert!(lf_mezz > lf_senior);
+        // Independent LHP references generated with SciPy 1.17.1:
+        // scipy.integrate.quad over [-12, 12], scipy.stats.norm cdf/pdf/ppf,
+        // epsabs=epsrel=1e-14, explicitly split at the tranche kinks.
+        // The 2e-9 absolute tolerance isolates the known inverse-normal
+        // approximation error (about 1e-9 here), rather than quadrature error.
+        assert_relative_eq!(lf_equity, 0.689_642_513_414_939_8, epsilon = 2.0e-9);
+        assert_relative_eq!(lf_mezz, 0.334_408_869_281_219_43, epsilon = 2.0e-9);
+        assert_relative_eq!(lf_senior, 0.014_954_538_762_052_74, epsilon = 2.0e-9);
 
         let el_equity = cdo.expected_tranche_loss(&equity, t);
         let el_mezz = cdo.expected_tranche_loss(&mezz, t);
@@ -361,28 +391,13 @@ mod tests {
         let spread_equity_bps = cdo.fair_spread(&equity) * 1.0e4;
         let spread_mezz_bps = cdo.fair_spread(&mezz) * 1.0e4;
         let spread_senior_bps = cdo.fair_spread(&senior) * 1.0e4;
-        assert!(spread_equity_bps > spread_mezz_bps);
-        assert!(spread_mezz_bps > spread_senior_bps);
-        // Ranges recentred after fixing hazard_rate() to use the credit
-        // triangle h = s/(1-R). With s=100bp, R=0.4, rho=0.30, r=5%, 5y
-        // quarterly the fair spreads are approximately equity 2490 bps,
-        // mezz 780 bps, senior 29 bps.
-        assert!(
-            (2000.0..=3000.0).contains(&spread_equity_bps),
-            "equity spread: {spread_equity_bps:.2} bps"
-        );
-        assert!(
-            (550.0..=1000.0).contains(&spread_mezz_bps),
-            "mezz spread: {spread_mezz_bps:.2} bps"
-        );
-        assert!(
-            (15.0..=60.0).contains(&spread_senior_bps),
-            "senior spread: {spread_senior_bps:.2} bps"
-        );
+        assert_relative_eq!(spread_equity_bps, 2_492.165_036_328_128, epsilon = 1.0e-4);
+        assert_relative_eq!(spread_mezz_bps, 781.248_788_297_829, epsilon = 1.0e-4);
+        assert_relative_eq!(spread_senior_bps, 29.189_895_017_131_857, epsilon = 1.0e-4);
 
         let tranche_sum = el_equity + el_mezz + el_senior;
         let portfolio_el = cdo.portfolio_expected_loss(t);
-        assert_relative_eq!(tranche_sum, portfolio_el, epsilon = 4.0e-3);
+        assert_relative_eq!(tranche_sum, portfolio_el, epsilon = 2.0e-10);
     }
 
     fn audit_cdo() -> SyntheticCdo {

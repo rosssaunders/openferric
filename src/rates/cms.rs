@@ -252,6 +252,9 @@ pub fn sabr_cms_convexity_adjustment(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+    use statrs::distribution::{ContinuousCDF, Normal};
+
     use super::*;
 
     #[test]
@@ -264,19 +267,12 @@ mod tests {
             vol: 0.20,
         };
         let ca = cms_convexity_adjustment(&params);
-        assert!(ca > 0.0);
-        assert!(ca.is_finite());
-        // Typical CA is a few bps
-        assert!(ca < 0.01);
         // Hand-computed Hull value for S=4%, sigma=20%, T=1y, 10y annual tenor:
         // v = 1.04^-10, v' = -10*1.04^-11, v'' = 110*1.04^-12
         // G'(S)  = S(-S v' - 1 + v)/S^2 + v'  = -8.110896
         // G''(S) = S(-v'' S^2 + 2 v' S + 2(1-v))/S^3 + v'' = 80.754323
         // CA = -0.5 * 0.04^2 * 0.20^2 * 1.0 * G''/G' = 3.186008564594e-4 (~3.2bp)
-        assert!(
-            (ca - 3.186008564594e-4).abs() < 1.0e-12,
-            "CA should match hand-computed Hull value, got {ca}"
-        );
+        assert_relative_eq!(ca, 3.186_008_564_594e-4, epsilon = 1.0e-15);
     }
 
     #[test]
@@ -296,8 +292,65 @@ mod tests {
             10000, 42,
         )
         .unwrap();
-        assert!(result.price > 0.0);
-        assert!(result.price.is_finite());
+        // Reproducibility regression for rand 0.10/StdRng.  Pricing accuracy is
+        // tested independently against Black-76 below.
+        assert_relative_eq!(result.price, 10_185.721_945_175_526, epsilon = 1.0e-9);
+        assert_relative_eq!(result.std_error, 43.290_370_079_303_69, epsilon = 1.0e-10);
+    }
+
+    #[test]
+    fn cms_spread_mc_matches_black76_in_comonotonic_reduction() {
+        let option = CmsSpreadOption {
+            strike: 0.012,
+            option_type: CmsSpreadOptionType::Call,
+            notional: 1_000_000.0,
+            expiry: 2.0,
+        };
+        let cms1_fwd = 0.04;
+        let cms2_fwd = 0.025;
+        let ca1 = 0.001;
+        let ca2 = 0.0005;
+        let vol = 0.20;
+        let discount_rate = 0.03;
+
+        // With rho=1 and equal volatilities, both rates are multiplied by the
+        // same unit-mean lognormal variate.  Their difference is therefore a
+        // single lognormal forward and the spread call reduces exactly to
+        // Black-76.  `statrs` supplies an independent normal CDF.
+        let spread_forward = (cms1_fwd + ca1) - (cms2_fwd + ca2);
+        let sigma_sqrt_t = vol * option.expiry.sqrt();
+        let d1 = ((spread_forward / option.strike).ln() + 0.5 * vol * vol * option.expiry)
+            / sigma_sqrt_t;
+        let d2 = d1 - sigma_sqrt_t;
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let expected = option.notional
+            * (-discount_rate * option.expiry).exp()
+            * (spread_forward * normal.cdf(d1) - option.strike * normal.cdf(d2));
+
+        let result = cms_spread_option_mc(
+            &option,
+            cms1_fwd,
+            cms2_fwd,
+            vol,
+            vol,
+            1.0,
+            ca1,
+            ca2,
+            discount_rate,
+            200_000,
+            7,
+        )
+        .unwrap();
+
+        let error = (result.price - expected).abs();
+        assert!(
+            error <= 4.0 * result.std_error,
+            "MC price {} differs from Black-76 reference {} by {} (> 4 stderr = {})",
+            result.price,
+            expected,
+            error,
+            4.0 * result.std_error
+        );
     }
 
     #[test]
@@ -312,7 +365,10 @@ mod tests {
             &option, 0.04, 0.025, 0.20, 0.25, 0.85, 0.001, 0.0005, 0.03, 10000, 42,
         )
         .unwrap();
-        assert!(result.price > 0.0);
+        // Reproducibility regression only; the independent pricing reduction
+        // is exercised by `cms_spread_mc_matches_black76_in_comonotonic_reduction`.
+        assert_relative_eq!(result.price, 33_490.071_949_875_67, epsilon = 1.0e-9);
+        assert_relative_eq!(result.std_error, 43.443_033_905_648_065, epsilon = 1.0e-10);
     }
 
     #[test]
@@ -331,19 +387,20 @@ mod tests {
             &option, 0.04, 0.025, 0.20, 0.25, 0.3, 0.001, 0.0005, 0.03, 10000, 42,
         )
         .unwrap();
-        // Lower correlation → higher spread vol → higher option value
-        assert!(low_rho.price > high_rho.price);
+        // Seeded implementation regressions, supplemented by the analytic
+        // Black-76 reduction and lognormal-martingale checks in this module.
+        assert_relative_eq!(low_rho.price, 6_671.306_015_827_68, epsilon = 1.0e-9);
+        assert_relative_eq!(high_rho.price, 5_342.627_391_370_247, epsilon = 1.0e-9);
     }
 
     #[test]
     fn sabr_convexity_adjustment_is_positive() {
         let ca = sabr_cms_convexity_adjustment(0.04, 8.5, 10.0, 1.0, 0.03, 0.5, -0.3, 0.4);
-        assert!(ca > 0.0);
-        assert!(ca.is_finite());
+        assert_relative_eq!(ca, 0.000_182_640_609_863_79, epsilon = 1.0e-15);
     }
 
     #[test]
-    fn expected_cms_rates_near_forward() {
+    fn simulated_cms_means_match_lognormal_martingales() {
         let option = CmsSpreadOption {
             strike: 0.01,
             option_type: CmsSpreadOptionType::Call,
@@ -354,8 +411,13 @@ mod tests {
             &option, 0.04, 0.025, 0.20, 0.25, 0.85, 0.001, 0.0005, 0.03, 50000, 42,
         )
         .unwrap();
-        // Expected rates should be near the adjusted forwards
-        assert!((result.expected_cms1 - 0.041).abs() < 0.005);
-        assert!((result.expected_cms2 - 0.0255).abs() < 0.005);
+        let n = 50_000.0_f64;
+        let expected_cms1 = 0.041;
+        let expected_cms2 = 0.0255;
+        let cms1_std_error = expected_cms1 * ((0.20_f64.powi(2)).exp() - 1.0).sqrt() / n.sqrt();
+        let cms2_std_error = expected_cms2 * ((0.25_f64.powi(2)).exp() - 1.0).sqrt() / n.sqrt();
+
+        assert!((result.expected_cms1 - expected_cms1).abs() <= 4.0 * cms1_std_error);
+        assert!((result.expected_cms2 - expected_cms2).abs() <= 4.0 * cms2_std_error);
     }
 }

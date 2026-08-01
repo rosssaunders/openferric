@@ -184,6 +184,8 @@ pub fn price_irs_multi_curve(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
 
     fn make_flat_curve(rate: f64) -> YieldCurve {
@@ -201,7 +203,7 @@ mod tests {
         let ois = make_flat_curve(0.03);
         let env = MultiCurveEnvironment::new(ois);
         let df = env.discount_factor(1.0);
-        assert!((df - (-0.03_f64).exp()).abs() < 0.001);
+        assert_relative_eq!(df, (-0.03_f64).exp(), epsilon = 1.0e-12);
     }
 
     #[test]
@@ -212,8 +214,8 @@ mod tests {
         env.add_forward_curve("3M", fwd_3m);
 
         let fwd = env.forward_rate("3M", 1.0, 1.25).unwrap();
-        // For flat curve at 3.5%, forward ≈ 3.5%
-        assert!((fwd - 0.035).abs() < 0.005);
+        let expected = (0.035_f64 * 0.25).exp_m1() / 0.25;
+        assert_relative_eq!(fwd, expected, epsilon = 1.0e-12);
     }
 
     #[test]
@@ -226,7 +228,8 @@ mod tests {
         env.add_forward_curve("6M", fwd_6m);
 
         let basis = env.tenor_basis("6M", "3M", 1.0, 1.5).unwrap();
-        assert!(basis > 0.0); // 6M > 3M
+        let expected = (0.037_f64 * 0.5).exp_m1() / 0.5 - (0.035_f64 * 0.5).exp_m1() / 0.5;
+        assert_relative_eq!(basis, expected, epsilon = 1.0e-12);
     }
 
     #[test]
@@ -270,10 +273,11 @@ mod tests {
         let mut env = MultiCurveEnvironment::new(ois);
         env.add_forward_curve("3M", fwd_3m.clone());
 
-        // If we set fixed rate = forward rate, PV should be near zero
-        let pv = price_irs_multi_curve(&env, "3M", 1_000_000.0, 0.035, 5.0, 4).unwrap();
-        // Won't be exactly zero due to interpolation, but should be small relative to notional
-        assert!(pv.abs() < 5000.0); // < 0.5% of notional
+        // On a flat continuous 3.5% projection curve, each quarterly simple
+        // forward is exactly exp(0.035/4)-1 over a quarter.
+        let par = (0.035_f64 * 0.25).exp_m1() / 0.25;
+        let pv = price_irs_multi_curve(&env, "3M", 1_000_000.0, par, 5.0, 4).unwrap();
+        assert_relative_eq!(pv, 0.0, epsilon = 1.0e-9);
     }
 
     #[test]

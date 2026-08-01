@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn nig_fft_prices_are_positive_and_bounded() {
+    fn nig_fft_prices_match_independent_scipy_quadrature() {
         let nig = Nig {
             alpha: 15.0,
             beta: -5.0,
@@ -194,27 +194,42 @@ mod tests {
         let prices = nig
             .european_calls_fft(100.0, &strikes, 0.03, 0.0, 0.5, CarrMadanParams::default())
             .unwrap();
-        for (k, p) in &prices {
-            assert!(*p > 0.0, "price at strike {k} should be > 0, got {p}");
-            assert!(*p < 100.0, "price at strike {k} should be < spot, got {p}");
+
+        // Independently evaluated with SciPy 1.17.1 integrate.quad on the
+        // continuous Carr-Madan integral (epsabs=epsrel=2e-12, upper tail
+        // extended to 1000), rather than another FFT grid.
+        let references = [
+            12.894_367_932_776_754,
+            9.188_650_543_941_383,
+            6.124_743_548_019_659,
+            3.800_296_619_395_705_7,
+            2.200_950_921_022_865,
+        ];
+        for ((k, price), reference) in prices.iter().zip(references) {
+            assert!(
+                (price - reference).abs() <= 2.0e-10,
+                "K={k}: fft={price}, scipy_quad={reference}"
+            );
         }
     }
 
     #[test]
-    fn nig_symmetric_beta_zero_gives_symmetric_smile() {
+    fn nig_characteristic_function_satisfies_martingale_moment() {
         let nig = Nig {
             alpha: 15.0,
             beta: 0.0,
             delta: 0.5,
         };
-        let strikes = vec![90.0, 110.0];
-        let prices = nig
-            .european_calls_fft(100.0, &strikes, 0.0, 0.0, 1.0, CarrMadanParams::default())
+        let spot: f64 = 100.0;
+        let rate: f64 = 0.03;
+        let dividend: f64 = 0.01;
+        let maturity: f64 = 1.25;
+        let moment = nig
+            .characteristic_fn(Complex::new(0.0, -1.0), spot, rate, dividend, maturity)
             .unwrap();
-        // With beta=0 and r=0, the model is symmetric around the forward
-        // Both OTM options should have similar prices (not exact due to call vs put)
-        assert!(prices[0].1 > 0.0);
-        assert!(prices[1].1 > 0.0);
+        let forward_moment = spot * ((rate - dividend) * maturity).exp();
+        assert!((moment.re - forward_moment).abs() <= 2.0e-12 * forward_moment);
+        assert!(moment.im.abs() <= 2.0e-12 * forward_moment);
     }
 
     #[test]
@@ -254,10 +269,25 @@ mod tests {
         let var_mc =
             logs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (logs.len() - 1) as f64;
 
-        let rel_err = (var_mc - var_analytic).abs() / var_analytic;
+        let fourth_central =
+            logs.iter().map(|x| (x - mean).powi(4)).sum::<f64>() / logs.len() as f64;
+        // Asymptotic standard error of the unbiased sample variance, with the
+        // fourth central moment estimated from the same exact-terminal draws.
+        let n = logs.len() as f64;
+        let variance_stderr = ((fourth_central - ((n - 3.0) / (n - 1.0)) * var_mc * var_mc) / n)
+            .max(0.0)
+            .sqrt();
         assert!(
-            rel_err < 0.06,
-            "MC variance {var_mc} vs analytic {var_analytic} (rel err {rel_err})"
+            (var_mc - var_analytic).abs() <= 4.0 * variance_stderr,
+            "MC variance {var_mc} vs analytic {var_analytic}, variance_stderr={variance_stderr}"
+        );
+
+        let mean_analytic =
+            nig.martingale_correction().unwrap() * horizon + beta * delta * horizon / gamma;
+        let mean_stderr = (var_analytic / n).sqrt();
+        assert!(
+            (mean - mean_analytic).abs() <= 4.0 * mean_stderr,
+            "MC mean {mean} vs analytic {mean_analytic}, mean_stderr={mean_stderr}"
         );
     }
 
@@ -272,13 +302,13 @@ mod tests {
     }
 
     #[test]
-    fn nig_martingale_correction_is_finite() {
+    fn nig_martingale_correction_matches_closed_form_value() {
         let nig = Nig {
             alpha: 15.0,
             beta: -5.0,
             delta: 0.5,
         };
         let omega = nig.martingale_correction().unwrap();
-        assert!(omega.is_finite());
+        assert!((omega - 0.157_348_335_535_004_94).abs() <= 2.0e-15);
     }
 }

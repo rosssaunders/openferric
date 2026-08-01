@@ -125,10 +125,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sa_ccr_ead_is_positive() {
+    fn sa_ccr_ead_matches_stated_basel_reduction() {
         let ead = sa_ccr_ead(50_000.0, 10_000_000.0, 5.0, SaCcrAssetClass::InterestRate);
-        assert!(ead > 0.0);
-        assert!(ead.is_finite());
+        // MF=1 and PFE=0.5%*10m=50k, hence 1.4*(RC+PFE)=140k.
+        assert!((ead - 140_000.0).abs() <= 4.0 * f64::EPSILON * 140_000.0);
     }
 
     #[test]
@@ -137,18 +137,21 @@ mod tests {
         let k_low = regulatory_capital(ead, 0.20);
         let k_high = regulatory_capital(ead, 1.0);
         assert!(k_high > k_low);
-        assert!((k_low - 16_000.0).abs() < 0.01); // 0.20 * 1M * 0.08
+        assert!((k_low - 16_000.0).abs() <= 4.0 * f64::EPSILON * 16_000.0);
+        assert!((k_high - 80_000.0).abs() <= 4.0 * f64::EPSILON * 80_000.0);
     }
 
     #[test]
-    fn kva_is_negative_for_positive_capital() {
+    fn kva_matches_exact_discrete_discounted_capital_sum() {
         let times = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let expected_capital = vec![100_000.0; 5];
         let discount_curve =
             YieldCurve::new(times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect());
         let kva = kva_from_profile(&times, &expected_capital, 0.10, &discount_curve);
-        assert!(kva < 0.0);
-        assert!(kva.is_finite());
+        let discount_sum =
+            (-0.03_f64).exp() * (1.0 - (-0.15_f64).exp()) / (1.0 - (-0.03_f64).exp());
+        let expected = -0.10 * 100_000.0 * discount_sum;
+        assert!((kva - expected).abs() <= 8.0 * f64::EPSILON * expected.abs());
     }
 
     #[test]

@@ -110,7 +110,7 @@ impl AndreasenHugeInterpolation {
             let mut sigma_loc: Vec<f64> = vec![avg_iv; n_grid];
 
             // Levenberg-Marquardt-style calibration loop.
-            for _iter in 0..50 {
+            for _iter in 0..200 {
                 let new_calls =
                     step_implicit(&prev_calls, &grid, &sigma_loc, dt, rate, dividend, spot, t);
 
@@ -412,19 +412,48 @@ fn lower_idx(grid: &[f64], val: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::normal_pdf;
 
-    fn synthetic_quotes(spot: f64, vol: f64, rate: f64, div: f64) -> Vec<(f64, f64, f64)> {
+    fn synthetic_quotes(_spot: f64, vol: f64, _rate: f64, _div: f64) -> Vec<(f64, f64, f64)> {
         let expiries = [0.25, 0.5, 1.0];
-        let strike_offsets = [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15];
+        // With K_min=75 and K_max=125 the production grid is [50, 150] in
+        // 0.5 increments, so every quote below is an exact grid node.  This
+        // isolates calibration repricing error from the separately documented
+        // off-grid strike interpolation error.
+        let strikes = [75.0, 85.0, 95.0, 100.0, 105.0, 115.0, 125.0];
         let mut quotes = Vec::new();
         for &t in &expiries {
-            let fwd = spot * ((rate - div) * t).exp();
-            for &dk in &strike_offsets {
-                let k = fwd * (1.0 + dk);
+            for &k in &strikes {
                 quotes.push((k, t, vol));
             }
         }
         quotes
+    }
+
+    fn assert_reprices_quote_nodes(
+        ah: &AndreasenHugeInterpolation,
+        quotes: &[(f64, f64, f64)],
+        spot: f64,
+        rate: f64,
+        div: f64,
+    ) {
+        for &(strike, expiry, vol) in quotes {
+            let expiry_idx = ah
+                .expiries
+                .iter()
+                .position(|t| (*t - expiry).abs() <= 1.0e-14)
+                .unwrap();
+            let strike_idx = nearest_idx(&ah.grid, strike);
+            assert!((ah.grid[strike_idx] - strike).abs() <= 1.0e-14);
+
+            let model = ah.call_prices[expiry_idx][strike_idx];
+            let target = bs_price(OptionType::Call, spot, strike, rate, div, vol, expiry);
+            assert!(
+                (model - target).abs() <= 5.0e-8,
+                "K={strike} T={expiry}: model={model} target={target} residual={}",
+                model - target
+            );
+        }
     }
 
     #[test]
@@ -437,27 +466,14 @@ mod tests {
         let quotes = synthetic_quotes(spot, vol, rate, div);
         let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
 
-        let mut max_err = 0.0_f64;
-        for &(k, t, _) in &quotes {
-            let iv = ah.implied_vol(k, t);
-            let err = (iv - vol).abs();
-            if err > max_err {
-                max_err = err;
-            }
-        }
-
-        assert!(
-            max_err < 0.02,
-            "max implied vol error {max_err:.6} exceeds tolerance"
-        );
+        assert_reprices_quote_nodes(&ah, &quotes, spot, rate, div);
     }
 
     #[test]
     fn andreasen_huge_flat_vol_roundtrip_with_unequal_rate_and_dividend() {
-        // With r != q the three conventions (target prices, PDE evolution, and
-        // Jaeckel inversion) must agree; the old code carried a net e^{(q-r)t}
-        // bias. A flat 20% smile must be recovered to within the scheme's
-        // discretization error at every quote.
+        // With r != q the target prices and PDE evolution must agree; the old
+        // code carried a net e^{(q-r)t} bias.  Exact quote-grid nodes isolate
+        // that convention check from strike interpolation.
         let spot = 100.0;
         let vol = 0.20;
         let rate = 0.05;
@@ -466,19 +482,7 @@ mod tests {
         let quotes = synthetic_quotes(spot, vol, rate, div);
         let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
 
-        let mut max_err = 0.0_f64;
-        for &(k, t, _) in &quotes {
-            let iv = ah.implied_vol(k, t);
-            let err = (iv - vol).abs();
-            if err > max_err {
-                max_err = err;
-            }
-        }
-
-        assert!(
-            max_err < 1.5e-3,
-            "max implied vol error {max_err:.6} exceeds tolerance"
-        );
+        assert_reprices_quote_nodes(&ah, &quotes, spot, rate, div);
     }
 
     #[test]
@@ -501,6 +505,65 @@ mod tests {
     }
 
     #[test]
+    fn andreasen_huge_off_grid_price_has_analytic_interpolation_error_bound() {
+        let spot: f64 = 100.0;
+        let vol: f64 = 0.20;
+        let rate: f64 = 0.02;
+        let div: f64 = 0.01;
+        let expiry: f64 = 0.5;
+        let quotes: Vec<(f64, f64, f64)> = [75.0, 99.5, 100.0, 125.0]
+            .into_iter()
+            .map(|strike| (strike, expiry, vol))
+            .collect();
+        let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
+
+        // 99.5 and 100.0 are adjacent calibrated nodes on the 0.5 grid.  At
+        // their midpoint, the implementation must reproduce linear price
+        // interpolation; the remaining error to Black-Scholes is bounded by
+        // max_K C_KK * h^2/8.
+        let left: f64 = 99.5;
+        let right: f64 = 100.0;
+        let strike: f64 = 0.5 * (left + right);
+        let model = ah.interpolate_call(strike, expiry);
+        let left_exact = bs_price(OptionType::Call, spot, left, rate, div, vol, expiry);
+        let right_exact = bs_price(OptionType::Call, spot, right, rate, div, vol, expiry);
+        let linear_reference = 0.5 * (left_exact + right_exact);
+        let expiry_idx = ah
+            .expiries
+            .iter()
+            .position(|t| (*t - expiry).abs() <= 1.0e-14)
+            .unwrap();
+        let left_model = ah.call_prices[expiry_idx][nearest_idx(&ah.grid, left)];
+        let right_model = ah.call_prices[expiry_idx][nearest_idx(&ah.grid, right)];
+        let model_linear_reference = 0.5 * (left_model + right_model);
+        let roundoff = 16.0 * f64::EPSILON * model.abs().max(1.0);
+        assert!(
+            (model - model_linear_reference).abs() <= roundoff,
+            "model={model} exact node interpolation={model_linear_reference}"
+        );
+        let node_calibration_error = (left_model - left_exact)
+            .abs()
+            .max((right_model - right_exact).abs());
+
+        let exact = bs_price(OptionType::Call, spot, strike, rate, div, vol, expiry);
+        let mut max_second_derivative = 0.0_f64;
+        for i in 0..=100 {
+            let k = left + (right - left) * i as f64 / 100.0;
+            let d2 =
+                ((spot / k).ln() + (rate - div - 0.5 * vol * vol) * expiry) / (vol * expiry.sqrt());
+            let second = (-rate * expiry).exp() * normal_pdf(d2) / (k * vol * expiry.sqrt());
+            max_second_derivative = max_second_derivative.max(second);
+        }
+        let interpolation_bound = max_second_derivative * (right - left).powi(2) / 8.0
+            + node_calibration_error
+            + roundoff;
+        assert!(
+            (model - exact).abs() <= interpolation_bound,
+            "model={model} exact={exact} interpolation_bound={interpolation_bound} node_calibration_error={node_calibration_error} linear_reference={linear_reference}"
+        );
+    }
+
+    #[test]
     fn andreasen_huge_no_calendar_arbitrage() {
         let spot = 100.0;
         let vol = 0.20;
@@ -510,17 +573,16 @@ mod tests {
         let quotes = synthetic_quotes(spot, vol, rate, div);
         let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
 
-        // Total variance should be non-decreasing in T at ATM.
+        // A flat input surface has the exact total variance w(T)=sigma^2 T.
         for k in [95.0, 100.0, 105.0] {
-            let mut prev_w = 0.0;
             for &t in &[0.25, 0.5, 1.0] {
                 let iv = ah.implied_vol(k, t);
                 let w = iv * iv * t;
+                let expected = vol * vol * t;
                 assert!(
-                    w >= prev_w - 1e-4,
-                    "calendar arbitrage at K={k}, T={t}: w={w:.6} < prev={prev_w:.6}"
+                    (w - expected).abs() <= 5.0e-8,
+                    "K={k}, T={t}: total_variance={w} exact={expected}, iv={iv}"
                 );
-                prev_w = w;
             }
         }
     }

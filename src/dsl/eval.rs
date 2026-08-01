@@ -2449,7 +2449,11 @@ mod tests {
         // At t=0.25: pays coupon = 1M * 0.08 * 0.25 = 20000, redeems 1M
         // PV = (20000 + 1000000) * exp(-0.05 * 0.25)
         let expected = (20_000.0 + 1_000_000.0) * (-0.05 * 0.25f64).exp();
-        assert!((pv - expected).abs() < 1.0, "expected {expected}, got {pv}");
+        let tolerance = 8.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (pv - expected).abs() <= tolerance,
+            "expected {expected}, got {pv}, tolerance {tolerance}"
+        );
     }
 
     #[test]
@@ -2480,7 +2484,11 @@ mod tests {
         let redeem_pv = 800_000.0 * (-0.05 * 1.5f64).exp();
         let expected = coupon_pv + redeem_pv;
 
-        assert!((pv - expected).abs() < 1.0, "expected {expected}, got {pv}");
+        let tolerance = 8.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (pv - expected).abs() <= tolerance,
+            "expected {expected}, got {pv}, tolerance {tolerance}"
+        );
     }
 
     #[test]
@@ -2505,7 +2513,11 @@ mod tests {
         let redeem_pv = 1_000_000.0 * (-0.05 * 1.0f64).exp();
         let expected = coupon_pv + redeem_pv;
 
-        assert!((pv - expected).abs() < 1.0, "expected {expected}, got {pv}");
+        let tolerance = 8.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (pv - expected).abs() <= tolerance,
+            "expected {expected}, got {pv}, tolerance {tolerance}"
+        );
     }
 
     #[test]
@@ -2571,7 +2583,12 @@ mod tests {
 
         let pv = evaluate_product(&product, &path_spots, &initial_spots, num_steps, 0.0).unwrap();
         // redeem 100 * 0.90 = 90, rate=0 so no discounting
-        assert!((pv - 90.0).abs() < 0.01, "expected 90.0, got {pv}");
+        let expected = 90.0_f64;
+        let tolerance = 8.0 * f64::EPSILON * expected;
+        assert!(
+            (pv - expected).abs() <= tolerance,
+            "expected {expected}, got {pv}, tolerance {tolerance}"
+        );
     }
 
     /// Product that redeems `func(1.0/0.0, 5.0)` at t=1.0; the first argument

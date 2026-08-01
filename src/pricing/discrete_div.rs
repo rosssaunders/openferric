@@ -131,8 +131,16 @@ mod tests {
         let adjusted_spot = escrowed_dividend_adjusted_spot(spot, rate, expiry, &dividends);
         let call = european_price_discrete_div(spot, strike, rate, vol, expiry, &dividends);
 
-        assert_relative_eq!(adjusted_spot, 98.0494, epsilon = 2e-4);
-        assert_relative_eq!(call, 9.2447, epsilon = 2e-4);
+        let expected_adjusted_spot = spot - 2.0 * (-rate * 0.5_f64).exp();
+        // Independently evaluated with SciPy 1.17.1's normal CDF for the
+        // escrowed spot above; this replaces the old four-decimal fixture.
+        let scipy_call = 9.244_683_623_230_578;
+        assert_relative_eq!(
+            adjusted_spot,
+            expected_adjusted_spot,
+            epsilon = 4.0 * f64::EPSILON * expected_adjusted_spot
+        );
+        assert_relative_eq!(call, scipy_call, epsilon = 2.0e-12);
     }
 
     #[test]
@@ -155,6 +163,14 @@ mod tests {
 
         let fwd = forward_price_discrete_div(100.0, 0.03, 0.0, 1.0, &schedule);
         let prepaid = schedule.prepaid_forward_spot(100.0, 0.03, 0.0, 1.0);
-        assert_relative_eq!(prepaid * (0.03_f64).exp(), fwd, epsilon = 1e-12);
+        let effective = effective_dividend_yield_discrete(100.0, 0.03, 0.0, 1.0, &schedule);
+
+        // Independently evaluated event-by-event from the documented jump
+        // equations; these lock the mixed cash/proportional ordering as well
+        // as the algebraic prepaid/forward identity.
+        assert_relative_eq!(fwd, 100.498_707_279_853_11, epsilon = 2.0e-12);
+        assert_relative_eq!(prepaid, 97.528_521_607_132_39, epsilon = 2.0e-12);
+        assert_relative_eq!(effective, 0.025_025_321_458_722_34, epsilon = 2.0e-15);
+        assert_relative_eq!(prepaid * (0.03_f64).exp(), fwd, epsilon = 2.0e-14);
     }
 }

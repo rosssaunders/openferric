@@ -195,9 +195,16 @@ mod tests {
         };
 
         let fair = cds.fair_spread(&discount_curve, &survival_curve);
-        let expected = (1.0 - cds.recovery_rate) * hazard;
+        // Closed form for equal quarterly periods under flat continuous r/h,
+        // including midpoint accrual-on-default in the premium annuity.
+        let dt = 0.25;
+        let survival_step = (-hazard * dt).exp();
+        let expected = (1.0 - cds.recovery_rate) * (1.0 - survival_step) * (-r * dt / 2.0).exp()
+            / (dt * (-(r + hazard) * dt).exp()
+                + 0.5 * dt * (1.0 - survival_step) * (-r * dt / 2.0).exp());
 
-        assert_relative_eq!(fair, expected, epsilon = 9e-4);
+        assert_relative_eq!(fair, expected, epsilon = 1.0e-14);
+        assert_relative_eq!(fair, 0.012_044_946_253_576_508, epsilon = 1.0e-14);
 
         let at_fair = Cds {
             spread: fair,

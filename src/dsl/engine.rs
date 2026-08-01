@@ -1723,10 +1723,10 @@ mod tests {
         // Forward price = S(0) * exp((r-q)*T) = 100 * exp(0.03) ≈ 103.045
         // Discounted = 100 * exp((r-q)*T) * exp(-r*T) = 100 * exp(-q*T) ≈ 98.02
         let expected = 100.0 * (-0.02f64).exp();
-        let rel_err = ((result.price - expected) / expected).abs();
+        let stderr = result.stderr.unwrap();
         assert!(
-            rel_err < 0.02,
-            "forward price error: got {}, expected {expected}, rel_err {rel_err}",
+            (result.price - expected).abs() <= 4.0 * stderr + 1.0e-12,
+            "forward price error: got {}, expected {expected}, stderr {stderr}",
             result.price
         );
     }
@@ -1791,13 +1791,15 @@ mod tests {
         let engine = DslMonteCarloEngine::new(50_000, 252, 42);
         let result = engine.price_multi_asset(&product, &market).unwrap();
 
-        // Best-of should be > 100 (it's a convex payoff on performance)
+        // Exact Margrabe value for two equal, non-dividend-paying assets:
+        // 100 + 100 * (2*N(0.1)-1), independently evaluated with SciPy 1.17.1.
+        let expected = 107.965_567_455_405_8;
+        let stderr = result.stderr.unwrap();
         assert!(
-            result.price > 90.0,
-            "best-of price {} should be > 90",
+            (result.price - expected).abs() <= 4.0 * stderr,
+            "best-of expected {expected}, got {}, stderr {stderr}",
             result.price
         );
-        assert!(result.stderr.unwrap() < 2.0, "stderr should be reasonable");
     }
 
     #[test]
@@ -1816,10 +1818,10 @@ mod tests {
         let result = engine.price(&dsl_product, &market).unwrap();
 
         let expected = 100.0 * (-0.02f64).exp();
-        let rel_err = ((result.price - expected) / expected).abs();
+        let stderr = result.stderr.unwrap();
         assert!(
-            rel_err < 0.02,
-            "single-asset forward price error: got {}, expected {expected}",
+            (result.price - expected).abs() <= 4.0 * stderr + 1.0e-12,
+            "single-asset forward price error: got {}, expected {expected}, stderr {stderr}",
             result.price
         );
     }
@@ -1827,18 +1829,15 @@ mod tests {
     #[test]
     fn greeks_produce_sensible_delta() {
         let product = make_forward_product();
-        let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.0);
-        let engine = DslMonteCarloEngine::new(50_000, 252, 42);
+        // Numerically negligible positive volatility satisfies market-domain
+        // validation while making every bumped valuation deterministic. The
+        // PV of S(T) is S(0) when q=0, so prepaid-forward delta is exactly 1.
+        let market = MultiAssetMarket::single(100.0, 1.0e-16, 0.05, 0.0);
+        let engine = DslMonteCarloEngine::new(1, 252, 42);
 
         let greeks = engine.greeks_multi_asset(&product, &market, 0).unwrap();
 
-        // Forward delta ≈ exp(-r*T) ≈ 0.951
-        let expected_delta = (-0.05f64).exp();
-        assert!(
-            (greeks.delta - expected_delta).abs() < 0.05,
-            "delta {} should be near {expected_delta}",
-            greeks.delta
-        );
+        assert!((greeks.delta - 1.0).abs() < 2.0e-12);
     }
 
     #[test]
@@ -1851,16 +1850,16 @@ mod tests {
         };
         // Starting far below mean: 50. With z=0 the step should pull toward 100.
         let next = stepper.step(50.0, 0.0);
-        assert!(
-            next > 50.0 && next < 100.0,
-            "Schwartz step from 50 with z=0 should move toward 100, got {next}"
-        );
+        let expected = ((100.0_f64).ln()
+            + (-2.0 * 0.01_f64).exp() * ((50.0_f64).ln() - (100.0_f64).ln()))
+        .exp();
+        assert!((next - expected).abs() < 2.0e-13);
         // Starting far above mean: 200. Should pull down.
         let next_high = stepper.step(200.0, 0.0);
-        assert!(
-            next_high < 200.0 && next_high > 100.0,
-            "Schwartz step from 200 with z=0 should move toward 100, got {next_high}"
-        );
+        let expected_high = ((100.0_f64).ln()
+            + (-2.0 * 0.01_f64).exp() * ((200.0_f64).ln() - (100.0_f64).ln()))
+        .exp();
+        assert!((next_high - expected_high).abs() < 2.0e-13);
     }
 
     #[test]
@@ -1873,16 +1872,12 @@ mod tests {
         };
         // Starting above mean: r=0.10. With z=0 should pull down.
         let next = stepper.step(0.10, 0.0);
-        assert!(
-            next < 0.10 && next > 0.05,
-            "Vasicek step from 0.10 with z=0 should move toward 0.05, got {next}"
-        );
+        let expected = 0.05 + (-0.01_f64).exp() * (0.10 - 0.05);
+        assert!((next - expected).abs() < 2.0e-16);
         // Starting below mean: r=0.01.
         let next_low = stepper.step(0.01, 0.0);
-        assert!(
-            next_low > 0.01 && next_low < 0.05,
-            "Vasicek step from 0.01 with z=0 should move toward 0.05, got {next_low}"
-        );
+        let expected_low = 0.05 + (-0.01_f64).exp() * (0.01 - 0.05);
+        assert!((next_low - expected_low).abs() < 2.0e-16);
     }
 
     #[test]
@@ -1951,13 +1946,14 @@ mod tests {
         let engine = DslMonteCarloEngine::new(100_000, 252, 42);
         let result = engine.price_multi_asset(&product, &market).unwrap();
 
-        // Starting at 80, mean-reverting toward 100 over 1 year with kappa=1.
-        // Expected E[S(T)] ≈ exp(mu + (ln(S0) - mu)*exp(-kappa*T))
-        // = exp(ln(100) + (ln(80) - ln(100))*exp(-1)) ≈ exp(4.605 - 0.223*0.368) ≈ 92.1
-        // Discounted by exp(-r*T) ≈ 0.951
+        // Exact expectation of the implemented 252-step Gaussian log-OU
+        // recursion, independently evaluated with SciPy/NumPy. This includes
+        // its lognormal variance correction and maturity discounting.
+        let expected = 89.354_581_974_527_62;
+        let stderr = result.stderr.unwrap();
         assert!(
-            result.price > 70.0 && result.price < 110.0,
-            "commodity forward price {} should be between 70 and 110",
+            (result.price - expected).abs() <= 4.0 * stderr,
+            "commodity forward expected {expected}, got {}, stderr {stderr}",
             result.price
         );
     }
@@ -1972,7 +1968,7 @@ mod tests {
             .price_multi_asset_with_policy(&product, &market, ExecutionPolicy::Scalar)
             .unwrap();
 
-        assert!(result.price.is_finite());
+        assert_eq!(result.price, 3.162_277_660_168_379_6e-25);
         assert_eq!(result.stderr, Some(0.0));
     }
 

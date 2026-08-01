@@ -5,10 +5,10 @@ use openferric::engines::fft::{
 };
 use openferric::models::VarianceGamma;
 use openferric::pricing::OptionType;
-use openferric::pricing::european::black_scholes_price;
+use openferric::pricing::european::{black_scholes_greeks, black_scholes_price};
 
 #[test]
-fn carr_madan_bs_matches_analytic_within_1e4_for_ten_strikes() {
+fn carr_madan_bs_matches_analytic_at_floating_point_precision() {
     let spot = 100.0;
     let rate = 0.03;
     let maturity = 0.25;
@@ -19,19 +19,18 @@ fn carr_madan_bs_matches_analytic_within_1e4_for_ten_strikes() {
     let slice = carr_madan_fft(&cf, rate, maturity, spot, params).expect("fft slice");
 
     let center = params.n / 2;
+    let mut max_err = 0.0_f64;
     for i in 0..10 {
         let idx = center + i * 8;
         let (k, fft_call) = slice[idx];
         let bs = black_scholes_price(OptionType::Call, spot, k, rate, vol, maturity);
-        assert!(
-            (fft_call - bs).abs() < 1e-4,
-            "BS mismatch K={k} fft={fft_call} bs={bs}"
-        );
+        max_err = max_err.max((fft_call - bs).abs());
     }
+    assert!(max_err < 3.0e-13, "maximum BS error={max_err}");
 }
 
 #[test]
-fn carr_madan_heston_exact_matches_grid_interpolation_within_1e2() {
+fn carr_madan_heston_exact_matches_its_fft_grid_at_floating_point_precision() {
     let spot = 100.0;
     let rate = 0.02;
     let q = 0.0;
@@ -54,13 +53,12 @@ fn carr_madan_heston_exact_matches_grid_interpolation_within_1e2() {
     );
     let interp = interpolate_strike_prices(&fft_prices, &strikes);
 
+    let mut max_err = 0.0_f64;
     for ((k_exact, exact_call), (k_interp, interp_call)) in exact.iter().zip(interp.iter()) {
         assert!((k_exact - k_interp).abs() < 1e-12);
-        assert!(
-            (exact_call - interp_call).abs() < 0.01,
-            "Heston mismatch K={k_exact} exact={exact_call} interp={interp_call}"
-        );
+        max_err = max_err.max((exact_call - interp_call).abs());
     }
+    assert!(max_err < 2.0e-13, "maximum Heston grid error={max_err}");
 }
 
 #[test]
@@ -100,7 +98,7 @@ fn variance_gamma_prices_positive_and_show_heavier_tails_than_bs() {
 }
 
 #[test]
-fn fft_delta_matches_finite_difference_within_1e3() {
+fn fft_delta_matches_closed_form_black_scholes() {
     let spot = 100.0;
     let rate = 0.03;
     let maturity = 1.0;
@@ -114,19 +112,17 @@ fn fft_delta_matches_finite_difference_within_1e3() {
     let greeks_pairs: Vec<(f64, f64)> = greeks.iter().map(|g| (g.strike, g.delta)).collect();
     let delta_fft = interpolate_strike_prices(&greeks_pairs, &[strike])[0].1;
 
-    let ds = 1e-3 * spot;
-    let p_up = black_scholes_price(OptionType::Call, spot + ds, strike, rate, vol, maturity);
-    let p_dn = black_scholes_price(OptionType::Call, spot - ds, strike, rate, vol, maturity);
-    let delta_fd = (p_up - p_dn) / (2.0 * ds);
+    let analytic_delta =
+        black_scholes_greeks(OptionType::Call, spot, strike, rate, vol, maturity).delta;
 
     assert!(
-        (delta_fft - delta_fd).abs() < 1e-3,
-        "delta mismatch fft={delta_fft} fd={delta_fd}"
+        (delta_fft - analytic_delta).abs() < 2.0e-12,
+        "delta mismatch fft={delta_fft} analytic={analytic_delta}"
     );
 }
 
 #[test]
-fn fractional_fft_exact_strikes_match_standard_fft_interpolation_within_1e4() {
+fn fractional_fft_exact_strikes_match_standard_fft_grid_at_roundoff() {
     let spot = 100.0;
     let rate = 0.02;
     let maturity = 1.0;
@@ -147,16 +143,15 @@ fn fractional_fft_exact_strikes_match_standard_fft_interpolation_within_1e4() {
         .expect("frft exact strikes");
     let fft_interp = interpolate_strike_prices(&fft_slice, &exact_strikes);
 
-    for ((k_frft, p_frft), (_, p_fft)) in frft_exact.iter().zip(fft_interp.iter()) {
-        assert!(
-            (p_frft - p_fft).abs() < 1e-4,
-            "FRFT/FFT mismatch K={k_frft} frft={p_frft} fft_interp={p_fft}"
-        );
+    let mut max_err = 0.0_f64;
+    for ((_, p_frft), (_, p_fft)) in frft_exact.iter().zip(fft_interp.iter()) {
+        max_err = max_err.max((p_frft - p_fft).abs());
     }
+    assert!(max_err < 5.0e-12, "maximum FRFT/FFT error={max_err}");
 }
 
 #[test]
-fn fft_strike_helper_matches_exact_strike_api_for_bs() {
+fn fft_strike_helper_matches_bs_with_measured_default_grid_interpolation_error() {
     let spot = 100.0;
     let rate = 0.02;
     let maturity = 1.0;
@@ -184,13 +179,24 @@ fn fft_strike_helper_matches_exact_strike_api_for_bs() {
     )
     .expect("exact strikes");
 
-    for ((_, p1), (_, p2)) in via_interp.iter().zip(via_exact.iter()) {
-        assert!((p1 - p2).abs() < 1e-2);
+    let mut max_interp_error = 0.0_f64;
+    for (((_, interpolated), (_, exact)), strike) in
+        via_interp.iter().zip(via_exact.iter()).zip(strikes)
+    {
+        let analytic = black_scholes_price(OptionType::Call, spot, strike, rate, vol, maturity);
+        assert!((exact - analytic).abs() < 3.0e-12);
+        max_interp_error = max_interp_error.max((interpolated - analytic).abs());
     }
+    // This is the measured linear-in-log-strike interpolation error for the
+    // stated default 4096-point grid, not an acceptable price range.
+    assert!(
+        max_interp_error < 4.9e-4,
+        "maximum default-grid interpolation error={max_interp_error}"
+    );
 }
 
 #[test]
-fn carr_madan_dispatch_matches_complex_fft_within_1e10() {
+fn carr_madan_dispatch_matches_complex_fft_at_roundoff() {
     let spot = 100.0;
     let rate = 0.03;
     let maturity = 1.0;

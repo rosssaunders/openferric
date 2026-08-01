@@ -381,4 +381,47 @@ mod tests {
             european_tree
         );
     }
+
+    #[test]
+    fn zero_vol_bermudan_matches_discounted_deterministic_swap_value() {
+        // With sigma=0 on a flat curve, the short-rate path is deterministic.
+        // The payer swap is ITM at every exercise date, and identical forward
+        // swap cashflows make the earliest exercise optimal.  This provides a
+        // closed-form oracle for the complete exercise/backward-induction path.
+        let flat_rate = 0.05_f64;
+        let curve = YieldCurve::new(
+            (0..=80)
+                .map(|i| {
+                    let t = i as f64 * 0.25;
+                    (t, (-flat_rate * t).exp())
+                })
+                .collect(),
+        );
+        let swaption = Swaption {
+            notional: 1_000_000.0,
+            strike: 0.04,
+            option_expiry: 3.0,
+            swap_tenor: 5.0,
+            is_payer: true,
+        };
+        let exercise_dates = [1.0, 2.0, 3.0];
+        let engine = BermudanSwaptionEngine::new(HullWhite::new(0.05, 0.0), 300);
+
+        let actual = engine.price(&swaption, &exercise_dates, &curve);
+        let annuity_at_exercise: f64 = (1..=5).map(|year| (-flat_rate * year as f64).exp()).sum();
+        let swap_value_at_exercise = swaption.notional
+            * (1.0
+                - (-flat_rate * swaption.swap_tenor).exp()
+                - swaption.strike * annuity_at_exercise);
+        let expected = (-flat_rate * exercise_dates[0]).exp() * swap_value_at_exercise;
+        // The model recovers its short-rate drift from finite differences of
+        // the input curve, so allow the measured 300-step discretization error
+        // against the continuum cashflow value (well below one millionth of a bp).
+        let tolerance = 5.0e-10 * expected.abs().max(1.0);
+
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "expected {expected}, got {actual}, tolerance {tolerance}"
+        );
+    }
 }

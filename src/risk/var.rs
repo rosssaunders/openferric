@@ -37,7 +37,7 @@ const TRADING_DAYS_PER_YEAR: f64 = 252.0;
 ///
 /// let pnl = [-2.0, -1.0, 0.5, 1.0, -0.2];
 /// let var_95 = historical_var(&pnl, 0.95);
-/// assert!(var_95 >= 0.0);
+/// assert!((var_95 - 1.8).abs() < 1.0e-14);
 /// ```
 pub fn historical_var(pnl: &[f64], confidence: f64) -> f64 {
     validate_inputs(pnl, confidence);
@@ -54,7 +54,8 @@ pub fn historical_var(pnl: &[f64], confidence: f64) -> f64 {
 /// let pnl = [-3.0, -2.0, -1.0, 0.5, 1.0];
 /// let var_95 = historical_var(&pnl, 0.95);
 /// let es_95 = historical_expected_shortfall(&pnl, 0.95);
-/// assert!(es_95 >= var_95);
+/// assert!((var_95 - 2.8).abs() < 1.0e-14);
+/// assert_eq!(es_95, 3.0);
 /// ```
 pub fn historical_expected_shortfall(pnl: &[f64], confidence: f64) -> f64 {
     validate_inputs(pnl, confidence);
@@ -85,7 +86,8 @@ pub fn historical_expected_shortfall(pnl: &[f64], confidence: f64) -> f64 {
 /// use openferric::risk::var::delta_normal_var;
 ///
 /// let var_99 = delta_normal_var(1.0, 0.20, 0.99, 1.0);
-/// assert!(var_99 > 0.0);
+/// // The implementation uses Acklam's inverse-normal approximation.
+/// assert!((var_99 - 0.029_309_228_274_932_753).abs() < 1.0e-10);
 /// ```
 pub fn delta_normal_var(
     delta: f64,
@@ -127,7 +129,7 @@ pub fn delta_gamma_normal_var(
 /// use openferric::risk::var::normal_expected_shortfall;
 ///
 /// let es = normal_expected_shortfall(0.0, 1.0, 0.99);
-/// assert!(es > 2.0);
+/// assert!((es - 2.665_214_220_345_806).abs() < 2.0e-8);
 /// ```
 pub fn normal_expected_shortfall(mean_loss: f64, std_dev_loss: f64, confidence: f64) -> f64 {
     assert!(
@@ -400,41 +402,35 @@ mod tests {
         );
     }
 
-    use approx::assert_relative_eq;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
-    use rand_distr::{Distribution, StandardNormal};
-
     use super::*;
+    use approx::assert_relative_eq;
 
     #[test]
-    fn historical_var_matches_standard_normal_quantiles() {
-        let mut rng = StdRng::seed_from_u64(42);
-        let pnl: Vec<f64> = (0..1000).map(|_| StandardNormal.sample(&mut rng)).collect();
-
-        let var_95 = historical_var(&pnl, 0.95);
-        let var_99 = historical_var(&pnl, 0.99);
-
-        assert!((var_95 - 1.645).abs() < 0.2);
-        assert!((var_99 - 2.326).abs() < 0.2);
+    fn historical_var_matches_exact_interpolated_order_statistics() {
+        // Sorted losses are [-4,-3,-2,-1,0,1,2,3,4,5]. The estimator uses
+        // rank p*(n-1), hence q(0.90)=4+0.1*(5-4) and q(0.95)=4+0.55*(5-4).
+        let pnl = [-5.0, -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+        assert_relative_eq!(historical_var(&pnl, 0.90), 4.1, epsilon = 1e-15);
+        assert_relative_eq!(historical_var(&pnl, 0.95), 4.55, epsilon = 1e-15);
     }
 
     #[test]
     fn delta_normal_var_matches_reference_value() {
         let var = delta_normal_var(1.0, 0.20, 0.99, 1.0);
-        assert_relative_eq!(var, 0.0293, epsilon = 3.0e-4);
+        // SciPy `special.ndtri(0.99)` propagated through the RiskMetrics scaling.
+        assert_relative_eq!(var, 0.029_309_228_274_932_753, epsilon = 1.0e-10);
     }
 
     #[test]
     fn normal_expected_shortfall_matches_reference_value() {
         let es = normal_expected_shortfall(0.0, 1.0, 0.99);
-        assert_relative_eq!(es, 2.665, epsilon = 5.0e-3);
+        assert_relative_eq!(es, 2.665_214_220_345_806, epsilon = 2.0e-8);
     }
 
     #[test]
     fn cornish_fisher_reduces_to_gaussian_for_zero_higher_moments() {
         let cf_var = cornish_fisher_var(0.0, 1.0, 0.0, 0.0, 0.99);
-        assert_relative_eq!(cf_var, 2.326, epsilon = 3.0e-3);
+        assert_relative_eq!(cf_var, 2.326_347_874_040_840_8, epsilon = 5.0e-9);
     }
 
     #[test]
@@ -444,11 +440,11 @@ mod tests {
 
         let via_returns = historical_var(&returns, 0.95);
         let via_prices = historical_var_from_prices(&prices, 0.95, false);
-        assert_relative_eq!(via_prices, via_returns, epsilon = 1.0e-14);
+        assert_eq!(via_prices, via_returns);
     }
 
     #[test]
-    fn backtest_wrapper_runs_and_produces_consistent_dimensions() {
+    fn backtest_wrapper_matches_direct_backtest_exactly() {
         let mut prices = vec![100.0];
         for i in 1..260 {
             let drift = if i % 37 == 0 { -0.03 } else { 0.001 };
@@ -459,10 +455,11 @@ mod tests {
         let confidence = 0.99;
         let forecasts = rolling_historical_var_from_prices(&prices, window, confidence, true);
         let bt = backtest_historical_var_from_prices(&prices, window, confidence, true);
+        let returns = log_returns(&prices);
+        let losses = returns[window..].iter().map(|r| -r).collect::<Vec<_>>();
+        let expected = backtest_var(&losses, &forecasts, confidence);
 
         assert_eq!(forecasts.len(), prices.len() - 1 - window);
-        assert!(bt.kupiec.p_value.is_finite());
-        assert!(bt.christoffersen.p_value_independence.is_finite());
-        assert!(bt.christoffersen.p_value_conditional_coverage.is_finite());
+        assert_eq!(bt, expected);
     }
 }

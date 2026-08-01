@@ -12,22 +12,22 @@ from openferric import py_cds_npv, py_survival_prob
 
 
 class TestCdsNpv:
-    def test_fair_spread_near_zero(self):
-        """At the fair CDS spread, NPV should be approximately zero.
-        For a rough fair spread: (1-R)*hazard_rate ≈ spread."""
+    def test_flat_hazard_cashflows_match_independent_midpoint_sum(self):
+        """Assert the exact quarterly midpoint-model NPV, not a near-zero band."""
         hazard_rate = 0.02
         recovery = 0.40
-        fair_spread = (1.0 - recovery) * hazard_rate  # ≈ 0.012
         npv = py_cds_npv(
             notional=1_000_000.0,
-            spread=fair_spread,
+            spread=0.012,
             maturity=5.0,
             recovery_rate=recovery,
             payment_freq=4,
             discount_rate=0.03,
             hazard_rate=hazard_rate,
         )
-        assert abs(npv) < 5000.0  # NPV close to zero (not exact due to discretization)
+        # Independently summed from exp(-r t), exp(-lambda t), quarterly
+        # coupons, midpoint protection, and half-period accrued premium.
+        assert npv == pytest.approx(198.09845254999126, abs=2e-9)
 
     def test_protection_buyer_positive_npv(self):
         """If spread < fair spread, protection buyer benefits (positive NPV)."""
@@ -40,7 +40,7 @@ class TestCdsNpv:
             discount_rate=0.03,
             hazard_rate=0.05,
         )
-        assert npv > 0.0
+        assert npv == pytest.approx(103100.31322752044, abs=2e-9)
 
     def test_protection_buyer_negative_npv(self):
         """If spread > fair spread, protection buyer overpays (negative NPV)."""
@@ -53,7 +53,7 @@ class TestCdsNpv:
             discount_rate=0.03,
             hazard_rate=0.01,
         )
-        assert npv < 0.0
+        assert npv == pytest.approx(-424287.2115125937, abs=2e-9)
 
     def test_zero_payment_freq_returns_nan(self):
         assert is_nan(
@@ -84,17 +84,17 @@ class TestSurvivalProb:
         assert py_survival_prob(hazard_rate=0.05, t=-1.0) == 1.0
 
     def test_exponential_decay(self):
-        """Survival prob ≈ exp(-λt) for constant hazard rate."""
+        """Survival probability equals exp(-lambda*t) for constant hazard."""
         hazard_rate = 0.05
         t = 3.0
         expected = math.exp(-hazard_rate * t)
         actual = py_survival_prob(hazard_rate, t)
-        assert actual == pytest.approx(expected, rel=1e-3)
+        assert actual == pytest.approx(expected, abs=2e-15)
 
     def test_high_hazard_rate(self):
-        """High hazard rate → low survival probability."""
+        """The high-hazard case still gets an exact exponential oracle."""
         prob = py_survival_prob(hazard_rate=1.0, t=5.0)
-        assert prob < 0.01
+        assert prob == pytest.approx(math.exp(-5.0), abs=2e-16)
 
     def test_zero_hazard_rate(self):
         """Zero hazard rate → survival prob = 1.0."""

@@ -129,7 +129,7 @@ mod tests {
             intra_corr: 1.0,
         };
         let im = simm.compute();
-        assert!((im - 17_000.0).abs() < 0.01);
+        assert!((im - 17_000.0).abs() <= 2.0e-12);
     }
 
     #[test]
@@ -141,12 +141,9 @@ mod tests {
             intra_corr: 0.5,
         };
         let im = simm.compute();
-        assert!(im > 0.0);
-        assert!(im.is_finite());
-        // Should be less than sum of individual IMs (diversification)
-        let im_1 = 0.02 * 1_000_000.0;
-        let im_2 = 0.02 * 500_000.0;
-        assert!(im < im_1 + im_2);
+        // sqrt(20_000^2 + 10_000^2 + 2 * 0.5 * 20_000 * 10_000)
+        let expected = 700_000_000.0_f64.sqrt();
+        assert!((im - expected).abs() <= 4.0e-12);
     }
 
     #[test]
@@ -157,7 +154,8 @@ mod tests {
         let discount_curve =
             YieldCurve::new(times.iter().map(|&t| (t, (-0.03_f64 * t).exp())).collect());
         let mva = mva_from_profile(&times, &expected_im, &funding_spread, &discount_curve);
-        assert!(mva < 0.0);
-        assert!(mva.is_finite());
+        // Exact right-endpoint rectangle sum for the stated 0.5-year grid.
+        let expected = -481.664_936_071_114_94;
+        assert!((mva - expected).abs() <= 2.0e-12);
     }
 }

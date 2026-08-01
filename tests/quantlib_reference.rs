@@ -1728,14 +1728,14 @@ struct HestonCachedCase {
 
 fn heston_cached_cases() -> Vec<HestonCachedCase> {
     vec![
-        // Case 1: S=1.0, K=1.05, T≈0.25yr
+        // Case 1 uses QuantLib Actual/Actual(ISDA), 2004-12-27 to 2005-03-28.
         HestonCachedCase {
             option_type: OptionType::Call,
             strike: 1.05,
             spot: 1.0,
             rate: 0.0225,
             dividend: 0.02,
-            expiry: 0.25,
+            expiry: 0.249_277_640_541_956_72,
             v0: 0.1,
             kappa: 3.16,
             theta: 0.09,
@@ -1743,11 +1743,12 @@ fn heston_cached_cases() -> Vec<HestonCachedCase> {
             rho: -0.2,
             expected: 0.0404774515,
         },
-        // Case 2: various strikes, T≈0.7yr
+        // Cases 2-4 use QuantLib's forward-normalized spot
+        // exp(-(r-q)*0.7), not spot=1.
         HestonCachedCase {
             option_type: OptionType::Call,
             strike: 0.9,
-            spot: 1.0,
+            spot: 0.979_218_964_569_459_7,
             rate: 0.05,
             dividend: 0.02,
             expiry: 0.7,
@@ -1761,7 +1762,7 @@ fn heston_cached_cases() -> Vec<HestonCachedCase> {
         HestonCachedCase {
             option_type: OptionType::Call,
             strike: 1.0,
-            spot: 1.0,
+            spot: 0.979_218_964_569_459_7,
             rate: 0.05,
             dividend: 0.02,
             expiry: 0.7,
@@ -1775,7 +1776,7 @@ fn heston_cached_cases() -> Vec<HestonCachedCase> {
         HestonCachedCase {
             option_type: OptionType::Call,
             strike: 1.1,
-            spot: 1.0,
+            spot: 0.979_218_964_569_459_7,
             rate: 0.05,
             dividend: 0.02,
             expiry: 0.7,
@@ -1934,9 +1935,10 @@ fn test_barrier_haug_reference_values() {
 fn test_heston_alan_lewis_reference_values() {
     // 10 cases (5 strikes × put+call) from Alan Lewis, wilmott.com
     // via QuantLib hestonmodel.cpp lines 1288-1415
-    // Tolerance 1e-2: our FFT engine won't match 12 digits but should be within 1%
+    // The high-resolution Carr-Madan grid reproduces this Lewis table to
+    // near machine precision at the requested strikes.
     let (spot, v0, rho, sigma_v, kappa, theta, r, q, t, cases) = heston_alan_lewis_cases();
-    let tolerance = 1e-2;
+    let tolerance = 5.0e-12;
 
     for (i, c) in cases.iter().enumerate() {
         let price = heston_fft_option_price(
@@ -1953,7 +1955,6 @@ fn test_heston_alan_lewis_reference_values() {
             rho,
         );
         let error = (price - c.expected).abs();
-
         assert!(
             error <= tolerance,
             "Heston Lewis case {i}: {:?} K={} expected={:.12} got={:.6} err={:.2e}",
@@ -1974,9 +1975,11 @@ fn test_heston_alan_lewis_reference_values() {
 #[test]
 fn test_heston_cached_regression_values() {
     // Cached values from QuantLib hestonmodel.cpp lines 440-536
-    // Tolerance 2e-2: our FFT-based engine differs from QuantLib's Gauss-Laguerre integration
+    // QuantLib publishes the second grid to seven decimal places. The 6e-7
+    // budget combines that rounding with the measured high-resolution FFT
+    // interpolation error over these four cases.
     let cases = heston_cached_cases();
-    let tolerance = 2e-2;
+    let tolerance = 6.0e-7;
 
     for (i, c) in cases.iter().enumerate() {
         let price = heston_fft_option_price(
@@ -1993,7 +1996,6 @@ fn test_heston_cached_regression_values() {
             c.rho,
         );
         let error = (price - c.expected).abs();
-
         assert!(
             error <= tolerance,
             "Heston cached case {i}: S={} K={} expected={:.10} got={:.6} err={:.2e}",

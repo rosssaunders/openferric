@@ -294,7 +294,7 @@ mod tests {
         assert_relative_eq!(
             bootstrapped.survival_prob(6.0),
             true_curve.survival_prob(6.0),
-            epsilon = 2e-3
+            epsilon = 1.0e-13
         );
     }
 

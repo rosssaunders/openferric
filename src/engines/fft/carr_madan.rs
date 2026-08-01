@@ -741,7 +741,9 @@ mod tests {
         let px = interpolate_strike_prices(&grid, &[80.0, 95.0, 120.0]);
         assert_eq!(px[0].1, 12.0);
         assert_eq!(px[2].1, 4.0);
-        assert!(px[1].1 < 12.0 && px[1].1 > 7.0);
+        let log_strike_weight = (95.0_f64.ln() - 90.0_f64.ln()) / (100.0_f64.ln() - 90.0_f64.ln());
+        let expected = 12.0 + log_strike_weight * (7.0 - 12.0);
+        assert_eq!(px[1].1, expected);
     }
 
     #[test]

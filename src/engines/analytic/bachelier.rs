@@ -208,14 +208,21 @@ pub fn bachelier_greeks(
 
 #[cfg(test)]
 mod tests {
-    use approx::assert_relative_eq;
-
     use super::*;
+
+    fn assert_close_to_scipy(actual: f64, expected: f64, label: &str) {
+        let tolerance = 256.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.15}, SciPy={expected:.15}, tolerance={tolerance:.3e}"
+        );
+    }
 
     #[test]
     fn atm_reference_value() {
         let call = bachelier_price(OptionType::Call, 100.0, 100.0, 0.05, 20.0, 1.0).unwrap();
-        assert_relative_eq!(call, 7.589_712_748_1, epsilon = 1e-6);
+        // scipy.stats.norm 1.17.1: exp(-0.05) * 20 * phi(0).
+        assert_close_to_scipy(call, 7.589712715905146, "ATM normal call");
     }
 
     #[test]
@@ -229,11 +236,13 @@ mod tests {
         let c = bachelier_price(OptionType::Call, f, k, r, sigma_n, t).unwrap();
         let p = bachelier_price(OptionType::Put, f, k, r, sigma_n, t).unwrap();
 
-        assert_relative_eq!(c - p, (-r * t).exp() * (f - k), epsilon = 2e-10);
+        let rhs = (-r * t).exp() * (f - k);
+        let roundoff = 64.0 * f64::EPSILON * c.abs().max(p.abs()).max(rhs.abs()).max(1.0);
+        assert!(((c - p) - rhs).abs() <= roundoff);
     }
 
     #[test]
-    fn greeks_match_finite_differences() {
+    fn greeks_match_scipy_closed_form_reference() {
         let f = 100.0;
         let k = 98.0;
         let r = 0.01;
@@ -242,27 +251,13 @@ mod tests {
 
         let g = bachelier_greeks(OptionType::Call, f, k, r, sigma_n, t).unwrap();
 
-        let eps_f = 1.0e-4;
-        let p_up = bachelier_price(OptionType::Call, f + eps_f, k, r, sigma_n, t).unwrap();
-        let p_dn = bachelier_price(OptionType::Call, f - eps_f, k, r, sigma_n, t).unwrap();
-        let p_0 = bachelier_price(OptionType::Call, f, k, r, sigma_n, t).unwrap();
-
-        let delta_fd = (p_up - p_dn) / (2.0 * eps_f);
-        let gamma_fd = (p_up - 2.0 * p_0 + p_dn) / (eps_f * eps_f);
-        assert_relative_eq!(g.delta, delta_fd, epsilon = 2e-6);
-        assert_relative_eq!(g.gamma, gamma_fd, epsilon = 2e-6);
-
-        let eps_vol = 1.0e-5;
-        let v_up = bachelier_price(OptionType::Call, f, k, r, sigma_n + eps_vol, t).unwrap();
-        let v_dn = bachelier_price(OptionType::Call, f, k, r, sigma_n - eps_vol, t).unwrap();
-        let vega_fd = (v_up - v_dn) / (2.0 * eps_vol);
-        assert_relative_eq!(g.vega, vega_fd, epsilon = 2e-6);
-
-        let eps_t = 1.0e-5;
-        let t_up = bachelier_price(OptionType::Call, f, k, r, sigma_n, t + eps_t).unwrap();
-        let t_dn = bachelier_price(OptionType::Call, f, k, r, sigma_n, t - eps_t).unwrap();
-        let theta_fd = -(t_up - t_dn) / (2.0 * eps_t);
-        assert_relative_eq!(g.theta, theta_fd, epsilon = 2e-6);
+        // Independent scipy.stats.norm CDF/PDF references at
+        // d=(100-98)/(15*sqrt(1.25)).
+        assert_close_to_scipy(g.delta, 0.5406634006260398, "delta");
+        assert_close_to_scipy(g.gamma, 0.023326350817238266, "gamma");
+        assert_close_to_scipy(g.vega, 0.43736907782321754, "vega");
+        assert_close_to_scipy(g.theta, -2.547795837253302, "theta");
+        assert_close_to_scipy(g.rho, -9.552_328_710_750_43, "rho");
     }
 
     #[test]

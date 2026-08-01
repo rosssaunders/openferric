@@ -10,6 +10,7 @@
 use approx::assert_relative_eq;
 
 use openferric::rates::{Swaption, YieldCurve};
+use statrs::distribution::{ContinuousCDF, Normal};
 
 /// Build a flat continuous yield curve.
 fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
@@ -29,8 +30,10 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
 /// Setup: 5% flat forward curve, 20% Black vol.
 /// Payer swaption, 5Y exercise into 10Y swap.
 ///
-/// QuantLib cached NPV for this setup is ~43.71 (varies by exact calendar).
-/// Our year-fraction API produces a close but not identical value.
+/// QuantLib's test uses the same Black swaption methodology but a full dated
+/// schedule. This test evaluates the exact Black-76 value for OpenFerric's
+/// documented annual year-fraction schedule, using `statrs` as the independent
+/// normal-CDF implementation.
 #[test]
 fn swaption_cached_value_payer_5y_into_10y() {
     let rate = 0.05;
@@ -47,25 +50,24 @@ fn swaption_cached_value_payer_5y_into_10y() {
 
     let price = swaption.price(&curve, vol);
 
-    // The forward swap rate on a flat 5% continuous curve is ~5.13% (not exactly
-    // 5%) due to continuous-to-annual compounding conversion in the annuity.
+    let expected_annuity: f64 = (6..=15).map(|t| (-rate * t as f64).exp()).sum();
+    let expected_forward = rate.exp() - 1.0;
+    let sigma_sqrt_t = vol * swaption.option_expiry.sqrt();
+    let d1 = ((expected_forward / swaption.strike).ln() + 0.5 * vol * vol * swaption.option_expiry)
+        / sigma_sqrt_t;
+    let d2 = d1 - sigma_sqrt_t;
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    let expected_price = swaption.notional
+        * expected_annuity
+        * (expected_forward * normal.cdf(d1) - swaption.strike * normal.cdf(d2));
+
     let fwd = swaption.forward_swap_rate(&curve);
-    assert_relative_eq!(fwd, 0.05127, epsilon = 1.0e-3);
+    assert_relative_eq!(fwd, expected_forward, epsilon = 1.0e-12);
 
-    // Price must be positive for an OTM payer swaption (strike 6% > fwd ~5%)
-    assert!(price > 0.0, "Swaption price must be positive");
-
-    // Annuity factor for 10Y annual swap starting at year 5, discounted at 5%
-    // continuous: sum of exp(-0.05*t) for t=6..15 ≈ 5.98
     let annuity = swaption.annuity_factor(&curve);
-    assert!(annuity > 0.0);
-    assert_relative_eq!(annuity, 5.977, epsilon = 0.01);
-
-    // Price should be in a reasonable range for 1M notional
-    assert!(
-        price > 10_000.0 && price < 50_000.0,
-        "Price {price} out of expected range for OTM payer swaption"
-    );
+    assert_relative_eq!(annuity, expected_annuity, epsilon = 1.0e-12);
+    assert_relative_eq!(price, expected_price, epsilon = 1.0e-8);
+    assert_relative_eq!(price, 36_279.649_346_017_74, epsilon = 1.0e-8);
 }
 
 /// ATM swaption: strike = forward rate.
@@ -103,7 +105,7 @@ fn swaption_atm_price() {
     };
     let recv_price = receiver.price(&curve, vol);
 
-    assert_relative_eq!(price, recv_price, epsilon = 1.0);
+    assert_relative_eq!(price, recv_price, epsilon = 1.0e-8);
 }
 
 // ── Strike dependence ───────────────────────────────────────────────────────
@@ -182,7 +184,7 @@ fn swaption_put_call_parity() {
         let parity_rhs = payer.notional * annuity * (fwd - strike);
         let parity_lhs = payer_price - recv_price;
 
-        assert_relative_eq!(parity_lhs, parity_rhs, epsilon = 1.0,);
+        assert_relative_eq!(parity_lhs, parity_rhs, epsilon = 1.0e-8);
     }
 }
 
@@ -206,7 +208,7 @@ fn swaption_implied_vol_round_trip() {
         let price = swaption.price(&curve, vol);
         let recovered_vol = swaption.implied_vol(price, &curve);
 
-        assert_relative_eq!(recovered_vol, vol, epsilon = 1.0e-4,);
+        assert_relative_eq!(recovered_vol, vol, epsilon = 1.0e-10);
     }
 }
 

@@ -8,7 +8,7 @@ use openferric::market::{
 };
 
 #[test]
-fn american_discrete_cash_div_matches_quantlib_within_point_one_percent() {
+fn american_cash_dividend_escrowed_model_locks_grid_and_matches_quantlib() {
     // QuantLib 1.41 reference, FdBlackScholesVanillaEngine (Escrowed model),
     // tGrid=xGrid=800:
     // S=100, K=100, r=3%, q=0%, vol=25%, T=1y, one cash dividend 0.2 at t=0.5.
@@ -36,23 +36,16 @@ fn american_discrete_cash_div_matches_quantlib_within_point_one_percent() {
         .expect("put pricing")
         .price;
 
-    let call_rel_err = (call - ql_call).abs() / ql_call;
-    let put_rel_err = (put - ql_put).abs() / ql_put;
+    // Exact 4,000-step finite-grid locks for the escrowed-dividend CRR engine.
+    assert!((call - 11.231_489_796_078_526).abs() <= 2.0e-10);
+    assert!((put - 8.745_105_217_344_733).abs() <= 2.0e-10);
 
-    assert!(
-        call_rel_err <= 1.0e-3,
-        "call rel err {} exceeds 0.1% (model={}, ql={})",
-        call_rel_err,
-        call,
-        ql_call
-    );
-    assert!(
-        put_rel_err <= 1.0e-3,
-        "put rel err {} exceeds 0.1% (model={}, ql={})",
-        put_rel_err,
-        put,
-        ql_put
-    );
+    // Quantify the remaining numerical-method/grid difference from QuantLib's
+    // independently implemented 800x800 escrowed finite-difference engine.
+    let call_model_gap = call - ql_call;
+    let put_model_gap = put - ql_put;
+    assert!((call_model_gap - 0.000_186_720_057_087_086_4).abs() <= 2.0e-10);
+    assert!((put_model_gap - 0.000_758_932_995_903_904_8).abs() <= 2.0e-10);
 }
 
 #[test]
@@ -100,18 +93,18 @@ fn barrier_mc_applies_ex_div_jump_on_path() {
 
     // Without jump the deterministic path never breaches 95.
     assert!(
-        no_div_price <= 1.0e-3,
-        "expected ~0 without ex-div jump, got {no_div_price}"
+        no_div_price.abs() <= 1.0e-10,
+        "expected 0, got {no_div_price}"
     );
     // With a 10 cash dividend at t=0.5, deterministic path jumps to 90 and knocks in.
     assert!(
-        (with_div_price - 10.0).abs() <= 1.0e-3,
+        (with_div_price - 10.0).abs() <= 1.0e-10,
         "expected ~10 with ex-div jump knock-in, got {with_div_price}"
     );
 }
 
 #[test]
-fn bootstrap_dividend_curve_reproduces_forwards_within_one_bp() {
+fn bootstrap_dividend_curve_reproduces_forwards_to_roundoff() {
     let spot = 100.0_f64;
     let rate = 0.02_f64;
     let strike = 100.0_f64;
@@ -145,7 +138,7 @@ fn bootstrap_dividend_curve_reproduces_forwards_within_one_bp() {
         let model_fwd = schedule.forward_price(spot, rate, 0.0, t);
         let abs_err = (model_fwd - fwd).abs();
         assert!(
-            abs_err <= 0.01, // 1bp on a ~100 forward is ~0.01 absolute
+            abs_err <= 64.0 * f64::EPSILON * fwd.abs().max(1.0),
             "forward mismatch at T={t}: model={model_fwd}, input={fwd}, abs_err={abs_err}"
         );
     }

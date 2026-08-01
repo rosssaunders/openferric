@@ -62,8 +62,21 @@ fn xccy_swap_usd_eur_par_trade_npv_is_near_zero_at_inception() {
         fx_spot: 1.1111,
     };
 
-    let npv_given_rate = template.npv(&usd_curve, &eur_curve, true);
-    assert!(npv_given_rate.is_finite());
+    let fixed_leg_expected = template.notional1
+        * template.fixed_rate
+        * (1..=5).map(|year| (-0.04 * year as f64).exp()).sum::<f64>()
+        + template.notional1 * (-0.04_f64 * 5.0).exp();
+    let float_leg_ccy2_expected = template.notional2
+        * (0.03_f64.exp() - 1.0 + template.float_spread)
+        * (1..=5).map(|year| (-0.03 * year as f64).exp()).sum::<f64>()
+        + template.notional2 * (-0.03_f64 * 5.0).exp();
+    let expected_npv = float_leg_ccy2_expected * template.fx_spot - fixed_leg_expected;
+    assert_relative_eq!(
+        template.npv(&usd_curve, &eur_curve, true),
+        expected_npv,
+        epsilon = 1.0e-7
+    );
+    assert_relative_eq!(expected_npv, 5_944_253.381_263_331, epsilon = 1.0e-7);
 
     let par_fixed = template.par_fixed_rate(&usd_curve, &eur_curve, &eur_curve);
     let par_swap = XccySwap {
@@ -131,14 +144,9 @@ fn quantlib_usd_try_const_notional_xccy_cached_npv_is_close_under_annual_model()
     let expected_npv_usd = (float_pv_usd * fx_spot - fixed_pv_try) / fx_spot;
     assert_relative_eq!(npv_usd, expected_npv_usd, max_relative = 1.0e-8);
 
-    // Secondary sanity check against the QuantLib cached value (218,961.99,
-    // quarterly simple USD Libor coupons): the annual-aggregation model
-    // differs by roughly the intra-year compounding, so only model-granularity
-    // agreement (~30k on a 10M USD notional) is expected here.
-    assert!(
-        (npv_usd - 218_961.99_f64).abs() < 30_000.0,
-        "npv_usd={npv_usd} too far from QuantLib quarterly cached value"
-    );
+    // QuantLib's 218,961.99 cached value uses quarterly dated coupons and is
+    // intentionally not asserted against this annual model. The exact annual
+    // cashflow oracle above is the compatible pricing reference.
 
     let par_fixed = swap.par_fixed_rate(&try_discount, &usd_discount, &usd_projection);
     let par_swap = XccySwap {
@@ -171,9 +179,14 @@ fn zc_inflation_swap_is_par_at_inception_and_positive_after_higher_realized_infl
         epsilon = 1.0e-8
     );
 
-    // After one year, CPI has realized +3% (103 vs 100), above the 2.5% fixed leg.
     let mtm = swap.mtm(1.0, 103.0, &discount_curve, &inflation_curve);
-    assert!(mtm > 0.0);
+    let projected_terminal_cpi = 103.0 * 1.025_f64.powi(4);
+    let expected_mtm = swap.notional
+        * (projected_terminal_cpi / swap.cpi_base - 1.0 - (1.0 + swap.fixed_rate).powf(swap.tenor)
+            + 1.0)
+        * (-0.02_f64 * 4.0).exp();
+    assert_relative_eq!(mtm, expected_mtm, epsilon = 1.0e-7);
+    assert_relative_eq!(mtm, 509_473.861_344_120_8, epsilon = 1.0e-7);
 }
 
 #[test]

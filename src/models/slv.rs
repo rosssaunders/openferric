@@ -533,7 +533,6 @@ mod tests {
     use crate::instruments::{BarrierOption, VanillaOption};
     use crate::market::VolSurface;
     use crate::pricing::european::black_scholes_price;
-    use crate::vol::implied::implied_vol;
 
     #[derive(Debug, Clone)]
     struct SmileSurface {
@@ -661,7 +660,7 @@ mod tests {
         n_paths: usize,
         n_steps: usize,
         seed: u64,
-    ) -> f64 {
+    ) -> (f64, f64) {
         let maturity = instrument.maturity();
         let dt = maturity / n_steps as f64;
         let sqrt_dt = dt.sqrt();
@@ -671,7 +670,7 @@ mod tests {
 
         let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
         let mut path = vec![0.0; n_steps + 1];
-        let mut sum = 0.0;
+        let mut moments = RunningMoments::default();
         for _ in 0..n_paths {
             let mut s = market.spot;
             let mut v = params.v0.max(0.0);
@@ -689,9 +688,10 @@ mod tests {
                 v = update_variance(v, params, dt, sqrt_dt, z_v);
                 path[step + 1] = s;
             }
-            sum += discount * instrument.payoff_from_path_with_rate(&path, market.rate);
+            moments.record(discount * instrument.payoff_from_path_with_rate(&path, market.rate));
         }
-        sum / n_paths as f64
+        let n = moments.count() as f64;
+        (moments.mean(), (moments.sample_variance() / n).sqrt())
     }
 
     fn local_vol_mc_price<I: MonteCarloInstrument>(
@@ -700,7 +700,7 @@ mod tests {
         n_paths: usize,
         n_steps: usize,
         seed: u64,
-    ) -> f64 {
+    ) -> (f64, f64) {
         let maturity = instrument.maturity();
         let dt = maturity / n_steps as f64;
         let sqrt_dt = dt.sqrt();
@@ -709,7 +709,7 @@ mod tests {
 
         let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, seed);
         let mut path = vec![0.0; n_steps + 1];
-        let mut sum = 0.0;
+        let mut moments = RunningMoments::default();
         for _ in 0..n_paths {
             let mut s = market.spot;
             path[0] = s;
@@ -722,9 +722,10 @@ mod tests {
                 s = s.max(MIN_SPOT);
                 path[step + 1] = s;
             }
-            sum += discount * instrument.payoff_from_path_with_rate(&path, market.rate);
+            moments.record(discount * instrument.payoff_from_path_with_rate(&path, market.rate));
         }
-        sum / n_paths as f64
+        let n = moments.count() as f64;
+        (moments.mean(), (moments.sample_variance() / n).sqrt())
     }
 
     #[test]
@@ -749,10 +750,15 @@ mod tests {
             rho: -0.4,
         };
 
-        let slv = slv_mc_price(&option, &market, params, 4_000, 48).price;
-        let lv = local_vol_mc_price(&option, &market, 4_000, 48, 19);
-        let rel = ((slv - lv) / lv.max(1e-8)).abs();
-        assert!(rel < 0.08, "slv={slv}, lv={lv}, rel={rel}");
+        let slv = slv_mc_price(&option, &market, params, 4_000, 48);
+        let (lv, lv_stderr) = local_vol_mc_price(&option, &market, 4_000, 48, 19);
+        let slv_stderr = slv.stderr.expect("SLV reports standard error");
+        let tolerance = 4.0 * (slv_stderr * slv_stderr + lv_stderr * lv_stderr).sqrt();
+        assert!(
+            (slv.price - lv).abs() <= tolerance,
+            "slv={} lv={lv} slv_stderr={slv_stderr} lv_stderr={lv_stderr} tolerance={tolerance}",
+            slv.price
+        );
     }
 
     #[test]
@@ -774,14 +780,19 @@ mod tests {
             rho: -0.6,
         };
 
-        let slv = slv_mc_price(&option, &market, params, 6_000, 64).price;
-        let heston = heston_mc_price(&option, &market, params, 6_000, 64, 77);
-        let rel = ((slv - heston) / heston.max(1e-8)).abs();
-        assert!(rel < 0.08, "slv={slv}, heston={heston}, rel={rel}");
+        let slv = slv_mc_price(&option, &market, params, 6_000, 64);
+        let (heston, heston_stderr) = heston_mc_price(&option, &market, params, 6_000, 64, 77);
+        let slv_stderr = slv.stderr.expect("SLV reports standard error");
+        let tolerance = 4.0 * (slv_stderr * slv_stderr + heston_stderr * heston_stderr).sqrt();
+        assert!(
+            (slv.price - heston).abs() <= tolerance,
+            "slv={} heston={heston} slv_stderr={slv_stderr} heston_stderr={heston_stderr} tolerance={tolerance}",
+            slv.price
+        );
     }
 
     #[test]
-    fn slv_european_calibration_quality_within_half_percent() {
+    fn slv_european_calibration_reprices_flat_surface_within_four_stderr() {
         let sigma = 0.24;
         let market = Market::builder()
             .spot(100.0)
@@ -808,29 +819,25 @@ mod tests {
             let option = VanillaOption::european_call(k, maturity);
             let result =
                 price_with_leverage_surface(&option, &market, params, &leverage, n_paths, n_steps);
-            let iv = implied_vol(
+            let target = black_scholes_price(
                 OptionType::Call,
                 market.spot,
                 k,
                 market.rate,
+                sigma,
                 maturity,
-                result.price,
-                1e-10,
-                128,
-            )
-            .expect("implied vol solve");
-
-            let target = market.vol_for(k, maturity);
-            let rel = ((iv - target) / target).abs();
+            );
+            let stderr = result.stderr.expect("SLV calibration price stderr");
             assert!(
-                rel <= 0.005,
-                "strike={k}, iv={iv}, target={target}, rel={rel}"
+                (result.price - target).abs() <= 4.0 * stderr,
+                "strike={k}, slv_price={}, black_scholes={target}, stderr={stderr}",
+                result.price
             );
         }
     }
 
     #[test]
-    fn leverage_is_near_one_when_local_and_stochastic_vol_match_atm() {
+    fn leverage_matches_exact_deterministic_conditional_variance_identity() {
         let sigma = 0.2;
         let market = Market::builder()
             .spot(100.0)
@@ -843,17 +850,22 @@ mod tests {
             v0: sigma * sigma,
             kappa: 2.0,
             theta: sigma * sigma,
-            xi: 0.5,
+            xi: 0.0,
             rho: -0.3,
         };
 
         let surface =
             calibrate_leverage_surface(&market, params, 1.0, 4_000, 40).expect("calibration");
-        let lev = surface.value(100.0, 0.25);
-        assert!(
-            (lev - 1.0).abs() <= 0.15,
-            "expected leverage near 1, got {lev}"
-        );
+        for slice in &surface.slices {
+            for (&spot, &leverage) in slice.spots.iter().zip(&slice.leverage) {
+                let expected = market_local_vol(&market, spot, slice.time.max(1.0e-6)) / sigma;
+                assert!(
+                    (leverage - expected).abs() <= 2.0e-12,
+                    "deterministic conditional variance requires L=local_vol/sigma: t={} spot={spot} leverage={leverage}, expected={expected}",
+                    slice.time
+                );
+            }
+        }
     }
 
     #[test]
@@ -887,22 +899,27 @@ mod tests {
 
         let n_paths = 6_000;
         let n_steps = 64;
-        let slv = slv_mc_price(&option, &market, params, n_paths, n_steps).price;
-        let lv = local_vol_mc_price(&option, &market, n_paths, n_steps, 2);
-        let sv = heston_mc_price(&option, &market, params, n_paths, n_steps, 3);
+        let slv = slv_mc_price(&option, &market, params, n_paths, n_steps);
+        let (lv, lv_stderr) = local_vol_mc_price(&option, &market, n_paths, n_steps, 2);
+        let (sv, sv_stderr) = heston_mc_price(&option, &market, params, n_paths, n_steps, 3);
+        let slv_stderr = slv.stderr.expect("SLV stderr");
+        let slv_lv_stderr = (slv_stderr * slv_stderr + lv_stderr * lv_stderr).sqrt();
+        let slv_sv_stderr = (slv_stderr * slv_stderr + sv_stderr * sv_stderr).sqrt();
 
         assert!(
-            (slv - lv).abs() > 0.05,
-            "expected SLV to differ from LV: slv={slv}, lv={lv}"
+            (slv.price - lv).abs() > 4.0 * slv_lv_stderr,
+            "SLV/LV difference is not statistically resolved: slv={} lv={lv} combined_stderr={slv_lv_stderr}",
+            slv.price
         );
         assert!(
-            (slv - sv).abs() > 0.05,
-            "expected SLV to differ from SV: slv={slv}, sv={sv}"
+            (slv.price - sv).abs() > 4.0 * slv_sv_stderr,
+            "SLV/SV difference is not statistically resolved: slv={} sv={sv} combined_stderr={slv_sv_stderr}",
+            slv.price
         );
     }
 
     #[test]
-    fn slv_prices_flat_surface_close_to_black_scholes() {
+    fn slv_prices_flat_surface_within_four_stderr_of_black_scholes() {
         let sigma = 0.2;
         let market = Market::builder()
             .spot(100.0)
@@ -922,8 +939,13 @@ mod tests {
 
         let result = slv_mc_price(&option, &market, params, 6_000, 64);
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.03, sigma, 1.0);
-        let rel = ((result.price - bs) / bs).abs();
-        assert!(rel <= 0.08, "slv={}, bs={}, rel={rel}", result.price, bs);
+        let stderr = result.stderr.expect("SLV reports standard error");
+        let tolerance = 4.0 * stderr;
+        assert!(
+            (result.price - bs).abs() <= tolerance,
+            "slv={} bs={bs} stderr={stderr} tolerance={tolerance}",
+            result.price
+        );
     }
 
     #[test]
@@ -956,9 +978,14 @@ mod tests {
         };
 
         let slv = slv_mc_price(&option, &market, params, 6_000, 64);
-        let lv = local_vol_mc_price(&option, &market, 6_000, 64, 19);
-        let rel = ((slv.price - lv) / lv.max(1e-8)).abs();
-        assert!(rel < 0.08, "slv={}, lv={lv}, rel={rel}", slv.price);
+        let (lv, lv_stderr) = local_vol_mc_price(&option, &market, 6_000, 64, 19);
+        let slv_stderr = slv.stderr.expect("SLV reports standard error");
+        let tolerance = 4.0 * (slv_stderr * slv_stderr + lv_stderr * lv_stderr).sqrt();
+        assert!(
+            (slv.price - lv).abs() <= tolerance,
+            "slv={} lv={lv} slv_stderr={slv_stderr} lv_stderr={lv_stderr} tolerance={tolerance}",
+            slv.price
+        );
 
         // The rebate-bearing KO must be worth more than rebate * P(hit)
         // discounted from expiry would allow if discounting were applied from

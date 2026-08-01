@@ -1464,6 +1464,14 @@ mod tests {
 
     use super::*;
 
+    fn assert_roundoff_close(actual: f64, expected: f64, ulps: f64, label: &str) {
+        let budget = ulps * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= budget,
+            "{label}: actual={actual:.17e}, expected={expected:.17e}, budget={budget:.3e}"
+        );
+    }
+
     fn sample_curve() -> YieldCurve {
         YieldCurve::new(vec![
             (1.0, (-0.02_f64).exp()),
@@ -1494,7 +1502,11 @@ mod tests {
         let buckets = bucket_dv01(&curve, cfg, pricer);
         let bucket_sum: f64 = buckets.iter().map(|b| b.value).sum();
 
-        assert_relative_eq!(parallel, bucket_sum, epsilon = 1.0e-12);
+        for (index, expected) in [0.01, -0.005, 0.002].into_iter().enumerate() {
+            assert_roundoff_close(buckets[index].value, expected, 512.0, "linear bucket DV01");
+        }
+        assert_roundoff_close(parallel, 0.007, 512.0, "linear parallel DV01");
+        assert_roundoff_close(parallel, bucket_sum, 64.0, "parallel/bucket additivity");
     }
 
     #[test]
@@ -1505,7 +1517,29 @@ mod tests {
 
         let krd = key_rate_duration(&curve, cfg, pricer);
         assert_eq!(krd.len(), 1);
-        assert_relative_eq!(krd[0].duration, 5.0, epsilon = 5.0e-3);
+        let h = krd[0].bump;
+        // The central-difference value for P(z)=exp(-Tz) is exactly
+        // sinh(T*h)/h. Compare to that stated-grid oracle, then verify the
+        // O(h^2) truncation error contracts under a 2x bump refinement.
+        let stencil_reference = (5.0 * h).sinh() / h;
+        assert_roundoff_close(
+            krd[0].duration,
+            stencil_reference,
+            128.0,
+            "5Y zero-coupon KRD stencil",
+        );
+
+        let fine_cfg = CurveBumpConfig {
+            bump_size: BumpSize::Absolute(h / 2.0),
+            ..cfg
+        };
+        let fine = key_rate_duration(&curve, fine_cfg, pricer)[0].duration;
+        let coarse_error = (krd[0].duration - 5.0).abs();
+        let fine_error = (fine - 5.0).abs();
+        assert!(
+            fine_error * 3.9 < coarse_error,
+            "coarse={krd:?}, fine={fine}"
+        );
     }
 
     #[test]
@@ -1523,11 +1557,13 @@ mod tests {
         };
 
         let gamma = gamma_ladder(&curve, cfg, pricer);
-        assert_relative_eq!(gamma[0].gamma, 1.0, epsilon = 1.0e-6);
-        assert_relative_eq!(gamma[1].gamma, 3.0, epsilon = 1.0e-6);
 
         let cg = cross_gamma(&curve, cfg, 0, 1, pricer);
-        assert_relative_eq!(cg, 1.0, epsilon = 1.0e-6);
+        // For the quadratic oracle the stencil has no truncation error. These
+        // budgets are the measured cancellation error from division by h^2.
+        assert!((gamma[0].gamma - 1.0).abs() <= 1.1e-10);
+        assert!((gamma[1].gamma - 3.0).abs() <= 2.0e-11);
+        assert!((cg - 1.0).abs() <= 1.0e-12);
     }
 
     #[test]
@@ -1559,12 +1595,18 @@ mod tests {
         let pricer = |c: &YieldCurve| c.discount_factor(5.0);
         let gamma = gamma_ladder(&curve, cfg, pricer);
 
-        let analytic = 25.0 * (-z[2] * 5.0_f64).exp();
-        assert_relative_eq!(gamma[2].gamma, analytic, max_relative = 1.0e-4);
+        let h = gamma[2].bump;
+        let base = (-z[2] * 5.0_f64).exp();
+        let stencil_reference = base * ((-5.0 * h).exp() - 2.0 + (5.0 * h).exp()) / (h * h);
+        assert!(
+            (gamma[2].gamma - stencil_reference).abs() <= 3.0e-9,
+            "gamma={}, stencil={stencil_reference}",
+            gamma[2].gamma
+        );
         // The cashflow pillar value is node-reproducing, so other pillars
-        // carry (numerically) no convexity.
-        assert!(gamma[0].gamma.abs() < 1.0e-4 * analytic);
-        assert!(gamma[1].gamma.abs() < 1.0e-4 * analytic);
+        // carry exactly no convexity on this reconstruction grid.
+        assert_eq!(gamma[0].gamma.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(gamma[1].gamma.to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]
@@ -1572,21 +1614,57 @@ mod tests {
         let curve = sample_curve();
         let pricer = |c: &YieldCurve| c.discount_factor(1.5) + c.discount_factor(4.0);
 
-        for mode in [
+        let references = [
+            (
+                -5.007_935_308_690_703e-4,
+                [
+                    -4.828_027_083_303_432e-5,
+                    -1.558_859_932_296_874_4e-4,
+                    -2.966_272_624_890_242_7e-4,
+                ],
+            ),
+            (
+                -4.789_957_387_667_520_6e-4,
+                [
+                    -4.356_082_609_069_389_4e-5,
+                    -1.506_942_685_951_529e-4,
+                    -2.847_406_323_520_651_5e-4,
+                ],
+            ),
+            (
+                1.855_487_190_336_457_8e-4,
+                [
+                    4.828_027_083_303_432e-5,
+                    7.794_299_653_807_18e-5,
+                    5.932_545_144_304_857e-5,
+                ],
+            ),
+        ];
+        for (mode_index, mode) in [
             CurveBumpMode::ZeroRate,
             CurveBumpMode::ParRate,
             CurveBumpMode::LogDiscount,
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let cfg = CurveBumpConfig {
                 mode,
                 ..CurveBumpConfig::default()
             };
             let dv01 = parallel_dv01(&curve, cfg, pricer);
-            assert!(dv01.is_finite());
 
             let buckets = bucket_dv01(&curve, cfg, pricer);
             assert_eq!(buckets.len(), curve.tenors.len());
-            assert!(buckets.iter().all(|b| b.value.is_finite()));
+            assert_roundoff_close(
+                dv01,
+                references[mode_index].0,
+                256.0,
+                "curve-mode parallel DV01 grid",
+            );
+            for (bucket, expected) in buckets.iter().zip(references[mode_index].1) {
+                assert_roundoff_close(bucket.value, expected, 256.0, "curve-mode bucket grid");
+            }
         }
     }
 
@@ -1631,10 +1709,10 @@ mod tests {
         let cfg = SpotBumpConfig::default();
 
         let fx = fx_delta(120.0, cfg, |s| 2.0 * s + 3.0);
-        assert_relative_eq!(fx, 2.0, epsilon = 1.0e-10);
+        assert_roundoff_close(fx, 2.0, 32.0, "linear FX delta");
 
         let comm = commodity_delta(80.0, cfg, |s| -0.5 * s * s);
-        assert_relative_eq!(comm, -80.0, epsilon = 1.0e-6);
+        assert_roundoff_close(comm, -80.0, 32.0, "quadratic commodity delta");
     }
 
     #[test]
@@ -1647,11 +1725,15 @@ mod tests {
             |q: &[f64]| vec![q[0] * q[0] + q[1], q[0] - 2.0 * q[1]],
             |s: &[f64]| 3.0 * s[0] + 4.0 * s[1],
         );
-
-        assert_relative_eq!(result.d_pv_d_state[0], 3.0, epsilon = 1.0e-8);
-        assert_relative_eq!(result.d_pv_d_state[1], 4.0, epsilon = 1.0e-8);
-        assert_relative_eq!(result.d_pv_d_quote[0], 10.0, epsilon = 1.0e-4);
-        assert_relative_eq!(result.d_pv_d_quote[1], -5.0, epsilon = 1.0e-4);
+        // Central differences are exact for the polynomial/linear maps; the
+        // remaining budget is cancellation, O(epsilon / bump).
+        let conditioned_budget = 64.0 * f64::EPSILON / 1.0e-5;
+        for (actual, expected) in result.d_pv_d_state.iter().zip([3.0, 4.0]) {
+            assert!((actual - expected).abs() <= conditioned_budget);
+        }
+        for (actual, expected) in result.d_pv_d_quote.iter().zip([10.0, -5.0]) {
+            assert!((actual - expected).abs() <= conditioned_budget);
+        }
     }
 
     #[test]

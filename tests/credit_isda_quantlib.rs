@@ -8,6 +8,7 @@ use approx::assert_relative_eq;
 use chrono::{Datelike, NaiveDate};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use statrs::distribution::{ContinuousCDF, Normal};
 
 use openferric::credit::cds_option::{CdsOption, fair_spread_from_hazard, risky_annuity};
 use openferric::credit::{
@@ -177,7 +178,7 @@ fn bootstrap_upward_sloping_term_structure() {
 }
 
 #[test]
-fn bootstrap_flat_spreads_give_approximately_flat_hazard() {
+fn bootstrap_flat_spreads_recover_exact_discrete_flat_hazard() {
     let discount_curve = flat_discount_curve(0.03, 12.0);
     let recovery = 0.4;
     let flat_spread = 0.0100;
@@ -191,12 +192,24 @@ fn bootstrap_flat_spreads_give_approximately_flat_hazard() {
 
     let curve = bootstrap_survival_curve_from_cds_spreads(&quotes, recovery, 4, &discount_curve);
 
-    // Hazard rates at different tenors should be approximately equal
+    // For flat quarterly discounting and hazard, every period has the same
+    // protection-to-premium ratio. Solve that one-period par-spread equation
+    // exactly, including midpoint protection and half-period accrued premium.
+    let dt = 0.25;
+    let df_pay = (-0.03_f64 * dt).exp();
+    let df_mid = (-0.03_f64 * dt / 2.0).exp();
+    let net_protection = (1.0 - recovery) * df_mid - 0.5 * flat_spread * dt * df_mid;
+    let survival_step = net_protection / (net_protection + flat_spread * dt * df_pay);
+    let expected_hazard = -survival_step.ln() / dt;
+
     let h1 = curve.hazard_rate(0.5);
     let h5 = curve.hazard_rate(4.0);
     let h8 = curve.hazard_rate(8.0);
-    assert_relative_eq!(h1, h5, epsilon = 3e-3);
-    assert_relative_eq!(h5, h8, epsilon = 3e-3);
+    assert_relative_eq!(expected_hazard, 0.016_604_437_030_399_125, epsilon = 1e-16);
+    // The 1e-13 floor is the bootstrap's 1e-13 NPV stopping criterion.
+    assert_relative_eq!(h1, expected_hazard, epsilon = 1e-13);
+    assert_relative_eq!(h5, expected_hazard, epsilon = 1e-13);
+    assert_relative_eq!(h8, expected_hazard, epsilon = 1e-13);
 }
 
 #[test]
@@ -254,8 +267,7 @@ fn bootstrap_repricing_via_survival_curve_method() {
 // ===========================================================================
 
 #[test]
-fn fair_spread_approximates_hazard_times_lgd() {
-    // Fundamental identity: fair_spread ≈ (1-R)*h for flat hazard
+fn fair_spread_matches_flat_hazard_discrete_closed_form() {
     let r = 0.03;
     let discount_curve = flat_discount_curve(r, 20.0);
     let hazard = 0.02;
@@ -271,8 +283,12 @@ fn fair_spread_approximates_hazard_times_lgd() {
     };
 
     let fair = cds.fair_spread(&discount_curve, &survival_curve);
-    let expected = (1.0 - recovery) * hazard;
-    assert_relative_eq!(fair, expected, epsilon = 1e-3);
+    let dt = 0.25;
+    let survival_step = (-hazard * dt).exp();
+    let expected = (1.0 - recovery) * (1.0 - survival_step) * (-r * dt / 2.0).exp()
+        / (dt * (-(r + hazard) * dt).exp()
+            + 0.5 * dt * (1.0 - survival_step) * (-r * dt / 2.0).exp());
+    assert_relative_eq!(fair, expected, epsilon = 1e-14);
 }
 
 #[test]
@@ -424,8 +440,16 @@ fn isda_midpoint_cached_regression() {
         },
     );
 
-    assert_relative_eq!(result.clean_npv, 295.0153398, epsilon = 1.0);
-    assert_relative_eq!(result.fair_spread, 0.007517539081, epsilon = 5.0e-7);
+    // QuantLib's fully dated cached values are 295.0153398 and
+    // 0.007517539081. OpenFerric's weekends-only schedule is a different
+    // convention, so pin its exact compatible cashflow result rather than
+    // accepting a one-dollar band around the incompatible value.
+    assert_relative_eq!(result.clean_npv, 295.440_979_236_107_86, epsilon = 1.0e-10);
+    assert_relative_eq!(
+        result.fair_spread,
+        0.007_517_859_639_424_599,
+        epsilon = 1.0e-14
+    );
 }
 
 #[test]
@@ -439,23 +463,13 @@ fn isda_flat_vs_midpoint_same_sign_similar_magnitude() {
     let midpoint = price_midpoint_flat(&cds, eval, hazard, 0.03, conventions);
     let isda = price_isda_flat(&cds, eval, hazard, 0.03, conventions);
 
-    // Same sign
-    assert!(
-        midpoint.clean_npv.signum() == isda.clean_npv.signum(),
-        "midpoint={} isda={}",
-        midpoint.clean_npv,
-        isda.clean_npv
+    assert_relative_eq!(midpoint.clean_npv, 91_491.321_504_181_63, epsilon = 1.0e-8);
+    assert_relative_eq!(isda.clean_npv, 91_496.742_298_545_37, epsilon = 1.0e-8);
+    assert_relative_eq!(
+        isda.clean_npv / midpoint.clean_npv,
+        1.000_059_249_273_861_4,
+        epsilon = 1.0e-14
     );
-    // Similar magnitude (within 10%)
-    if midpoint.clean_npv.abs() > 1.0 {
-        let ratio = isda.clean_npv / midpoint.clean_npv;
-        assert!(
-            (0.85..=1.15).contains(&ratio),
-            "ratio={ratio}, midpoint={}, isda={}",
-            midpoint.clean_npv,
-            isda.clean_npv
-        );
-    }
 }
 
 #[test]
@@ -537,7 +551,7 @@ fn par_cds_has_near_zero_npv() {
     let recovery = 0.4;
     let hazard = hazard_from_par_spread(spread, recovery);
 
-    let cds = DatedCds::standard_imm(
+    let probe = DatedCds::standard_imm(
         ProtectionSide::Buyer,
         eval,
         5,
@@ -546,14 +560,13 @@ fn par_cds_has_near_zero_npv() {
         recovery,
     );
 
-    let result = price_isda_flat(&cds, eval, hazard, 0.05, IsdaConventions::default());
-    // NPV should be approximately zero for a par CDS
-    // (tolerance is loose due to discrete schedule vs continuous approximation)
-    assert!(
-        result.clean_npv.abs() < 5.0e4,
-        "Par CDS NPV should be near zero, got {}",
-        result.clean_npv
-    );
+    let probe_result = price_isda_flat(&probe, eval, hazard, 0.05, IsdaConventions::default());
+    let par_cds = DatedCds {
+        running_spread: probe_result.fair_spread,
+        ..probe
+    };
+    let result = price_isda_flat(&par_cds, eval, hazard, 0.05, IsdaConventions::default());
+    assert_relative_eq!(result.clean_npv, 0.0, epsilon = 1.0e-8);
 }
 
 // ===========================================================================
@@ -710,21 +723,26 @@ fn risky_annuity_positive_and_decreasing_with_hazard() {
     let rpv01_low = risky_annuity(4, 5.0, 0.01, r, 0.4);
     let rpv01_high = risky_annuity(4, 5.0, 0.10, r, 0.4);
 
-    assert!(rpv01_low > 0.0);
-    assert!(rpv01_high > 0.0);
-    assert!(rpv01_low > rpv01_high, "Higher hazard should reduce RPV01");
+    let closed_form = |hazard: f64| {
+        let dt = 0.25;
+        let ratio = (-(r + hazard) * dt).exp();
+        dt * ratio * (1.0 - ratio.powi(20)) / (1.0 - ratio)
+    };
+    assert_relative_eq!(rpv01_low, closed_form(0.01), epsilon = 1e-14);
+    assert_relative_eq!(rpv01_high, closed_form(0.10), epsilon = 1e-14);
 }
 
 #[test]
-fn fair_spread_from_hazard_approximation() {
-    // For discrete payments: fair_spread ≈ h*(1-R) with small correction
+fn fair_spread_from_hazard_matches_discrete_closed_form() {
     let h = 0.02;
     let r_free = 0.03;
     let recovery = 0.4;
     let fair = fair_spread_from_hazard(4, 5.0, h, r_free, recovery);
-    let continuous = h * (1.0 - recovery);
-    // Discrete vs continuous should be close
-    assert_relative_eq!(fair, continuous, epsilon = 2e-3);
+    let dt = 0.25;
+    let expected = (1.0 - recovery) * (1.0 - (-h * dt).exp()) * (-r_free * dt / 2.0).exp()
+        / (dt * (-(r_free + h) * dt).exp());
+    assert_relative_eq!(fair, expected, epsilon = 1e-14);
+    assert_relative_eq!(fair, 0.012_075_247_442_418_708, epsilon = 1e-14);
 }
 
 #[test]
@@ -778,10 +796,14 @@ fn cds_option_quantlib_cached_value() {
     };
 
     let price = option.black_price(fair, vol, rpv01);
-    assert!(
-        (price - 270.976348).abs() < 1.0,
-        "QuantLib cached value: got {price}, expected 270.976348"
-    );
+    let sigma_sqrt_t = vol * t_expiry.sqrt();
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    let expected = notional
+        * rpv01
+        * fair
+        * (normal.cdf(0.5 * sigma_sqrt_t) - normal.cdf(-0.5 * sigma_sqrt_t));
+    assert_relative_eq!(price, expected, epsilon = 1e-9);
+    assert_relative_eq!(price, 270.779_713_302_305_6, epsilon = 1e-9);
 }
 
 // ===========================================================================
@@ -883,7 +905,7 @@ fn tranche_expected_losses_sum_to_portfolio_loss() {
         + cdo.expected_tranche_loss(&senior, t);
     let portfolio_el = cdo.portfolio_expected_loss(t);
 
-    assert_relative_eq!(el_sum, portfolio_el, epsilon = 4e-3);
+    assert_relative_eq!(el_sum, portfolio_el, epsilon = 2e-10);
 }
 
 #[test]
@@ -1024,21 +1046,58 @@ fn first_to_default_spread_exceeds_single_name() {
     let name_spread = single.fair_spread(&discount_curve, &curve);
 
     let curves = vec![curve.clone(); 5];
-    let ftd = first_to_default_spread_copula(
-        1.0,
-        5.0,
-        recovery,
-        4,
-        &discount_curve,
-        &curves,
-        &GaussianCopula::new(0.25),
-        20_000,
-        42,
-    );
+    // At zero copula correlation, five homogeneous exponential default times
+    // have an exponential minimum with intensity 5h.  This gives an
+    // independent closed-form reference for the simulated first-to-default
+    // cashflows under the implementation's accrued-premium convention.
+    let first_hazard = 5.0 * hazard;
+    let k = 0.03 + first_hazard;
+    let maturity = 5.0;
+    let dt = 0.25;
+    let expected_protection = (1.0 - recovery) * first_hazard / k * (1.0 - (-k * maturity).exp());
+    let mut expected_annuity = 0.0;
+    for period in 0..20 {
+        let start = period as f64 * dt;
+        let end = start + dt;
+        let full_coupon = dt * (-k * end).exp();
+        let accrued_on_default =
+            first_hazard * (-k * start).exp() * (1.0 - (-k * dt).exp() * (1.0 + k * dt)) / (k * k);
+        expected_annuity += full_coupon + accrued_on_default;
+    }
+    let expected = expected_protection / expected_annuity;
 
+    // Estimate sampling error from independent deterministic batches.  The
+    // assertion is against the analytic price, not against an RNG snapshot.
+    let batch_prices: Vec<f64> = (0..32)
+        .map(|seed| {
+            first_to_default_spread_copula(
+                1.0,
+                maturity,
+                recovery,
+                4,
+                &discount_curve,
+                &curves,
+                &GaussianCopula::new(0.0),
+                10_000,
+                seed,
+            )
+        })
+        .collect();
+    let batch_count = batch_prices.len() as f64;
+    let mean = batch_prices.iter().sum::<f64>() / batch_count;
+    let variance = batch_prices
+        .iter()
+        .map(|price| (price - mean).powi(2))
+        .sum::<f64>()
+        / (batch_count - 1.0);
+    let std_error = (variance / batch_count).sqrt();
+
+    assert_relative_eq!(expected, 0.050_187_313_704_602_75, epsilon = 1.0e-14);
+    assert!(mean > name_spread);
     assert!(
-        ftd > name_spread,
-        "FTD spread {ftd} should exceed single-name spread {name_spread}"
+        (mean - expected).abs() <= 4.0 * std_error,
+        "MC mean {mean} differs from exponential-minimum reference {expected} by more than 4 stderr ({})",
+        4.0 * std_error
     );
 }
 
@@ -1069,8 +1128,9 @@ fn nth_to_default_spread_decreases_with_n() {
     let s2 = basket2.fair_spread(&discount_curve, &curves);
     let s3 = basket3.fair_spread(&discount_curve, &curves);
 
-    assert!(s1 > s2, "1st-to-default {s1} > 2nd-to-default {s2}");
-    assert!(s2 > s3, "2nd-to-default {s2} > 3rd-to-default {s3}");
+    assert_relative_eq!(s1, 0.060_222_285_858_122_26, epsilon = 1.0e-14);
+    assert_relative_eq!(s2, 0.009_019_522_989_712_63, epsilon = 1.0e-14);
+    assert_relative_eq!(s3, 0.000_865_832_177_931_71, epsilon = 1.0e-14);
 }
 
 #[test]

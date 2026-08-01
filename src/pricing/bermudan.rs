@@ -132,11 +132,13 @@ pub fn longstaff_schwartz_bermudan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pricing::american::crr_binomial_american;
-    use crate::pricing::european::black_scholes_price;
+    use crate::core::{ExerciseStyle, PricingEngine};
+    use crate::engines::tree::binomial::BinomialTreeEngine;
+    use crate::instruments::vanilla::VanillaOption;
+    use crate::market::Market;
 
     #[test]
-    fn bermudan_put_between_european_and_american() {
+    fn bermudan_lsm_matches_independent_binomial_with_batch_stderr() {
         let s0 = 100.0;
         let k = 100.0;
         let r = 0.05;
@@ -144,24 +146,62 @@ mod tests {
         let t = 1.0;
 
         let exercise_steps = vec![13, 26, 39, 52];
-        let berm = longstaff_schwartz_bermudan(
-            OptionType::Put,
-            s0,
-            k,
-            r,
-            sigma,
-            t,
-            52,
-            &exercise_steps,
-            60_000,
-            99,
+        let estimates = (0..16)
+            .map(|batch| {
+                longstaff_schwartz_bermudan(
+                    OptionType::Put,
+                    s0,
+                    k,
+                    r,
+                    sigma,
+                    t,
+                    52,
+                    &exercise_steps,
+                    30_000,
+                    99 + batch,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mean = estimates.iter().sum::<f64>() / estimates.len() as f64;
+        let variance = estimates
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / (estimates.len() - 1) as f64;
+        let batch_stderr = (variance / estimates.len() as f64).sqrt();
+
+        let dates = exercise_steps
+            .iter()
+            .map(|step| t * *step as f64 / 52.0)
+            .collect::<Vec<_>>();
+        let option = VanillaOption {
+            option_type: OptionType::Put,
+            strike: k,
+            expiry: t,
+            exercise: ExerciseStyle::Bermudan { dates },
+        };
+        let market = Market::builder()
+            .spot(s0)
+            .rate(r)
+            .dividend_yield(0.0)
+            .flat_vol(sigma)
+            .build()
+            .unwrap();
+        let coarse = BinomialTreeEngine::new(2_500)
+            .price(&option, &market)
+            .unwrap()
+            .price;
+        let reference = BinomialTreeEngine::new(5_000)
+            .price(&option, &market)
+            .unwrap()
+            .price;
+        let reference_refinement = (reference - coarse).abs();
+        let err = (mean - reference).abs();
+
+        assert!(
+            err <= 4.0 * batch_stderr + reference_refinement,
+            "LSM mean={mean} tree={reference} err={err} batch_se={batch_stderr} tree_refinement={reference_refinement}"
         );
-
-        let eur = black_scholes_price(OptionType::Put, s0, k, r, sigma, t);
-        let am = crr_binomial_american(OptionType::Put, s0, k, r, sigma, t, 500);
-
-        assert!(berm >= eur - 0.2);
-        assert!(berm <= am + 0.3);
     }
 
     #[test]

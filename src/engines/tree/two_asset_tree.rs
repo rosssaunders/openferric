@@ -317,8 +317,6 @@ mod tests {
     use crate::core::PricingEngine;
     use crate::engines::analytic::rainbow::{best_of_two_call_price, worst_of_two_call_price};
     use crate::engines::analytic::spread::kirk_spread_price;
-    use approx::assert_relative_eq;
-
     fn dummy_market() -> Market {
         Market::builder()
             .spot(1.0)
@@ -329,12 +327,26 @@ mod tests {
             .unwrap()
     }
 
+    fn assert_refinement_covers_error(label: &str, coarse: f64, fine: f64, exact: f64) {
+        let coarse_error = (coarse - exact).abs();
+        let fine_error = (fine - exact).abs();
+        let measured_discretization = (fine - coarse).abs();
+        assert!(
+            fine_error <= coarse_error,
+            "{label}: refinement did not improve: coarse={coarse} fine={fine} exact={exact}"
+        );
+        assert!(
+            fine_error <= 2.0 * measured_discretization + 1.0e-12,
+            "{label}: fine={fine} exact={exact} error={fine_error} measured_discretization={measured_discretization}"
+        );
+    }
+
     #[test]
-    fn spread_call_matches_kirk_approximation() {
+    fn zero_strike_spread_tree_converges_to_exact_margrabe_value() {
         let option = SpreadOption {
             s1: 100.0,
             s2: 96.0,
-            k: 3.0,
+            k: 0.0,
             vol1: 0.20,
             vol2: 0.15,
             rho: 0.5,
@@ -344,14 +356,17 @@ mod tests {
             t: 0.5,
         };
 
-        let kirk = kirk_spread_price(&option).unwrap();
-        let tree = TwoAssetBinomialEngine::new(200)
+        // Kirk reduces exactly to Margrabe at zero spread strike.
+        let exact = kirk_spread_price(&option).unwrap();
+        let coarse = TwoAssetBinomialEngine::new(100)
             .price(&option, &dummy_market())
             .unwrap()
             .price;
-
-        // Kirk is an approximation, so tolerance is wider
-        assert_relative_eq!(tree, kirk, epsilon = 0.15);
+        let fine = TwoAssetBinomialEngine::new(200)
+            .price(&option, &dummy_market())
+            .unwrap()
+            .price;
+        assert_refinement_covers_error("spread", coarse, fine, exact);
     }
 
     #[test]
@@ -370,12 +385,15 @@ mod tests {
         };
 
         let analytic = best_of_two_call_price(&option).unwrap();
-        let tree = TwoAssetBinomialEngine::new(100)
+        let coarse = TwoAssetBinomialEngine::new(50)
             .price(&option, &dummy_market())
             .unwrap()
             .price;
-
-        assert_relative_eq!(tree, analytic, epsilon = 0.5);
+        let fine = TwoAssetBinomialEngine::new(100)
+            .price(&option, &dummy_market())
+            .unwrap()
+            .price;
+        assert_refinement_covers_error("best-of", coarse, fine, analytic);
     }
 
     #[test]
@@ -394,12 +412,15 @@ mod tests {
         };
 
         let analytic = worst_of_two_call_price(&option).unwrap();
-        let tree = TwoAssetBinomialEngine::new(100)
+        let coarse = TwoAssetBinomialEngine::new(50)
             .price(&option, &dummy_market())
             .unwrap()
             .price;
-
-        assert_relative_eq!(tree, analytic, epsilon = 0.5);
+        let fine = TwoAssetBinomialEngine::new(100)
+            .price(&option, &dummy_market())
+            .unwrap()
+            .price;
+        assert_refinement_covers_error("worst-of", coarse, fine, analytic);
     }
 
     #[test]
@@ -430,17 +451,15 @@ mod tests {
         };
 
         let market = dummy_market();
-        let engine = TwoAssetBinomialEngine::new(100);
-
-        let best_price = engine.price(&best, &market).unwrap().price;
-        let worst_price = engine.price(&worst, &market).unwrap().price;
-
         // best_of + worst_of = call(S1,K) + call(S2,K)
-        // Both marginals should be equal here (symmetric case)
         let analytic_best = best_of_two_call_price(&best).unwrap();
         let analytic_worst = worst_of_two_call_price(&worst).unwrap();
         let analytic_sum = analytic_best + analytic_worst;
-
-        assert_relative_eq!(best_price + worst_price, analytic_sum, epsilon = 1.0);
+        let sum_at = |steps| {
+            let engine = TwoAssetBinomialEngine::new(steps);
+            engine.price(&best, &market).unwrap().price
+                + engine.price(&worst, &market).unwrap().price
+        };
+        assert_refinement_covers_error("best+worst", sum_at(50), sum_at(100), analytic_sum);
     }
 }

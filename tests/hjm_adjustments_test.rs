@@ -29,7 +29,7 @@ fn flat_forward_curve(rate: f64, max_t: f64, dt: f64) -> (Vec<f64>, Vec<f64>) {
 }
 
 #[test]
-fn single_factor_hjm_recovers_hull_white_bond_prices_within_one_percent() {
+fn single_factor_hjm_and_hull_white_match_flat_curve_bond_price() {
     let rate = 0.03;
     let maturity = 7.0;
     let _hjm = HjmModel::single_factor_exponential(0.01, 0.20);
@@ -41,8 +41,9 @@ fn single_factor_hjm_recovers_hull_white_bond_prices_within_one_percent() {
     let curve = flat_discount_curve(rate, 30.0, 0.25);
     let hw_bond = hw.bond_price(0.0, maturity, rate, &curve);
 
-    let rel_err = (hjm_bond - hw_bond).abs() / hw_bond.abs().max(1.0e-12);
-    assert!(rel_err <= 0.01);
+    let expected = (-rate * maturity).exp();
+    assert_relative_eq!(hjm_bond, expected, epsilon = 2.0e-14);
+    assert_relative_eq!(hw_bond, expected, epsilon = 2.0e-12);
 }
 
 #[test]
@@ -64,19 +65,22 @@ fn convexity_adjustment_is_positive_and_increases_with_maturity() {
     let short = futures_forward_convexity_adjustment(0.012, 0.5, 0.75);
     let long = futures_forward_convexity_adjustment(0.012, 2.0, 2.25);
 
+    assert_relative_eq!(short, 0.000_027, epsilon = 8.0e-20);
+    assert_relative_eq!(long, 0.000_324, epsilon = 2.0e-19);
     assert!(short > 0.0);
     assert!(long > short);
 }
 
 #[test]
-fn cms_rate_is_above_swap_rate_from_convexity_bias() {
+fn cms_rate_matches_nonzero_closed_form_adjustment() {
     let swap_rate = 0.03;
     let cms = cms_rate_in_arrears(swap_rate, 0.25, 3.0);
+    assert_relative_eq!(cms, 0.032_812_5, epsilon = 8.0e-18);
     assert!(cms > swap_rate);
 }
 
 #[test]
-fn timing_adjustment_vanishes_when_payment_equals_natural_date() {
+fn timing_adjustment_matches_zero_and_nonzero_closed_forms() {
     let rate = 0.0275;
     let adjusted = timing_adjusted_rate(rate, 0.2, 1.5, 1.5);
     assert_relative_eq!(
@@ -85,6 +89,14 @@ fn timing_adjustment_vanishes_when_payment_equals_natural_date() {
         epsilon = 1.0e-16
     );
     assert_relative_eq!(adjusted, rate, epsilon = 1.0e-16);
+
+    let delayed = timing_adjusted_rate(rate, 0.2, 1.5, 2.0);
+    assert_relative_eq!(
+        timing_adjustment_amount(0.2, 1.5, 2.0),
+        0.015,
+        epsilon = 4.0e-18
+    );
+    assert_relative_eq!(delayed, 0.0425, epsilon = 8.0e-18);
 }
 
 #[test]

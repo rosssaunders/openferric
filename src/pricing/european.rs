@@ -125,15 +125,23 @@ pub fn black_scholes_greeks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_relative_eq;
+
+    fn assert_close_to_scipy(actual: f64, expected: f64, label: &str) {
+        let tolerance = 256.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.15}, SciPy={expected:.15}, tolerance={tolerance:.3e}"
+        );
+    }
 
     #[test]
     fn black_scholes_known_value() {
         let call = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
-        assert_relative_eq!(call, 10.4506, epsilon = 2e-4);
+        // scipy.stats.norm 1.17.1 evaluated from the closed-form BSM equation.
+        assert_close_to_scipy(call, 10.450583572185565, "ATM call");
 
         let put = black_scholes_price(OptionType::Put, 100.0, 100.0, 0.05, 0.2, 1.0);
-        assert_relative_eq!(put, 5.5735, epsilon = 2e-4);
+        assert_close_to_scipy(put, 5.573526022256971, "ATM put");
     }
 
     #[test]
@@ -148,7 +156,8 @@ mod tests {
         let p = black_scholes_price(OptionType::Put, s, k, r, sigma, t);
         let rhs = s - k * (-r * t).exp();
 
-        assert_relative_eq!(c - p, rhs, epsilon = 2e-6);
+        let roundoff = 64.0 * f64::EPSILON * c.abs().max(p.abs()).max(rhs.abs()).max(1.0);
+        assert!(((c - p) - rhs).abs() <= roundoff);
     }
 
     #[test]
@@ -162,28 +171,25 @@ mod tests {
         let c = black_76_price(OptionType::Call, f, k, r, sigma, t);
         let p = black_76_price(OptionType::Put, f, k, r, sigma, t);
 
-        assert_relative_eq!(c - p, (-r * t).exp() * (f - k), epsilon = 2e-6);
+        let rhs = (-r * t).exp() * (f - k);
+        let roundoff = 64.0 * f64::EPSILON * c.abs().max(p.abs()).max(rhs.abs()).max(1.0);
+        assert!(((c - p) - rhs).abs() <= roundoff);
     }
 
     #[test]
-    fn greeks_are_consistent_with_finite_differences() {
+    fn greeks_match_scipy_closed_form_reference() {
         let s = 100.0;
         let k = 100.0;
         let r = 0.05;
         let sigma = 0.2;
         let t = 1.0;
-        let ds = 1e-3;
-
         let g = black_scholes_greeks(OptionType::Call, s, k, r, sigma, t);
 
-        let p_up = black_scholes_price(OptionType::Call, s + ds, k, r, sigma, t);
-        let p_dn = black_scholes_price(OptionType::Call, s - ds, k, r, sigma, t);
-        let p_0 = black_scholes_price(OptionType::Call, s, k, r, sigma, t);
-
-        let delta_fd = (p_up - p_dn) / (2.0 * ds);
-        let gamma_fd = (p_up - 2.0 * p_0 + p_dn) / (ds * ds);
-
-        assert_relative_eq!(g.delta, delta_fd, epsilon = 1e-4);
-        assert_relative_eq!(g.gamma, gamma_fd, epsilon = 1e-4);
+        // Independent scipy.stats.norm CDF/PDF references for d1=0.35, d2=0.15.
+        assert_close_to_scipy(g.delta, 0.6368306511756191, "delta");
+        assert_close_to_scipy(g.gamma, 0.018762017345846895, "gamma");
+        assert_close_to_scipy(g.vega, 37.52403469169379, "vega");
+        assert_close_to_scipy(g.theta, -6.414027546438197, "theta");
+        assert_close_to_scipy(g.rho, 53.232481545376345, "rho");
     }
 }

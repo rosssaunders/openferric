@@ -58,20 +58,17 @@ fn schwartz_one_factor_ou_expected_mean() {
         alpha_star
     );
 
-    // For X_0 = ln(20), verify the conditional mean at various horizons
+    // Decimal (80-digit) evaluation of the OU conditional-mean formula.
     let x0 = 20.0_f64.ln();
-    for &t in &[0.5, 1.0, 2.0, 5.0] {
-        let expected = ou_expected_mean(alpha_star, x0, kappa, t);
-        // At t -> inf the mean should converge to alpha_star = 3.0
-        assert!(
-            expected <= alpha_star || (expected - alpha_star).abs() < 1e-10,
-            "OU mean at T={} should not exceed long-run mean when X_0 < alpha*",
-            t
-        );
-        // Mean should increase toward alpha_star since ln(20) ~ 2.996 < 3.0
-        if t > 0.0 {
-            assert!(expected >= x0 - 1e-10, "OU mean should move toward alpha*");
-        }
+    let references = [
+        (0.5, 2.997_973_963_873_319),
+        (1.0, 2.999_038_171_157_747),
+        (2.0, 2.999_783_230_079_647),
+        (5.0, 2.999_997_518_566_255),
+    ];
+    for &(t, reference) in &references {
+        let mean = ou_expected_mean(alpha_star, x0, kappa, t);
+        assert!((mean - reference).abs() <= 2.0e-15);
     }
 }
 
@@ -87,34 +84,24 @@ fn schwartz_one_factor_ou_variance() {
     // Check model validates
     model.validate().expect("model should be valid");
 
-    // Variance should increase monotonically and converge to sigma^2 / (2*kappa)
+    // Decimal (80-digit) evaluations of the exact OU variance.
     let long_run_var = sigma * sigma / (2.0 * kappa);
-
-    let mut prev_var = 0.0;
-    for &t in &[0.25, 0.5, 1.0, 2.0, 5.0, 10.0] {
+    let references = [
+        (0.25, 0.014_417_662_148_360_713),
+        (0.5, 0.021_262_220_895_132_91),
+        (1.0, 0.026_054_144_080_935_155),
+        (2.0, 0.027_377_507_892_730_223),
+        (5.0, 0.027_448_312_868_077_382),
+        (10.0, 0.027_448_322_147_647_87),
+    ];
+    for &(t, reference) in &references {
         let var = ou_variance(sigma, kappa, t);
-        assert!(
-            var > prev_var,
-            "OU variance should increase with time: T={}, var={}, prev={}",
-            t,
-            var,
-            prev_var
-        );
-        assert!(
-            var <= long_run_var + 1e-14,
-            "OU variance should not exceed long-run variance"
-        );
-        prev_var = var;
+        assert!((var - reference).abs() <= 2.0e-17);
     }
 
-    // At long horizon, should be very close to long-run variance
+    // At T=50 the remaining analytic tail is 5.35e-67 and rounds away in f64.
     let var_long = ou_variance(sigma, kappa, 50.0);
-    assert!(
-        (var_long - long_run_var).abs() < 1e-10,
-        "OU variance at T=50 should converge to {}, got {}",
-        long_run_var,
-        var_long
-    );
+    assert_eq!(var_long, long_run_var);
 }
 
 #[test]
@@ -131,41 +118,21 @@ fn schwartz_one_factor_futures_term_structure() {
     let f_20 = schwartz_futures_price(s0, kappa, sigma, alpha_star, 2.0);
     let f_50 = schwartz_futures_price(s0, kappa, sigma, alpha_star, 5.0);
 
-    // Term structure should be in contango (increasing) since ln(20) ~ 2.996 < alpha* = 3.0
-    assert!(
-        f_05 > s0,
-        "futures should be above spot in contango: F(0.5)={}, S={}",
-        f_05,
-        s0
-    );
-    assert!(
-        f_10 > f_05,
-        "futures should increase with maturity: F(1.0)={}, F(0.5)={}",
-        f_10,
-        f_05
-    );
-    assert!(
-        f_20 > f_10,
-        "futures should increase with maturity: F(2.0)={}, F(1.0)={}",
-        f_20,
-        f_10
-    );
-    assert!(
-        f_50 > f_20,
-        "futures should increase with maturity: F(5.0)={}, F(2.0)={}",
-        f_50,
-        f_20
-    );
+    let references = [
+        20.259_120_238_738_785,
+        20.329_341_634_953_764,
+        20.357_959_874_337_344,
+        20.363_043_707_840_006,
+    ];
+    for (actual, reference) in [f_05, f_10, f_20, f_50].into_iter().zip(references) {
+        assert!((actual - reference).abs() <= 3.0e-14);
+    }
 
     // Futures should converge to exp(alpha* + sigma^2/(4*kappa)) as T->inf
     let long_run_futures = (alpha_star + sigma * sigma / (4.0 * kappa)).exp();
     let f_100 = schwartz_futures_price(s0, kappa, sigma, alpha_star, 100.0);
-    assert!(
-        (f_100 - long_run_futures).abs() / long_run_futures < 1e-8,
-        "futures should converge to long-run level: F(100)={}, target={}",
-        f_100,
-        long_run_futures
-    );
+    assert!((long_run_futures - 20.363_094_331_926_926).abs() <= 3.0e-14);
+    assert_eq!(f_100, long_run_futures);
 }
 
 #[test]
@@ -179,21 +146,19 @@ fn schwartz_one_factor_backwardation() {
     let f_05 = schwartz_futures_price(s0, kappa, sigma, alpha_star, 0.5);
     let f_50 = schwartz_futures_price(s0, kappa, sigma, alpha_star, 5.0);
 
-    // At short maturity, the futures should be below spot (backwardation)
-    assert!(
-        f_05 < s0,
-        "should be in backwardation: F(0.5)={}, S={}",
-        f_05,
-        s0
-    );
-
-    // At long maturity, should converge to equilibrium regardless
+    // Decimal (80-digit) finite-horizon references. The exact T=5 residual
+    // from the infinite-horizon level is 0.002591549324584..., not a 1% band.
+    assert!((f_05 - 22.523_044_204_153_94).abs() <= 3.0e-14);
+    assert!((f_50 - 20.365_685_881_251_51).abs() <= 3.0e-14);
     let long_run_futures = (alpha_star + sigma * sigma / (4.0 * kappa)).exp();
+    let residual_reference = 0.002_591_549_324_584_057;
+    // Subtracting two independently exponentiated values near 20 magnifies
+    // their libm roundoff; budget those operands explicitly.
+    let cancellation_roundoff = 8.0 * f64::EPSILON * (f_50.abs() + long_run_futures.abs()).max(1.0);
     assert!(
-        (f_50 - long_run_futures).abs() / long_run_futures < 0.01,
-        "futures should converge to long-run level: F(5)={}, target={}",
-        f_50,
-        long_run_futures
+        (f_50 - long_run_futures - residual_reference).abs() <= cancellation_roundoff,
+        "finite-horizon residual={} reference={residual_reference} roundoff budget={cancellation_roundoff:.3e}",
+        f_50 - long_run_futures
     );
 }
 
@@ -304,69 +269,70 @@ fn schwartz_smith_two_factor_chi_mean_reverts() {
 
     let mean_chi = sum_chi / n as f64;
     let expected_chi = chi0 * (-model.kappa * t).exp(); // mean of chi_T
+    let variance_chi =
+        model.sigma_chi.powi(2) * (1.0 - (-2.0 * model.kappa * t).exp()) / (2.0 * model.kappa);
+    let tolerance = 4.0 * (variance_chi / n as f64).sqrt();
 
     assert!(
-        (mean_chi - expected_chi).abs() < 0.02,
-        "chi should mean-revert: mean={}, expected={}",
+        (mean_chi - expected_chi).abs() <= tolerance,
+        "chi should mean-revert: mean={}, expected={}, tolerance={tolerance}",
         mean_chi,
         expected_chi
     );
 }
 
 // ---------------------------------------------------------------------------
-// Black-76 reference prices (QuantLib BlackCalculator)
+// Black-76 reference prices (SciPy normal CDF; consistent with QuantLib BlackCalculator)
 // ---------------------------------------------------------------------------
 // Parameters: Forward=100, vol=0.20, T=1.0, r=0.0 => StdDev = 0.20, Discount = 1.0
 
 #[test]
-fn black76_atm_call_quantlib() {
+fn black76_atm_call_matches_scipy_reference() {
     let price = black76_price(OptionType::Call, 100.0, 100.0, 0.0, 0.20, 1.0).unwrap();
-    // The library's normal CDF approximation introduces ~1e-5 difference from
-    // exact QuantLib values (7.965567455406), which the library now matches; we
-    // own consistent output.
+    // Independent SciPy 1.17.1 normal-CDF evaluation.
     assert!(
-        (price - 7.965567455405796).abs() < 1e-6,
-        "ATM call: expected ~7.9656, got {}",
+        (price - 7.965_567_455_405_804).abs() <= 3.0e-14,
+        "ATM call: expected 7.965567455405804, got {}",
         price
     );
 }
 
 #[test]
-fn black76_itm_call_quantlib() {
+fn black76_itm_call_matches_scipy_reference() {
     let price = black76_price(OptionType::Call, 100.0, 90.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 13.5891081160548).abs() < 1e-6,
-        "ITM call (K=90): expected ~13.5891, got {}",
+        (price - 13.589_108_116_054_796).abs() <= 3.0e-14,
+        "ITM call (K=90): expected 13.589108116054796, got {}",
         price
     );
 }
 
 #[test]
-fn black76_otm_call_quantlib() {
+fn black76_otm_call_matches_scipy_reference() {
     let price = black76_price(OptionType::Call, 100.0, 110.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 4.292010941409888).abs() < 1e-6,
-        "OTM call (K=110): expected ~4.2920, got {}",
+        (price - 4.292_010_941_409_885).abs() <= 3.0e-14,
+        "OTM call (K=110): expected 4.292010941409885, got {}",
         price
     );
 }
 
 #[test]
-fn black76_itm_put_quantlib() {
+fn black76_itm_put_matches_scipy_reference() {
     let price = black76_price(OptionType::Put, 100.0, 110.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 14.29201094140989).abs() < 1e-6,
-        "ITM put (K=110): expected ~14.2920, got {}",
+        (price - 14.292_010_941_409_899).abs() <= 3.0e-14,
+        "ITM put (K=110): expected 14.292010941409899, got {}",
         price
     );
 }
 
 #[test]
-fn black76_otm_put_quantlib() {
+fn black76_otm_put_matches_scipy_reference() {
     let price = black76_price(OptionType::Put, 100.0, 90.0, 0.0, 0.20, 1.0).unwrap();
     assert!(
-        (price - 3.589108116054802).abs() < 1e-6,
-        "OTM put (K=90): expected ~3.5891, got {}",
+        (price - 3.589_108_116_054_795_5).abs() <= 3.0e-14,
+        "OTM put (K=90): expected 3.5891081160547955, got {}",
         price
     );
 }
@@ -855,7 +821,7 @@ fn forward_curve_from_futures_quotes() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn commodity_spread_option_crack_spread_positive() {
+fn commodity_spread_option_crack_spread_matches_scipy_kirk_reference() {
     let spread = CommoditySpreadOption::crack_spread(
         OptionType::Call,
         95.0,    // refined forward
@@ -872,11 +838,11 @@ fn commodity_spread_option_crack_spread_positive() {
     );
 
     let price = spread.price_kirk().unwrap();
-    assert!(price > 0.0, "crack spread call price should be positive");
+    assert!((price - 97_776.912_290_401_3).abs() <= 3.0e-10);
 }
 
 #[test]
-fn commodity_spread_option_spark_spread_positive() {
+fn commodity_spread_option_spark_spread_matches_scipy_kirk_reference() {
     let spread = CommoditySpreadOption::spark_spread(
         OptionType::Call,
         60.0,    // power forward
@@ -893,8 +859,8 @@ fn commodity_spread_option_spark_spread_positive() {
 
     let price = spread.price_kirk().unwrap();
     assert!(
-        price > 0.0,
-        "spark spread call price should be positive: {}",
+        (price - 13_743.185_534_017_315).abs() <= 6.0e-11,
+        "spark spread call price: {}",
         price
     );
 }
@@ -937,7 +903,7 @@ fn commodity_spread_option_put_call_relation() {
     let parity = df * intrinsic_fwd;
 
     assert!(
-        (call_price - put_price - parity).abs() < 1e-6,
+        (call_price - put_price - parity).abs() <= 2.0e-14,
         "spread put-call parity: C-P={}, DF*(F1-F2-K)={}",
         call_price - put_price,
         parity
@@ -1113,7 +1079,7 @@ fn black76_call_price_increases_with_vol() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn black76_deep_itm_call_approaches_df_times_f_minus_k() {
+fn black76_deep_itm_call_matches_scipy_closed_form() {
     let forward = 100.0;
     let strike = 10.0; // very deep ITM
     let r = 0.05;
@@ -1121,20 +1087,16 @@ fn black76_deep_itm_call_approaches_df_times_f_minus_k() {
     let t = 1.0;
 
     let price = black76_price(OptionType::Call, forward, strike, r, vol, t).unwrap();
-    let df = (-r * t).exp();
-    let intrinsic = df * (forward - strike);
-
-    // Deep ITM call should be very close to discounted intrinsic
+    let expected = 85.610_648_205_064_27;
     assert!(
-        (price - intrinsic).abs() / intrinsic < 0.01,
-        "deep ITM call should be close to DF*(F-K): price={}, DF*(F-K)={}",
+        (price - expected).abs() <= 2.0e-13,
+        "deep ITM call: price={} expected={expected}",
         price,
-        intrinsic
     );
 }
 
 #[test]
-fn black76_deep_otm_call_near_zero() {
+fn black76_deep_otm_call_matches_scipy_tail_value() {
     let forward = 100.0;
     let strike = 300.0; // very deep OTM
     let r = 0.05;
@@ -1142,7 +1104,11 @@ fn black76_deep_otm_call_near_zero() {
     let t = 1.0;
 
     let price = black76_price(OptionType::Call, forward, strike, r, vol, t).unwrap();
-    assert!(price < 1e-6, "deep OTM call should be near zero: {}", price);
+    let expected = 1.111_590_309_260_426_6e-7;
+    assert!(
+        (price - expected).abs() <= 2.0e-18,
+        "price={price} expected={expected}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,24 +1185,8 @@ fn seasonal_model_captures_nat_gas_winter_summer_pattern() {
 }
 
 #[test]
-fn kirk_spread_matches_two_factor_mc_within_two_percent() {
-    let spread = CommoditySpreadOption::crack_spread(
-        OptionType::Call,
-        95.0,
-        88.0,
-        2.0,
-        2.0,
-        1.0,
-        0.34,
-        0.27,
-        0.58,
-        0.03,
-        1.0,
-        1.0,
-    );
-
-    let kirk = spread.price_kirk().unwrap();
-
+fn two_factor_spread_mc_matches_exact_margrabe_reduction() {
+    let maturity = 1.0_f64;
     let model = TwoFactorSpreadModel {
         leg_1: TwoFactorCommodityProcess {
             kappa_fast: 2.5,
@@ -1252,13 +1202,46 @@ fn kirk_spread_matches_two_factor_mc_within_two_percent() {
         rho_slow: 0.56,
     };
 
-    let (mc, _stderr) = spread.price_two_factor_mc(&model, 400_000, 101).unwrap();
-    let rel_err = ((mc - kirk) / kirk).abs();
+    // The model's two independent factors sum to a jointly lognormal terminal
+    // forward. At K=0, Kirk is exactly Margrabe when supplied with the
+    // integrated marginal variances and covariance of those factors.
+    let fast_var_1 = model.leg_1.sigma_fast.powi(2)
+        * (1.0 - (-2.0 * model.leg_1.kappa_fast * maturity).exp())
+        / (2.0 * model.leg_1.kappa_fast);
+    let fast_var_2 = model.leg_2.sigma_fast.powi(2)
+        * (1.0 - (-2.0 * model.leg_2.kappa_fast * maturity).exp())
+        / (2.0 * model.leg_2.kappa_fast);
+    let slow_var_1 = model.leg_1.sigma_slow.powi(2) * maturity;
+    let slow_var_2 = model.leg_2.sigma_slow.powi(2) * maturity;
+    let var_1 = fast_var_1 + slow_var_1;
+    let var_2 = fast_var_2 + slow_var_2;
+    let covariance = model.rho_fast * (fast_var_1 * fast_var_2).sqrt()
+        + model.rho_slow * (slow_var_1 * slow_var_2).sqrt();
+    let effective_rho = covariance / (var_1 * var_2).sqrt();
+
+    let spread = CommoditySpreadOption::crack_spread(
+        OptionType::Call,
+        95.0,
+        88.0,
+        0.0,
+        1.0,
+        1.0,
+        (var_1 / maturity).sqrt(),
+        (var_2 / maturity).sqrt(),
+        effective_rho,
+        0.03,
+        maturity,
+        1.0,
+    );
+    let margrabe = spread.price_kirk().unwrap();
+    let (mc, stderr) = spread.price_two_factor_mc(&model, 400_000, 101).unwrap();
+    let tolerance = 4.0 * stderr + 1.0e-12;
     assert!(
-        rel_err <= 0.02,
-        "Kirk vs 2-factor MC mismatch exceeds 2%: kirk={} mc={} rel_err={}",
-        kirk,
+        (mc - margrabe).abs() <= tolerance,
+        "two-factor MC/Margrabe error exceeds sampling budget: exact={} mc={} stderr={} tolerance={}",
+        margrabe,
         mc,
-        rel_err
+        stderr,
+        tolerance
     );
 }

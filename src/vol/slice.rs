@@ -513,6 +513,16 @@ pub fn log_returns_batch(prices: &[f64]) -> Vec<f64> {
 mod tests {
     use super::*;
 
+    fn assert_values(actual: &[f64], expected: &[f64], tolerance: f64) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "value {index}: actual={actual:.17e}, expected={expected:.17e}, tolerance={tolerance:.1e}"
+            );
+        }
+    }
+
     /// Helper: build a single SVI slice header + params.
     fn svi_fixture() -> (Vec<f64>, Vec<f64>) {
         // SVI params: a=0.04, b=0.4, rho=-0.4, m=0.0, sigma=0.5
@@ -533,29 +543,26 @@ mod tests {
     fn test_eval_iv_pct_svi() {
         let params = [0.04, 0.4, -0.4, 0.0, 0.5];
         let iv = eval_iv_pct(MODEL_SVI, &params, 0.0, 0.25, 100.0);
-        assert!(iv.is_finite());
-        assert!(iv > 0.0);
         // At k=0, total_var = a + b*sigma = 0.04 + 0.4*0.5 = 0.24
-        // IV = sqrt(0.24/0.25)*100 = sqrt(0.96)*100 ≈ 97.98
+        // IV = sqrt(0.24/0.25)*100.
         let expected = (0.24_f64 / 0.25).sqrt() * 100.0;
-        assert!((iv - expected).abs() < 0.01);
+        assert!((iv - expected).abs() <= 2.0e-14);
     }
 
     #[test]
     fn test_eval_iv_pct_sabr() {
         let params = [0.2, 0.5, -0.3, 0.4];
         let iv = eval_iv_pct(MODEL_SABR, &params, 0.0, 0.25, 100.0);
-        assert!(iv.is_finite());
-        assert!(iv > 0.0);
+        // Hagan ATM SABR asymptotic formula, evaluated at full precision.
+        assert!((iv - 2.005_618_75).abs() <= 2.0e-14);
     }
 
     #[test]
     fn test_eval_iv_pct_vv() {
         let params = [0.20, -0.02, 0.005];
         let iv = eval_iv_pct(MODEL_VV, &params, 0.0, 0.25, 100.0);
-        assert!(iv.is_finite());
         // At k=0 the vanna/volga terms vanish → iv = atm_vol * 100
-        assert!((iv - 20.0).abs() < 0.01);
+        assert_eq!(iv, 20.0);
     }
 
     #[test]
@@ -570,10 +577,12 @@ mod tests {
         let (headers, params) = svi_fixture();
         let k_grid = vec![-0.1, 0.0, 0.1];
         let result = iv_grid(&headers, &params, &k_grid);
-        assert_eq!(result.len(), 3);
-        assert!(result.iter().all(|v| v.is_finite() && *v > 0.0));
-        // Smile: IV at k=-0.1 and k=0.1 should differ from ATM
-        assert!((result[0] - result[1]).abs() > 0.01 || (result[2] - result[1]).abs() > 0.01);
+        let expected = [
+            101.972_698_413_587_42,
+            97.979_589_711_327_14,
+            95.490_477_125_986,
+        ];
+        assert_values(&result, &expected, 2.0e-13);
     }
 
     #[test]
@@ -595,21 +604,34 @@ mod tests {
         ];
         let k_grid = vec![-0.05, 0.0, 0.05];
         let result = iv_grid(&headers, &params, &k_grid);
-        assert_eq!(result.len(), 6); // 2 slices * 3 k-points
-        assert!(result.iter().all(|v| v.is_finite() && *v > 0.0));
+        let expected = [
+            99.799_301_084_209_57,
+            97.979_589_711_327_14,
+            96.539_631_742_081_51,
+            45.324_812_876_004_05,
+            44.721_359_549_995_796,
+            44.320_860_350_909_05,
+        ];
+        assert_values(&result, &expected, 2.0e-13);
     }
 
     #[test]
     fn test_term_structure_batch() {
         let (headers, params) = svi_fixture();
         let result = term_structure_batch(&headers, &params);
-        assert_eq!(result.len(), 7);
-        // kCall, kPut, ivCall, ivPut, atmIv, rr25, bf25
-        let atm_iv = result[4];
-        assert!(atm_iv.is_finite() && atm_iv > 0.0);
-        // rr25 = ivCall - ivPut
-        let rr25 = result[5];
-        assert!(rr25.is_finite());
+        // kCall, kPut, ivCall, ivPut, atmIv, rr25, bf25. The strike
+        // values are deterministic locks for the Newton solver; their d1
+        // residuals are independently checked below.
+        let expected = [
+            0.446_504_735_580_889_27,
+            -0.218_635_984_328_979_24,
+            97.303_330_586_869_99,
+            108.308_189_274_371_39,
+            97.979_589_711_327_14,
+            -11.004_858_687_501_397,
+            4.826_170_219_293_559,
+        ];
+        assert_values(&result, &expected, 2.0e-12);
     }
 
     #[test]
@@ -631,11 +653,15 @@ mod tests {
         ];
         let k_points = vec![-0.05, 0.0, 0.05];
         let result = forward_vol_grid(&headers, &params, &k_points);
-        // 1 pair * (2 + 3) = 5 values
-        assert_eq!(result.len(), 5);
-        // spot vol and fwd vol should be positive
-        assert!(result[0] > 0.0 && result[0].is_finite());
-        assert!(result[1] > 0.0 && result[1].is_finite());
+        // Later-slice spot vol, ATM forward vol, then the three forward-smile vols.
+        let expected = [
+            34.641_016_151_377_55,
+            25.819_888_974_716_125,
+            25.819_888_974_716_11,
+            25.819_888_974_716_125,
+            25.819_888_974_716_11,
+        ];
+        assert_values(&result, &expected, 2.0e-13);
     }
 
     #[test]
@@ -651,9 +677,12 @@ mod tests {
         let t = 0.25_f64;
         let sqrt_t = t.sqrt();
         let k = solve_delta_k(MODEL_SVI, &params, t, 100.0, sqrt_t, -0.6745);
-        assert!(k.is_finite());
-        // 25-delta call strike should be positive (OTM call → k > 0)
-        // (Not strictly guaranteed for all models but typical)
+        assert!((k - 0.446_504_735_580_889_27).abs() <= 2.0e-13);
+        let sigma = eval_iv_pct(MODEL_SVI, &params, k, t, 100.0) / 100.0;
+        let d1 = (-k + 0.5 * sigma * sigma * t) / (sigma * sqrt_t);
+        // The 1e-6 residual is the solver's documented stopping criterion;
+        // this deterministic case converges materially below it.
+        assert!((d1 - (-0.6745)).abs() <= 6.0e-8);
     }
 
     #[test]
@@ -662,8 +691,12 @@ mod tests {
         let k_values = vec![0.0, 0.05, -0.05];
         let slice_indices = vec![0, 0, 0];
         let result = batch_slice_iv(&headers, &params, &k_values, &slice_indices);
-        assert_eq!(result.len(), 3);
-        assert!(result.iter().all(|v| v.is_finite() && *v > 0.0));
+        let expected = [
+            97.979_589_711_327_14,
+            96.539_631_742_081_51,
+            99.799_301_084_209_57,
+        ];
+        assert_values(&result, &expected, 2.0e-13);
     }
 
     #[test]
@@ -691,18 +724,30 @@ mod tests {
 
         let result =
             slice_fit_diagnostics(MODEL_SVI, &params, t, forward, &ks, &market_ivs, &strikes);
-        assert!(result.len() >= 3 + ks.len());
-        let rmse = result[0];
-        assert!(rmse < 1e-10); // perfect fit
+        let expected = [
+            0.0,
+            -32.659_837_835_048_22,
+            152.412_489_441_644_54,
+            101.972_698_413_587_42,
+            97.979_589_711_327_14,
+            95.490_477_125_986,
+        ];
+        // The curvature proxy is a stated 0.001 central-difference grid, so
+        // use a deterministic grid lock rather than treating it as an analytic Greek.
+        assert_values(&result, &expected, 2.0e-9);
     }
 
     #[test]
     fn test_find_25d_strikes_batch() {
         let (headers, params) = vv_fixture();
         let result = find_25d_strikes_batch(&headers, &params);
-        assert_eq!(result.len(), 4);
-        // kCall, kPut, ivCall, ivPut — all should be finite
-        assert!(result.iter().all(|v| v.is_finite()));
+        let expected = [
+            0.070_682_781_460_037_59,
+            -0.064_910_449_314_824_38,
+            19.542_974_965_145_998,
+            20.859_772_814_660_865,
+        ];
+        assert_values(&result, &expected, 2.0e-12);
     }
 
     #[test]
@@ -747,9 +792,8 @@ mod tests {
     fn test_realized_vol() {
         let returns = vec![0.01, -0.005, 0.008, -0.003, 0.012, -0.007, 0.004];
         let rv = realized_vol(&returns, 252.0);
-        assert!(rv.is_finite() && rv > 0.0);
-        // With these small returns, annualized vol should be in a reasonable range
-        assert!(rv < 200.0);
+        // Python statistics.stdev reference, annualized and expressed in %.
+        assert!((rv - 12.218_019_479_441_011).abs() < 2.0e-12);
     }
 
     #[test]

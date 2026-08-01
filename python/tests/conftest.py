@@ -11,9 +11,7 @@ import pytest
 # Tolerances
 # ---------------------------------------------------------------------------
 
-REL_TOL = 1e-4  # relative tolerance for pricing values
 ABS_TOL = 1e-8  # absolute tolerance for near-zero values
-LOOSE_TOL = 1e-2  # looser tolerance for MC / FFT comparisons
 
 
 # ---------------------------------------------------------------------------

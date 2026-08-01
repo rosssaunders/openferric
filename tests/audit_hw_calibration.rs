@@ -162,13 +162,13 @@ fn approximation_matches_jamshidian_implied_normal_vol_scale() {
 }
 
 /// End-to-end external anchor: generate ATM swaption prices from the exact
-/// Jamshidian pricer at known (a, sigma) = (0.05, 0.01), convert to normal
-/// vols via the Bachelier ATM formula, calibrate, and recover sigma. The
-/// pre-fix code fed comparable market data into a lognormal transform and
-/// returned sigma pinned at 0.08; recovered sigma must sit near 0.01 and
-/// inside the plausible normal-vol band [0.003, 0.03].
+/// Jamshidian pricer at known `(a, sigma) = (0.05, 0.01)`, convert to normal
+/// vols with the Bachelier ATM formula, and lock the resulting least-squares
+/// projection onto the calibrator's frozen-weight approximation. The pre-fix
+/// code instead fed comparable data into a lognormal transform and pinned
+/// sigma at an unrelated search boundary.
 #[test]
-fn calibration_recovers_sigma_from_jamshidian_prices() {
+fn calibration_matches_jamshidian_projection_reference() {
     let true_a = 0.05;
     let true_sigma = 0.01;
 
@@ -183,23 +183,17 @@ fn calibration_recovers_sigma_from_jamshidian_prices() {
 
     let (cal_a, cal_sigma) =
         calibrate_hull_white_params(&quotes).expect("normal-vol quotes must calibrate");
-    eprintln!("calibrated a={cal_a:.6} sigma={cal_sigma:.6}");
-
-    assert!(
-        (0.003..=0.03).contains(&cal_sigma),
-        "calibrated sigma {cal_sigma} outside plausible normal-vol band"
-    );
-    // Observed recovery: (a, sigma) = (0.0472, 0.01034); the residual bias is
-    // the frozen-weight approximation error, well under the 10% band.
-    let rel_sigma = (cal_sigma - true_sigma).abs() / true_sigma;
-    assert!(
-        rel_sigma <= 0.10,
-        "sigma {cal_sigma} not within 10% of true {true_sigma} (rel {rel_sigma})"
-    );
-    assert!(
-        cal_a > 0.0 && cal_a < 0.5,
-        "calibrated a {cal_a} implausible"
-    );
+    // The exact Jamshidian prices are projected onto the deliberately
+    // approximate frozen-weight volatility formula, so its least-squares
+    // parameters differ from the generating parameters. Lock that deterministic
+    // projection; exact synthetic quote recovery is tested in the model module.
+    let expected_a = 0.046_383_839_484;
+    let expected_sigma = 0.010_312_263_46;
+    // Explicit cross-libm/root-solver arithmetic budget; these are still exact
+    // deterministic projection anchors, not percentage calibration bands.
+    let roundoff = 64.0 * f64::EPSILON;
+    assert!((cal_a - expected_a).abs() <= roundoff);
+    assert!((cal_sigma - expected_sigma).abs() <= roundoff);
 }
 
 /// Feeding lognormal Black ATM vols (~0.20 at 4% rates, the verified failure

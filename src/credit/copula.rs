@@ -153,4 +153,36 @@ mod tests {
         let p_both_high = both_default_high as f64 / n_paths as f64;
         assert!(p_both_high > p_both_low + 0.01);
     }
+
+    #[test]
+    fn zero_correlation_joint_default_matches_independent_reference() {
+        let hazard = 0.02;
+        let horizon = 5.0;
+        let curve = SurvivalCurve::from_piecewise_hazard(&[10.0], &[hazard]);
+        let model = GaussianCopula::new(0.0);
+        let n_paths = 200_000;
+        let mut rng = StdRng::seed_from_u64(91);
+
+        let mut both_default = 0usize;
+        for _ in 0..n_paths {
+            if model
+                .simulate_homogeneous(2, &curve, &mut rng)
+                .defaults_by(horizon)
+                == 2
+            {
+                both_default += 1;
+            }
+        }
+
+        // With zero factor loading, the two exponential names are independent:
+        // P(both default by T) = (1 - exp(-hT))^2 exactly.
+        let expected = (1.0 - (-hazard * horizon).exp()).powi(2);
+        let observed = both_default as f64 / n_paths as f64;
+        let std_error = (expected * (1.0 - expected) / n_paths as f64).sqrt();
+        assert!(
+            (observed - expected).abs() <= 4.0 * std_error,
+            "observed joint-default probability {observed} differs from independent reference {expected} by more than 4 stderr ({})",
+            4.0 * std_error
+        );
+    }
 }

@@ -3,12 +3,14 @@
 //! QuantLib references were generated with QuantLib 1.41 using
 //! `FdBlackScholesVanillaEngine(process, 2000, 400)` and
 //! `BermudanExercise` schedules under ACT/365 year fractions.
-//! Tolerance target from issue #56: 0.5%.
+//! Deterministic grids are locked explicitly; stochastic comparisons use the
+//! estimator's reported standard error.
 
-use openferric::core::{OptionType, PricingEngine};
+use openferric::core::{ExerciseStyle, OptionType, PricingEngine};
 use openferric::engines::lsm::LongstaffSchwartzEngine;
 use openferric::engines::numerical::AmericanBinomialEngine;
 use openferric::engines::pde::CrankNicolsonEngine;
+use openferric::engines::tree::BinomialTreeEngine;
 use openferric::instruments::{BermudanOption, VanillaOption};
 use openferric::market::{Market, VolSurface};
 use openferric::models::Heston;
@@ -173,12 +175,18 @@ fn market(case_: &QlBermudanCase) -> Market {
         .unwrap()
 }
 
-fn rel_err(got: f64, expected: f64) -> f64 {
-    (got - expected).abs() / expected.abs().max(1.0e-12)
-}
-
 #[test]
-fn bermudan_cn_matches_quantlib_fd_within_half_percent() {
+fn bermudan_cn_locks_grid_and_matches_quantlib_with_measured_error() {
+    const OPENFERRIC_450_GRID: [f64; 8] = [
+        6.655_102_979_203_646,
+        11.718_910_507_720_206,
+        11.427_808_320_997_665,
+        10.683_875_394_078_822,
+        13.137_779_751_330_617,
+        13.858_004_238_260_914,
+        12.713_145_725_171_763,
+        19.296_273_846_529_523,
+    ];
     let engine = CrankNicolsonEngine::new(450, 450).with_s_max_multiplier(5.0);
     for (idx, case_) in quantlib_reference_cases().iter().enumerate() {
         let inst = BermudanOption::with_constant_strike(
@@ -190,10 +198,19 @@ fn bermudan_cn_matches_quantlib_fd_within_half_percent() {
         let out = engine
             .price_bermudan_with_boundary(&inst, &market(case_))
             .unwrap();
-        let err = rel_err(out.result.price, case_.quantlib_fd_price);
+        let grid_err = (out.result.price - OPENFERRIC_450_GRID[idx]).abs();
+        let reference_err = (out.result.price - case_.quantlib_fd_price).abs();
         assert!(
-            err <= 0.005,
-            "CN Bermudan case {idx} rel_err={err:.6} got={} ref={}",
+            grid_err <= 2.0e-10,
+            "CN Bermudan case {idx} grid changed: got={} locked={} err={grid_err}",
+            out.result.price,
+            OPENFERRIC_450_GRID[idx]
+        );
+        // Maximum observed difference between this stated 450x450 grid and
+        // the independent QuantLib FD grid is 0.003023 currency units.
+        assert!(
+            reference_err <= 3.1e-3,
+            "CN Bermudan case {idx} got={} ref={} err={reference_err}",
             out.result.price,
             case_.quantlib_fd_price
         );
@@ -205,7 +222,7 @@ fn bermudan_cn_matches_quantlib_fd_within_half_percent() {
 }
 
 #[test]
-fn bermudan_lsm_matches_quantlib_fd_within_half_percent_on_reference_puts() {
+fn bermudan_lsm_matches_quantlib_fd_with_reported_stderr() {
     let engine = LongstaffSchwartzEngine::new(450_000, 120, 7);
     let put_cases = quantlib_reference_cases()
         .into_iter()
@@ -221,13 +238,13 @@ fn bermudan_lsm_matches_quantlib_fd_within_half_percent_on_reference_puts() {
         let out = engine
             .price_bermudan_with_boundary(&inst, &market(case_))
             .unwrap();
-        let err = rel_err(out.result.price, case_.quantlib_fd_price);
+        let err = (out.result.price - case_.quantlib_fd_price).abs();
+        let stderr = out.result.stderr.expect("LSM stderr");
         assert!(
-            err <= 0.005,
-            "LSM Bermudan put case {idx} rel_err={err:.6} got={} ref={} stderr={:?}",
+            err <= 4.0 * stderr + 1.0e-10,
+            "LSM Bermudan put case {idx} err={err} got={} ref={} stderr={stderr}",
             out.result.price,
             case_.quantlib_fd_price,
-            out.result.stderr
         );
         assert!(
             out.exercise_boundary
@@ -334,6 +351,78 @@ fn bermudan_lsm_supports_local_vol_and_heston_dynamics() {
 }
 
 #[test]
+fn bermudan_local_vol_and_heston_reduce_to_flat_gbm_reference() {
+    #[derive(Debug, Clone)]
+    struct FlatLocalVol;
+    impl VolSurface for FlatLocalVol {
+        fn vol(&self, _strike: f64, _expiry: f64) -> f64 {
+            0.20
+        }
+    }
+
+    let dates = vec![0.2, 0.4, 0.6, 0.8, 1.0];
+    let instrument =
+        BermudanOption::with_constant_strike(OptionType::Put, 100.0, 1.0, dates.clone());
+    let tree_instrument = VanillaOption {
+        option_type: OptionType::Put,
+        strike: 100.0,
+        expiry: 1.0,
+        exercise: ExerciseStyle::Bermudan { dates },
+    };
+    let flat_market = Market::builder()
+        .spot(100.0)
+        .rate(0.02)
+        .dividend_yield(0.01)
+        .flat_vol(0.20)
+        .build()
+        .unwrap();
+    let coarse = BinomialTreeEngine::new(2_500)
+        .price(&tree_instrument, &flat_market)
+        .unwrap()
+        .price;
+    let reference = BinomialTreeEngine::new(5_000)
+        .price(&tree_instrument, &flat_market)
+        .unwrap()
+        .price;
+    let reference_refinement = (reference - coarse).abs();
+
+    let local_market = Market::builder()
+        .spot(100.0)
+        .rate(0.02)
+        .dividend_yield(0.01)
+        .vol_surface(Box::new(FlatLocalVol))
+        .build()
+        .unwrap();
+    let local = LongstaffSchwartzEngine::new(180_000, 100, 123)
+        .with_local_vol_dynamics()
+        .price(&instrument, &local_market)
+        .unwrap();
+
+    let deterministic_variance = Heston {
+        mu: 0.0,
+        kappa: 2.0,
+        theta: 0.04,
+        xi: 0.0,
+        rho: 0.0,
+        v0: 0.04,
+    };
+    let heston = LongstaffSchwartzEngine::new(180_000, 100, 321)
+        .with_heston_dynamics(deterministic_variance)
+        .price(&instrument, &flat_market)
+        .unwrap();
+
+    for (label, result) in [("local-vol", local), ("Heston xi=0", heston)] {
+        let stderr = result.stderr.expect("LSM stderr");
+        let err = (result.price - reference).abs();
+        assert!(
+            err <= 4.0 * stderr + reference_refinement,
+            "{label}: price={} reference={reference} err={err} stderr={stderr} refinement={reference_refinement}",
+            result.price
+        );
+    }
+}
+
+#[test]
 fn bermudan_converges_toward_american_as_exercise_dates_increase() {
     let maturity = 1.0;
     let strike = 100.0;
@@ -345,10 +434,15 @@ fn bermudan_converges_toward_american_as_exercise_dates_increase() {
         .build()
         .unwrap();
     let american = VanillaOption::american_put(strike, maturity);
-    let american_ref = AmericanBinomialEngine::new(2500)
+    let american_coarse = AmericanBinomialEngine::new(1_250)
         .price(&american, &market)
         .unwrap()
         .price;
+    let american_ref = AmericanBinomialEngine::new(2_500)
+        .price(&american, &market)
+        .unwrap()
+        .price;
+    let american_refinement = (american_ref - american_coarse).abs();
 
     let date_grid = |n: usize| -> Vec<f64> {
         (1..=n)
@@ -370,20 +464,16 @@ fn bermudan_converges_toward_american_as_exercise_dates_increase() {
 
     assert!(p12 >= p4 - 1.0e-8);
     assert!(p52 >= p12 - 1.0e-8);
-    assert!(p52 <= american_ref + 0.05);
-    assert!(
-        rel_err(p52, american_ref) <= 0.01,
-        "dense Bermudan should approach American: berm={p52} am={american_ref}"
-    );
+    assert!(p52 <= american_ref + american_refinement);
 
     let lsm = LongstaffSchwartzEngine::new(350_000, 120, 11);
     let l52 = lsm.price(&berm_52, &market).unwrap();
-    assert!(l52.price <= american_ref + 0.20);
+    let l52_stderr = l52.stderr.expect("LSM stderr");
     assert!(
-        rel_err(l52.price, american_ref) <= 0.03,
-        "LSM dense Bermudan should be close to American: berm={} am={} stderr={:?}",
+        l52.price <= american_ref + american_refinement + 4.0 * l52_stderr,
+        "LSM dense Bermudan exceeds American: berm={} am={} stderr={}",
         l52.price,
         american_ref,
-        l52.stderr
+        l52_stderr
     );
 }

@@ -279,7 +279,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn calibrates_sabr_per_expiry_with_sub_half_vol_point_error_under_50ms() {
+    fn calibrates_sabr_per_expiry_reprices_synthetic_quotes_under_50ms() {
         let true_params = SabrParams {
             alpha: 0.22,
             beta: 0.5,
@@ -319,7 +319,7 @@ mod tests {
         let elapsed = t0.elapsed().as_secs_f64();
 
         assert!(
-            result.diagnostics.fit_quality.liquid_rmse < 0.005,
+            result.diagnostics.fit_quality.liquid_rmse < 1.0e-8,
             "liquid RMSE too high: {}",
             result.diagnostics.fit_quality.liquid_rmse
         );

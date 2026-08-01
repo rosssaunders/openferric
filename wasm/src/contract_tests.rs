@@ -4,7 +4,8 @@ use wasm_bindgen_test::*;
 fn pricing_success_path_returns_values() {
     let price = crate::pricing::bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true)
         .expect("valid Black-Scholes input should price");
-    assert!((price - 10.4506).abs() < 0.01);
+    // Independent Black--Scholes reference, evaluated at full f64 precision.
+    assert!((price - 10.450_583_572_185_565).abs() < 2.0e-12);
 
     let greeks = crate::pricing::bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true)
         .expect("valid Greeks input should price");

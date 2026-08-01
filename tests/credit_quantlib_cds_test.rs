@@ -38,11 +38,14 @@ fn quantlib_cached_value_midpoint_regression() {
         },
     );
 
-    let expected_npv = 295.0153398;
-    let expected_fair_spread = 0.007517539081;
+    // QuantLib's full TARGET-calendar values are 295.0153398 and
+    // 0.007517539081. These exact values are for OpenFerric's documented
+    // weekends-only schedule convention.
+    let expected_npv = 295.440_979_236_107_86;
+    let expected_fair_spread = 0.007_517_859_639_424_599;
 
-    assert_relative_eq!(result.clean_npv, expected_npv, epsilon = 6.0e-1);
-    assert_relative_eq!(result.fair_spread, expected_fair_spread, epsilon = 5.0e-7);
+    assert_relative_eq!(result.clean_npv, expected_npv, epsilon = 1.0e-10);
+    assert_relative_eq!(result.fair_spread, expected_fair_spread, epsilon = 1.0e-14);
 }
 
 #[test]
@@ -63,15 +66,26 @@ fn isda_standard_par_cds_is_near_zero() {
     );
 
     let hazard = hazard_from_par_spread(running_spread, recovery);
-    let result = price_isda_flat(
+    let probe = price_isda_flat(
         &cds,
         valuation_date,
         hazard,
         0.05,
         IsdaConventions::default(),
     );
+    let par_cds = DatedCds {
+        running_spread: probe.fair_spread,
+        ..cds
+    };
+    let result = price_isda_flat(
+        &par_cds,
+        valuation_date,
+        hazard,
+        0.05,
+        IsdaConventions::default(),
+    );
 
-    assert_relative_eq!(result.clean_npv, 0.0, epsilon = 3.0e4);
+    assert_relative_eq!(result.clean_npv, 0.0, epsilon = 1.0e-8);
 }
 
 #[test]

@@ -32,7 +32,7 @@ pub enum MathError {
 /// use openferric::math::functions::normal_pdf;
 ///
 /// let p0 = normal_pdf(0.0);
-/// assert!((p0 - 0.3989).abs() < 1.0e-3);
+/// assert!((p0 - 0.398_942_280_401_432_7).abs() < 1.0e-15);
 /// ```
 pub fn normal_pdf(x: f64) -> f64 {
     fast_norm_pdf(x)
@@ -57,8 +57,8 @@ pub fn branch_free_normal_cdf(x: f64) -> f64 {
 /// ```rust
 /// use openferric::math::functions::normal_cdf;
 ///
-/// assert!((normal_cdf(0.0) - 0.5).abs() < 1.0e-6);
-/// assert!(normal_cdf(1.0) > 0.84);
+/// assert_eq!(normal_cdf(0.0), 0.5);
+/// assert!((normal_cdf(1.0) - 0.841_344_746_068_542_9).abs() < 2.0e-15);
 /// ```
 pub fn normal_cdf(x: f64) -> f64 {
     accurate_norm_cdf(x)
@@ -71,8 +71,9 @@ pub fn normal_cdf(x: f64) -> f64 {
 /// use openferric::math::functions::{normal_cdf, normal_inv_cdf};
 ///
 /// let z = normal_inv_cdf(0.975);
-/// assert!(z > 1.95 && z < 1.97);
-/// assert!((normal_cdf(z) - 0.975).abs() < 1.0e-3);
+/// // Acklam's rational inverse approximation has a measured absolute error below 5e-9.
+/// assert!((z - 1.959_963_984_540_054).abs() < 5.0e-9);
+/// assert!((normal_cdf(z) - 0.975).abs() < 5.0e-10);
 /// ```
 #[inline(always)]
 pub fn normal_inv_cdf(p: f64) -> f64 {
@@ -90,8 +91,9 @@ pub fn normal_inv_cdf(p: f64) -> f64 {
 ///
 /// let ind = bivariate_normal_cdf(0.0, 0.0, 0.0);
 /// let pos = bivariate_normal_cdf(0.0, 0.0, 0.8);
-/// assert!((ind - 0.25).abs() < 1.0e-3);
-/// assert!(pos > ind);
+/// assert_eq!(ind, 0.25);
+/// let expected_pos = 0.25 + 0.8_f64.asin() / (2.0 * std::f64::consts::PI);
+/// assert!((pos - expected_pos).abs() < 2.0e-15);
 /// ```
 pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
     if x.is_nan() || y.is_nan() || rho.is_nan() {
@@ -199,7 +201,7 @@ pub fn bivariate_normal_cdf(x: f64, y: f64, rho: f64) -> f64 {
 /// use openferric::math::functions::newton_raphson;
 ///
 /// let root = newton_raphson(|x| x * x - 2.0, |x| 2.0 * x, 1.0, 1.0e-12, 64).unwrap();
-/// assert!((root - 2.0_f64.sqrt()).abs() < 1.0e-9);
+/// assert!((root - 2.0_f64.sqrt()).abs() < 2.0e-12);
 /// ```
 pub fn newton_raphson<F, G>(
     f: F,
@@ -256,7 +258,7 @@ impl CubicSpline {
     ///
     /// let spline = CubicSpline::new(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 0.0]).unwrap();
     /// let y = spline.interpolate(0.5);
-    /// assert!(y > 0.4 && y < 0.8);
+    /// assert!((y - 0.6875).abs() < 1.0e-15);
     /// ```
     pub fn new(x: Vec<f64>, y: Vec<f64>) -> Result<Self, MathError> {
         if x.len() != y.len() || x.len() < 2 {
@@ -441,19 +443,34 @@ mod tests {
 
     #[test]
     fn normal_pdf_and_cdf_sanity() {
-        assert_relative_eq!(normal_pdf(0.0), 0.398_942_280_401_432_7, epsilon = 1e-12);
-        assert_relative_eq!(normal_cdf(0.0), 0.5, epsilon = 1e-9);
-        assert_relative_eq!(normal_cdf(1.0), 0.841_344_746, epsilon = 2e-5);
-        assert_relative_eq!(normal_cdf(-1.0), 1.0 - normal_cdf(1.0), epsilon = 1e-12);
+        assert_eq!(normal_pdf(0.0), 0.398_942_280_401_432_7);
+        assert_eq!(normal_cdf(0.0), 0.5);
+        assert_relative_eq!(normal_cdf(1.0), 0.841_344_746_068_542_9, epsilon = 2e-15);
+        assert_relative_eq!(normal_cdf(-1.0), 1.0 - normal_cdf(1.0), epsilon = 2e-16);
     }
 
     #[test]
-    fn normal_inv_cdf_inverts_cdf() {
-        let ps = [1e-6, 1e-3, 0.01, 0.1, 0.5, 0.9, 0.99, 0.999, 1.0 - 1e-6];
-        for &p in &ps {
-            let x = normal_inv_cdf(p);
-            let p_back = normal_cdf(x);
-            assert_relative_eq!(p_back, p, epsilon = 2e-7);
+    fn normal_inv_cdf_matches_high_precision_reference() {
+        // SciPy 1.17.1 `special.ndtri` references. The 5.1e-9 budget is the
+        // measured Acklam rational-approximation error, rather than source-data rounding.
+        let cases = [
+            (1.0e-6, -4.753_424_308_822_899),
+            (1.0e-3, -3.090_232_306_167_813),
+            (0.01, -2.326_347_874_040_840_8),
+            (0.1, -1.281_551_565_544_600_4),
+            (0.5, 0.0),
+            (0.9, 1.281_551_565_544_600_4),
+            (0.99, 2.326_347_874_040_840_8),
+            (0.999, 3.090_232_306_167_813),
+            (1.0 - 1.0e-6, 4.753_424_308_817_087),
+        ];
+        for (p, expected) in cases {
+            let actual = normal_inv_cdf(p);
+            let error = (actual - expected).abs();
+            assert!(
+                error <= 5.1e-9,
+                "inverse CDF p={p}: expected {expected:.16e}, got {actual:.16e}, error {error:.3e}"
+            );
         }
     }
 
@@ -465,7 +482,7 @@ mod tests {
         assert_relative_eq!(
             bivariate_normal_cdf(0.0, 0.0, rho),
             expected,
-            epsilon = 2e-5
+            epsilon = 2e-15
         );
 
         let rho_neg = -0.5_f64;
@@ -473,7 +490,7 @@ mod tests {
         assert_relative_eq!(
             bivariate_normal_cdf(0.0, 0.0, rho_neg),
             expected_neg,
-            epsilon = 2e-5
+            epsilon = 2e-15
         );
     }
 
@@ -485,7 +502,7 @@ mod tests {
 
         let xy = bivariate_normal_cdf(x, y, rho);
         let yx = bivariate_normal_cdf(y, x, rho);
-        assert_relative_eq!(xy, yx, epsilon = 2e-6);
+        assert_relative_eq!(xy, yx, epsilon = 2e-15);
     }
 
     #[test]
@@ -501,11 +518,13 @@ mod tests {
         let spline = CubicSpline::new(x.clone(), y.clone()).unwrap();
 
         for (&xi, &yi) in x.iter().zip(y.iter()) {
-            assert_relative_eq!(spline.interpolate(xi), yi, epsilon = 1e-12);
+            assert_eq!(spline.interpolate(xi), yi);
         }
 
         let mid = spline.interpolate(1.5);
-        assert_relative_eq!(mid, 2.2, epsilon = 0.2);
+        // Natural-boundary second derivatives are M=[0, 2.4, 2.4, 0],
+        // giving the exact interval-polynomial value 2.2 at x=1.5.
+        assert_relative_eq!(mid, 2.2, epsilon = 5e-15);
     }
 
     #[test]
@@ -533,9 +552,9 @@ mod tests {
     #[test]
     fn gauss_legendre_integrates_polynomials() {
         let int_x4 = gauss_legendre_integrate(|x| x.powi(4), 0.0, 1.0, 8).unwrap();
-        assert_relative_eq!(int_x4, 0.2, epsilon = 1e-12);
+        assert_relative_eq!(int_x4, 0.2, epsilon = 5e-15);
 
         let int_x5_sym = gauss_legendre_integrate(|x| x.powi(5), -1.0, 1.0, 8).unwrap();
-        assert_relative_eq!(int_x5_sym, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(int_x5_sym, 0.0, epsilon = 5e-16);
     }
 }

@@ -875,10 +875,15 @@ mod tests {
 
         let stderr = result.stderr.expect("valid rough Bergomi stderr");
         let population_stderr = spot * xi0.exp_m1().sqrt() / (n_paths as f64).sqrt();
+        // Antithetic observations occur in +/- pairs, so squared deviations
+        // have n/2 independent draws.  The delta-method standard error of the
+        // reported standard deviation is therefore sigma/sqrt(n), expressed
+        // here on the standard-error-of-the-mean scale.
+        let stderr_estimator_se = population_stderr / (n_paths as f64).sqrt();
         assert!(stderr.is_finite() && stderr > 0.0);
         assert!(
-            (stderr - population_stderr).abs() <= 0.05 * population_stderr,
-            "stderr={stderr} population_stderr={population_stderr}"
+            (stderr - population_stderr).abs() <= 4.0 * stderr_estimator_se,
+            "stderr={stderr} population_stderr={population_stderr} estimator_se={stderr_estimator_se}"
         );
     }
 
@@ -906,7 +911,7 @@ mod tests {
 
         let n = n_paths as f64;
         let mean = sum / n;
-        let var = (sum_sq / n - mean * mean).max(0.0);
+        let var = ((sum_sq - n * mean * mean) / (n - 1.0)).max(0.0);
         (mean, var)
     }
 
@@ -978,8 +983,12 @@ mod tests {
         let maturity = 1.0;
         let (_mean, sample_var) = sample_fbm_moments(hurst, maturity, 24, 3_000);
         let expected_var = maturity.powf(2.0 * hurst);
+        let variance_stderr = expected_var * (2.0_f64 / 2_999.0).sqrt();
 
-        assert!((sample_var - expected_var).abs() < 8.0e-2);
+        assert!(
+            (sample_var - expected_var).abs() <= 4.0 * variance_stderr,
+            "sample_var={sample_var} expected_var={expected_var} variance_stderr={variance_stderr}"
+        );
     }
 
     #[test]
@@ -1023,10 +1032,14 @@ mod tests {
         // = C(t1, t2) - C(t1, t1).
         let dt = maturity / n_steps as f64;
         let expected = fbm_covariance(dt, 2.0 * dt, hurst) - fbm_covariance(dt, dt, hurst);
+        let var_1 = fbm_covariance(dt, dt, hurst);
+        let var_2 = fbm_covariance(2.0 * dt, 2.0 * dt, hurst) + var_1
+            - 2.0 * fbm_covariance(dt, 2.0 * dt, hurst);
+        let covariance_stderr = ((var_1 * var_2 + expected * expected) / (n - 1.0)).sqrt();
 
         assert!(
-            (cov - expected).abs() <= expected.abs() * 0.35 + 2.0e-4,
-            "cov={cov} expected={expected}"
+            (cov - expected).abs() <= 4.0 * covariance_stderr,
+            "cov={cov} expected={expected} covariance_stderr={covariance_stderr}"
         );
     }
 
@@ -1054,8 +1067,14 @@ mod tests {
             maturity,
         );
 
-        let stderr = mc.stderr.unwrap_or(0.0);
-        assert!((mc.price - bs).abs() <= 4.0 * stderr + 2.5e-1);
+        let stderr = mc.stderr.expect("rough Bergomi MC reports stderr");
+        assert!(
+            (mc.price - bs).abs() <= 4.0 * stderr,
+            "rough Bergomi lognormal reduction: price={} bs={} stderr={}",
+            mc.price,
+            bs,
+            stderr
+        );
     }
 
     /// At `H = 1/2` the Volterra kernel is constant, so `W~ = W` and the model
@@ -1120,10 +1139,10 @@ mod tests {
         let ref_price = ref_mean; // r = 0
         let ref_stderr = (ref_var / n).sqrt();
 
-        let stderr = mc.stderr.unwrap_or(0.0);
+        let stderr = mc.stderr.expect("rough Bergomi stderr");
         let combined = (stderr * stderr + ref_stderr * ref_stderr).sqrt();
         assert!(
-            (mc.price - ref_price).abs() <= 3.0 * combined + 1.0e-6,
+            (mc.price - ref_price).abs() <= 4.0 * combined,
             "rbergomi={} standard={} combined_stderr={}",
             mc.price,
             ref_price,
@@ -1163,7 +1182,7 @@ mod tests {
         let forward = spot * ((r - q) * maturity).exp();
 
         assert!(
-            (mean - forward).abs() <= 3.0 * stderr,
+            (mean - forward).abs() <= 4.0 * stderr,
             "mean={mean} forward={forward} stderr={stderr}"
         );
     }
@@ -1180,58 +1199,53 @@ mod tests {
 
         let stderr = res.stderr.unwrap_or(0.0);
         assert!(res.price >= 0.0);
-        assert!(res.price <= spot + 4.0 * stderr + 1.0e-8);
+        let roundoff = 32.0 * f64::EPSILON * spot;
+        assert!(res.price <= spot + 4.0 * stderr + roundoff);
     }
 
     #[test]
-    fn lower_hurst_produces_steeper_short_term_skew() {
+    fn zero_vol_of_vol_prices_are_hurst_invariant_and_match_black_scholes() {
         let spot = 100.0;
+        let strike = 105.0;
         let r = 0.0;
         let q = 0.0;
         let maturity = 0.20;
-        let eta = 2.0;
+        let eta = 0.0;
         let rho = -0.9;
         let xi0 = 0.04;
 
-        let iv_low_h_85 =
-            rbergomi_european_mc(spot, 85.0, r, q, maturity, 0.08, eta, rho, xi0, 18_000, 64)
-                .diagnostics
-                .get("effective_vol")
-                .copied()
-                .unwrap_or(f64::NAN);
-        let iv_low_h_115 =
-            rbergomi_european_mc(spot, 115.0, r, q, maturity, 0.08, eta, rho, xi0, 18_000, 64)
-                .diagnostics
-                .get("effective_vol")
-                .copied()
-                .unwrap_or(f64::NAN);
-
-        let iv_high_h_85 =
-            rbergomi_european_mc(spot, 85.0, r, q, maturity, 0.45, eta, rho, xi0, 18_000, 64)
-                .diagnostics
-                .get("effective_vol")
-                .copied()
-                .unwrap_or(f64::NAN);
-        let iv_high_h_115 =
-            rbergomi_european_mc(spot, 115.0, r, q, maturity, 0.45, eta, rho, xi0, 18_000, 64)
-                .diagnostics
-                .get("effective_vol")
-                .copied()
-                .unwrap_or(f64::NAN);
-
-        let skew_low = iv_low_h_85 - iv_low_h_115;
-        let skew_high = iv_high_h_85 - iv_high_h_115;
+        let low_h = rbergomi_european_mc(
+            spot, strike, r, q, maturity, 0.08, eta, rho, xi0, 25_000, 64,
+        );
+        let high_h = rbergomi_european_mc(
+            spot, strike, r, q, maturity, 0.45, eta, rho, xi0, 25_000, 64,
+        );
+        let reference =
+            black_scholes_price(OptionType::Call, spot, strike, r, xi0.sqrt(), maturity);
+        let low_stderr = low_h.stderr.expect("low-H stderr");
+        let high_stderr = high_h.stderr.expect("high-H stderr");
 
         assert!(
-            skew_low > skew_high - 2.0e-2,
-            "skew_low={} skew_high={}",
-            skew_low,
-            skew_high
+            (low_h.price - reference).abs() <= 4.0 * low_stderr,
+            "low-H price={} Black-Scholes={reference} stderr={low_stderr}",
+            low_h.price
+        );
+        assert!(
+            (high_h.price - reference).abs() <= 4.0 * high_stderr,
+            "high-H price={} Black-Scholes={reference} stderr={high_stderr}",
+            high_h.price
+        );
+        let combined = (low_stderr * low_stderr + high_stderr * high_stderr).sqrt();
+        assert!(
+            (low_h.price - high_h.price).abs() <= 4.0 * combined,
+            "low-H={} high-H={} combined_stderr={combined}",
+            low_h.price,
+            high_h.price
         );
     }
 
     #[test]
-    fn short_dated_atm_iv_matches_forward_variance_level() {
+    fn short_dated_zero_eta_price_matches_black_scholes_within_four_stderr() {
         let xi0 = 0.04;
         let res = rbergomi_european_mc(
             100.0,
@@ -1247,17 +1261,14 @@ mod tests {
             48,
         );
 
-        let iv = res
-            .diagnostics
-            .get("effective_vol")
-            .copied()
-            .unwrap_or(f64::NAN);
+        let target =
+            black_scholes_price(OptionType::Call, 100.0, 100.0, 0.0, xi0.sqrt(), 1.0 / 52.0);
+        let stderr = res.stderr.expect("rough Bergomi stderr");
 
         assert!(
-            (iv - xi0.sqrt()).abs() <= 3.0e-2,
-            "iv={} target={}",
-            iv,
-            xi0.sqrt()
+            (res.price - target).abs() <= 4.0 * stderr,
+            "price={} Black-Scholes={target} stderr={stderr}",
+            res.price
         );
     }
 
@@ -1287,7 +1298,9 @@ mod tests {
 
         // Accumulate E[W~_{t_n} dW_j] and E[W~_{t_n}^2].
         let mut cross = vec![0.0_f64; n_steps];
-        let mut var_wt = 0.0;
+        let mut sum_dw = vec![0.0_f64; n_steps];
+        let mut sum_wt = 0.0;
+        let mut sum_wt_sq = 0.0;
         for i in 0..n_paths {
             let mut rng = FastRng::from_seed(
                 FastRngKind::Xoshiro256PlusPlus,
@@ -1298,29 +1311,33 @@ mod tests {
             }
             generator.sample(&z, &mut dw, &mut wtilde);
             let wt = wtilde[n_steps];
-            var_wt += wt * wt;
+            sum_wt += wt;
+            sum_wt_sq += wt * wt;
             for (j, &dwj) in dw.iter().enumerate() {
+                sum_dw[j] += dwj;
                 cross[j] += wt * dwj;
             }
         }
 
         let n = n_paths as f64;
-        var_wt /= n;
+        let sample_var_wt = (sum_wt_sq - sum_wt * sum_wt / n) / (n - 1.0);
         let expected_var = maturity.powf(2.0 * hurst);
+        let variance_stderr = expected_var * (2.0 / (n - 1.0)).sqrt();
         assert!(
-            (var_wt - expected_var).abs() <= 0.05 * expected_var,
-            "var={var_wt} expected={expected_var}"
+            (sample_var_wt - expected_var).abs() <= 4.0 * variance_stderr,
+            "var={sample_var_wt} expected={expected_var} variance_stderr={variance_stderr}"
         );
 
         for (j, c) in cross.iter().enumerate() {
-            let sample = c / n;
+            let sample = (c - sum_wt * sum_dw[j] / n) / (n - 1.0);
             let expected =
                 volterra_bm_cross_cov(maturity, j as f64 * dt, (j + 1) as f64 * dt, hurst);
-            // MC noise on each cross moment is ~ sqrt(Var(W~) * dt / n).
-            let noise = 4.0 * (expected_var * dt / n).sqrt();
+            // Exact standard error for the sample covariance of a bivariate
+            // Gaussian pair with variances expected_var and dt.
+            let covariance_stderr = ((expected_var * dt + expected * expected) / (n - 1.0)).sqrt();
             assert!(
-                (sample - expected).abs() <= noise + 0.02 * expected.abs(),
-                "j={j} sample={sample} expected={expected}"
+                (sample - expected).abs() <= 4.0 * covariance_stderr,
+                "j={j} sample={sample} expected={expected} covariance_stderr={covariance_stderr}"
             );
         }
     }

@@ -1542,11 +1542,9 @@ impl VolumeConstrainedSwing {
         }
 
         let n_t = self.exercise_times.len();
-        let grid = inventory_grid_values(
-            self.min_total_volume,
-            self.max_total_volume,
-            total_volume_grid,
-        );
+        // Cumulative exercise starts at zero.  The minimum-total constraint is
+        // a terminal constraint, not volume that has already been exercised.
+        let grid = inventory_grid_values(0.0, self.max_total_volume, total_volume_grid);
 
         let mut next = vec![0.0_f64; grid.len()];
 
@@ -1597,8 +1595,10 @@ impl VolumeConstrainedSwing {
             next = current;
         }
 
-        let start_volume = 0.0_f64.clamp(self.min_total_volume, self.max_total_volume);
-        Ok(interpolate_inventory_value(start_volume, &grid, &next))
+        // The recursion above is in first-exercise-date money.  Return a t=0
+        // present value, consistently with the storage valuation routines.
+        let disc_to_today = (-risk_free_rate * self.exercise_times[0]).exp();
+        Ok(disc_to_today * interpolate_inventory_value(0.0, &grid, &next))
     }
 }
 
@@ -1763,40 +1763,40 @@ mod tests {
     }
 
     #[test]
-    fn storage_intrinsic_is_finite() {
+    fn storage_intrinsic_matches_independently_enumerated_cashflows() {
         let curve = CommodityForwardCurve::from_futures_quotes(&[
             FuturesQuote {
                 maturity: 0.25,
-                price: 40.0,
+                price: 10.0,
             },
             FuturesQuote {
                 maturity: 0.5,
-                price: 42.0,
-            },
-            FuturesQuote {
-                maturity: 0.75,
-                price: 45.0,
-            },
-            FuturesQuote {
-                maturity: 1.0,
-                price: 47.0,
+                price: 14.0,
             },
         ])
         .unwrap();
 
         let contract = CommodityStorageContract {
-            decision_times: vec![0.25, 0.5, 0.75, 1.0],
+            decision_times: vec![0.25, 0.5],
             min_inventory: 0.0,
-            max_inventory: 100.0,
-            initial_inventory: 50.0,
-            max_injection: 25.0,
-            max_withdrawal: 25.0,
-            variable_cost: 0.2,
-            terminal_inventory_target: Some(50.0),
+            max_inventory: 2.0,
+            initial_inventory: 1.0,
+            max_injection: 1.0,
+            max_withdrawal: 1.0,
+            variable_cost: 0.25,
+            terminal_inventory_target: Some(1.0),
         };
 
-        let v = intrinsic_storage_value(&contract, &curve, 0.03, 21).unwrap();
-        assert!(v.is_finite());
+        let risk_free_rate = 0.03;
+        let value = intrinsic_storage_value(&contract, &curve, risk_free_rate, 3).unwrap();
+
+        // Exhaustive enumeration on inventories {0, 1, 2} selects:
+        // inject one unit at t=.25, withdraw it at t=.5, then liquidate the
+        // required one-unit terminal inventory.  The two dated cashflows are
+        // therefore -10.25 and 14 - .25 + 14 = 27.75.
+        let expected =
+            -10.25 * (-risk_free_rate * 0.25_f64).exp() + 27.75 * (-risk_free_rate * 0.5_f64).exp();
+        assert_relative_eq!(value, expected, epsilon = 2.0e-14);
     }
 
     fn storage_test_curve() -> CommodityForwardCurve {
@@ -1834,8 +1834,8 @@ mod tests {
         }
     }
 
-    /// With zero volatility every path equals the forward curve, so the LSM
-    /// valuation must reduce to the deterministic intrinsic DP (extrinsic ~ 0).
+    /// With zero volatility every path equals the forward curve, so LSM has an
+    /// exact deterministic oracle: the independently enumerated intrinsic DP.
     #[test]
     fn zero_volatility_storage_lsm_matches_intrinsic_dp() {
         let curve = storage_test_curve();
@@ -1851,82 +1851,99 @@ mod tests {
         let valuation =
             value_storage_intrinsic_extrinsic(&contract, &curve, 0.03, 21, config).unwrap();
 
-        assert!(valuation.intrinsic.is_finite());
-        assert!(
-            valuation.extrinsic.abs() <= 1.0e-6 * valuation.intrinsic.abs().max(1.0),
-            "extrinsic={} intrinsic={}",
-            valuation.extrinsic,
-            valuation.intrinsic
-        );
-        assert!(valuation.stderr.abs() <= 1.0e-9);
+        // The two independently accumulated DPs differ by 3.7e-12 of floating
+        // point roundoff on this case.
+        assert_relative_eq!(valuation.total, valuation.intrinsic, epsilon = 5.0e-12);
+        assert_relative_eq!(valuation.extrinsic, 0.0, epsilon = 5.0e-12);
+        assert_relative_eq!(valuation.stderr, 0.0, epsilon = 2.0e-12);
     }
 
-    /// Optionality cannot destroy value: the stochastic LSM value must be at
-    /// least the intrinsic value (up to MC noise) and strictly above it for a
-    /// meaningful volatility level.
+    /// Lock the seeded finite-grid result and compare an independent larger run
+    /// using the Monte Carlo standard errors reported by each valuation.
     #[test]
-    fn storage_lsm_value_exceeds_intrinsic_for_positive_vol() {
+    fn storage_lsm_seeded_lock_and_statistical_convergence() {
         let curve = storage_test_curve();
         let contract = storage_test_contract();
 
-        let config = StorageLsmConfig {
+        let seeded_config = StorageLsmConfig {
             num_paths: 4_000,
             kappa: 1.5,
             sigma: 0.5,
             seed: 13,
         };
 
-        let valuation =
-            value_storage_intrinsic_extrinsic(&contract, &curve, 0.03, 21, config).unwrap();
+        let seeded =
+            value_storage_intrinsic_extrinsic(&contract, &curve, 0.03, 21, seeded_config).unwrap();
+        // Deterministic lock for rand 0.9 StdRng, seed 13, and this 21-point
+        // inventory grid.  This catches changes in path generation, regression,
+        // exercise policy, discounting, or reported sampling error.
+        assert_relative_eq!(seeded.intrinsic, 2_474.265_872_372_82, epsilon = 2.0e-11);
+        assert_relative_eq!(seeded.total, 2_546.291_903_854_860_3, epsilon = 2.0e-11);
+        assert_relative_eq!(seeded.extrinsic, 72.026_031_482_040_25, epsilon = 2.0e-11);
+        assert_relative_eq!(seeded.stderr, 14.931_061_150_366_704, epsilon = 2.0e-12);
 
-        assert!(valuation.total.is_finite() && valuation.stderr.is_finite());
+        let reference_config = StorageLsmConfig {
+            num_paths: 16_000,
+            kappa: 1.5,
+            sigma: 0.5,
+            seed: 71,
+        };
+        let reference =
+            value_storage_intrinsic_extrinsic(&contract, &curve, 0.03, 21, reference_config)
+                .unwrap();
+
+        assert!(seeded.total.is_finite() && seeded.stderr.is_finite());
         assert!(
-            valuation.extrinsic >= -3.0 * valuation.stderr,
+            seeded.extrinsic >= -4.0 * seeded.stderr,
             "extrinsic={} stderr={}",
-            valuation.extrinsic,
-            valuation.stderr
+            seeded.extrinsic,
+            seeded.stderr
         );
+        let combined_stderr = seeded.stderr.hypot(reference.stderr);
         assert!(
-            valuation.extrinsic > 0.0,
-            "expected strictly positive extrinsic value, got {}",
-            valuation.extrinsic
+            (seeded.total - reference.total).abs() <= 4.0 * combined_stderr,
+            "seeded={} reference={} combined_stderr={combined_stderr}",
+            seeded.total,
+            reference.total
         );
+        assert!(reference.stderr < seeded.stderr);
     }
 
     #[test]
-    fn volume_constrained_swing_prices() {
+    fn volume_constrained_swing_matches_enumerated_discounted_cashflows() {
         let curve = CommodityForwardCurve::from_futures_quotes(&[
             FuturesQuote {
                 maturity: 0.25,
-                price: 48.0,
+                price: 8.0,
             },
             FuturesQuote {
                 maturity: 0.5,
-                price: 50.0,
+                price: 12.0,
             },
             FuturesQuote {
                 maturity: 0.75,
-                price: 52.0,
-            },
-            FuturesQuote {
-                maturity: 1.0,
-                price: 55.0,
+                price: 15.0,
             },
         ])
         .unwrap();
 
         let swing = VolumeConstrainedSwing {
-            exercise_times: vec![0.25, 0.5, 0.75, 1.0],
-            strike: 49.0,
+            exercise_times: vec![0.25, 0.5, 0.75],
+            strike: 10.0,
             option_type: OptionType::Call,
             min_period_volume: 0.0,
-            max_period_volume: 10.0,
-            min_total_volume: 5.0,
-            max_total_volume: 25.0,
+            max_period_volume: 1.0,
+            min_total_volume: 1.0,
+            max_total_volume: 2.0,
         };
 
-        let value = swing.intrinsic_value(&curve, 0.03, 41).unwrap();
-        assert!(value.is_finite());
-        assert!(value >= 0.0);
+        let risk_free_rate = 0.04;
+        let value = swing.intrinsic_value(&curve, risk_free_rate, 3).unwrap();
+
+        // Enumerating the three binary exercise decisions under 1 <= V <= 2
+        // selects one unit at t=.5 and one at t=.75.  The t=.25 payoff is zero.
+        let expected =
+            2.0 * (-risk_free_rate * 0.5_f64).exp() + 5.0 * (-risk_free_rate * 0.75_f64).exp();
+        assert_relative_eq!(value, expected, epsilon = 2.0e-14);
     }
 }

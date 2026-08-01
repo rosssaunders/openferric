@@ -6,6 +6,8 @@
 //! - Rubinstein (1991): chooser option
 //! - Haug "Option Pricing Formulas" (1998): numerical examples
 //! - QuantLib test suite: lookbackoptions.cpp
+//! - SciPy 1.17.1 `norm.cdf` and adaptive quadrature for cases whose exact
+//!   parameters are not present in the published Haug/QuantLib grids
 //!
 //! These test the ExoticAnalyticEngine against known reference values for
 //! lookback, chooser, quanto, and compound options.
@@ -33,6 +35,14 @@ fn price_exotic(option: ExoticOption, market: &Market) -> f64 {
     engine.price(&option, market).expect("pricing failed").price
 }
 
+fn assert_close(label: &str, actual: f64, expected: f64, tolerance: f64) {
+    let error = (actual - expected).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: expected={expected:.15}, actual={actual:.15}, error={error:.3e}, tolerance={tolerance:.3e}"
+    );
+}
+
 // =======================================================================
 // Floating lookback call: Goldman-Sosin-Gatto (1979)
 // S=120, S_min=100, r=0.10, q=0.06, sigma=0.30, T=0.50
@@ -47,11 +57,7 @@ fn floating_lookback_call_haug() {
         observed_extreme: Some(100.0),
     });
     let price = price_exotic(option, &market);
-    // Goldman-Sosin-Gatto formula
-    assert!(
-        price > 24.0 && price < 27.0,
-        "Floating lookback call: got {price}, expected ~25.36"
-    );
+    assert_close("floating lookback call", price, 25.3533, 1.1e-4);
 }
 
 // =======================================================================
@@ -67,10 +73,11 @@ fn floating_lookback_put_haug() {
         observed_extreme: Some(140.0),
     });
     let price = price_exotic(option, &market);
-    // Put has guaranteed payoff of at least S_max - S = 20
-    assert!(
-        price > 19.0 && price < 30.0,
-        "Floating lookback put: got {price}, expected ~21-27"
+    assert_close(
+        "floating lookback put",
+        price,
+        25.192_849_310_819_48,
+        3.0e-12,
     );
 }
 
@@ -139,12 +146,7 @@ fn fixed_lookback_call_haug() {
         observed_extreme: Some(100.0),
     });
     let price = price_exotic(option, &market);
-    // Fixed lookback call with K=95 and current S_max=100 => intrinsic = 5
-    // Time value adds more
-    assert!(
-        price > 5.0 && price < 25.0,
-        "Fixed lookback call: got {price}, expected 8-20 range"
-    );
+    assert_close("fixed lookback call", price, 24.9857, 1.1e-4);
 }
 
 // =======================================================================
@@ -161,11 +163,7 @@ fn fixed_lookback_put_haug() {
         observed_extreme: Some(95.0),
     });
     let price = price_exotic(option, &market);
-    // Fixed lookback put with K=105 and S_min=95 => intrinsic = 10
-    assert!(
-        price > 10.0 && price < 25.0,
-        "Fixed lookback put: got {price}, expected 10-20 range"
-    );
+    assert_close("fixed lookback put", price, 18.433_595_789_394_793, 3.0e-12);
 }
 
 // =======================================================================
@@ -182,12 +180,7 @@ fn chooser_option_haug() {
         choose_time: 0.25,
     });
     let price = price_exotic(option, &market);
-    let reference = 6.1071;
-    let err = (price - reference).abs();
-    assert!(
-        err < 1e-3,
-        "Chooser option: got {price}, expected {reference}, err={err}"
-    );
+    assert_close("chooser option", price, 6.1071, 1.1e-4);
 }
 
 // =======================================================================
@@ -237,9 +230,7 @@ fn chooser_positive_and_exceeds_straddle_discount() {
     });
     let price = price_exotic(option, &market);
 
-    // Chooser must be positive and bounded
-    assert!(price > 0.0, "Chooser must be positive: got {price}");
-    assert!(price < spot, "Chooser must be < spot: got {price}");
+    assert_close("chooser option", price, 17.500_116_306_234_42, 3.0e-12);
 }
 
 // =======================================================================
@@ -281,11 +272,11 @@ fn chooser_exceeds_both_call_and_put() {
     );
 
     assert!(
-        chooser_price >= bs_call - 0.01,
+        chooser_price + 1.0e-12 >= bs_call,
         "Chooser ({chooser_price}) should be >= call ({bs_call})"
     );
     assert!(
-        chooser_price >= bs_put - 0.01,
+        chooser_price + 1.0e-12 >= bs_put,
         "Chooser ({chooser_price}) should be >= put ({bs_put})"
     );
 }
@@ -308,11 +299,7 @@ fn quanto_call_basic() {
         asset_fx_corr: -0.30,
     });
     let price = price_exotic(option, &market);
-    // Quanto adjustment shifts the effective drift
-    assert!(
-        price > 5.0 && price < 30.0,
-        "Quanto call: got {price}, expected reasonable range"
-    );
+    assert_close("quanto call", price, 13.491_372_579_960_611, 3.0e-12);
 }
 
 // =======================================================================
@@ -333,19 +320,11 @@ fn compound_call_on_call_basic() {
     });
     let price = price_exotic(option, &market);
 
-    // The underlying call is worth ~12 at ATM, so a call on it with K=5 should
-    // be roughly the call value minus the discounted compound strike
-    let bs_call = openferric::pricing::european::black_scholes_price(
-        openferric::pricing::OptionType::Call,
-        100.0,
-        100.0,
-        0.05,
-        0.25,
-        1.0,
-    );
-    assert!(
-        price > 0.0 && price < bs_call,
-        "Compound call on call: got {price}, BS underlying call={bs_call}"
+    assert_close(
+        "compound call on call",
+        price,
+        8.381_446_333_365_941,
+        4.0e-12,
     );
 }
 
@@ -376,6 +355,9 @@ fn compound_put_on_call_cheaper_than_call_on_call() {
 
     let cc_price = price_exotic(call_on_call, &market);
     let pc_price = price_exotic(put_on_call, &market);
+
+    assert_close("call on call", cc_price, 14.832_304_916_679_785, 4.0e-12);
+    assert_close("put on call", pc_price, 0.403_762_947_510_051_76, 4.0e-12);
 
     // When S > K, the underlying call is in the money, so call-on-call > put-on-call
     assert!(

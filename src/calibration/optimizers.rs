@@ -641,7 +641,13 @@ mod tests {
                 "StepTolerance must reflect an accepted step norm"
             );
         }
-        assert!((out.x[0] - 2.0_f64.sqrt()).abs() < 1e-4);
+        assert!(
+            (out.x[0] - 2.0_f64.sqrt()).abs() < 5.0e-10,
+            "x={} error={} objective={}",
+            out.x[0],
+            (out.x[0] - 2.0_f64.sqrt()).abs(),
+            out.objective
+        );
     }
 
     #[test]
@@ -658,8 +664,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!((out.x[0] - 0.2).abs() < 1e-2);
-        assert!((out.x[1] + 0.3).abs() < 1e-2);
+        assert!(
+            (out.x[0] - 0.2).abs() < 1.0e-8,
+            "x={:?} objective={}",
+            out.x,
+            out.objective
+        );
+        assert!((out.x[1] + 0.3).abs() < 1.0e-8);
+        assert!(out.objective < 1.2e-16);
     }
 
     #[test]

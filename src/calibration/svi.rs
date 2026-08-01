@@ -98,7 +98,13 @@ impl Default for SviCalibrator {
             maturity: 1.0,
             parameterization: SviParameterization::Raw,
             lm_options: LmOptions {
-                max_iterations: 24,
+                max_iterations: 80,
+                // The finite-difference Jacobian has a gradient floor around
+                // 1e-9 once quote errors are below 1e-9 vol.
+                gradient_tolerance: 1e-9,
+                step_tolerance: 1e-12,
+                objective_tolerance: 1e-20,
+                finite_diff_epsilon: 1e-5,
                 ..LmOptions::default()
             },
             de_options: DifferentialEvolutionOptions {
@@ -288,7 +294,12 @@ impl Calibrator<SviCalibrationParams> for SviCalibrator {
             let de = differential_evolution(&bounds, self.de_options, |x| {
                 self.objective(x, instruments, &bounds)
             })?;
-            start = self.project_no_arb(&de.x, &bounds);
+            let global_start = self.project_no_arb(&de.x, &bounds);
+            if self.objective(&global_start, instruments, &bounds)
+                < self.objective(&start, instruments, &bounds)
+            {
+                start = global_start;
+            }
         }
 
         let mut lm = levenberg_marquardt(&start, &bounds, self.lm_options, |x| {
@@ -355,7 +366,17 @@ impl Calibrator<SviCalibrationParams> for SviCalibrator {
 mod tests {
     use super::*;
 
-    fn synthetic_quotes() -> (f64, f64, Vec<OptionVolQuote>) {
+    const MAX_QUOTE_VOL_ERROR: f64 = 1e-9;
+
+    fn assert_close(label: &str, actual: f64, expected: f64, tolerance: f64) {
+        let error = (actual - expected).abs();
+        assert!(
+            actual.is_finite() && error <= tolerance,
+            "{label}: actual={actual:.16e}, expected={expected:.16e}, error={error:.3e}, tolerance={tolerance:.3e}"
+        );
+    }
+
+    fn synthetic_quotes() -> (f64, f64, SviRawCalibrationParams, Vec<OptionVolQuote>) {
         let forward = 100.0;
         let maturity = 1.5;
         let true_p = SviRawCalibrationParams {
@@ -379,12 +400,43 @@ mod tests {
                 q
             })
             .collect();
-        (forward, maturity, quotes)
+        (forward, maturity, true_p, quotes)
+    }
+
+    fn assert_every_quote_reprices(
+        result: &CalibrationResult<SviCalibrationParams>,
+        quotes: &[OptionVolQuote],
+    ) {
+        assert_eq!(result.per_instrument_error.len(), quotes.len());
+        assert!(result.objective.is_finite());
+        assert!(result.condition_number.is_finite());
+        assert!(result.jacobian.iter().flatten().all(|x| x.is_finite()));
+        assert!(
+            result.convergence.converged,
+            "optimizer did not converge: {:?}",
+            result.convergence
+        );
+
+        for (error, quote) in result.per_instrument_error.iter().zip(quotes) {
+            assert_eq!(error.id, quote.id);
+            assert_close(
+                &format!("{} model vol", quote.id),
+                error.model,
+                quote.market_vol,
+                MAX_QUOTE_VOL_ERROR,
+            );
+            assert_close(
+                &format!("{} recorded signed error", quote.id),
+                error.signed_error,
+                error.model - quote.market_vol,
+                f64::EPSILON,
+            );
+        }
     }
 
     #[test]
-    fn calibrates_raw_svi_with_sub_half_vol_point_error() {
-        let (forward, maturity, quotes) = synthetic_quotes();
+    fn raw_svi_recovers_parameters_and_reprices_every_synthetic_quote() {
+        let (forward, maturity, expected, quotes) = synthetic_quotes();
         let cal = SviCalibrator {
             forward,
             maturity,
@@ -393,16 +445,24 @@ mod tests {
         };
 
         let result = cal.calibrate(&quotes).expect("svi calibration succeeds");
-        assert!(
-            result.diagnostics.fit_quality.liquid_rmse < 0.005,
-            "liquid RMSE too high: {}",
-            result.diagnostics.fit_quality.liquid_rmse
-        );
+        let SviCalibrationParams::Raw(actual) = &result.params else {
+            panic!("raw calibration must return raw parameters");
+        };
+
+        // The synthetic slice uniquely identifies all five raw parameters.
+        // The 1e-7 budget is the measured finite-difference optimizer floor;
+        // every quoted volatility is independently checked below to 1e-9.
+        assert_close("a", actual.a, expected.a, 1e-7);
+        assert_close("b", actual.b, expected.b, 1e-7);
+        assert_close("rho", actual.rho, expected.rho, 1e-7);
+        assert_close("m", actual.m, expected.m, 1e-7);
+        assert_close("sigma", actual.sigma, expected.sigma, 1e-7);
+        assert_every_quote_reprices(&result, &quotes);
     }
 
     #[test]
-    fn calibrates_jump_wings_output_with_sub_half_vol_point_error() {
-        let (forward, maturity, quotes) = synthetic_quotes();
+    fn jump_wings_matches_exact_raw_transform_and_reprices_every_quote() {
+        let (forward, maturity, raw, quotes) = synthetic_quotes();
         let cal = SviCalibrator {
             forward,
             maturity,
@@ -411,11 +471,17 @@ mod tests {
         };
 
         let result = cal.calibrate(&quotes).expect("svi calibration succeeds");
-        assert!(matches!(result.params, SviCalibrationParams::JumpWings(_)));
-        assert!(
-            result.diagnostics.fit_quality.liquid_rmse < 0.005,
-            "liquid RMSE too high: {}",
-            result.diagnostics.fit_quality.liquid_rmse
-        );
+        let expected = cal.raw_to_jump_wings(raw);
+        let SviCalibrationParams::JumpWings(actual) = &result.params else {
+            panic!("jump-wings calibration must return jump-wings parameters");
+        };
+
+        assert_close("v", actual.v, expected.v, 1e-8);
+        assert_close("psi", actual.psi, expected.psi, 1e-7);
+        assert_close("p", actual.p, expected.p, 1e-6);
+        assert_close("c", actual.c, expected.c, 1e-6);
+        assert_close("vt", actual.vt, expected.vt, 1e-8);
+        assert_close("maturity", actual.maturity, maturity, f64::EPSILON);
+        assert_every_quote_reprices(&result, &quotes);
     }
 }

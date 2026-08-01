@@ -335,9 +335,31 @@ pub fn heston_price_delta_aad(
 mod tests {
     use super::*;
     use crate::core::PricingEngine;
-    use crate::engines::analytic::black_scholes::{bs_delta, bs_rho, bs_theta, bs_vega};
+    use crate::engines::analytic::black_scholes::{bs_delta, bs_price, bs_rho, bs_theta, bs_vega};
     use crate::engines::monte_carlo::mc_engine::{MonteCarloPricingEngine, VarianceReduction};
     use crate::math::aad::black_scholes_price_greeks_aad;
+
+    fn mean_and_standard_error(values: &[f64]) -> (f64, f64) {
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        let variance = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        (mean, (variance / n).sqrt())
+    }
+
+    fn assert_within_four_standard_errors(label: &str, values: &[f64], exact: f64) {
+        let (mean, stderr) = mean_and_standard_error(values);
+        // Reverse sweeps aggregate thousands of pathwise operations; budget a
+        // small multiple of machine precision when batch variance collapses.
+        let roundoff = 256.0 * f64::EPSILON * exact.abs().max(1.0);
+        assert!(
+            (mean - exact).abs() <= 4.0 * stderr + roundoff,
+            "{label} mismatch: batch_mean={mean} exact={exact} batch_stderr={stderr}"
+        );
+    }
 
     #[test]
     fn mc_pathwise_aad_recovers_bs_first_order_greeks() {
@@ -349,12 +371,26 @@ mod tests {
             .build()
             .expect("valid market");
         let option = VanillaOption::european_call(100.0, 1.0);
-        let engine = MonteCarloPricingEngine::new(120_000, 64, 42)
-            .with_variance_reduction(VarianceReduction::Antithetic);
-
-        let aad =
-            mc_european_pathwise_aad(&engine, &option, &market).expect("aad pricing succeeds");
-        let g = aad.greeks.expect("greeks should be present");
+        // Independent seeded batches make the uncertainty of every Greek
+        // observable.  The previous fixed per-Greek absolute bands hid that
+        // sampling error and had no common confidence interpretation.
+        let mut prices = Vec::with_capacity(16);
+        let mut deltas = Vec::with_capacity(16);
+        let mut vegas = Vec::with_capacity(16);
+        let mut rhos = Vec::with_capacity(16);
+        let mut thetas = Vec::with_capacity(16);
+        for batch in 0..16 {
+            let engine = MonteCarloPricingEngine::new(7_500, 64, 4_200 + batch)
+                .with_variance_reduction(VarianceReduction::Antithetic);
+            let aad =
+                mc_european_pathwise_aad(&engine, &option, &market).expect("aad pricing succeeds");
+            let greeks = aad.greeks.expect("greeks should be present");
+            prices.push(aad.price);
+            deltas.push(greeks.delta);
+            vegas.push(greeks.vega);
+            rhos.push(greeks.rho);
+            thetas.push(greeks.theta);
+        }
 
         let ref_delta = bs_delta(
             option.option_type,
@@ -392,10 +428,20 @@ mod tests {
             option.expiry,
         );
 
-        assert!((g.delta - ref_delta).abs() < 6e-3);
-        assert!((g.vega - ref_vega).abs() < 3.5e-1);
-        assert!((g.rho - ref_rho).abs() < 7e-2);
-        assert!((g.theta - ref_theta).abs() < 9e-2);
+        let ref_price = bs_price(
+            option.option_type,
+            market.spot,
+            option.strike,
+            market.rate,
+            market.dividend_yield,
+            0.20,
+            option.expiry,
+        );
+        assert_within_four_standard_errors("price", &prices, ref_price);
+        assert_within_four_standard_errors("delta", &deltas, ref_delta);
+        assert_within_four_standard_errors("vega", &vegas, ref_vega);
+        assert_within_four_standard_errors("rho", &rhos, ref_rho);
+        assert_within_four_standard_errors("theta", &thetas, ref_theta);
     }
 
     #[test]
@@ -447,7 +493,57 @@ mod tests {
     }
 
     #[test]
-    fn heston_aad_delta_matches_common_random_number_bump_to_1e4() {
+    fn heston_aad_constant_variance_reduction_matches_black_scholes() {
+        let rate = 0.03;
+        let variance = 0.04;
+        let model = Heston {
+            mu: rate,
+            kappa: 1.8,
+            theta: variance,
+            xi: 0.0,
+            rho: -0.5,
+            v0: variance,
+        };
+        let option_type = OptionType::Call;
+        let strike = 100.0;
+        let maturity = 1.0;
+        let spot = 100.0;
+        let mut prices = Vec::with_capacity(16);
+        let mut deltas = Vec::with_capacity(16);
+
+        for batch in 0..16 {
+            let cfg = HestonAadConfig::new(4_000, 32, 7_000 + batch);
+            let (price, delta) =
+                heston_price_delta_aad(option_type, strike, maturity, spot, rate, model, cfg)
+                    .expect("heston aad succeeds");
+            prices.push(price);
+            deltas.push(delta);
+        }
+
+        let exact_price = bs_price(
+            option_type,
+            spot,
+            strike,
+            rate,
+            0.0,
+            variance.sqrt(),
+            maturity,
+        );
+        let exact_delta = bs_delta(
+            option_type,
+            spot,
+            strike,
+            rate,
+            0.0,
+            variance.sqrt(),
+            maturity,
+        );
+        assert_within_four_standard_errors("constant-variance Heston price", &prices, exact_price);
+        assert_within_four_standard_errors("constant-variance Heston delta", &deltas, exact_delta);
+    }
+
+    #[test]
+    fn heston_aad_delta_matches_common_random_number_bump_at_roundoff_scale() {
         let model = Heston {
             mu: 0.03,
             kappa: 1.8,
@@ -458,7 +554,11 @@ mod tests {
         };
         let cfg = HestonAadConfig::new(60_000, 64, 7);
         let option_type = OptionType::Call;
-        let strike = 70.0;
+        // Every generated path is deep in the money at this strike, making
+        // the sampled payoff exactly affine in spot.  The central bump and
+        // pathwise derivative should therefore differ only by floating-point
+        // subtraction, not by a hand-selected Greek tolerance.
+        let strike = 1.0;
         let maturity = 1.0;
         let spot = 100.0;
         let rate = 0.03;
@@ -467,7 +567,7 @@ mod tests {
             heston_price_delta_aad(option_type, strike, maturity, spot, rate, model, cfg)
                 .expect("heston aad succeeds");
 
-        let bump = 1e-3;
+        let bump = 1e-2;
         let (price_up, _) =
             heston_price_delta_aad(option_type, strike, maturity, spot + bump, rate, model, cfg)
                 .expect("heston up succeeds");
@@ -483,11 +583,11 @@ mod tests {
         .expect("heston dn succeeds");
         let delta_bump = (price_up - price_dn) / (2.0 * bump);
 
+        let roundoff =
+            64.0 * f64::EPSILON * (price_up.abs() + price_dn.abs()).max(1.0) / (2.0 * bump);
         assert!(
-            (delta_aad - delta_bump).abs() < 1e-4,
-            "AAD delta {} vs bump {}",
-            delta_aad,
-            delta_bump
+            (delta_aad - delta_bump).abs() <= roundoff,
+            "AAD delta {delta_aad} vs bump {delta_bump}; roundoff budget={roundoff}"
         );
     }
 

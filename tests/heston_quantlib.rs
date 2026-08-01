@@ -141,11 +141,9 @@ fn heston_quantlib_cached_reference_values() {
             - fixture.spot * (-fixture.dividend_rate * fixture.maturity).exp()
             + strike * (-fixture.risk_free_rate * fixture.maturity).exp();
         let (expected_put, expected_call) = fixture.expected_put_call[idx];
-        // The reference values use QuantLib's 128-point Gauss-Laguerre and
-        // adaptive analytic engines. The independent Carr-Madan FFT has a
-        // measured absolute discretization error below one cent for this
-        // five-strike grid.
-        let tol = 1.0e-2;
+        // The high-resolution Carr-Madan grid reproduces this QuantLib/Lewis
+        // table to near machine precision at all five requested strikes.
+        let tol = 5.0e-12;
         let call_err = (call_price - expected_call).abs();
         let put_err = (put_price - expected_put).abs();
 

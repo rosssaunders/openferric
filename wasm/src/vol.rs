@@ -276,23 +276,30 @@ mod tests {
     // -- sabr_vol --
 
     #[test]
-    fn sabr_vol_atm_approx_alpha() {
+    fn sabr_vol_atm_matches_hagan_formula() {
         let vol = sabr_vol(100.0, 100.0, 1.0, 0.20, 1.0, -0.3, 0.4);
-        assert!((vol - 0.20).abs() < 0.02);
+        assert!((vol - 0.201_106_666_666_666_68).abs() < 2.0e-16);
     }
 
     #[test]
     fn sabr_vol_smile_skew() {
         let vol_low = sabr_vol(100.0, 80.0, 1.0, 0.20, 0.5, -0.4, 0.6);
         let vol_atm = sabr_vol(100.0, 100.0, 1.0, 0.20, 0.5, -0.4, 0.6);
-        // Negative rho → downside skew
-        assert!(vol_low > vol_atm);
+        let vol_high = sabr_vol(100.0, 120.0, 1.0, 0.20, 0.5, -0.4, 0.6);
+        let expected = [
+            0.060_309_788_022_575_306,
+            0.020_444_083_333_333_33,
+            0.038_765_355_669_920_95,
+        ];
+        for (actual, reference) in [vol_low, vol_atm, vol_high].into_iter().zip(expected) {
+            assert!((actual - reference).abs() < 2.0e-16);
+        }
     }
 
     #[test]
-    fn sabr_vol_positive() {
+    fn sabr_vol_second_atm_reference() {
         let vol = sabr_vol(100.0, 100.0, 1.0, 0.25, 0.5, 0.0, 0.3);
-        assert!(vol > 0.0);
+        assert!((vol - 0.025_187_662_760_416_67).abs() < 2.0e-16);
     }
 
     // -- fit_sabr_wasm --
@@ -311,9 +318,24 @@ mod tests {
             .map(|&k| sabr_vol(forward, k, t, alpha, beta, rho, nu))
             .collect();
         let result = fit_sabr_wasm(forward, &strikes, &vols, t, beta);
-        assert!((result.alpha - alpha).abs() < 0.05);
-        // beta is fixed
-        assert!((result.beta - beta).abs() < 1e-10);
+        let max_repricing_error = strikes
+            .iter()
+            .zip(&vols)
+            .map(|(&strike, &quote)| {
+                (sabr_vol(
+                    forward,
+                    strike,
+                    t,
+                    result.alpha,
+                    result.beta,
+                    result.rho,
+                    result.nu,
+                ) - quote)
+                    .abs()
+            })
+            .fold(0.0_f64, f64::max);
+        assert_eq!(result.beta, beta);
+        assert!(max_repricing_error < 1.0e-9, "error={max_repricing_error}");
     }
 
     // -- WasmSviParams --
@@ -383,10 +405,11 @@ mod tests {
             points_flat.push(tv);
         }
         let result = calibrate_svi_wasm(&points_flat, 0.04, 0.1, -0.1, 0.0, 0.15, 2000, 0.002);
-        // Check it reproduces total variance at ATM
-        let tv_atm = result.total_variance(0.0);
-        let expected_atm = svi.total_variance(0.0);
-        assert!((tv_atm - expected_atm).abs() < 0.01);
+        let max_repricing_error = (-5..=5)
+            .map(|i| i as f64 * 0.05)
+            .map(|k| (result.total_variance(k) - svi.total_variance(k)).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_repricing_error < 1.0e-5, "error={max_repricing_error}");
     }
 
     // -- log_moneyness_batch_wasm --
@@ -433,16 +456,16 @@ mod tests {
     // -- realized_vol --
 
     #[test]
-    fn realized_vol_positive() {
+    fn realized_vol_matches_sample_standard_deviation() {
         let log_ret = [0.01, -0.02, 0.015, -0.005, 0.008];
         let rv = realized_vol(&log_ret, 252.0);
-        assert!(rv > 0.0);
+        assert!((rv - 22.466_775_469_568_393).abs() < 2.0e-12);
     }
 
     #[test]
     fn realized_vol_zero_returns() {
         let log_ret = [0.0, 0.0, 0.0];
         let rv = realized_vol(&log_ret, 252.0);
-        assert!(rv.abs() < 1e-10 || rv == 0.0);
+        assert_eq!(rv, 0.0);
     }
 }

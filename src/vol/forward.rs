@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn vix_matches_flat_vol_within_tenth_of_point() {
+    fn vix_matches_flat_vol_on_stated_quadrature_grid() {
         let sigma = 0.20;
         let surface = FlatSurface {
             vol: sigma,
@@ -772,11 +772,19 @@ mod tests {
         };
         let out = vix_style_index_from_surface(&surface, 0.01, settings).unwrap();
         let expected = sigma * 100.0;
-        assert!(
-            (out.index - expected).abs() < 0.1,
-            "vix={} expected={expected}",
-            out.index
-        );
+        assert!((out.index - 20.002_034_342_198_733).abs() < 2.0e-10);
+
+        let fine = vix_style_index_from_surface(
+            &surface,
+            0.01,
+            VixSettings {
+                strike_count: 6001,
+                log_moneyness_span: 3.0,
+                ..VixSettings::default()
+            },
+        )
+        .unwrap();
+        assert!((fine.index - expected).abs() < (out.index - expected).abs());
     }
 
     #[test]

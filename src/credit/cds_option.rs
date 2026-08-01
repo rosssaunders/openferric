@@ -145,6 +145,9 @@ pub fn fair_spread_from_hazard(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+    use statrs::distribution::{ContinuousCDF, Normal};
+
     use super::*;
 
     #[test]
@@ -173,7 +176,7 @@ mod tests {
 
         let p = payer.black_price(forward, vol, rpv01);
         let r = receiver.black_price(forward, vol, rpv01);
-        assert!((p - r).abs() < 1e-8, "ATM payer ({p}) != receiver ({r})");
+        assert_relative_eq!(p, r, epsilon = 1.0e-10);
     }
 
     #[test]
@@ -259,10 +262,16 @@ mod tests {
         };
 
         let price = option.black_price(fair, vol, rpv01);
-        assert!(
-            (price - 270.976348).abs() < 1.0,
-            "QuantLib cached value mismatch: got {price}, expected 270.976348"
-        );
+        // QuantLib's dated cached value is 270.976348. For this test's stated
+        // approximate quarterly schedule, the compatible Black-76 oracle is
+        // exact and is independently evaluated with statrs' normal CDF.
+        let sigma_sqrt_t = vol * t_expiry.sqrt();
+        let d1 = 0.5 * sigma_sqrt_t; // ATM: ln(F/K) = 0
+        let d2 = -0.5 * sigma_sqrt_t;
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let expected = notional * rpv01 * fair * (normal.cdf(d1) - normal.cdf(d2));
+        assert_relative_eq!(price, expected, epsilon = 1.0e-9);
+        assert_relative_eq!(price, 270.779_713_302_305_6, epsilon = 1.0e-9);
     }
 
     #[test]
@@ -282,10 +291,7 @@ mod tests {
 
         let price = payer.black_price(forward, 0.0, rpv01);
         let expected = 1_000_000.0 * rpv01 * (forward - strike);
-        assert!(
-            (price - expected).abs() < 1e-6,
-            "Zero vol payer: got {price}, expected {expected}"
-        );
+        assert_relative_eq!(price, expected, epsilon = 1.0e-10);
 
         // OTM receiver with zero vol should be 0
         let receiver = CdsOption {
@@ -297,10 +303,7 @@ mod tests {
             recovery_rate: 0.4,
         };
         let price_r = receiver.black_price(forward, 0.0, rpv01);
-        assert!(
-            price_r.abs() < 1e-6,
-            "Zero vol OTM receiver should be 0, got {price_r}"
-        );
+        assert_relative_eq!(price_r, 0.0, epsilon = 1.0e-15);
     }
 
     #[test]
@@ -319,11 +322,13 @@ mod tests {
         };
         let forward = 0.05;
         let price = deep_itm.black_price(forward, vol, rpv01);
-        let intrinsic = 1_000_000.0 * rpv01 * (forward - 0.001);
-        assert!(
-            price >= intrinsic * 0.99,
-            "Deep ITM payer should be >= intrinsic: {price} vs {intrinsic}"
-        );
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let d1 = ((forward / deep_itm.strike_spread).ln() + 0.5 * vol * vol) / vol;
+        let d2 = d1 - vol;
+        let expected = deep_itm.notional
+            * rpv01
+            * (forward * normal.cdf(d1) - deep_itm.strike_spread * normal.cdf(d2));
+        assert_relative_eq!(price, expected, epsilon = 1.0e-9);
 
         // Deep OTM payer: forward << strike
         let deep_otm = CdsOption {
@@ -336,9 +341,11 @@ mod tests {
         };
         let forward_low = 0.001;
         let price_otm = deep_otm.black_price(forward_low, vol, rpv01);
-        assert!(
-            price_otm < 1_000_000.0 * rpv01 * 0.001,
-            "Deep OTM payer should be near zero, got {price_otm}"
-        );
+        let d1 = ((forward_low / deep_otm.strike_spread).ln() + 0.5 * vol * vol) / vol;
+        let d2 = d1 - vol;
+        let expected_otm = deep_otm.notional
+            * rpv01
+            * (forward_low * normal.cdf(d1) - deep_otm.strike_spread * normal.cdf(d2));
+        assert_relative_eq!(price_otm, expected_otm, epsilon = 1.0e-12);
     }
 }

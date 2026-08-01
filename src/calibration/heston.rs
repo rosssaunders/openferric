@@ -70,7 +70,13 @@ impl Default for HestonCalibrator {
             )
             .expect("valid Heston bounds"),
             lm_options: LmOptions {
-                max_iterations: 28,
+                max_iterations: 80,
+                // FFT/implied-vol round trips put the numerical gradient floor
+                // around 1e-10 once quote errors are below 1e-9 vol.
+                gradient_tolerance: 1e-10,
+                step_tolerance: 1e-10,
+                objective_tolerance: 1e-18,
+                finite_diff_epsilon: 1e-5,
                 ..LmOptions::default()
             },
             fft_params: CarrMadanParams {
@@ -242,6 +248,16 @@ mod tests {
 
     use super::*;
 
+    const MAX_QUOTE_VOL_ERROR: f64 = 1e-9;
+
+    fn assert_close(label: &str, actual: f64, expected: f64, tolerance: f64) {
+        let error = (actual - expected).abs();
+        assert!(
+            actual.is_finite() && error <= tolerance,
+            "{label}: actual={actual:.16e}, expected={expected:.16e}, error={error:.3e}, tolerance={tolerance:.3e}"
+        );
+    }
+
     fn synthetic_surface(
         cal: &HestonCalibrator,
         params: HestonCalibrationParams,
@@ -282,8 +298,6 @@ mod tests {
                 .expect("iv inversion succeeds");
 
                 let mut q = OptionVolQuote::new(format!("T{t:.2}_K{idx}"), *k, t, iv);
-                q.bid_vol = Some((iv - 0.0005).max(1e-6));
-                q.ask_vol = Some(iv + 0.0005);
                 q.weight = if (k / cal.spot - 1.0).abs() <= 0.2 {
                     1.5
                 } else {
@@ -297,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn calibrates_heston_surface_with_sub_half_vol_point_error() {
+    fn recovers_heston_parameters_and_reprices_every_synthetic_quote() {
         let cal = HestonCalibrator::default();
         let true_params = HestonCalibrationParams {
             v0: 0.045,
@@ -314,11 +328,40 @@ mod tests {
         let result = cal.calibrate(&quotes).expect("calibration succeeds");
         let elapsed = t0.elapsed().as_secs_f64();
 
+        assert_eq!(result.per_instrument_error.len(), quotes.len());
+        assert!(result.objective.is_finite());
+        assert!(result.condition_number.is_finite());
+        assert!(result.jacobian.iter().flatten().all(|x| x.is_finite()));
         assert!(
-            result.diagnostics.fit_quality.liquid_rmse < 0.005,
-            "liquid RMSE too high: {}",
-            result.diagnostics.fit_quality.liquid_rmse
+            result.convergence.converged,
+            "optimizer did not converge: {:?}",
+            result.convergence
         );
+
+        // The five parameters are identifiable on this 5x10 surface.  These
+        // parameter-specific budgets are the measured FFT/finite-difference
+        // optimization floors, not market-fit cushions.
+        assert_close("v0", result.params.v0, true_params.v0, 1e-9);
+        assert_close("kappa", result.params.kappa, true_params.kappa, 1e-7);
+        assert_close("theta", result.params.theta, true_params.theta, 1e-9);
+        assert_close("sigma_v", result.params.sigma_v, true_params.sigma_v, 1e-8);
+        assert_close("rho", result.params.rho, true_params.rho, 1e-9);
+
+        for (error, quote) in result.per_instrument_error.iter().zip(&quotes) {
+            assert_eq!(error.id, quote.id);
+            assert_close(
+                &format!("{} model vol", quote.id),
+                error.model,
+                quote.market_vol,
+                MAX_QUOTE_VOL_ERROR,
+            );
+            assert_close(
+                &format!("{} recorded signed error", quote.id),
+                error.signed_error,
+                error.model - quote.market_vol,
+                f64::EPSILON,
+            );
+        }
 
         // Target from issue #55 for a 50-point surface (release mode).
         // In debug mode with parallel tests, allow more headroom.

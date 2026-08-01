@@ -403,6 +403,14 @@ fn normal_cdf(x: f64) -> f64 {
 mod tests {
     use super::*;
 
+    fn assert_grid_lock(actual: f64, expected: f64, label: &str) {
+        let tolerance = 8.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: expected {expected:.17}, got {actual:.17}, tolerance {tolerance:.3e}"
+        );
+    }
+
     // Helper: generate a simple exposure profile (e.g., forward-starting swap)
     fn simple_exposure_profile(time_grid: &[f64], peak: f64) -> Vec<f64> {
         // Triangular profile peaking at midpoint
@@ -460,49 +468,72 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hull_white_positive_beta_wwr() {
-        // β > 0 with asset rising → higher hazard → more CVA
-        // β > 0 with asset above 1 → λ > λ₀ → WWR
-        let time_grid: Vec<f64> = (1..=20).map(|i| i as f64 * 0.25).collect();
-        let n_paths = 100;
-
-        // Asset paths trending up (1.0 → 1.5)
-        let asset_paths: Vec<Vec<f64>> = (0..n_paths)
-            .map(|_| time_grid.iter().map(|&t| 1.0 + 0.1 * t).collect())
+    fn hull_white_nonzero_beta_inputs() -> (Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let time_grid = vec![0.25, 0.5, 1.0, 1.5, 2.0, 3.0];
+        let slopes = [0.03, 0.06, 0.09, 0.12];
+        let peaks = [300_000.0, 500_000.0, 700_000.0, 900_000.0];
+        let asset_paths = slopes
+            .iter()
+            .map(|slope| time_grid.iter().map(|t| 1.0 + slope * t).collect())
             .collect();
-        let exposure = simple_exposure_profile(&time_grid, 1_000_000.0);
-        let exposure_paths: Vec<Vec<f64>> = (0..n_paths).map(|_| exposure.clone()).collect();
+        let exposure_paths = peaks
+            .iter()
+            .map(|&peak| simple_exposure_profile(&time_grid, peak))
+            .collect();
+        (time_grid, asset_paths, exposure_paths)
+    }
 
-        let hw = HullWhiteWWR::new(0.02, 2.0, n_paths, 42);
-        let result = hw.cva_with_wwr(&asset_paths, &exposure_paths, &time_grid, 0.4, 0.03);
+    #[test]
+    fn test_hull_white_positive_beta_matches_deterministic_grid_reference() {
+        let (time_grid, asset_paths, exposure_paths) = hull_white_nonzero_beta_inputs();
+        let result = HullWhiteWWR::new(0.035, 1.75, 4, 42).cva_with_wwr(
+            &asset_paths,
+            &exposure_paths,
+            &time_grid,
+            0.4,
+            0.027,
+        );
 
+        // Independently evaluated from the piecewise-constant survival recursion on the
+        // stated six-point grid. This model averages supplied paths; it has no MC error.
+        assert_grid_lock(
+            result.cva_independent,
+            15_057.753_122_747_8,
+            "independent CVA",
+        );
+        assert_grid_lock(result.cva_wwr, 18_593.968_940_215_505, "beta=1.75 CVA");
+        assert_grid_lock(result.wwr_ratio, 1.234_843_524_703_930_2, "beta=1.75 ratio");
         assert!(
             result.wwr_ratio > 1.0,
-            "positive β with rising asset should give WWR ratio > 1, got {}",
-            result.wwr_ratio
+            "monotonic WWR check is supplemental"
         );
     }
 
     #[test]
-    fn test_hull_white_negative_beta_rwr() {
-        // β < 0 with asset rising → lower hazard → less CVA (right-way risk)
-        let time_grid: Vec<f64> = (1..=20).map(|i| i as f64 * 0.25).collect();
-        let n_paths = 100;
+    fn test_hull_white_negative_beta_matches_deterministic_grid_reference() {
+        let (time_grid, asset_paths, exposure_paths) = hull_white_nonzero_beta_inputs();
+        let result = HullWhiteWWR::new(0.035, -1.25, 4, 42).cva_with_wwr(
+            &asset_paths,
+            &exposure_paths,
+            &time_grid,
+            0.4,
+            0.027,
+        );
 
-        let asset_paths: Vec<Vec<f64>> = (0..n_paths)
-            .map(|_| time_grid.iter().map(|&t| 1.0 + 0.1 * t).collect())
-            .collect();
-        let exposure = simple_exposure_profile(&time_grid, 1_000_000.0);
-        let exposure_paths: Vec<Vec<f64>> = (0..n_paths).map(|_| exposure.clone()).collect();
-
-        let hw = HullWhiteWWR::new(0.02, -2.0, n_paths, 42);
-        let result = hw.cva_with_wwr(&asset_paths, &exposure_paths, &time_grid, 0.4, 0.03);
-
+        assert_grid_lock(
+            result.cva_independent,
+            15_057.753_122_747_8,
+            "independent CVA",
+        );
+        assert_grid_lock(result.cva_wwr, 13_030.377_411_837_926, "beta=-1.25 CVA");
+        assert_grid_lock(
+            result.wwr_ratio,
+            0.865_360_011_259_109_4,
+            "beta=-1.25 ratio",
+        );
         assert!(
             result.wwr_ratio < 1.0,
-            "negative β with rising asset should give RWR ratio < 1, got {}",
-            result.wwr_ratio
+            "monotonic RWR check is supplemental"
         );
     }
 
@@ -536,18 +567,9 @@ mod tests {
 
     #[test]
     fn test_copula_positive_correlation_increases_cva() {
-        // ρ > 0: high-exposure paths default earlier → CVA strictly above independent,
-        // well beyond MC noise.
         let time_grid: Vec<f64> = (1..=10).map(|i| i as f64 * 0.5).collect();
         let exposure_paths = varied_exposure_paths(&time_grid, 200);
 
-        let zero = CopulaWWR::new(0.0, 50_000, 777).cva_with_wwr(
-            &exposure_paths,
-            &time_grid,
-            0.02,
-            0.4,
-            0.03,
-        );
         let pos = CopulaWWR::new(0.7, 50_000, 777).cva_with_wwr(
             &exposure_paths,
             &time_grid,
@@ -556,32 +578,49 @@ mod tests {
             0.03,
         );
 
+        // Exact regression lock for the stated LCG seed, 50,000 draws, exposure grid,
+        // and A&S CDF implementation. It detects changes hidden by ratio-only checks.
+        assert_grid_lock(
+            pos.cva_independent,
+            26_614.354_201_548_33,
+            "seeded independent CVA",
+        );
+        assert_grid_lock(pos.cva_wwr, 41_219.470_022_413_7, "seeded rho=0.7 CVA");
+        assert_grid_lock(
+            pos.wwr_ratio,
+            1.548_768_371_768_934_2,
+            "seeded rho=0.7 ratio",
+        );
+
+        // Independent SciPy 1.17.1 adaptive quadrature target using scipy.stats.norm,
+        // integrated separately over every default-time bucket and exposure rank.
+        // Standard errors are sample estimates for this exact 50,000-path grid.
+        const SCIPY_INDEPENDENT: f64 = 26_842.145_725_312_297;
+        const SCIPY_RHO_POS: f64 = 41_592.802_133_458_96;
+        const SE_INDEPENDENT: f64 = 478.376_765_311_065_1;
+        const SE_RHO_POS: f64 = 683.787_780_840_040_7;
+        const SCIPY_RATIO_POS: f64 = 1.549_533_429_968_555_3;
+        const SE_RATIO_POS: f64 = 0.029_935_162_353_823_423;
         assert!(
-            pos.wwr_ratio > 1.15,
-            "positive correlation should give WWR ratio well above 1, got {}",
-            pos.wwr_ratio
+            (pos.cva_independent - SCIPY_INDEPENDENT).abs() <= 4.0 * SE_INDEPENDENT,
+            "independent CVA differs from quadrature by more than four standard errors"
         );
         assert!(
-            pos.cva_wwr > 1.15 * zero.cva_wwr,
-            "ρ=0.7 CVA {} should exceed ρ=0 CVA {} well beyond MC noise",
-            pos.cva_wwr,
-            zero.cva_wwr
+            (pos.cva_wwr - SCIPY_RHO_POS).abs() <= 4.0 * SE_RHO_POS,
+            "rho=0.7 CVA differs from quadrature by more than four standard errors"
         );
+        assert!(
+            (pos.wwr_ratio - SCIPY_RATIO_POS).abs() <= 4.0 * SE_RATIO_POS,
+            "rho=0.7 ratio differs from quadrature by more than four paired standard errors"
+        );
+        assert!(pos.wwr_ratio > 1.0, "monotonic WWR check is supplemental");
     }
 
     #[test]
     fn test_copula_negative_correlation_decreases_cva() {
-        // ρ < 0: high-exposure paths default later (right-way risk) → CVA below independent.
         let time_grid: Vec<f64> = (1..=10).map(|i| i as f64 * 0.5).collect();
         let exposure_paths = varied_exposure_paths(&time_grid, 200);
 
-        let zero = CopulaWWR::new(0.0, 50_000, 777).cva_with_wwr(
-            &exposure_paths,
-            &time_grid,
-            0.02,
-            0.4,
-            0.03,
-        );
         let neg = CopulaWWR::new(-0.7, 50_000, 777).cva_with_wwr(
             &exposure_paths,
             &time_grid,
@@ -590,17 +629,37 @@ mod tests {
             0.03,
         );
 
+        assert_grid_lock(
+            neg.cva_independent,
+            26_614.354_201_548_33,
+            "seeded independent CVA",
+        );
+        assert_grid_lock(neg.cva_wwr, 12_198.254_409_084_842, "seeded rho=-0.7 CVA");
+        assert_grid_lock(
+            neg.wwr_ratio,
+            0.458_333_661_478_631_36,
+            "seeded rho=-0.7 ratio",
+        );
+
+        const SCIPY_INDEPENDENT: f64 = 26_842.145_725_312_297;
+        const SCIPY_RHO_NEG: f64 = 12_120.061_189_161_486;
+        const SE_INDEPENDENT: f64 = 478.376_765_311_065_1;
+        const SE_RHO_NEG: f64 = 228.633_090_666_537_1;
+        const SCIPY_RATIO_NEG: f64 = 0.451_531_010_716_933_8;
+        const SE_RATIO_NEG: f64 = 0.010_482_917_449_886_348;
         assert!(
-            neg.wwr_ratio < 0.85,
-            "negative correlation should give RWR ratio well below 1, got {}",
-            neg.wwr_ratio
+            (neg.cva_independent - SCIPY_INDEPENDENT).abs() <= 4.0 * SE_INDEPENDENT,
+            "independent CVA differs from quadrature by more than four standard errors"
         );
         assert!(
-            neg.cva_wwr < 0.85 * zero.cva_wwr,
-            "ρ=-0.7 CVA {} should be below ρ=0 CVA {} well beyond MC noise",
-            neg.cva_wwr,
-            zero.cva_wwr
+            (neg.cva_wwr - SCIPY_RHO_NEG).abs() <= 4.0 * SE_RHO_NEG,
+            "rho=-0.7 CVA differs from quadrature by more than four standard errors"
         );
+        assert!(
+            (neg.wwr_ratio - SCIPY_RATIO_NEG).abs() <= 4.0 * SE_RATIO_NEG,
+            "rho=-0.7 ratio differs from quadrature by more than four paired standard errors"
+        );
+        assert!(neg.wwr_ratio < 1.0, "monotonic RWR check is supplemental");
     }
 
     #[test]

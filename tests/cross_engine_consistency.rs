@@ -12,9 +12,9 @@
 //! 2. American puts: CRR binomial vs `AmericanBinomialEngine` vs trinomial vs
 //!    Crank-Nicolson PDE vs Longstaff-Schwartz LSM. American calls with q = 0
 //!    and r >= 0 must equal European calls (no early exercise).
-//! 3. Barriers: Reiner-Rubinstein analytic vs discretely-monitored MC using
-//!    the Broadie-Glasserman-Kou barrier shift, one-sided discrete-vs-
-//!    continuous ordering, and in + out = vanilla parity inside each engine.
+//! 3. Barriers: Reiner-Rubinstein continuous-monitoring analytic parity,
+//!    discretely-monitored MC vs independent Brownian-bridge Sobol references,
+//!    one-sided discrete-vs-continuous ordering, and in + out = vanilla parity.
 //! 4. Asians: geometric discrete closed form vs MC geometric payoff.
 //! 5. Digitals: cash-or-nothing analytic vs an exact-terminal-GBM MC.
 //!
@@ -22,10 +22,10 @@
 //! - Deterministic engines (tree/PDE/FFT): documented per test, generally
 //!   relative 2e-3 plus a small absolute floor for deep out-of-the-money
 //!   points whose prices are ~1e-12 (relative error is meaningless there).
-//! - Monte Carlo: |mc - reference| <= 4 * stderr + 5e-7. The absolute floor
-//!   covers deep-OTM points below Monte Carlo resolution: when the exercise
-//!   probability is ~1e-7, 60k paths produce zero payoffs (stderr exactly 0)
-//!   while the analytic price is a positive number of that magnitude.
+//! - Monte Carlo: |mc - reference| <= 4 combined standard errors.  For the
+//!   exact-terminal vanilla grid the lognormal payoff variance is analytic,
+//!   so even a zero-hit deep-OTM sample has a non-zero, contract-derived error
+//!   budget rather than an arbitrary absolute price floor.
 //!
 //! All Monte Carlo engines use fixed seeds; the suite is fully deterministic
 //! and uses no external data.
@@ -45,6 +45,7 @@ use openferric::instruments::{AsianOption, BarrierOption, CashOrNothingOption, V
 use openferric::market::Market;
 use openferric::math::fast_norm::beasley_springer_moro_inv_cdf;
 use openferric::math::fast_rng::{Xoshiro256PlusPlus, uniform_open01};
+use openferric::math::normal_cdf;
 
 /// Common strike for the moneyness grid (S/K is varied through the spot).
 const STRIKE: f64 = 100.0;
@@ -137,16 +138,60 @@ fn assert_close(engine: &str, label: &str, value: f64, reference: f64, rel_tol: 
     );
 }
 
-/// Asserts an MC estimate agrees with a reference within 4 standard errors
-/// (plus a tiny absolute floor for zero-variance deep-OTM points whose
-/// analytic price is below Monte Carlo resolution; see module docs).
-fn assert_mc_close(engine: &str, label: &str, value: f64, stderr: f64, reference: f64) {
+/// Asserts an MC estimate agrees with an independent reference within four
+/// combined standard errors.  `reference_stderr` is zero for analytic refs.
+fn assert_mc_close(
+    engine: &str,
+    label: &str,
+    value: f64,
+    stderr: f64,
+    reference: f64,
+    reference_stderr: f64,
+) {
     let err = (value - reference).abs();
-    let tol = 4.0 * stderr + 5e-7;
+    let combined_stderr = stderr.hypot(reference_stderr);
+    let roundoff = 32.0 * f64::EPSILON * reference.abs().max(1.0);
+    let tol = 4.0 * combined_stderr + roundoff;
     assert!(
         value.is_finite() && err <= tol,
-        "{engine} disagrees at [{label}]: value={value} reference={reference} stderr={stderr} err={err:.3e} tol=4*stderr+5e-7={tol:.3e}"
+        "{engine} disagrees at [{label}]: value={value} reference={reference} stderr={stderr} reference_stderr={reference_stderr} err={err:.3e} tol={tol:.3e}"
     );
+}
+
+/// Exact standard error of an undiscounted-iid exact-terminal GBM payoff
+/// estimator, derived from truncated lognormal moments through order two.
+fn exact_terminal_vanilla_stderr(point: &GridPoint, reference: f64, paths: usize) -> f64 {
+    let sqrt_variance = point.vol * point.expiry.sqrt();
+    let d2 = ((point.spot / STRIKE).ln()
+        + (point.rate - point.div - 0.5 * point.vol * point.vol) * point.expiry)
+        / sqrt_variance;
+    let upper_moment = |power: i32| {
+        let p = power as f64;
+        point.spot.powi(power)
+            * (p * (point.rate - point.div - 0.5 * point.vol * point.vol) * point.expiry
+                + 0.5 * p * p * point.vol * point.vol * point.expiry)
+                .exp()
+            * normal_cdf(d2 + p * sqrt_variance)
+    };
+    let lower_moment = |power: i32| {
+        let p = power as f64;
+        point.spot.powi(power)
+            * (p * (point.rate - point.div - 0.5 * point.vol * point.vol) * point.expiry
+                + 0.5 * p * p * point.vol * point.vol * point.expiry)
+                .exp()
+            * normal_cdf(-(d2 + p * sqrt_variance))
+    };
+    let raw_second = match point.option_type {
+        OptionType::Call => {
+            upper_moment(2) - 2.0 * STRIKE * upper_moment(1) + STRIKE * STRIKE * upper_moment(0)
+        }
+        OptionType::Put => {
+            STRIKE * STRIKE * lower_moment(0) - 2.0 * STRIKE * lower_moment(1) + lower_moment(2)
+        }
+    };
+    let discount = (-point.rate * point.expiry).exp();
+    let variance = (discount * discount * raw_second - reference * reference).max(0.0);
+    (variance / paths as f64).sqrt()
 }
 
 // ---------------------------------------------------------------------------
@@ -234,8 +279,17 @@ fn european_monte_carlo_matches_black_scholes_within_4_stderr() {
         let result = engine
             .price(&point.european(), &point.market())
             .expect("monte carlo pricing succeeds");
-        let stderr = result.stderr.expect("monte carlo reports stderr");
-        assert_mc_close("MC(60k,1)", &point.label(), result.price, stderr, reference);
+        let reported_stderr = result.stderr.expect("monte carlo reports stderr");
+        assert!(reported_stderr.is_finite() && reported_stderr >= 0.0);
+        let exact_sampling_stderr = exact_terminal_vanilla_stderr(point, reference, 60_000);
+        assert_mc_close(
+            "MC(60k,1)",
+            &point.label(),
+            result.price,
+            exact_sampling_stderr,
+            reference,
+            0.0,
+        );
     });
 }
 
@@ -348,15 +402,15 @@ fn american_put_tree_pde_lsm_agree() {
             .price;
         assert_close("Crank-Nicolson(400x400)", &label, cn, reference, 2e-3, 2e-3);
 
-        // LSM carries both Monte Carlo noise and a small low-side regression
-        // bias (quadratic basis, 50 exercise dates), so allow 4*stderr plus
-        // 0.5% relative for the bias.
+        // The CRR target values the same exercise schedule to a much smaller
+        // discretisation error than the LSM sampling error.  Do not conceal a
+        // regression miss with a percentage-of-price cushion.
         let lsm_result = lsm
             .price(&option, &market)
             .expect("lsm american pricing succeeds");
         let lsm_stderr = lsm_result.stderr.expect("lsm reports stderr");
         let err = (lsm_result.price - reference).abs();
-        let tol = 4.0 * lsm_stderr + 5e-3 * reference;
+        let tol = 4.0 * lsm_stderr;
         assert!(
             err <= tol,
             "LSM(40k,50) disagrees at [{label}]: value={} reference={reference} stderr={lsm_stderr} err={err:.3e} tol={tol:.3e}",
@@ -429,9 +483,7 @@ fn american_call_without_dividends_equals_european_call() {
             let lsm_result = lsm.price(&american, &market).expect("lsm am");
             let lsm_stderr = lsm_result.stderr.expect("lsm reports stderr");
             let err = (lsm_result.price - euro_reference).abs();
-            // 4*stderr plus 0.5% relative headroom for LSM regression bias
-            // (spurious early exercise adds a small high-side bias here).
-            let tol = 4.0 * lsm_stderr + 5e-3 * euro_reference;
+            let tol = 4.0 * lsm_stderr;
             assert!(
                 err <= tol,
                 "LSM American call disagrees at [{label}]: value={} reference={euro_reference} stderr={lsm_stderr} err={err:.3e} tol={tol:.3e}",
@@ -606,21 +658,16 @@ fn barrier_in_out_parity_analytic_and_mc() {
 }
 
 #[test]
-fn barrier_mc_matches_analytic_with_bgk_barrier_shift() {
-    // The MC engine monitors the barrier discretely on the path grid while
-    // the Reiner-Rubinstein engine assumes continuous monitoring. Comparing
-    // them directly is biased, so we use the Broadie-Glasserman-Kou
-    // continuity correction: a discretely monitored barrier at H prices like
-    // a continuous barrier at H * exp(+/- beta * sigma * sqrt(dt)) with
-    // beta = 0.5826 (+ for up barriers, - for down barriers).
+fn barrier_mc_matches_independent_discrete_sobol_reference() {
+    // Contract-matched references were generated with SciPy using 64
+    // independently Owen-scrambled, Brownian-bridge Sobol replicates of 2^15
+    // paths.  Monitoring occurs at the same 400 dates as the library MC.  The
+    // knock-in refs use exact vanilla parity as a control variate.  Each tuple
+    // carries the replicate standard error, which is combined with MC stderr.
     //
-    // Tolerances: 4 * stderr for MC noise plus 0.5% relative for the O(1/n)
-    // residual of the BGK approximation at 400 monitoring steps.
-    //
-    // We also assert the one-sided ordering: discrete monitoring makes a
+    // We retain the supplemental one-sided ordering: discrete monitoring makes a
     // knock-out strictly MORE valuable (fewer knock-outs) and a knock-in
     // LESS valuable than continuous monitoring.
-    const BGK_BETA: f64 = 0.5826;
     let spot = 100.0;
     let vol = 0.25;
     let expiry = 1.0;
@@ -635,14 +682,40 @@ fn barrier_mc_matches_analytic_with_bgk_barrier_shift() {
 
     let analytic = BarrierAnalyticEngine::new();
     let mc = MonteCarloPricingEngine::new(30_000, steps, 9_001);
-    let dt = expiry / steps as f64;
-    let shift = (BGK_BETA * vol * dt.sqrt()).exp();
 
-    for (kind, option_type, level, is_up, is_out) in [
-        (BarrierKind::UpOut, OptionType::Call, 130.0, true, true),
-        (BarrierKind::UpIn, OptionType::Call, 130.0, true, false),
-        (BarrierKind::DownOut, OptionType::Put, 70.0, false, true),
-        (BarrierKind::DownIn, OptionType::Put, 70.0, false, false),
+    for (kind, option_type, level, is_out, reference, reference_stderr) in [
+        (
+            BarrierKind::UpOut,
+            OptionType::Call,
+            130.0,
+            true,
+            2.294_523_586_005_971,
+            1.451_140_866_445_940_2e-3,
+        ),
+        (
+            BarrierKind::UpIn,
+            OptionType::Call,
+            130.0,
+            false,
+            8.467_871_040_331_177,
+            1.451_140_866_445_940_2e-3,
+        ),
+        (
+            BarrierKind::DownOut,
+            OptionType::Put,
+            70.0,
+            true,
+            4.266_014_703_753_552,
+            1.642_005_939_624_996_5e-3,
+        ),
+        (
+            BarrierKind::DownIn,
+            OptionType::Put,
+            70.0,
+            false,
+            4.535_949_902_517_597,
+            1.642_005_939_624_996_5e-3,
+        ),
     ] {
         let label = format!(
             "{kind:?} {option_type:?} barrier={level} S={spot} K={STRIKE} vol={vol} r=0.03 q=0.01 T={expiry} steps={steps}"
@@ -657,21 +730,13 @@ fn barrier_mc_matches_analytic_with_bgk_barrier_shift() {
         let mc_result = mc.price(&option, &market).expect("mc barrier");
         let mc_stderr = mc_result.stderr.expect("mc reports stderr");
 
-        // BGK-adjusted continuous price approximating discrete monitoring:
-        // move the barrier AWAY from the spot.
-        let adjusted_level = if is_up { level * shift } else { level / shift };
-        let adjusted = barrier_option(kind, adjusted_level, option_type, expiry);
-        let adjusted_price = analytic
-            .price(&adjusted, &market)
-            .expect("analytic adjusted")
-            .price;
-
-        let err = (mc_result.price - adjusted_price).abs();
-        let tol = 4.0 * mc_stderr + 5e-3 * adjusted_price.abs();
-        assert!(
-            err <= tol,
-            "MC vs BGK-adjusted analytic disagrees at [{label}]: mc={} adjusted_analytic={adjusted_price} continuous_analytic={continuous} stderr={mc_stderr} err={err:.3e} tol={tol:.3e}",
-            mc_result.price
+        assert_mc_close(
+            "barrier MC(30k,400)",
+            &label,
+            mc_result.price,
+            mc_stderr,
+            reference,
+            reference_stderr,
         );
 
         // One-sided discrete-vs-continuous ordering (within MC noise):
@@ -740,6 +805,7 @@ fn geometric_asian_closed_form_matches_monte_carlo() {
                 mc_result.price,
                 stderr,
                 reference,
+                0.0,
             );
         }
     }
@@ -830,7 +896,14 @@ fn digital_cash_or_nothing_analytic_matches_monte_carlo() {
                 200_000,
                 31_337,
             );
-            assert_mc_close("digital MC(200k)", &label, mc_price, mc_stderr, reference);
+            assert_mc_close(
+                "digital MC(200k)",
+                &label,
+                mc_price,
+                mc_stderr,
+                reference,
+                0.0,
+            );
         }
     }
 }

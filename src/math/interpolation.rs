@@ -1729,16 +1729,36 @@ mod tests {
         .unwrap();
 
         let y = itp.value(1.5).unwrap();
-        assert_relative_eq!(y, 0.015, epsilon = 1e-12);
+        assert_relative_eq!(y, 0.015, epsilon = 8.0 * f64::EPSILON);
 
         let j = itp.jacobian(1.5).unwrap();
-        assert_relative_eq!(j[0], 0.5, epsilon = 1e-12);
-        assert_relative_eq!(j[1], 0.5, epsilon = 1e-12);
-        assert_relative_eq!(j[2], 0.0, epsilon = 1e-12);
+        assert_eq!(j, vec![0.5, 0.5, 0.0]);
     }
 
     #[test]
-    fn log_linear_positive_and_smooth() {
+    fn piecewise_constant_has_exact_step_values_and_jacobian() {
+        let itp = PiecewiseConstantInterpolator::new(
+            vec![1.0, 2.0, 4.0],
+            vec![0.01, 0.02, 0.04],
+            ExtrapolationMode::Flat,
+        )
+        .unwrap();
+
+        for (xq, expected, expected_j) in [
+            (0.5, 0.01, vec![1.0, 0.0, 0.0]),
+            (1.5, 0.01, vec![1.0, 0.0, 0.0]),
+            (2.0, 0.02, vec![0.0, 1.0, 0.0]),
+            (3.999, 0.02, vec![0.0, 1.0, 0.0]),
+            (5.0, 0.04, vec![0.0, 0.0, 1.0]),
+        ] {
+            assert_eq!(itp.value(xq).unwrap(), expected);
+            assert_eq!(itp.derivative(xq).unwrap(), 0.0);
+            assert_eq!(itp.jacobian(xq).unwrap(), expected_j);
+        }
+    }
+
+    #[test]
+    fn log_linear_matches_exponential_segment_and_sensitivities() {
         let itp = LogLinearInterpolator::new(
             vec![1.0, 2.0, 4.0],
             vec![0.99, 0.95, 0.87],
@@ -1746,6 +1766,25 @@ mod tests {
         )
         .unwrap();
 
+        let expected = (0.5 * 0.95_f64.ln() + 0.5 * 0.87_f64.ln()).exp();
+        let expected_derivative = expected * (0.87_f64.ln() - 0.95_f64.ln()) / 2.0;
+        assert_relative_eq!(
+            itp.value(3.0).unwrap(),
+            expected,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        assert_relative_eq!(
+            itp.derivative(3.0).unwrap(),
+            expected_derivative,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        let expected_j = [0.0, 0.5 * expected / 0.95, 0.5 * expected / 0.87];
+        for (got, expected) in itp.jacobian(3.0).unwrap().iter().zip(expected_j) {
+            assert_relative_eq!(*got, expected, epsilon = 8.0 * f64::EPSILON);
+        }
+
+        // Positivity and direction are useful no-arbitrage supplements to the
+        // exact value, derivative, and sensitivity locks above.
         assert!(itp.value(3.0).unwrap() > 0.0);
         assert!(itp.derivative(3.0).unwrap() < 0.0);
     }
@@ -1757,12 +1796,18 @@ mod tests {
         let itp = MonotoneConvexInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Linear)
             .unwrap();
 
-        for w in x.windows(2) {
+        let reference = [
+            0.0110625,
+            0.012541666666666668,
+            0.014479166666666666,
+            0.0170625,
+        ];
+        for ((w, expected), i) in x.windows(2).zip(reference).zip(0..) {
             let mid = 0.5 * (w[0] + w[1]);
             let v = itp.value(mid).unwrap();
-            let i = x.partition_point(|z| *z < mid).saturating_sub(1);
-            assert!(v >= y[i].min(y[i + 1]) - 1.0e-12);
-            assert!(v <= y[i].max(y[i + 1]) + 1.0e-12);
+            assert_relative_eq!(v, expected, epsilon = 8.0 * f64::EPSILON);
+            assert!(v >= y[i].min(y[i + 1]));
+            assert!(v <= y[i].max(y[i + 1]));
         }
     }
 
@@ -1775,11 +1820,25 @@ mod tests {
         )
         .unwrap();
 
+        for (t, expected) in [
+            (0.75, 0.02042261904761905),
+            (1.5, 0.0230487012987013),
+            (3.5, 0.02781818181818182),
+            (4.75, 0.02896296296296296),
+        ] {
+            assert_relative_eq!(
+                itp.value(t).unwrap(),
+                expected,
+                epsilon = 8.0 * f64::EPSILON
+            );
+        }
+
+        // Shape preservation supplements the deterministic grid lock.
         let mut prev = itp.value(0.5).unwrap();
         for i in 1..40 {
             let t = 0.5 + (4.5 * i as f64) / 40.0;
             let v = itp.value(t).unwrap();
-            assert!(v >= prev - 1.0e-12);
+            assert!(v >= prev);
             prev = v;
         }
     }
@@ -1793,31 +1852,39 @@ mod tests {
                 .unwrap();
 
         for (xi, yi) in x.iter().zip(y.iter()) {
-            assert_relative_eq!(itp.value(*xi).unwrap(), *yi, epsilon = 1e-12);
+            assert_relative_eq!(itp.value(*xi).unwrap(), *yi, epsilon = 8.0 * f64::EPSILON);
         }
     }
 
     #[test]
-    fn log_cubic_stays_positive() {
-        let itp = LogCubicMonotoneInterpolator::new(
-            vec![1.0, 2.0, 5.0, 10.0],
-            vec![0.99, 0.96, 0.87, 0.71],
-            ExtrapolationMode::Linear,
-        )
-        .unwrap();
+    fn log_cubic_reproduces_an_exponential_curve() {
+        let a = 0.01_f64;
+        let b = -0.03_f64;
+        let x = vec![1.0, 2.0, 5.0, 10.0];
+        let y = x.iter().map(|t| (a + b * t).exp()).collect();
+        let itp = LogCubicMonotoneInterpolator::new(x, y, ExtrapolationMode::Linear).unwrap();
 
-        for t in [0.5, 1.5, 3.0, 7.0, 12.0] {
+        for t in [1.0, 1.5, 3.0, 7.0, 10.0] {
+            let expected = (a + b * t).exp();
+            assert_relative_eq!(
+                itp.value(t).unwrap(),
+                expected,
+                epsilon = 8.0 * f64::EPSILON
+            );
+            assert_relative_eq!(itp.derivative(t).unwrap(), b * expected, epsilon = 3.0e-16);
             assert!(itp.value(t).unwrap() > 0.0);
         }
     }
 
     #[test]
-    fn nelson_siegel_fit_retrieves_curve_within_one_bp() {
+    fn nelson_siegel_fit_recovers_on_grid_synthetic_curve_at_roundoff() {
         let x = vec![0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0];
         let beta0 = 0.022;
         let beta1 = -0.014;
         let beta2 = 0.018;
-        let tau = 1.8;
+        // Use a decay parameter on the documented calibration grid. This is
+        // an exact-model oracle, not a loose basis-point fit check.
+        let tau = logspace(0.05, 40.0, 80)[37];
 
         let y: Vec<f64> = x
             .iter()
@@ -1829,21 +1896,24 @@ mod tests {
 
         let fit =
             NelsonSiegelInterpolator::fit(x.clone(), y.clone(), ExtrapolationMode::Linear).unwrap();
+        assert_eq!(fit.tau, tau);
+        assert_relative_eq!(fit.beta0, beta0, epsilon = 3.0e-16);
+        assert_relative_eq!(fit.beta1, beta1, epsilon = 3.0e-16);
+        assert_relative_eq!(fit.beta2, beta2, epsilon = 3.0e-16);
         for (ti, yi) in x.iter().zip(y.iter()) {
-            let err_bp = (fit.value(*ti).unwrap() - yi) * 1.0e4;
-            assert!(err_bp.abs() < 1.0);
+            assert_relative_eq!(fit.value(*ti).unwrap(), *yi, epsilon = 3.0e-16);
         }
     }
 
     #[test]
-    fn nss_fit_retrieves_curve_within_two_bp() {
+    fn nss_fit_recovers_on_grid_synthetic_curve_at_roundoff() {
         let x = vec![0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0];
         let beta0 = 0.021;
         let beta1 = -0.011;
         let beta2 = 0.015;
         let beta3 = 0.006;
-        let tau1 = 1.6;
-        let tau2 = 8.0;
+        let tau1 = logspace(0.05, 10.0, 28)[15];
+        let tau2 = logspace(0.2, 50.0, 32)[24];
 
         let y: Vec<f64> = x
             .iter()
@@ -1857,9 +1927,14 @@ mod tests {
             NelsonSiegelSvenssonInterpolator::fit(x.clone(), y.clone(), ExtrapolationMode::Linear)
                 .unwrap();
 
+        assert_eq!(fit.tau1, tau1);
+        assert_eq!(fit.tau2, tau2);
+        assert_relative_eq!(fit.beta0, beta0, epsilon = 3.0e-15);
+        assert_relative_eq!(fit.beta1, beta1, epsilon = 3.0e-15);
+        assert_relative_eq!(fit.beta2, beta2, epsilon = 3.0e-15);
+        assert_relative_eq!(fit.beta3, beta3, epsilon = 3.0e-15);
         for (ti, yi) in x.iter().zip(y.iter()) {
-            let err_bp = (fit.value(*ti).unwrap() - yi) * 1.0e4;
-            assert!(err_bp.abs() < 2.0);
+            assert_relative_eq!(fit.value(*ti).unwrap(), *yi, epsilon = 3.0e-15);
         }
     }
 
@@ -1878,14 +1953,44 @@ mod tests {
             NelsonSiegelInterpolator::fit(x.clone(), y.clone(), ExtrapolationMode::Linear).unwrap();
         let j_ns = ns.jacobian(4.0).unwrap();
         assert_eq!(j_ns.len(), y.len());
-        assert!((j_ns.iter().sum::<f64>() - 1.0).abs() < 1.0e-6);
+        let ns_reference = [
+            -0.05400575356709347,
+            0.049311423139242194,
+            0.1843866619735679,
+            0.25314491429798136,
+            0.28133535625619877,
+            0.2451627716028998,
+            0.16371656798123968,
+            -0.022627637309008408,
+            -0.10042430442086525,
+        ];
+        for (got, expected) in j_ns.iter().zip(ns_reference) {
+            assert_relative_eq!(*got, expected, epsilon = 2.0e-11);
+        }
+        // Central differences use 1e-6 input bumps. The measured uniform-shift
+        // roundoff is 4.59e-11, replacing the former 1e-6 blanket cushion.
+        assert!((j_ns.iter().sum::<f64>() - 1.0).abs() < 4.7e-11);
 
         let nss =
             NelsonSiegelSvenssonInterpolator::fit(x.clone(), y.clone(), ExtrapolationMode::Linear)
                 .unwrap();
         let j_nss = nss.jacobian(4.0).unwrap();
         assert_eq!(j_nss.len(), y.len());
-        assert!((j_nss.iter().sum::<f64>() - 1.0).abs() < 1.0e-6);
+        let nss_reference = [
+            -0.08546994382206685,
+            0.04808557415615644,
+            0.2113031034641638,
+            0.28275125643108245,
+            0.29006963081501524,
+            0.23305277624396936,
+            0.13906693163527606,
+            -0.028591119850124302,
+            -0.09026820906379851,
+        ];
+        for (got, expected) in j_nss.iter().zip(nss_reference) {
+            assert_relative_eq!(*got, expected, epsilon = 2.0e-11);
+        }
+        assert!((j_nss.iter().sum::<f64>() - 1.0).abs() < 1.1e-11);
     }
 
     #[test]
@@ -1902,7 +2007,7 @@ mod tests {
         .unwrap();
 
         for (t, df) in x.iter().zip(y.iter()) {
-            assert_relative_eq!(sw.value(*t).unwrap(), *df, epsilon = 1e-10);
+            assert_relative_eq!(sw.value(*t).unwrap(), *df, epsilon = 3.0e-13);
         }
     }
 
