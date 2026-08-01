@@ -283,10 +283,13 @@ fn basis_swap_par_spread_reprices_to_zero() {
     let expected_par_spread = (long_leg - short_leg) / spread_pv01;
     assert_relative_eq!(par_spread, expected_par_spread, epsilon = 1.0e-12);
     assert_relative_eq!(par_spread, 0.010_239_710_198_232_398, epsilon = 1.0e-12);
-    assert_relative_eq!(
-        par_swap.npv(&discount_curve, &short_curve, &long_curve, true),
-        0.0,
-        epsilon = 1.0e-5
+    let par_npv = par_swap.npv(&discount_curve, &short_curve, &long_curve, true);
+    // The par NPV subtracts two independently accumulated legs.  Bound that
+    // cancellation by their scale instead of admitting a fixed currency band.
+    let cancellation_roundoff = 64.0 * f64::EPSILON * short_leg.abs().max(long_leg.abs()).max(1.0);
+    assert!(
+        par_npv.abs() <= cancellation_roundoff,
+        "basis-swap par residual {par_npv:e} exceeds cancellation budget {cancellation_roundoff:e}"
     );
 }
 

@@ -15,6 +15,8 @@
 
 use std::arch::x86_64::*;
 
+use crate::math::fast_norm::accurate_norm_cdf;
+
 const LN_2_HI: f64 = 6.931_471_803_691_238e-1;
 const LN_2_LO: f64 = 1.908_214_929_270_587_7e-10;
 
@@ -372,6 +374,26 @@ pub unsafe fn norm_cdf_f64x4(x: __m256d) -> __m256d {
     let result = _mm256_blendv_pd(approx, reflected, neg_mask);
     let is_zero = _mm256_cmp_pd(x, zero, _CMP_EQ_OQ);
     _mm256_blendv_pd(result, _mm256_set1_pd(0.5), is_zero)
+}
+
+/// Production-accuracy normal CDF evaluated independently in each AVX2 lane.
+///
+/// AVX2 has no `erfc` instruction.  The Cody evaluations are therefore scalar,
+/// while callers retain vectorized log, discounting, and payoff arithmetic.
+/// [`norm_cdf_f64x4`] remains the explicit fast A&S approximation.
+#[inline]
+#[target_feature(enable = "avx2,fma")]
+/// # Safety
+/// The caller must ensure AVX2+FMA are available on the executing CPU.
+pub unsafe fn accurate_norm_cdf_f64x4(x: __m256d) -> __m256d {
+    let mut lanes = [0.0_f64; 4];
+    // SAFETY: `lanes` contains four contiguous f64 values.
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), x) };
+    for value in &mut lanes {
+        *value = accurate_norm_cdf(*value);
+    }
+    // SAFETY: `lanes` contains four contiguous f64 values.
+    unsafe { _mm256_loadu_pd(lanes.as_ptr()) }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

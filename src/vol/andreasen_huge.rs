@@ -412,7 +412,7 @@ fn lower_idx(grid: &[f64], val: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::normal_pdf;
+    use crate::math::{normal_cdf, normal_pdf};
 
     fn synthetic_quotes(_spot: f64, vol: f64, _rate: f64, _div: f64) -> Vec<(f64, f64, f64)> {
         let expiries = [0.25, 0.5, 1.0];
@@ -561,6 +561,137 @@ mod tests {
             (model - exact).abs() <= interpolation_bound,
             "model={model} exact={exact} interpolation_bound={interpolation_bound} node_calibration_error={node_calibration_error} linear_reference={linear_reference}"
         );
+    }
+
+    #[test]
+    fn andreasen_huge_nonflat_off_grid_matches_bachelier_reference() {
+        let spot: f64 = 100.0;
+        let rate: f64 = 0.0;
+        let div: f64 = 0.0;
+        let normal_vol: f64 = 20.0;
+        let normal_call = |strike: f64, expiry: f64| {
+            let stddev = normal_vol * expiry.sqrt();
+            let d = (spot - strike) / stddev;
+            (spot - strike) * normal_cdf(d) + stddev * normal_pdf(d)
+        };
+        let quotes: Vec<(f64, f64, f64)> = [
+            0.05, 0.075, 0.10, 0.125, 0.15, 0.175, 0.20, 0.225, 0.25, 0.275, 0.30, 0.325, 0.35,
+            0.375, 0.40, 0.425, 0.45, 0.475, 0.50,
+        ]
+        .into_iter()
+        .flat_map(|expiry| {
+            [
+                75.0_f64, 77.5, 80.0, 82.5, 85.0, 87.5, 90.0, 92.5, 95.0, 97.5, 100.0, 102.5,
+                105.0, 107.5, 110.0, 112.5, 115.0, 117.5, 120.0, 122.5, 125.0,
+            ]
+            .into_iter()
+            .map(move |strike| {
+                let price = normal_call(strike, expiry);
+                let vol = implied_vol_jaeckel(price, spot, strike, expiry, true)
+                    .expect("Bachelier call has a Black implied volatility");
+                (strike, expiry, vol)
+            })
+        })
+        .collect();
+        let ah = AndreasenHugeInterpolation::new(&quotes, spot, rate, div);
+
+        // These prices and node prices were independently evaluated with
+        // SciPy 1.17.1 (`scipy.special.ndtr`) in the analytic Bachelier
+        // formula.  A normal-vol surface induces a genuinely non-flat Black
+        // implied-vol smile.  The fixed production grid has dK=0.5; its
+        // calibrated-node budget is 1.1e-3 currency units.  The additional
+        // off-grid budget is the exact linear-interpolation remainder
+        // max(C_KK) dK^2 / 8, with Bachelier gamma
+        // phi((S-K)/(sigma_N sqrt(T))) / (sigma_N sqrt(T)).
+        let fixtures: [(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64); 2] = [
+            (
+                0.25,
+                97.3,
+                5.483_960_270_622_136,
+                97.0,
+                5.667_612_421_172_099,
+                97.5,
+                5.363_446_982_235_802,
+                0.038_666_811_680_284_93,
+                5.667_237_733_420_867,
+                5.363_446_982_240_887,
+                5.484_963_282_712_881,
+            ),
+            (
+                0.5,
+                108.2,
+                2.464_594_633_067_921,
+                108.0,
+                2.521_275_914_383_213,
+                108.5,
+                2.381_358_578_122_543_3,
+                0.024_038_532_470_982_7,
+                2.521_817_358_687_558_3,
+                2.382_381_380_358_338_2,
+                2.466_042_967_355_869_5,
+            ),
+        ];
+        let grid_node_budget = 1.1e-3;
+
+        for &(
+            expiry,
+            strike,
+            exact,
+            left,
+            left_exact,
+            right,
+            right_exact,
+            max_gamma,
+            left_grid_reference,
+            right_grid_reference,
+            off_grid_reference,
+        ) in &fixtures
+        {
+            let model = ah.interpolate_call(strike, expiry);
+            let ei = ah
+                .expiries
+                .iter()
+                .position(|t| (*t - expiry).abs() <= 1.0e-14)
+                .unwrap();
+            let gi = lower_idx(&ah.grid, strike);
+            assert_eq!(ah.grid[gi], left);
+            assert_eq!(ah.grid[gi + 1], right);
+
+            let left_model = ah.call_prices[ei][gi];
+            let right_model = ah.call_prices[ei][gi + 1];
+
+            // Separately lock the deterministic production finite-grid
+            // outputs.  These are not economic tolerances: the allowance is
+            // only for binary64 operation ordering across supported targets.
+            for (label, actual, reference) in [
+                ("left node", left_model, left_grid_reference),
+                ("right node", right_model, right_grid_reference),
+                ("off-grid interpolation", model, off_grid_reference),
+            ] {
+                let binary64_budget = 128.0 * f64::EPSILON * reference.abs().max(1.0);
+                assert!(
+                    (actual - reference).abs() <= binary64_budget,
+                    "T={expiry} K={strike} {label}: actual={actual:.17e} finite-grid reference={reference:.17e} binary64_budget={binary64_budget:.3e}"
+                );
+            }
+
+            assert!(
+                (left_model - left_exact).abs() <= grid_node_budget,
+                "T={expiry} K={left}: node={left_model} exact={left_exact} budget={grid_node_budget}"
+            );
+            assert!(
+                (right_model - right_exact).abs() <= grid_node_budget,
+                "T={expiry} K={right}: node={right_model} exact={right_exact} budget={grid_node_budget}"
+            );
+
+            let interpolation_budget = max_gamma * (right - left).powi(2) / 8.0;
+            let roundoff = 32.0 * f64::EPSILON * exact.abs().max(1.0);
+            let tolerance = grid_node_budget + interpolation_budget + roundoff;
+            assert!(
+                (model - exact).abs() <= tolerance,
+                "T={expiry} K={strike}: model={model} exact={exact} grid_node_budget={grid_node_budget} interpolation_budget={interpolation_budget} tolerance={tolerance}"
+            );
+        }
     }
 
     #[test]

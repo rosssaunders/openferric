@@ -249,6 +249,7 @@ pub fn tarf_vega(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use statrs::distribution::{ContinuousCDF, Normal};
 
     fn make_standard_tarf() -> Tarf {
         // Weekly fixings for 1 year
@@ -261,6 +262,29 @@ mod tests {
             2.0,     // 2x downside leverage
             fixing_times,
         )
+    }
+
+    fn one_fixing_standard_value(
+        spot: f64,
+        strike: f64,
+        rate: f64,
+        dividend_yield: f64,
+        volatility: f64,
+        maturity: f64,
+        notional: f64,
+        downside_leverage: f64,
+    ) -> f64 {
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let sigma_sqrt_t = volatility * maturity.sqrt();
+        let d1 = ((spot / strike).ln()
+            + (rate - dividend_yield + 0.5 * volatility * volatility) * maturity)
+            / sigma_sqrt_t;
+        let d2 = d1 - sigma_sqrt_t;
+        let spot_pv = spot * (-dividend_yield * maturity).exp();
+        let strike_pv = strike * (-rate * maturity).exp();
+        let call = spot_pv * normal.cdf(d1) - strike_pv * normal.cdf(d2);
+        let put = strike_pv * normal.cdf(-d2) - spot_pv * normal.cdf(-d1);
+        notional * (call - downside_leverage * put)
     }
 
     #[test]
@@ -298,10 +322,144 @@ mod tests {
     }
 
     #[test]
-    fn tarf_delta_is_finite() {
-        let tarf = make_standard_tarf();
-        let delta = tarf_delta(&tarf, 100.0, 0.03, 0.0, 0.15, 5000, 42, 0.01).unwrap();
-        assert!(delta.is_finite());
+    fn tarf_delta_and_vega_match_one_fixing_black_scholes_decomposition() {
+        // With one fixing, no KO and the full-gain target convention, the
+        // standard TARF payoff is N * (call - L * put). Compare the public
+        // bump APIs against that independent Black-Scholes decomposition at
+        // the exact same spot and volatility bump points.
+        const N_PATHS: usize = 1_000_000;
+        const FOUR_SE_DELTA_BUDGET: f64 = 1.21e-3;
+        const FOUR_SE_VEGA_BUDGET: f64 = 5.67e-1;
+        let tarf = Tarf::standard(100.0, 1.0, f64::INFINITY, 1.0, 2.0, vec![1.0]);
+        let spot = 100.0;
+        let rate = 0.03;
+        let dividend_yield = 0.01;
+        let vol = 0.20;
+        let spot_bump = 0.01;
+        let vol_bump = 0.01;
+
+        let actual_delta = tarf_delta(
+            &tarf,
+            spot,
+            rate,
+            dividend_yield,
+            vol,
+            N_PATHS,
+            42,
+            spot_bump,
+        )
+        .unwrap();
+        let actual_vega = tarf_vega(
+            &tarf,
+            spot,
+            rate,
+            dividend_yield,
+            vol,
+            N_PATHS,
+            42,
+            vol_bump,
+        )
+        .unwrap();
+        let value = |s, sigma| {
+            one_fixing_standard_value(
+                s,
+                tarf.strike,
+                rate,
+                dividend_yield,
+                sigma,
+                tarf.fixing_times[0],
+                tarf.notional_per_fixing,
+                tarf.downside_leverage,
+            )
+        };
+        let delta_reference = (value(spot * (1.0 + spot_bump), vol)
+            - value(spot * (1.0 - spot_bump), vol))
+            / (2.0 * spot * spot_bump);
+        let vega_reference =
+            (value(spot, vol + vol_bump) - value(spot, vol - vol_bump)) / (2.0 * vol_bump);
+
+        // Independent SciPy 1.17.1 integration of the paired common-random-
+        // number estimators gives SE_delta=3.00206971e-4 and
+        // SE_vega=0.141699319 at one million paths.
+        assert!(
+            (actual_delta - delta_reference).abs() <= FOUR_SE_DELTA_BUDGET,
+            "TARF delta={actual_delta} BS decomposition={delta_reference}"
+        );
+        assert!(
+            (actual_vega - vega_reference).abs() <= FOUR_SE_VEGA_BUDGET,
+            "TARF vega={actual_vega} BS decomposition={vega_reference}"
+        );
+    }
+
+    #[test]
+    fn path_dependent_tarf_greeks_match_independent_scipy_sobol_references() {
+        const N_REPLICATES: usize = 12;
+        const PATHS_PER_REPLICATE: usize = 40_000;
+        let fixing_times = (1..=12).map(|month| month as f64 / 12.0).collect();
+        let tarf = Tarf::standard(100.0, 1.0, 120.0, 20.0, 2.0, fixing_times);
+        let mut deltas = [0.0_f64; N_REPLICATES];
+        let mut vegas = [0.0_f64; N_REPLICATES];
+
+        for replicate in 0..N_REPLICATES {
+            let seed = 41_003 + 65_537 * replicate as u64;
+            deltas[replicate] = tarf_delta(
+                &tarf,
+                100.0,
+                0.03,
+                0.01,
+                0.20,
+                PATHS_PER_REPLICATE,
+                seed,
+                0.01,
+            )
+            .unwrap();
+            vegas[replicate] = tarf_vega(
+                &tarf,
+                100.0,
+                0.03,
+                0.01,
+                0.20,
+                PATHS_PER_REPLICATE,
+                seed,
+                0.01,
+            )
+            .unwrap();
+        }
+
+        fn mean_and_se<const N: usize>(samples: &[f64; N]) -> (f64, f64) {
+            let mean = samples.iter().sum::<f64>() / N as f64;
+            let variance = samples
+                .iter()
+                .map(|sample| (sample - mean).powi(2))
+                .sum::<f64>()
+                / (N - 1) as f64;
+            (mean, (variance / N as f64).sqrt())
+        }
+
+        // Independent SciPy 1.17.1 inverse-normal Sobol integration with 24
+        // Owen scrambles x 2^17 paths.  The target and KO are both active;
+        // central bumps and common paths exactly match the public Greek APIs.
+        for (label, samples, reference, reference_se) in [
+            (
+                "delta",
+                &deltas,
+                12.410_356_325_863_939,
+                6.753_763_687_173_809e-3,
+            ),
+            (
+                "vega",
+                &vegas,
+                -565.296_753_545_253_2,
+                2.600_048_016_445_336e-1,
+            ),
+        ] {
+            let (actual, implementation_se) = mean_and_se(samples);
+            let combined_se = implementation_se.hypot(reference_se);
+            assert!(
+                (actual - reference).abs() <= 4.0 * combined_se,
+                "path-dependent TARF {label}: actual={actual} reference={reference} implementation_se={implementation_se} reference_se={reference_se}"
+            );
+        }
     }
 
     fn make_decumulator_tarf() -> Tarf {

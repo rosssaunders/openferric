@@ -673,18 +673,60 @@ fn discounted_call_payoff_mean_and_stderr(
     maturity: f64,
 ) -> (f64, f64) {
     let discount = (-r * maturity).exp();
+    let payoffs = terminals
+        .iter()
+        .map(|terminal| (*terminal - strike).max(0.0))
+        .collect::<Vec<_>>();
+    let (mean, stderr) = antithetic_mean_and_stderr(&payoffs);
 
-    let mut moments = RunningMoments::default();
-    for s_t in terminals {
-        let payoff = (*s_t - strike).max(0.0);
-        moments.record(payoff);
+    (discount * mean, discount * stderr)
+}
+
+/// Mean and standard error for samples ordered as antithetic pairs.
+///
+/// [`simulate_terminal_spots`] emits `(Z, -Z)` next to each other. Those two
+/// observations are dependent, so treating all terminal payoffs as iid gives
+/// the wrong sampling error. For an even sample count, this routine is exactly
+/// the sample standard deviation of the independent pair means divided by the
+/// square root of the number of pairs. The final singleton of an odd-sized run
+/// is handled as an independent, weight-one cluster via the usual finite-sample
+/// cluster-robust variance estimate.
+fn antithetic_mean_and_stderr(samples: &[f64]) -> (f64, f64) {
+    if samples.is_empty() {
+        return (f64::NAN, f64::NAN);
     }
 
-    let n = moments.count() as f64;
+    // Keep the public price translation-stable even when payoffs have a large
+    // common level and very small dispersion.
+    let mut moments = RunningMoments::default();
+    for &sample in samples {
+        moments.record(sample);
+    }
     let mean = moments.mean();
-    let variance = moments.sample_variance();
 
-    (discount * mean, discount * (variance / n).sqrt())
+    let cluster_count = samples.len().div_ceil(2);
+    if cluster_count <= 1 {
+        return (mean, 0.0);
+    }
+
+    let total_weight = samples.len() as f64;
+    let mut squared_cluster_scores = 0.0;
+    for cluster in samples.chunks(2) {
+        let weight = cluster.len() as f64;
+        let cluster_mean = if cluster.len() == 2 {
+            cluster[0] + 0.5 * (cluster[1] - cluster[0])
+        } else {
+            cluster[0]
+        };
+        let score = (weight / total_weight) * (cluster_mean - mean);
+        squared_cluster_scores += score * score;
+    }
+
+    let finite_sample_correction = cluster_count as f64 / (cluster_count - 1) as f64;
+    (
+        mean,
+        (finite_sample_correction * squared_cluster_scores).sqrt(),
+    )
 }
 
 fn implied_vol_with_dividend(
@@ -867,19 +909,23 @@ mod tests {
     use crate::pricing::european::black_scholes_price;
 
     #[test]
-    fn public_rbergomi_stderr_resolves_small_variance_around_large_mean() {
+    fn public_rbergomi_stderr_matches_antithetic_pair_variance() {
         let spot = 1.0e12;
-        let xi0 = 1.0e-18;
+        let xi0 = 1.0e-4;
         let n_paths = 8_192;
         let result = rbergomi_european_mc(spot, 1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0, xi0, n_paths, 1);
 
         let stderr = result.stderr.expect("valid rough Bergomi stderr");
-        let population_stderr = spot * xi0.exp_m1().sqrt() / (n_paths as f64).sqrt();
-        // Antithetic observations occur in +/- pairs, so squared deviations
-        // have n/2 independent draws.  The delta-method standard error of the
-        // reported standard deviation is therefore sigma/sqrt(n), expressed
-        // here on the standard-error-of-the-mean scale.
-        let stderr_estimator_se = population_stderr / (n_paths as f64).sqrt();
+        // For one constant-variance interval the antithetic pair mean is
+        //   S * exp(-v/2) * cosh(sqrt(v) Z) - K.
+        // Its exact variance is S^2 * (cosh(v) - 1).  The sinh form below
+        // evaluates that small difference without cancellation.
+        let pair_count = n_paths as f64 / 2.0;
+        let population_stderr = spot * 2.0_f64.sqrt() * (0.5 * xi0).sinh() / pair_count.sqrt();
+        // As v -> 0 the standardized pair mean tends to Z^2-1, whose kurtosis
+        // is 15. The delta-method SE of a sample standard deviation from m
+        // pairs is therefore sigma * sqrt((15-1)/(4m)).
+        let stderr_estimator_se = population_stderr * (14.0 / (4.0 * pair_count)).sqrt();
         assert!(stderr.is_finite() && stderr > 0.0);
         assert!(
             (stderr - population_stderr).abs() <= 4.0 * stderr_estimator_se,
@@ -1077,6 +1123,95 @@ mod tests {
         );
     }
 
+    /// Full rough-Bergomi regime (`H != 1/2`, `eta > 0`, `rho != 0`) against
+    /// an independent finite-grid reference.  With two Euler intervals the
+    /// first Volterra value is one-dimensional Gaussian.  Conditioning on it
+    /// makes terminal log-spot Gaussian, so the option price is a single
+    /// Gaussian integral.  SciPy 1.17.1 `integrate.quad` and an independent
+    /// 64-node `roots_hermitenorm` evaluation agree across the strike grid
+    /// below to 8.6e-13; the production pricer is compared only through its
+    /// reported Monte Carlo sampling error and that quadrature uncertainty.
+    #[test]
+    fn nonzero_eta_rbergomi_matches_conditional_gaussian_reference_grid() {
+        let references: [(f64, f64); 3] = [
+            (85.0, 17.490_256_839_772_75),
+            (105.0, 4.995_459_194_100_712),
+            (125.0, 0.801_323_277_713_841_5),
+        ];
+        let quadrature_error = 1.0e-12;
+
+        for (strike, reference) in references {
+            let result = rbergomi_european_mc(
+                100.0, strike, 0.015, 0.005, 0.8, 0.13, 1.7, -0.72, 0.045, 120_000, 2,
+            );
+            let stderr = result.stderr.expect("rough Bergomi reports stderr");
+            let tolerance = 4.0 * stderr + quadrature_error;
+
+            assert!(
+                (result.price - reference).abs() <= tolerance,
+                "K={strike}: price={} reference={reference} stderr={stderr} quadrature_error={quadrature_error} tolerance={tolerance}",
+                result.price
+            );
+        }
+    }
+
+    /// Multi-step full-regime rough-Bergomi prices against an independent QMC
+    /// implementation of the exact eight-step Gaussian/Euler contract.
+    ///
+    /// The reference was generated with SciPy 1.17.1 and NumPy 2.4.3. SciPy
+    /// adaptive quadrature independently assembled every Volterra covariance;
+    /// its largest difference from the production 64-node transformed
+    /// Gauss-Legendre covariance was 4.3e-12. Each price is the mean of 24
+    /// independently Owen-scrambled Sobol replicates (seeds 91000..91023),
+    /// with 2^19 points in 24 dimensions per replicate. `reference_stderr` is
+    /// the replicate sample standard deviation divided by sqrt(24). The 2^18
+    /// means are retained to make the final QMC refinement explicit.
+    #[test]
+    fn nonzero_eta_rbergomi_eight_step_matches_scipy_sobol_reference_grid() {
+        // (strike, mean at 2^18, mean at 2^19, SE of the 2^19 mean)
+        let references: [(f64, f64, f64, f64); 3] = [
+            (
+                85.0,
+                17.671_668_643_464_827,
+                17.671_691_320_321_41,
+                6.562_702_226_175_41e-4,
+            ),
+            (
+                105.0,
+                4.467_247_864_584_035,
+                4.467_831_253_995_881,
+                8.298_230_510_345_551e-4,
+            ),
+            (
+                125.0,
+                0.479_995_237_613_264_1,
+                0.479_833_575_422_235_4,
+                7.018_006_592_723_939e-4,
+            ),
+        ];
+
+        for (strike, coarse_reference, reference, reference_stderr) in references {
+            let qmc_refinement = (reference - coarse_reference).abs();
+            assert!(
+                qmc_refinement <= reference_stderr,
+                "K={strike}: QMC 2^18->2^19 refinement={qmc_refinement} exceeds final replicate SE={reference_stderr}"
+            );
+
+            let result = rbergomi_european_mc(
+                100.0, strike, 0.015, 0.005, 0.8, 0.13, 1.7, -0.72, 0.045, 240_000, 8,
+            );
+            let implementation_stderr = result.stderr.expect("rough Bergomi reports stderr");
+            let combined_stderr = implementation_stderr.hypot(reference_stderr);
+            let covariance_and_roundoff = 1.0e-9;
+            let tolerance = 4.0 * combined_stderr + covariance_and_roundoff;
+            assert!(
+                (result.price - reference).abs() <= tolerance,
+                "K={strike}: price={} reference={reference} implementation_stderr={implementation_stderr} reference_stderr={reference_stderr} covariance_and_roundoff={covariance_and_roundoff} tolerance={tolerance}",
+                result.price
+            );
+        }
+    }
+
     /// At `H = 1/2` the Volterra kernel is constant, so `W~ = W` and the model
     /// degenerates to a standard Bergomi model driven by an ordinary Brownian
     /// motion. Compare against a direct standard-BM implementation with the
@@ -1104,8 +1239,7 @@ mod tests {
         let dt = maturity / n_steps as f64;
         let sqrt_dt = dt.sqrt();
         let rho_perp = (1.0 - rho * rho).max(0.0).sqrt();
-        let mut sum = 0.0;
-        let mut sum_sq = 0.0;
+        let mut reference_payoffs = Vec::with_capacity(n_paths);
         let mut z_w = vec![0.0_f64; n_steps];
         let mut z_p = vec![0.0_f64; n_steps];
         for pair in 0..(n_paths / 2) {
@@ -1129,15 +1263,11 @@ mod tests {
                     w += sign * z_w[i] * sqrt_dt;
                 }
                 let payoff = (s - strike).max(0.0_f64);
-                sum += payoff;
-                sum_sq += payoff * payoff;
+                reference_payoffs.push(payoff);
             }
         }
-        let n = (2 * (n_paths / 2)) as f64;
-        let ref_mean = sum / n;
-        let ref_var = (sum_sq - n * ref_mean * ref_mean).max(0.0) / (n - 1.0);
+        let (ref_mean, ref_stderr) = antithetic_mean_and_stderr(&reference_payoffs);
         let ref_price = ref_mean; // r = 0
-        let ref_stderr = (ref_var / n).sqrt();
 
         let stderr = mc.stderr.expect("rough Bergomi stderr");
         let combined = (stderr * stderr + ref_stderr * ref_stderr).sqrt();
@@ -1171,14 +1301,7 @@ mod tests {
         )
         .unwrap();
 
-        let n = terminals.len() as f64;
-        let mean = terminals.iter().sum::<f64>() / n;
-        let var = terminals
-            .iter()
-            .map(|s| (s - mean) * (s - mean))
-            .sum::<f64>()
-            / (n - 1.0);
-        let stderr = (var / n).sqrt();
+        let (mean, stderr) = antithetic_mean_and_stderr(&terminals);
         let forward = spot * ((r - q) * maturity).exp();
 
         assert!(

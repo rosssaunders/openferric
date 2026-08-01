@@ -354,6 +354,88 @@ mod tests {
     }
 
     #[test]
+    fn range_accrual_rate_delta_matches_deterministic_central_bump() {
+        // One deterministic fixing is placed exactly at the lower boundary.
+        // The upward initial-rate bump accrues the coupon and the downward bump
+        // does not, giving an exact nonzero reference for the public delta API.
+        let ra = RangeAccrual {
+            notional: 1_000.0,
+            coupon_rate: 0.05,
+            lower_bound: 0.04,
+            upper_bound: 0.06,
+            fixing_times: vec![1.0],
+            payment_time: 1.0,
+        };
+        let discount_rate = 0.03;
+        let bump = 1.0e-3;
+        let actual =
+            range_accrual_rate_delta(&ra, 0.04, 0.0, 0.04, 0.0, discount_rate, 256, 42, bump)
+                .unwrap();
+        let coupon_pv = ra.notional * ra.coupon_rate * (-discount_rate * ra.payment_time).exp();
+        let exact = coupon_pv / (2.0 * bump);
+        let roundoff = 64.0 * 256.0 * f64::EPSILON * exact.abs().max(1.0);
+        assert!(
+            (actual - exact).abs() <= roundoff,
+            "range-accrual delta={actual} deterministic reference={exact}"
+        );
+    }
+
+    #[test]
+    fn stochastic_range_accrual_delta_matches_exact_gaussian_marginals() {
+        const N_REPLICATES: usize = 12;
+        const PATHS_PER_REPLICATE: usize = 40_000;
+        let ra = RangeAccrual {
+            notional: 1_000_000.0,
+            coupon_rate: 0.05,
+            lower_bound: 0.035,
+            upper_bound: 0.055,
+            fixing_times: (1..=24).map(|month| month as f64 / 12.0).collect(),
+            payment_time: 2.0,
+        };
+        let r0 = 0.04;
+        let kappa = 0.8;
+        let theta = 0.045;
+        let sigma = 0.012;
+        let discount_rate = 0.03;
+        let bump = 0.002;
+
+        let exact = (exact_single_euler_price(&ra, r0 + bump, kappa, theta, sigma, discount_rate)
+            - exact_single_euler_price(&ra, r0 - bump, kappa, theta, sigma, discount_rate))
+            / (2.0 * bump);
+        // Independently evaluated with SciPy 1.17.1 normal CDFs at the exact
+        // Euler marginal means and variances.
+        let scipy_reference = 489_499.986_626_609_8;
+        assert!((exact - scipy_reference).abs() <= 2.0e-7);
+
+        let mut estimates = [0.0_f64; N_REPLICATES];
+        for (replicate, estimate) in estimates.iter_mut().enumerate() {
+            *estimate = range_accrual_rate_delta(
+                &ra,
+                r0,
+                kappa,
+                theta,
+                sigma,
+                discount_rate,
+                PATHS_PER_REPLICATE,
+                30_011 + 65_537 * replicate as u64,
+                bump,
+            )
+            .unwrap();
+        }
+        let mean = estimates.iter().sum::<f64>() / N_REPLICATES as f64;
+        let variance = estimates
+            .iter()
+            .map(|estimate| (estimate - mean).powi(2))
+            .sum::<f64>()
+            / (N_REPLICATES - 1) as f64;
+        let implementation_se = (variance / N_REPLICATES as f64).sqrt();
+        assert!(
+            (mean - scipy_reference).abs() <= 4.0 * implementation_se,
+            "stochastic range-accrual delta={mean} reference={scipy_reference} implementation_se={implementation_se}"
+        );
+    }
+
+    #[test]
     fn range_accrual_narrow_range_less_valuable() {
         let mut ra = make_range_accrual();
         let wide = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42).unwrap();

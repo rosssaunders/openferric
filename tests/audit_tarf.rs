@@ -13,7 +13,7 @@
 //! Products" 2nd ed.). No MC self-references.
 
 use openferric::core::OptionType;
-use openferric::engines::analytic::black_scholes::bs_price;
+use openferric::engines::analytic::black_scholes::{bs_price, norm_cdf};
 use openferric::instruments::tarf::Tarf;
 use openferric::pricing::tarf::tarf_mc_price;
 
@@ -52,6 +52,53 @@ fn strip_closed_form(
                     - leverage * bs_price(lose, spot, strike, rate, q, vol, t))
         })
         .sum()
+}
+
+/// Discounted Black-Scholes value of `(S_T - strike)` restricted to
+/// `strike < S_T < upper`.  This is the difference of the two truncated
+/// lognormal zeroth and first moments, not an approximation by a vanilla.
+#[allow(clippy::too_many_arguments)]
+fn truncated_call_band(
+    spot: f64,
+    strike: f64,
+    upper: f64,
+    rate: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+) -> f64 {
+    let root_t = t.sqrt();
+    let d = |level: f64| {
+        let d1 = ((spot / level).ln() + (rate - q + 0.5 * vol * vol) * t) / (vol * root_t);
+        (d1, d1 - vol * root_t)
+    };
+    let (d1_k, d2_k) = d(strike);
+    let (d1_b, d2_b) = d(upper);
+    spot * (-q * t).exp() * (norm_cdf(d1_k) - norm_cdf(d1_b))
+        - strike * (-rate * t).exp() * (norm_cdf(d2_k) - norm_cdf(d2_b))
+}
+
+/// Discounted Black-Scholes value of `(strike - S_T)` restricted to
+/// `lower < S_T < strike`.
+#[allow(clippy::too_many_arguments)]
+fn truncated_put_band(
+    spot: f64,
+    lower: f64,
+    strike: f64,
+    rate: f64,
+    q: f64,
+    vol: f64,
+    t: f64,
+) -> f64 {
+    let root_t = t.sqrt();
+    let d = |level: f64| {
+        let d1 = ((spot / level).ln() + (rate - q + 0.5 * vol * vol) * t) / (vol * root_t);
+        (d1, d1 - vol * root_t)
+    };
+    let (d1_b, d2_b) = d(lower);
+    let (d1_k, d2_k) = d(strike);
+    strike * (-rate * t).exp() * (norm_cdf(-d2_k) - norm_cdf(-d2_b))
+        - spot * (-q * t).exp() * (norm_cdf(-d1_k) - norm_cdf(-d1_b))
 }
 
 /// The decumulator KO barrier is a downside barrier: it must trigger when
@@ -233,26 +280,25 @@ fn finite_ko_barrier_reduces_holder_value_for_both_types() {
 
 /// The KO check precedes the fixing P&L: the breaching fixing pays nothing.
 /// With a single fixing and the barrier epsilon-close to the strike, the
-/// surviving payoff is only the losing leg, giving analytic anchors:
-///   Standard   (barrier = K + eps): pays (S-K)*L*N only when S < K  => -L*N*Put
-///   Decumulator (barrier = K - eps): pays (K-S)*L*N only when S > K => -L*N*Call
+/// surviving payoff has an exact truncated-lognormal decomposition:
+///   Standard   = N * [Call restricted to K<S<B - L*Put]
+///   Decumulator = N * [Put restricted to B<S<K - L*Call]
 /// If the breaching fixing were paid (wrong ordering), the winning leg would
 /// be included and both prices would be strongly positive instead.
 #[test]
 fn ko_breaching_fixing_pays_nothing_single_fixing_closed_form() {
     let (spot, rate, q, vol, t) = (100.0, 0.03, 0.0, 0.15, 1.0);
     let (strike, notional, leverage) = (100.0, 1000.0, 1.0);
-    // Epsilon band (K, K+eps) pays at most eps * notional = 0.1 with tiny
-    // probability; the +0.2 slack in the assertions dominates it.
     let eps = 1e-4;
 
     let std_tarf = Tarf::standard(strike, notional, strike + eps, NO_TARGET, leverage, vec![t]);
     let std_mc = tarf_mc_price(&std_tarf, spot, rate, q, vol, 200_000, 42).unwrap();
-    let std_expected =
-        -leverage * notional * bs_price(OptionType::Put, spot, strike, rate, q, vol, t);
+    let std_expected = notional
+        * (truncated_call_band(spot, strike, strike + eps, rate, q, vol, t)
+            - leverage * bs_price(OptionType::Put, spot, strike, rate, q, vol, t));
     assert!(
-        (std_mc.price - std_expected).abs() < 4.0 * std_mc.std_error + 0.2,
-        "standard KO ordering: mc = {} +/- {}, expected -L*N*Put = {}",
+        (std_mc.price - std_expected).abs() < 4.0 * std_mc.std_error,
+        "standard KO ordering: mc = {} +/- {}, exact truncated-moment value = {}",
         std_mc.price,
         std_mc.std_error,
         std_expected
@@ -260,11 +306,12 @@ fn ko_breaching_fixing_pays_nothing_single_fixing_closed_form() {
 
     let dec_tarf = Tarf::decumulator(strike, notional, strike - eps, NO_TARGET, leverage, vec![t]);
     let dec_mc = tarf_mc_price(&dec_tarf, spot, rate, q, vol, 200_000, 42).unwrap();
-    let dec_expected =
-        -leverage * notional * bs_price(OptionType::Call, spot, strike, rate, q, vol, t);
+    let dec_expected = notional
+        * (truncated_put_band(spot, strike - eps, strike, rate, q, vol, t)
+            - leverage * bs_price(OptionType::Call, spot, strike, rate, q, vol, t));
     assert!(
-        (dec_mc.price - dec_expected).abs() < 4.0 * dec_mc.std_error + 0.2,
-        "decumulator KO ordering: mc = {} +/- {}, expected -L*N*Call = {}",
+        (dec_mc.price - dec_expected).abs() < 4.0 * dec_mc.std_error,
+        "decumulator KO ordering: mc = {} +/- {}, exact truncated-moment value = {}",
         dec_mc.price,
         dec_mc.std_error,
         dec_expected

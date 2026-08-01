@@ -12,4 +12,5 @@
 
 pub use crate::instruments::mbs::{
     ConstantCpr, IoStrip, MbsCashflow, MbsPassThrough, PoStrip, PrepaymentModel, PsaModel,
+    RateIncentivePrepayment,
 };

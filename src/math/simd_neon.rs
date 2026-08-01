@@ -16,6 +16,8 @@
 
 use std::arch::aarch64::*;
 
+use crate::math::fast_norm::accurate_norm_cdf;
+
 const P: f64 = 0.231_641_9;
 const A1: f64 = 0.319_381_530;
 const A2: f64 = -0.356_563_782;
@@ -379,12 +381,27 @@ pub unsafe fn norm_cdf_f64x2(x: float64x2_t) -> float64x2_t {
     vbslq_f64(is_zero, vdupq_n_f64(0.5), result)
 }
 
+/// Production-accuracy normal CDF evaluated independently in each NEON lane.
+///
+/// NEON has no `erfc` instruction.  The Cody evaluations are therefore scalar,
+/// while callers retain vectorized log, discounting, and payoff arithmetic.
+/// [`norm_cdf_f64x2`] remains the explicit fast A&S approximation.
+#[inline]
+pub unsafe fn accurate_norm_cdf_f64x2(x: float64x2_t) -> float64x2_t {
+    let mut lanes = [0.0_f64; 2];
+    // SAFETY: `lanes` contains two contiguous f64 values.
+    unsafe { vst1q_f64(lanes.as_mut_ptr(), x) };
+    for value in &mut lanes {
+        *value = accurate_norm_cdf(*value);
+    }
+    // SAFETY: `lanes` contains two contiguous f64 values.
+    unsafe { vld1q_f64(lanes.as_ptr()) }
+}
+
 #[inline]
 fn bs_price_scalar(spot: f64, strike: f64, r: f64, q: f64, vol: f64, t: f64, is_call: bool) -> f64 {
-    // Must stay CDF-consistent with the NEON vector body (A&S
-    // `normal_cdf_approx`), like the AVX2/AVX-512 tails: routing the tail
-    // through the accurate-CDF pricer makes the last element of an odd-length
-    // batch differ from the lane-computed value by ~1e-5.
+    // Scalar exceptional lanes and tails share the vector body's accurate
+    // Cody CDF; only ordinary SIMD/scalar expression grouping can differ.
     crate::engines::analytic::bs_simd::bs_price_scalar(spot, strike, r, q, vol, t, is_call)
 }
 
@@ -488,8 +505,8 @@ pub unsafe fn bs_price_neon_batch_into(
         let d1 = vmulq_f64(vaddq_f64(ln_sk, drift_v), inv_sig_sqrt_t_v);
         let d2 = vsubq_f64(d1, sig_sqrt_t_v);
 
-        let nd1 = unsafe { norm_cdf_f64x2(d1) };
-        let nd2 = unsafe { norm_cdf_f64x2(d2) };
+        let nd1 = unsafe { accurate_norm_cdf_f64x2(d1) };
+        let nd2 = unsafe { accurate_norm_cdf_f64x2(d2) };
 
         let call = vsubq_f64(
             vmulq_f64(vmulq_f64(s, df_q_v), nd1),
@@ -498,10 +515,10 @@ pub unsafe fn bs_price_neon_batch_into(
 
         let put = vsubq_f64(
             vmulq_f64(vmulq_f64(k, df_r_v), unsafe {
-                norm_cdf_f64x2(vsubq_f64(zero, d2))
+                accurate_norm_cdf_f64x2(vsubq_f64(zero, d2))
             }),
             vmulq_f64(vmulq_f64(s, df_q_v), unsafe {
-                norm_cdf_f64x2(vsubq_f64(zero, d1))
+                accurate_norm_cdf_f64x2(vsubq_f64(zero, d1))
             }),
         );
 

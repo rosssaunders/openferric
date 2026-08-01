@@ -230,4 +230,58 @@ mod tests {
         assert_eq!(terminals.len(), 100);
         assert!(terminals.iter().all(|x| x.is_finite() && *x > 0.0));
     }
+
+    #[test]
+    fn characteristic_function_satisfies_risk_neutral_martingale() {
+        let vg = VarianceGamma {
+            sigma: 0.2,
+            theta: 0.1,
+            nu: 0.85,
+        };
+        let (spot, rate, dividend, maturity) = (100.0_f64, 0.05_f64, 0.01_f64, 1.0_f64);
+        let first_moment = vg
+            .characteristic_fn(Complex::new(0.0, -1.0), spot, rate, dividend, maturity)
+            .unwrap();
+        let exact_forward = spot * ((rate - dividend) * maturity).exp();
+        let roundoff = 32.0 * f64::EPSILON * exact_forward;
+        assert!((first_moment.re - exact_forward).abs() <= roundoff);
+        assert!(first_moment.im.abs() <= roundoff);
+    }
+
+    #[test]
+    fn exact_terminal_simulation_prices_fypy_call_with_sampling_error() {
+        let vg = VarianceGamma {
+            sigma: 0.2,
+            theta: 0.1,
+            nu: 0.85,
+        };
+        let (spot, strike, rate, dividend, maturity) =
+            (100.0_f64, 100.0_f64, 0.05_f64, 0.01_f64, 1.0_f64);
+        let terminals = vg
+            // A single gamma increment is an exact terminal VG draw; there is
+            // no time-discretization allowance in this comparison.
+            .simulate_terminal_spots(spot, rate, dividend, maturity, 1, 300_000, 91)
+            .unwrap();
+        let discount = (-rate * maturity).exp();
+        let payoffs: Vec<f64> = terminals
+            .iter()
+            .map(|terminal| discount * (terminal - strike).max(0.0))
+            .collect();
+        let n = payoffs.len() as f64;
+        let mean = payoffs.iter().sum::<f64>() / n;
+        let variance = payoffs
+            .iter()
+            .map(|payoff| (payoff - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        let stderr = (variance / n).sqrt();
+
+        // fypy Carr-Madan N=2^20 reference, independently cached in
+        // tests/fft_levy_reference.rs.
+        const FYPY_REFERENCE: f64 = 10.139_350_627_486_14;
+        assert!(
+            (mean - FYPY_REFERENCE).abs() <= 4.0 * stderr,
+            "VG MC={mean} +/- {stderr}, fypy={FYPY_REFERENCE}"
+        );
+    }
 }

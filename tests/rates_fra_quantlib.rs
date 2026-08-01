@@ -28,6 +28,14 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
     YieldCurve::new(points)
 }
 
+/// Binary64 operation budget for a FRA PV.  The 64 rounding units cover the
+/// forward projection, discounting, and the subtraction of nearly equal rates;
+/// scaling by notional keeps this a numerical-error bound rather than an
+/// economic pricing tolerance.
+fn fra_pv_roundoff(notional: f64) -> f64 {
+    64.0 * f64::EPSILON * notional.abs().max(1.0)
+}
+
 // ── Forward rate from pillar rates ──────────────────────────────────────────
 
 /// Reference: QuantLib forwardrateagreement.cpp.
@@ -88,7 +96,11 @@ fn fra_npv_at_par_is_zero() {
     };
 
     let npv = fra.npv(&curve);
-    assert_relative_eq!(npv, 0.0, epsilon = 1.0e-6);
+    let roundoff = fra_pv_roundoff(fra.notional);
+    assert!(
+        npv.abs() <= roundoff,
+        "at-par FRA residual {npv:e} exceeds binary64 budget {roundoff:e}"
+    );
 }
 
 // ── NPV sign ────────────────────────────────────────────────────────────────
@@ -160,7 +172,13 @@ fn fra_npv_formula_verification() {
     let df = curve.discount_factor(tau);
     let expected_npv = 1_000_000.0 * (fwd - fixed_rate) * tau * df;
 
-    assert_relative_eq!(fra.npv(&curve), expected_npv, epsilon = 1.0e-6,);
+    let actual_npv = fra.npv(&curve);
+    let roundoff = fra_pv_roundoff(fra.notional);
+    assert!(
+        (actual_npv - expected_npv).abs() <= roundoff,
+        "FRA PV error {:e} exceeds binary64 budget {roundoff:e}",
+        actual_npv - expected_npv
+    );
 }
 
 // ── Notional scaling ────────────────────────────────────────────────────────
@@ -357,5 +375,11 @@ fn fra_forward_starting_projects_period_forward() {
     assert_relative_eq!(fra.forward_rate(&curve), expected_fwd, epsilon = 1.0e-10);
 
     let expected_npv = 1_000_000.0 * (expected_fwd - 0.04) * tau * curve.discount_factor(t2);
-    assert_relative_eq!(fra.npv(&curve), expected_npv, epsilon = 1.0e-6);
+    let actual_npv = fra.npv(&curve);
+    let roundoff = fra_pv_roundoff(fra.notional);
+    assert!(
+        (actual_npv - expected_npv).abs() <= roundoff,
+        "forward-start FRA PV error {:e} exceeds binary64 budget {roundoff:e}",
+        actual_npv - expected_npv
+    );
 }

@@ -108,8 +108,12 @@ pub enum RollConvention {
 
 /// Built-in market holiday centers.
 ///
-/// Rules follow standard market calendars and match QuantLib behavior for
-/// core fixed-income/derivatives use cases.
+/// Rules follow the corresponding QuantLib market calendars. In particular,
+/// `London`, `Tokyo`, `Sydney`, and `HongKong` mean QuantLib's United Kingdom
+/// Settlement, Japan, Australia Settlement, and Hong Kong HKEx calendars.
+/// Hong Kong and Singapore include exchange-published movable-holiday tables
+/// for 2019-2026 and 2019-2027 respectively; use [`CustomCalendar`] to supply
+/// local movable holidays outside those finite table ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinancialCenter {
     Nyc,
@@ -207,7 +211,7 @@ impl Calendar {
         Self::FinancialCenter(FinancialCenter::Nyc)
     }
 
-    /// London calendar.
+    /// QuantLib United Kingdom Settlement calendar.
     pub fn london() -> Self {
         Self::FinancialCenter(FinancialCenter::London)
     }
@@ -217,12 +221,15 @@ impl Calendar {
         Self::FinancialCenter(FinancialCenter::Target)
     }
 
-    /// Tokyo calendar.
+    /// QuantLib Japan calendar.
     pub fn tokyo() -> Self {
         Self::FinancialCenter(FinancialCenter::Tokyo)
     }
 
-    /// Sydney calendar.
+    /// QuantLib Australia Settlement calendar.
+    ///
+    /// This includes the first-Monday-in-August bank holiday and the
+    /// first-Monday-in-October Labour Day that QuantLib's ASX variant omits.
     pub fn sydney() -> Self {
         Self::FinancialCenter(FinancialCenter::Sydney)
     }
@@ -814,10 +821,35 @@ fn is_london_holiday(date: NaiveDate) -> bool {
         return true;
     }
 
-    if date == nth_weekday_of_month(y, 5, Weekday::Mon, 1)
-        || date == last_weekday_of_month(y, 5, Weekday::Mon)
-        || date == last_weekday_of_month(y, 8, Weekday::Mon)
-    {
+    let early_may_bank_holiday = if matches!(y, 1995 | 2020) {
+        NaiveDate::from_ymd_opt(y, 5, 8).expect("valid VE-day bank holiday")
+    } else {
+        nth_weekday_of_month(y, 5, Weekday::Mon, 1)
+    };
+    if date == early_may_bank_holiday || date == last_weekday_of_month(y, 8, Weekday::Mon) {
+        return true;
+    }
+
+    let spring_bank_holidays: &[(u32, u32)] = match y {
+        2002 => &[(6, 3), (6, 4)],
+        2012 => &[(6, 4), (6, 5)],
+        2022 => &[(6, 2), (6, 3)],
+        _ => &[],
+    };
+    if if spring_bank_holidays.is_empty() {
+        date == last_weekday_of_month(y, 5, Weekday::Mon)
+    } else {
+        spring_bank_holidays.iter().any(|&(month, day)| {
+            date == NaiveDate::from_ymd_opt(y, month, day).expect("valid date")
+        })
+    } {
+        return true;
+    }
+
+    if matches!(
+        (y, date.month(), date.day()),
+        (2011, 4, 29) | (2022, 9, 19) | (2023, 5, 8) | (1999, 12, 31)
+    ) {
         return true;
     }
 
@@ -839,7 +871,7 @@ fn is_tokyo_holiday(date: NaiveDate) -> bool {
 }
 
 fn is_sydney_holiday(date: NaiveDate) -> bool {
-    australia_nsw_holidays(date.year()).contains(&date)
+    australia_settlement_holidays(date.year()).contains(&date)
 }
 
 fn is_hong_kong_holiday(date: NaiveDate) -> bool {
@@ -937,37 +969,100 @@ fn japan_holidays(year: i32) -> BTreeSet<NaiveDate> {
     holidays.insert(NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date"));
     holidays.insert(NaiveDate::from_ymd_opt(year, 1, 2).expect("valid date"));
     holidays.insert(NaiveDate::from_ymd_opt(year, 1, 3).expect("valid date"));
-    holidays.insert(nth_weekday_of_month(year, 1, Weekday::Mon, 2)); // Coming of age day
-    holidays.insert(NaiveDate::from_ymd_opt(year, 2, 11).expect("valid date"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 2, 23).expect("valid date"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 3, vernal_equinox_day(year)).expect("valid"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 4, 29).expect("valid date"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 5, 3).expect("valid date"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 5, 4).expect("valid date"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 5, 5).expect("valid date"));
-    holidays.insert(nth_weekday_of_month(year, 7, Weekday::Mon, 3)); // Marine day
-    holidays.insert(NaiveDate::from_ymd_opt(year, 8, 11).expect("valid date"));
-    holidays.insert(nth_weekday_of_month(year, 9, Weekday::Mon, 3)); // Respect for aged day
-    holidays.insert(NaiveDate::from_ymd_opt(year, 9, autumnal_equinox_day(year)).expect("valid"));
-    holidays.insert(nth_weekday_of_month(year, 10, Weekday::Mon, 2)); // Sports day
-    holidays.insert(NaiveDate::from_ymd_opt(year, 11, 3).expect("valid date"));
-    holidays.insert(NaiveDate::from_ymd_opt(year, 11, 23).expect("valid date"));
 
-    let originals = holidays.clone();
-    for h in originals {
-        if h.weekday() == Weekday::Sun {
-            let mut sub = h + Duration::days(1);
-            while holidays.contains(&sub) {
-                sub += Duration::days(1);
-            }
-            holidays.insert(sub);
+    // Coming of Age Day: January 15 before 2000, second Monday since 2000.
+    if year >= 2000 {
+        holidays.insert(nth_weekday_of_month(year, 1, Weekday::Mon, 2));
+    } else {
+        insert_sunday_substitute(&mut holidays, year, 1, 15);
+    }
+
+    insert_sunday_substitute(&mut holidays, year, 2, 11); // National Foundation Day
+    if year >= 2020 {
+        insert_sunday_substitute(&mut holidays, year, 2, 23); // Emperor Naruhito's birthday
+    } else if (1989..2019).contains(&year) {
+        insert_sunday_substitute(&mut holidays, year, 12, 23); // Emperor Akihito's birthday
+    }
+
+    insert_sunday_substitute(&mut holidays, year, 3, vernal_equinox_day(year));
+    insert_sunday_substitute(&mut holidays, year, 4, 29); // Greenery/Showa Day
+
+    for day in 3..=5 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 5, day).expect("valid Golden Week date"));
+    }
+    let may_sixth = NaiveDate::from_ymd_opt(year, 5, 6).expect("valid Golden Week date");
+    if matches!(
+        may_sixth.weekday(),
+        Weekday::Mon | Weekday::Tue | Weekday::Wed
+    ) {
+        holidays.insert(may_sixth);
+    }
+
+    // Marine Day, including the 2020/2021 Olympic moves.
+    if ((2003..2020).contains(&year)) || year >= 2022 {
+        holidays.insert(nth_weekday_of_month(year, 7, Weekday::Mon, 3));
+    } else if (1996..2003).contains(&year) {
+        insert_sunday_substitute(&mut holidays, year, 7, 20);
+    } else if year == 2020 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 7, 23).expect("valid Olympic holiday"));
+    } else if year == 2021 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 7, 22).expect("valid Olympic holiday"));
+    }
+
+    // Mountain Day, including the 2020/2021 Olympic moves.
+    if (2016..2020).contains(&year) || year >= 2022 {
+        insert_sunday_substitute(&mut holidays, year, 8, 11);
+    } else if year == 2020 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 8, 10).expect("valid Olympic holiday"));
+    } else if year == 2021 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 8, 9).expect("valid Olympic holiday"));
+    }
+
+    if year >= 2003 {
+        holidays.insert(nth_weekday_of_month(year, 9, Weekday::Mon, 3));
+    } else {
+        insert_sunday_substitute(&mut holidays, year, 9, 15);
+    }
+
+    let autumnal_equinox = autumnal_equinox_day(year);
+    if year >= 2003 {
+        let citizens_holiday =
+            NaiveDate::from_ymd_opt(year, 9, autumnal_equinox - 1).expect("valid citizens holiday");
+        if citizens_holiday.weekday() == Weekday::Tue && citizens_holiday.day() >= 16 {
+            holidays.insert(citizens_holiday);
         }
     }
+    insert_sunday_substitute(&mut holidays, year, 9, autumnal_equinox);
+
+    // Sports Day (formerly Health and Sports Day), including Olympic moves.
+    if (2000..2020).contains(&year) || year >= 2022 {
+        holidays.insert(nth_weekday_of_month(year, 10, Weekday::Mon, 2));
+    } else if year < 2000 {
+        insert_sunday_substitute(&mut holidays, year, 10, 10);
+    } else if year == 2020 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 7, 24).expect("valid Olympic holiday"));
+    } else if year == 2021 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 7, 23).expect("valid Olympic holiday"));
+    }
+
+    insert_sunday_substitute(&mut holidays, year, 11, 3); // Culture Day
+    insert_sunday_substitute(&mut holidays, year, 11, 23); // Labour Thanksgiving Day
+    holidays.insert(NaiveDate::from_ymd_opt(year, 12, 31).expect("valid bank holiday"));
+
+    let one_shot: &[(u32, u32)] = match year {
+        1959 => &[(4, 10)],
+        1989 => &[(2, 24)],
+        1990 => &[(11, 12)],
+        1993 => &[(6, 9)],
+        2019 => &[(4, 30), (5, 1), (5, 2), (10, 22)],
+        _ => &[],
+    };
+    insert_dated_holidays(&mut holidays, year, one_shot);
 
     holidays
 }
 
-fn australia_nsw_holidays(year: i32) -> BTreeSet<NaiveDate> {
+fn australia_settlement_holidays(year: i32) -> BTreeSet<NaiveDate> {
     let mut holidays = BTreeSet::new();
     holidays.extend(observed_monday_if_weekend(year, 1, 1)); // New year
     holidays.extend(observed_monday_if_weekend(year, 1, 26)); // Australia day
@@ -978,36 +1073,156 @@ fn australia_nsw_holidays(year: i32) -> BTreeSet<NaiveDate> {
 
     holidays.insert(NaiveDate::from_ymd_opt(year, 4, 25).expect("valid date")); // ANZAC day
     holidays.insert(nth_weekday_of_month(year, 6, Weekday::Mon, 2)); // King's birthday
+    holidays.insert(nth_weekday_of_month(year, 8, Weekday::Mon, 1)); // Bank holiday
     holidays.insert(nth_weekday_of_month(year, 10, Weekday::Mon, 1)); // Labour day
     holidays.extend(uk_christmas_and_boxing_holidays(year));
+
+    if year == 2022 {
+        holidays.insert(NaiveDate::from_ymd_opt(year, 9, 22).expect("valid mourning holiday"));
+    }
 
     holidays
 }
 
 fn hong_kong_holidays(year: i32) -> BTreeSet<NaiveDate> {
     let mut holidays = BTreeSet::new();
-    holidays.extend(observed_monday_if_weekend(year, 1, 1)); // New year
+    holidays.insert(NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date"));
+    insert_monday_if_sunday(&mut holidays, year, 1, 1); // New year
 
     let easter = easter_sunday(year);
     holidays.insert(easter - Duration::days(2)); // Good Friday
     holidays.insert(easter + Duration::days(1)); // Easter Monday
 
-    holidays.extend(observed_monday_if_weekend(year, 5, 1)); // Labour day
-    holidays.extend(observed_monday_if_weekend(year, 7, 1)); // HKSAR day
-    holidays.extend(observed_monday_if_weekend(year, 10, 1)); // National day
-    holidays.extend(uk_christmas_and_boxing_holidays(year));
+    for (month, day) in [(5, 1), (7, 1), (10, 1)] {
+        holidays.insert(NaiveDate::from_ymd_opt(year, month, day).expect("valid date"));
+        insert_monday_if_sunday(&mut holidays, year, month, day);
+    }
+    holidays.insert(NaiveDate::from_ymd_opt(year, 12, 25).expect("valid date"));
+    holidays.insert(NaiveDate::from_ymd_opt(year, 12, 26).expect("valid date"));
+
+    // HKEx movable/special holidays, matching QuantLib's published tables.
+    let dated: &[(u32, u32)] = match year {
+        2019 => &[(2, 5), (2, 6), (2, 7), (4, 5), (6, 7), (10, 7)],
+        2020 => &[
+            (1, 27),
+            (1, 28),
+            (4, 4),
+            (4, 30),
+            (6, 25),
+            (10, 2),
+            (10, 26),
+        ],
+        2021 => &[
+            (2, 12),
+            (2, 15),
+            (4, 5),
+            (5, 19),
+            (6, 14),
+            (9, 22),
+            (10, 14),
+        ],
+        2022 => &[
+            (2, 1),
+            (2, 2),
+            (2, 3),
+            (4, 5),
+            (5, 9),
+            (6, 3),
+            (9, 12),
+            (10, 4),
+        ],
+        2023 => &[
+            (1, 23),
+            (1, 24),
+            (1, 25),
+            (4, 5),
+            (5, 26),
+            (6, 22),
+            (10, 23),
+        ],
+        2024 => &[
+            (2, 12),
+            (2, 13),
+            (4, 4),
+            (5, 15),
+            (6, 10),
+            (9, 18),
+            (10, 11),
+        ],
+        2025 => &[(1, 29), (1, 30), (1, 31), (4, 4), (5, 5), (10, 7), (10, 29)],
+        2026 => &[
+            (2, 17),
+            (2, 18),
+            (2, 19),
+            (4, 7),
+            (5, 25),
+            (6, 19),
+            (10, 19),
+        ],
+        _ => &[],
+    };
+    insert_dated_holidays(&mut holidays, year, dated);
 
     holidays
 }
 
 fn singapore_holidays(year: i32) -> BTreeSet<NaiveDate> {
     let mut holidays = BTreeSet::new();
-    holidays.extend(observed_monday_if_weekend(year, 1, 1)); // New year
+    holidays.insert(NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date"));
+    insert_monday_if_sunday(&mut holidays, year, 1, 1); // New year
     holidays.insert(easter_sunday(year) - Duration::days(2)); // Good Friday
-    holidays.extend(observed_monday_if_weekend(year, 5, 1)); // Labour day
-    holidays.extend(observed_monday_if_weekend(year, 8, 9)); // National day
-    holidays.extend(observed_monday_if_weekend(year, 12, 25)); // Christmas
+    holidays.insert(NaiveDate::from_ymd_opt(year, 5, 1).expect("valid date")); // Labour day
+    holidays.insert(NaiveDate::from_ymd_opt(year, 8, 9).expect("valid date"));
+    insert_monday_if_sunday(&mut holidays, year, 8, 9); // National day
+    holidays.insert(NaiveDate::from_ymd_opt(year, 12, 25).expect("valid date"));
+
+    // SGX movable/special holidays, matching QuantLib's published tables.
+    let dated: &[(u32, u32)] = match year {
+        2019 => &[(2, 5), (2, 6), (5, 20), (6, 5), (8, 12), (10, 28)],
+        2020 => &[(1, 27), (5, 7), (5, 25), (7, 31), (11, 14)],
+        2021 => &[(2, 12), (5, 13), (5, 26), (7, 20), (11, 4)],
+        2022 => &[
+            (2, 1),
+            (2, 2),
+            (5, 2),
+            (5, 3),
+            (5, 16),
+            (7, 11),
+            (10, 24),
+            (12, 26),
+        ],
+        2023 => &[(1, 23), (1, 24), (4, 22), (6, 2), (6, 29), (9, 1), (11, 13)],
+        2024 => &[(2, 12), (4, 10), (5, 22), (6, 17), (10, 31)],
+        2025 => &[(1, 29), (1, 30), (3, 31), (5, 12), (10, 20)],
+        2026 => &[(2, 17), (2, 18), (3, 20), (5, 27), (6, 1), (11, 9)],
+        2027 => &[(2, 8), (3, 10), (5, 17), (5, 20), (10, 28)],
+        _ => &[],
+    };
+    insert_dated_holidays(&mut holidays, year, dated);
     holidays
+}
+
+fn insert_monday_if_sunday(holidays: &mut BTreeSet<NaiveDate>, year: i32, month: u32, day: u32) {
+    let actual = NaiveDate::from_ymd_opt(year, month, day).expect("valid fixed holiday");
+    if actual.weekday() == Weekday::Sun {
+        holidays.insert(actual + Duration::days(1));
+    }
+}
+
+fn insert_sunday_substitute(holidays: &mut BTreeSet<NaiveDate>, year: i32, month: u32, day: u32) {
+    let actual = NaiveDate::from_ymd_opt(year, month, day).expect("valid fixed holiday");
+    holidays.insert(actual);
+    if actual.weekday() == Weekday::Sun {
+        holidays.insert(actual + Duration::days(1));
+    }
+}
+
+fn insert_dated_holidays(holidays: &mut BTreeSet<NaiveDate>, year: i32, dates: &[(u32, u32)]) {
+    holidays.extend(
+        dates
+            .iter()
+            .map(|&(month, day)| NaiveDate::from_ymd_opt(year, month, day).expect("valid date")),
+    );
 }
 
 fn easter_sunday(year: i32) -> NaiveDate {
@@ -1030,12 +1245,20 @@ fn easter_sunday(year: i32) -> NaiveDate {
 }
 
 fn vernal_equinox_day(year: i32) -> u32 {
-    // QuantLib-compatible approximation in Gregorian years.
-    (20.8431 + 0.242194 * (year - 1980) as f64 - ((year - 1980) / 4) as f64).floor() as u32
+    japanese_equinox_day(year, 20.69115)
 }
 
 fn autumnal_equinox_day(year: i32) -> u32 {
-    (23.2488 + 0.242194 * (year - 1980) as f64 - ((year - 1980) / 4) as f64).floor() as u32
+    japanese_equinox_day(year, 23.09)
+}
+
+fn japanese_equinox_day(year: i32, exact_2000_day: f64) -> u32 {
+    // QuantLib Japan::Impl formula. Rust and C++ integer division both truncate
+    // toward zero, including for the historical negative year offset.
+    let years_since_2000 = year - 2000;
+    let leap_years = years_since_2000 / 4 + years_since_2000 / 100 - years_since_2000 / 400;
+    (exact_2000_day + f64::from(years_since_2000) * 0.242_194 - f64::from(leap_years)).floor()
+        as u32
 }
 
 fn nth_weekday_of_month(year: i32, month: u32, weekday: Weekday, n: u32) -> NaiveDate {
@@ -1084,6 +1307,366 @@ mod tests {
         assert!(Calendar::sydney().is_holiday(NaiveDate::from_ymd_opt(2024, 12, 25).unwrap()));
         assert!(Calendar::hong_kong().is_holiday(NaiveDate::from_ymd_opt(2024, 10, 1).unwrap()));
         assert!(Calendar::singapore().is_holiday(NaiveDate::from_ymd_opt(2024, 8, 9).unwrap()));
+    }
+
+    fn weekday_holidays(calendar: &Calendar, year: i32) -> Vec<NaiveDate> {
+        let mut date = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
+        let mut holidays = Vec::new();
+        while date <= end {
+            if !matches!(date.weekday(), Weekday::Sat | Weekday::Sun) && calendar.is_holiday(date) {
+                holidays.push(date);
+            }
+            date = date.succ_opt().unwrap();
+        }
+        holidays
+    }
+
+    fn dates(year: i32, month_days: &[(u32, u32)]) -> Vec<NaiveDate> {
+        month_days
+            .iter()
+            .map(|&(month, day)| NaiveDate::from_ymd_opt(year, month, day).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn hong_kong_2024_holiday_set_matches_quantlib_1_43() {
+        // QuantLib-Python 1.43 Calendar.holidayList(HongKong(), ..., false).
+        let expected = dates(
+            2024,
+            &[
+                (1, 1),
+                (2, 12),
+                (2, 13),
+                (3, 29),
+                (4, 1),
+                (4, 4),
+                (5, 1),
+                (5, 15),
+                (6, 10),
+                (7, 1),
+                (9, 18),
+                (10, 1),
+                (10, 11),
+                (12, 25),
+                (12, 26),
+            ],
+        );
+        assert_eq!(weekday_holidays(&Calendar::hong_kong(), 2024), expected);
+    }
+
+    #[test]
+    fn singapore_2024_and_2026_holiday_sets_match_quantlib_1_43() {
+        // QuantLib-Python 1.43 Calendar.holidayList(Singapore(), ..., false).
+        let expected_2024 = dates(
+            2024,
+            &[
+                (1, 1),
+                (2, 12),
+                (3, 29),
+                (4, 10),
+                (5, 1),
+                (5, 22),
+                (6, 17),
+                (8, 9),
+                (10, 31),
+                (12, 25),
+            ],
+        );
+        let expected_2026 = dates(
+            2026,
+            &[
+                (1, 1),
+                (2, 17),
+                (2, 18),
+                (3, 20),
+                (4, 3),
+                (5, 1),
+                (5, 27),
+                (6, 1),
+                (8, 10),
+                (11, 9),
+                (12, 25),
+            ],
+        );
+        assert_eq!(
+            weekday_holidays(&Calendar::singapore(), 2024),
+            expected_2024
+        );
+        assert_eq!(
+            weekday_holidays(&Calendar::singapore(), 2026),
+            expected_2026
+        );
+    }
+
+    #[test]
+    fn hong_kong_2026_holiday_set_matches_current_quantlib_source() {
+        // QuantLib master additionally carries the published 2026 HKEx table.
+        let expected = dates(
+            2026,
+            &[
+                (1, 1),
+                (2, 17),
+                (2, 18),
+                (2, 19),
+                (4, 3),
+                (4, 6),
+                (4, 7),
+                (5, 1),
+                (5, 25),
+                (6, 19),
+                (7, 1),
+                (10, 1),
+                (10, 19),
+                (12, 25),
+            ],
+        );
+        assert_eq!(weekday_holidays(&Calendar::hong_kong(), 2026), expected);
+    }
+
+    #[test]
+    fn london_special_holiday_sets_match_quantlib_1_43_settlement() {
+        // QuantLib-Python 1.43 UnitedKingdom(UnitedKingdom.Settlement).
+        let expected_2020 = dates(
+            2020,
+            &[
+                (1, 1),
+                (4, 10),
+                (4, 13),
+                (5, 8),
+                (5, 25),
+                (8, 31),
+                (12, 25),
+                (12, 28),
+            ],
+        );
+        let expected_2022 = dates(
+            2022,
+            &[
+                (1, 3),
+                (4, 15),
+                (4, 18),
+                (5, 2),
+                (6, 2),
+                (6, 3),
+                (8, 29),
+                (9, 19),
+                (12, 26),
+                (12, 27),
+            ],
+        );
+        let expected_2023 = dates(
+            2023,
+            &[
+                (1, 2),
+                (4, 7),
+                (4, 10),
+                (5, 1),
+                (5, 8),
+                (5, 29),
+                (8, 28),
+                (12, 25),
+                (12, 26),
+            ],
+        );
+
+        assert_eq!(weekday_holidays(&Calendar::london(), 2020), expected_2020);
+        assert_eq!(weekday_holidays(&Calendar::london(), 2022), expected_2022);
+        assert_eq!(weekday_holidays(&Calendar::london(), 2023), expected_2023);
+    }
+
+    #[test]
+    fn japan_modern_holiday_sets_match_quantlib_1_43() {
+        // QuantLib-Python 1.43 Calendar.holidayList(Japan(), ..., false).
+        let expected_2019 = dates(
+            2019,
+            &[
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (1, 14),
+                (2, 11),
+                (3, 21),
+                (4, 29),
+                (4, 30),
+                (5, 1),
+                (5, 2),
+                (5, 3),
+                (5, 6),
+                (7, 15),
+                (8, 12),
+                (9, 16),
+                (9, 23),
+                (10, 14),
+                (10, 22),
+                (11, 4),
+                (12, 31),
+            ],
+        );
+        let expected_2020 = dates(
+            2020,
+            &[
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (1, 13),
+                (2, 11),
+                (2, 24),
+                (3, 20),
+                (4, 29),
+                (5, 4),
+                (5, 5),
+                (5, 6),
+                (7, 23),
+                (7, 24),
+                (8, 10),
+                (9, 21),
+                (9, 22),
+                (11, 3),
+                (11, 23),
+                (12, 31),
+            ],
+        );
+        let expected_2021 = dates(
+            2021,
+            &[
+                (1, 1),
+                (1, 11),
+                (2, 11),
+                (2, 23),
+                (4, 29),
+                (5, 3),
+                (5, 4),
+                (5, 5),
+                (7, 22),
+                (7, 23),
+                (8, 9),
+                (9, 20),
+                (9, 23),
+                (11, 3),
+                (11, 23),
+                (12, 31),
+            ],
+        );
+        let expected_2024 = dates(
+            2024,
+            &[
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (1, 8),
+                (2, 12),
+                (2, 23),
+                (3, 20),
+                (4, 29),
+                (5, 3),
+                (5, 6),
+                (7, 15),
+                (8, 12),
+                (9, 16),
+                (9, 23),
+                (10, 14),
+                (11, 4),
+                (12, 31),
+            ],
+        );
+
+        assert_eq!(weekday_holidays(&Calendar::tokyo(), 2019), expected_2019);
+        assert_eq!(weekday_holidays(&Calendar::tokyo(), 2020), expected_2020);
+        assert_eq!(weekday_holidays(&Calendar::tokyo(), 2021), expected_2021);
+        assert_eq!(weekday_holidays(&Calendar::tokyo(), 2024), expected_2024);
+        // New Year's bank holidays do not spill to January 4 when January 1 is Sunday.
+        assert!(Calendar::tokyo().is_business_day(NaiveDate::from_ymd_opt(2023, 1, 4).unwrap()));
+    }
+
+    #[test]
+    fn sydney_matches_quantlib_1_43_australia_settlement_not_asx() {
+        // QuantLib-Python 1.43 Australia(Australia.Settlement).
+        let expected_2022 = dates(
+            2022,
+            &[
+                (1, 3),
+                (1, 26),
+                (4, 15),
+                (4, 18),
+                (4, 25),
+                (6, 13),
+                (8, 1),
+                (9, 22),
+                (10, 3),
+                (12, 26),
+                (12, 27),
+            ],
+        );
+        let expected_2024 = dates(
+            2024,
+            &[
+                (1, 1),
+                (1, 26),
+                (3, 29),
+                (4, 1),
+                (4, 25),
+                (6, 10),
+                (8, 5),
+                (10, 7),
+                (12, 25),
+                (12, 26),
+            ],
+        );
+
+        assert_eq!(weekday_holidays(&Calendar::sydney(), 2022), expected_2022);
+        assert_eq!(weekday_holidays(&Calendar::sydney(), 2024), expected_2024);
+    }
+
+    #[test]
+    fn hong_kong_2019_and_2020_holiday_sets_match_quantlib_1_43() {
+        // QuantLib-Python 1.43 HongKong(HongKong.HKEx).
+        let expected_2019 = dates(
+            2019,
+            &[
+                (1, 1),
+                (2, 5),
+                (2, 6),
+                (2, 7),
+                (4, 5),
+                (4, 19),
+                (4, 22),
+                (5, 1),
+                (6, 7),
+                (7, 1),
+                (10, 1),
+                (10, 7),
+                (12, 25),
+                (12, 26),
+            ],
+        );
+        let expected_2020 = dates(
+            2020,
+            &[
+                (1, 1),
+                (1, 27),
+                (1, 28),
+                (4, 10),
+                (4, 13),
+                (4, 30),
+                (5, 1),
+                (6, 25),
+                (7, 1),
+                (10, 1),
+                (10, 2),
+                (10, 26),
+                (12, 25),
+            ],
+        );
+
+        assert_eq!(
+            weekday_holidays(&Calendar::hong_kong(), 2019),
+            expected_2019
+        );
+        assert_eq!(
+            weekday_holidays(&Calendar::hong_kong(), 2020),
+            expected_2020
+        );
     }
 
     #[test]

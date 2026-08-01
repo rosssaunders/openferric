@@ -30,7 +30,7 @@ class TestCva:
             math.exp(-discount_rate * t) * exposure * (math.exp(-hazard_rate * previous_t) - math.exp(-hazard_rate * t))
             for previous_t, t, exposure in zip([0.0, *times[:-1]], times, ee)
         )
-        assert cva == pytest.approx(expected, abs=16 * math.ulp(expected))
+        assert cva == pytest.approx(expected, rel=0.0, abs=16 * math.ulp(expected))
 
     def test_zero_exposure_zero_cva(self):
         """Zero exposure → zero CVA."""
@@ -50,7 +50,7 @@ class TestCva:
             math.exp(-discount_rate * t) * exposure * (math.exp(-hazard_rate * previous_t) - math.exp(-hazard_rate * t))
             for previous_t, t, exposure in zip([0.0, *times[:-1]], times, ee)
         )
-        assert actual == pytest.approx(expected, abs=16 * math.ulp(expected))
+        assert actual == pytest.approx(expected, rel=0.0, abs=16 * math.ulp(expected))
 
 
 # =========================================================================
@@ -72,7 +72,7 @@ class TestSaCcrEad:
     def test_ead_matches_stated_sa_ccr_reduction(self, asset_class, expected):
         """MF=1, so EAD = 1.4 * (100k + supervisory_factor * 1m)."""
         ead = py_sa_ccr_ead(replacement_cost=100_000.0, notional=1_000_000.0, maturity=5.0, asset_class=asset_class)
-        assert ead == pytest.approx(expected, abs=8 * math.ulp(expected))
+        assert ead == pytest.approx(expected, rel=0.0, abs=8 * math.ulp(expected))
 
     def test_interest_rate_alias(self):
         ead1 = py_sa_ccr_ead(100_000.0, 1_000_000.0, 5.0, "ir")
@@ -98,7 +98,7 @@ class TestHistoricalVar:
         """The interpolated 95% loss quantile is exactly 4 + 0.55 * (5 - 4)."""
         returns = list(range(-5, 5))  # [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4]
         var = py_historical_var(returns=returns, confidence=0.95)
-        assert var == pytest.approx(4.55, abs=2 * math.ulp(4.55))
+        assert var == pytest.approx(4.55, rel=0.0, abs=2 * math.ulp(4.55))
 
     @pytest.mark.parametrize(("confidence", "expected"), [(0.90, 0.032), (0.99, 0.0482)])
     def test_confidence_quantiles_are_exact(self, confidence, expected):
@@ -106,7 +106,7 @@ class TestHistoricalVar:
         # The type-7 rank p*(n-1) therefore interpolates between .03 and .05.
         returns = [-0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.04, 0.05]
         actual = py_historical_var(returns=returns, confidence=confidence)
-        assert actual == pytest.approx(expected, abs=4 * math.ulp(expected))
+        assert actual == pytest.approx(expected, rel=0.0, abs=4 * math.ulp(expected))
 
     def test_all_positive_returns(self):
         """The loss-positive convention floors a negative loss quantile at zero."""
@@ -129,5 +129,5 @@ class TestHistoricalEs:
         returns = [-0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05]
         var = py_historical_var(returns=returns, confidence=confidence)
         es = py_historical_es(returns=returns, confidence=confidence)
-        assert var == pytest.approx(expected_var, abs=4 * math.ulp(expected_var))
-        assert es == pytest.approx(expected_es, abs=4 * math.ulp(expected_es))
+        assert var == pytest.approx(expected_var, rel=0.0, abs=4 * math.ulp(expected_var))
+        assert es == pytest.approx(expected_es, rel=0.0, abs=4 * math.ulp(expected_es))

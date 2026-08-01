@@ -4,8 +4,9 @@
 //! Source: vendor/QuantLib/test-suite/swaptions.cpp — testCachedValue, testStrikeDependence
 //!
 //! Our API uses year-fraction tenor and Black-76 model. QuantLib tests use
-//! calendar-based schedules with Actual/365(Fixed). Tolerances are adjusted
-//! to account for the simplified year-fraction approach.
+//! calendar-based schedules with Actual/365(Fixed). Compatible year-fraction
+//! targets below are evaluated independently; price allowances cover only
+//! binary64 arithmetic and normal-CDF implementation roundoff.
 
 use approx::assert_relative_eq;
 
@@ -22,6 +23,11 @@ fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
         })
         .collect();
     YieldCurve::new(points)
+}
+
+fn ulp(value: f64) -> f64 {
+    let magnitude = value.abs();
+    magnitude.next_up() - magnitude
 }
 
 // ── Cached value tests ──────────────────────────────────────────────────────
@@ -62,12 +68,18 @@ fn swaption_cached_value_payer_5y_into_10y() {
         * (expected_forward * normal.cdf(d1) - swaption.strike * normal.cdf(d2));
 
     let fwd = swaption.forward_swap_rate(&curve);
-    assert_relative_eq!(fwd, expected_forward, epsilon = 1.0e-12);
+    assert!((fwd - expected_forward).abs() <= 32.0 * ulp(expected_forward));
 
     let annuity = swaption.annuity_factor(&curve);
-    assert_relative_eq!(annuity, expected_annuity, epsilon = 1.0e-12);
-    assert_relative_eq!(price, expected_price, epsilon = 1.0e-8);
-    assert_relative_eq!(price, 36_279.649_346_017_74, epsilon = 1.0e-8);
+    assert!((annuity - expected_annuity).abs() <= 32.0 * ulp(expected_annuity));
+
+    // The 256-ULP allowance covers the independently implemented normal CDF,
+    // the ten-term annuity sum, and Black-76 arithmetic. It is roughly 2e-9
+    // currency units, not an economic price tolerance.
+    let expected_price_roundoff = 256.0 * ulp(expected_price);
+    assert!((price - expected_price).abs() <= expected_price_roundoff);
+    let cached_reference = 36_279.649_346_017_74;
+    assert!((price - cached_reference).abs() <= 256.0 * ulp(cached_reference));
 }
 
 /// ATM swaption: strike = forward rate.
@@ -105,7 +117,7 @@ fn swaption_atm_price() {
     };
     let recv_price = receiver.price(&curve, vol);
 
-    assert_relative_eq!(price, recv_price, epsilon = 1.0e-8);
+    assert!((price - recv_price).abs() <= 8.0 * ulp(price.max(recv_price)));
 }
 
 // ── Strike dependence ───────────────────────────────────────────────────────
@@ -184,7 +196,14 @@ fn swaption_put_call_parity() {
         let parity_rhs = payer.notional * annuity * (fwd - strike);
         let parity_lhs = payer_price - recv_price;
 
-        assert_relative_eq!(parity_lhs, parity_rhs, epsilon = 1.0e-8);
+        // Propagate a bounded number of rounding units through the two option
+        // prices and their cancellation in put-call parity.
+        let operation_scale = payer_price
+            .abs()
+            .max(recv_price.abs())
+            .max(parity_rhs.abs());
+        let parity_roundoff = 64.0 * ulp(operation_scale);
+        assert!((parity_lhs - parity_rhs).abs() <= parity_roundoff);
     }
 }
 

@@ -25,10 +25,15 @@ explicit statistical or numerical error budget rather than bitwise equality.
 
 Reference values in this audit were regenerated with
 [QuantLib-Python 1.43](https://pypi.org/project/QuantLib/) and
-[SciPy 1.17.1](https://docs.scipy.org/doc/scipy/reference/). Each cached value is
-accompanied by its contract/model parameters;
+[SciPy 1.17.1](https://docs.scipy.org/doc/scipy/reference/), with
+[NumPy 2.4.3 Gauss-Hermite nodes](https://numpy.org/doc/stable/reference/generated/numpy.polynomial.hermite.hermgauss.html)
+for Gaussian-factor integration. Each cached value is accompanied by its
+contract/model parameters;
 SciPy Sobol references additionally record replicate counts and reference
-standard errors. Lévy-process FFT values use the open-source
+standard errors. Correlated first-to-default is also checked against
+[FinancePy 1.0.1](https://pypi.org/project/financepy/), with its contract dates,
+day count, factor-loading conversion, sample count and reference error recorded
+in the test. Lévy-process FFT values use the open-source
 [fypy Carr-Madan implementation](https://github.com/jkirkby3/fypy), and product
 grids are cross-checked against the upstream
 [QuantLib test suite](https://github.com/lballabio/QuantLib/tree/master/test-suite).
@@ -42,14 +47,14 @@ package value, or stated finite-grid regression target.
 |---|---|---|
 | Vanilla equity, Greeks, FX, Black-76, Bachelier | `strata_black_scholes`, `european_quantlib`, `quantlib_reference`, Python/WASM pricing tests | Strata/QuantLib grids and closed forms |
 | Barriers, digitals, lookbacks, compound, chooser, quanto, rainbow, spreads | `barrier_quantlib`, `strata_barrier`, `digital_reference`, `exotic_reference`, `equity_exotics_exact_reference`, `haug_rainbow_spread` | QuantLib/Haug grids and independent SciPy formulas |
-| Asian, basket, autocall, range accrual, TARF, swing, convertible, real options, structured notes | `asian_quantlib`, `equity_exotics_exact_reference`, DSL tests and focused module tests | QuantLib/SciPy Sobol values, analytic reductions, deterministic cashflows |
-| American/Bermudan, binomial/trinomial, PDE, LSM | `american_approx_reference`, `bermudan_quantlib`, `pde_solvers_issue35`, `lsm_reference`, `cross_engine_consistency`, tree module tests | QuantLib, Black-Scholes/CRR, published approximations, deterministic Hull-White reduction |
+| Asian, basket, autocall, range accrual, TARF, swing, convertible, real options, structured notes | `asian_quantlib`, `equity_exotics_exact_reference`, `audit_convertible`, DSL tests and focused structured-note/swing/real-option tests | QuantLib/SciPy Sobol values, including full stochastic path Greeks; Black-Scholes reductions, exact discounted cashflows, independent Decimal CRR and separately implemented full-slice Hull-White recurrences |
+| American/Bermudan, binomial/trinomial, PDE, LSM | `american_approx_reference`, `bermudan_quantlib`, `hull_white_tree_reference`, `pde_solvers_issue35`, `lsm_reference`, `cross_engine_consistency`, tree module tests | QuantLib, Black-Scholes/CRR, published approximations, Jamshidian's closed form, an independent continuous-state Hull-White Gaussian program, and a local-vol log-price trinomial chain |
 | FFT/FRFT, Heston, VG, CGMY, NIG | `fang_oosterlee_heston`, `fft_levy_reference`, `heston_quantlib`, `variance_gamma_model_quantlib`, Python/WASM FFT tests | QuantLib, fypy, Lewis and Fang-Oosterlee values |
 | SABR, SVI, Heston, Hull-White and mixture calibration | focused calibration/model tests and Python/WASM vol tests | Exact synthetic quote repricing, identifiable parameter recovery, and solver-conditioned error budgets |
-| MC, QMC, SIMD/parallel MC, AAD, rough volatility and SLV | `cross_engine_consistency` and focused engine/model tests | Closed-form BSM/Margrabe/moment targets with reported sampling error |
-| Bonds, curves, FRA, swaps, OIS/basis, caps/floors, swaptions, XCCY, inflation, CMS | `rates_*`, `strata_bond_reference` and focused rates module tests | QuantLib/Strata values, exact discounted cashflows, Black-76 reductions |
-| CDS, CDS options/index, ISDA, copulas, first/nth default, CDO | `credit_isda_quantlib`, `credit_quantlib_cds_test` and focused credit module tests | QuantLib values, exact survival cashflows, SciPy quadrature and distribution formulas |
-| Commodity, weather, catastrophe bonds, MBS/PSA and funding swaps | `commodity_reference`, `commodity_weather_test` and focused instrument tests | Black-76/Kirk, exact Poisson/cashflow calculations, SIFMA PSA formulas |
+| MC, QMC, SIMD/parallel MC, AAD, rough volatility and SLV | `cross_engine_consistency` and focused engine/model tests | Closed-form BSM/Margrabe/moment targets, non-flat SLV surface repricing, two-step conditional-Gaussian and eight-step SciPy/NumPy Sobol rough-Bergomi grids, all with reported sampling/calibration error |
+| Bonds, curves, FRA, swaps, OIS/basis, caps/floors, swaptions, XCCY, inflation, CMS | `rates_*`, `strata_bond_reference` and focused rates module tests | QuantLib/Strata values, exact discounted cashflows, Black-76 reductions, SciPy conditional-lognormal quadrature and QuantLib spread-basket QMC |
+| CDS, CDS options/index, ISDA, copulas, first/nth default, CDO | `credit_isda_quantlib`, `credit_quantlib_cds_test`, `cdo_heterogeneous_reference` and focused credit module tests | QuantLib and FinancePy values, exact survival cashflows, SciPy quadrature, direct finite-pool Bernoulli enumeration and distribution formulas |
+| Commodity, weather, catastrophe bonds, MBS/PSA and funding swaps | `commodity_reference`, `commodity_weather_test` and focused instrument tests | Black-76/Kirk, exact Poisson/cashflow calculations, SIFMA PSA formulas, and OTS refinancing-incentive coefficients/seasonality with full cashflow paths independently evaluated using Decimal arithmetic under the library's gross-WAC convention |
 | VaR/ES, XVA, KVA/FVA/MVA and portfolio sensitivities | `var_es_reference` and focused risk module tests | Exact empirical order statistics, Gaussian formulas, discounted exposure/capital cashflows, and reported sampling error |
 | Rust, Python and WebAssembly surfaces | workspace tests, `python/tests`, and `wasm-pack test --node` | The same full-precision references exercised through each binding |
 
@@ -63,37 +68,101 @@ external engine exists:
   in analytic, tree, and PDE engines and explicit ex-dividend path jumps in
   Monte Carlo engines. References align the dividend dates and cashflows with
   QuantLib's escrowed model before comparing prices.
-- CDO pricing is the large-homogeneous-portfolio Gaussian-copula model. General
-  heterogeneous base-correlation tranches are outside the current engine.
-- MBS cashflows use the stated
+- CDO pricing includes both the legacy large-homogeneous-portfolio model and a
+  finite heterogeneous one-factor Gaussian-copula recursion with per-name
+  exposures, recoveries, survival curves and factor loadings. The finite engine
+  requires an explicit commensurate loss unit so it never silently rounds name
+  losses. Its requested factor-quadrature order is a minimum: the engine
+  doubles it until consecutive prices converge and returns an error at the
+  safety cap rather than accepting an unchecked near-unit-loading result. Raw
+  survival-curve nodes are revalidated at pricing time, including after direct
+  Rust or Python mutation. Base-correlation pricing accepts a fixed
+  maturity-slice attachment / detachment pair; market-surface calibration and
+  bespoke mapping are not inferred by the engine.
+- MBS cashflows support the stated
   [SIFMA PSA/CPR prepayment path](https://www.sifma.org/wp-content/uploads/2017/08/chsf.pdf)
-  and a flat discount yield; the model does not make prepayments interest-rate
-  dependent.
-- Cross-currency swap reference cases use the engine's annual coupon periods,
-  rather than silently comparing them with QuantLib's common quarterly setup.
-- Dated CDS schedules use the library's weekends-only calendar unless an explicit
-  business calendar is supplied; QuantLib TARGET-calendar references are adjusted
-  to the same dates before comparison.
-- The funding-rate swap has no volatility state, so its reported volatility
-  sensitivity is exactly zero by construction.
-- General correlated CMS-spread, first-to-default, and non-zero-volatility
-  Bermudan-swaption cases have no identical external contract/model fixture in
-  the current reference set. They are covered by exact one-factor or deterministic
-  reductions, independently evaluated cashflows, and convergence/statistical
-  checks; broader model equivalence is not claimed.
-- Non-flat stochastic-local-volatility and non-zero-eta rough-Bergomi prices do
-  not yet have like-for-like external package grids. Coverage uses exact
-  Black-Scholes/constant-leverage reductions, analytic covariance identities,
-  and reported Monte Carlo errors. Andreasen-Huge similarly has exact quote-node
-  repricing and off-grid interpolation budgets, but no external non-flat grid.
-- Structured-note, swing, convertible, and real-option tests use exact limiting
-  cases plus exercise/order/no-arbitrage properties where the non-trivial model
-  has no matching independent package implementation.
-- The WebAssembly SIMD batch pricer uses `f64x2`, but deliberately retains its
-  Abramowitz-Stegun normal-CDF approximation.  Tests separate binary64 SIMD
-  roundoff from that approximation and pin its SciPy-grid maxima (about
-  `1.3e-5` in price, `7.2e-8` in delta, and `3.3e-7` in theta); scalar binding
-  prices use the higher-accuracy analytic path.
+  and an explicit deterministic refinancing-rate scenario using the transparent
+  OTS refinancing-incentive coefficients, seasoning ramp, and seasonality factors
+  shown in the
+  [MathWorks modified Richard--Roll example](https://www.mathworks.com/help/fininst/prepayment-modeling-with-a-two-factor-hull-white-model.html).
+  MathWorks feeds its pass-through `CouponRate` to that example; OpenFerric uses
+  the pool's gross WAC because `coupon_rate - servicing_fee` separately defines
+  investor pass-through interest and gross `coupon_rate` drives amortization.
+  Scenario pricing accepts monthly refinancing rates and discount yields, and
+  scenario duration rebuilds prepayment cashflows under each parallel rate bump.
+  The benchmark intentionally omits proprietary borrower calibration, default,
+  burnout, and a stochastic OAS rate engine; it is not labeled as the full
+  Richard--Roll model.
+- Cross-currency swaps accept explicit fixed- and floating-leg frequencies;
+  legacy methods remain annual compatibility wrappers. Quarterly dual-curve
+  cashflows and par rates are pinned to independent high-precision Decimal
+  sums. The API remains year-fraction based rather than pretending that a dated
+  QuantLib calendar/day-count contract is identical.
+- Standard dated CDS pricing uses T+1 calendar-day step-in and T+3
+  business-day cash settlement. Regular accrual boundaries and payment dates
+  are Following-adjusted on the supplied calendar, while contractual maturity
+  remains unadjusted. Act/365F curve times, the multi-period final coupon's
+  final-day-inclusive Act/360, the one-period exception, half-day
+  default-accrual bias, and the accrued rebate are covered by full
+  QuantLib-Python 1.43 ISDA-engine fixtures across clean/dirty NPV, both legs,
+  rebate, and fair spread, including same-day and holiday-adjusted zero-lag
+  settlement. The older unadjusted Act/360 calculation remains available only
+  through the explicitly named legacy analytic API in both Rust and Python.
+- London, Tokyo and Sydney are pinned to QuantLib's United Kingdom Settlement,
+  Japan and Australia Settlement variants, including UK royal one-offs,
+  Japan's 2019 succession and 2020/2021 Olympic moves, and Australia's 2022
+  mourning holiday. Hong Kong and Singapore include QuantLib's finite
+  exchange-published movable-holiday tables for 2019-2026 and 2019-2027;
+  outside those table ranges callers must supply a `CustomCalendar`. Full
+  weekday holiday-set tests cover each exceptional modern rule family.
+- The funding-rate swap payoff is linear in realised rates, so under
+  deterministic discounting its value depends only on conditional forward
+  means and its volatility sensitivity is mathematically zero. Nonlinear
+  funding options require a separate stochastic model.
+- General correlated CMS-spread prices are checked against independent SciPy
+  conditional-lognormal quadrature and a converged QuantLib-Python 1.43
+  low-discrepancy spread-basket engine. Correlated first-to-default is checked
+  against SciPy/NumPy Gaussian-factor quadrature and an exactly aligned
+  FinancePy 1.0.1 Gaussian-copula contract. Package and implementation sampling
+  errors are combined explicitly.
+- The Hull-White tree's non-zero-volatility single-exercise swaption converges
+  to Jamshidian's closed form and a QuantLib-Python 1.43 value. The library's
+  rolling-tenor multi-exercise contract is not the conventional fixed-underlying
+  package payoff, so it is checked against an independent continuous-state
+  Gaussian dynamic program using the exact joint law of the short-rate factor
+  and stochastic discount integral.
+- Non-flat stochastic-local-volatility calibration is checked across strikes
+  against the exact sampled/interpolated market Black-Scholes surface, with
+  separate particle, calibration and pricing uncertainty. Non-zero-eta rough
+  Bergomi is checked both by exact conditional-Gaussian quadrature on a two-step
+  grid and by an independently assembled eight-step Volterra/Euler Gaussian law
+  integrated with replicated SciPy/NumPy Sobol QMC. Andreasen-Huge is
+  checked against a non-flat Bachelier-induced Black smile at calibrated nodes
+  and off-grid points with the analytic interpolation remainder; the production
+  finite-grid node solves and off-grid interpolation outputs are locked
+  separately at binary64 operation-roundoff scale.
+- The non-zero-vol-of-vol Heston Bermudan has a QuantLib 1.43 finite-difference
+  target. Custom non-flat local-vol and time-varying-strike Bermudans are checked
+  against an independent recombining log-price Markov chain, with CN convergence
+  and LSM reported error tested separately.
+- Swing tests reduce unconstrained rights to a strip of Black-Scholes calls and
+  converge to a QuantLib-Python 1.43 finite-difference price for the constrained
+  monthly contract. Real-option defer, expansion, and abandonment trees are
+  checked against Black-Scholes reductions, independent high-precision
+  multi-stage CRR recurrences and deterministic immediate exercise. Structured
+  notes and convertibles pin exact discounted cashflows plus finite-grid
+  recurrences for non-zero-volatility callable and fully featured exercise
+  cases. The callable-note recurrence is independently written at the lattice
+  and event-order layer but deliberately reuses the model's calibrated-theta
+  and bond-price primitives, which the separate Jamshidian/QuantLib tests cover;
+  exercise/order/no-arbitrage properties remain supplemental.
+- Native and WebAssembly SIMD batch pricers evaluate the tail-accurate Cody
+  normal CDF independently per lane while retaining vectorized log, discount
+  and payoff arithmetic. Cached SciPy price/Greek grids are checked with an
+  explicit binary64/vector-math budget. The separately named
+  `normal_cdf_batch_approx` primitive deliberately retains the faster
+  Abramowitz-Stegun approximation and has its own approximation-error tests;
+  it is not used by the batch Black-Scholes pricing or Greek paths.
 
 ## Equity Derivatives
 
@@ -173,7 +242,7 @@ external engine exists:
 | ISDA standard model | `credit::isda` |
 | CDS index pricing | `credit::cds_index` |
 | Nth-to-default (Gaussian copula) | `credit::cds_index` |
-| CDO tranche pricing (LHP) | `credit::cdo` |
+| CDO tranche pricing (LHP and finite heterogeneous/base correlation) | `credit::cdo`, `credit::heterogeneous_cdo` |
 | Copula simulation | `credit::copula` |
 | CDS options (Black model) | `credit::cds_option` |
 
@@ -184,7 +253,7 @@ external engine exists:
 | TARFs (target redemption forwards) | `instruments::tarf`, `pricing::tarf` |
 | Range accruals (single + dual rate) | `instruments::range_accrual`, `pricing::range_accrual` |
 | Autocallables | `instruments::autocallable`, `pricing::autocallable` |
-| MBS pass-through (PSA/CPR prepayment) | `instruments::mbs` |
+| MBS pass-through (PSA/CPR and OTS rate-incentive prepayment) | `instruments::mbs` |
 | IO/PO strips | `instruments::mbs` |
 | WAL, OAS, effective duration | `instruments::mbs` |
 

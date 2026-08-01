@@ -1,6 +1,6 @@
 use openferric::core::OptionType;
 use openferric::instruments::{
-    CatastropheBond, DegreeDayType, WeatherOption, cumulative_cdd, cumulative_hdd,
+    CatastropheBond, DegreeDayType, WeatherOption, WeatherSwap, cumulative_cdd, cumulative_hdd,
 };
 use openferric::models::{SchwartzOneFactor, implied_convenience_yield};
 
@@ -80,6 +80,64 @@ fn weather_option_burn_price_matches_discounted_historical_average() {
     // arithmetic mean is exactly 12 and PV = 12 * exp(-0.02 * 0.5).
     let expected = 11.880_598_004_990_016;
     assert!((price - expected).abs() <= 2.0e-12);
+}
+
+#[test]
+fn weather_swap_matches_exact_linear_historical_cashflow() {
+    let swap = WeatherSwap {
+        index_type: DegreeDayType::CDD,
+        strike: 110.0,
+        tick_size: 2.5,
+        notional: 10_000.0,
+        is_payer: true,
+        discount_rate: 0.025,
+        maturity: 0.75,
+    };
+    let historical_indices = [90.0, 105.0, 115.0, 130.0];
+    let actual = swap
+        .price_from_historical_indices(&historical_indices)
+        .unwrap();
+    let exact_mean_index = 110.0;
+    let expected = 10_000.0
+        * 2.5
+        * (exact_mean_index - swap.strike)
+        * (-swap.discount_rate * swap.maturity).exp();
+    assert_eq!(expected, 0.0);
+    assert_eq!(actual, expected);
+
+    let receiver = WeatherSwap {
+        is_payer: false,
+        strike: 120.0,
+        ..swap
+    };
+    let actual = receiver
+        .price_from_historical_indices(&historical_indices)
+        .unwrap();
+    let expected = 10_000.0 * 2.5 * 10.0 * (-0.025_f64 * 0.75).exp();
+    assert!((actual - expected).abs() <= 16.0 * f64::EPSILON * expected);
+}
+
+#[test]
+fn weather_option_temperature_burn_matches_explicit_degree_day_payoffs() {
+    let option = WeatherOption {
+        index_type: DegreeDayType::HDD,
+        option_type: OptionType::Call,
+        strike: 8.0,
+        tick_size: 20.0,
+        notional: 100.0,
+        discount_rate: 0.03,
+        maturity: 0.5,
+    };
+    let histories = vec![
+        vec![60.0, 62.0, 64.0], // HDD index = 9; payoff index = 1
+        vec![65.0, 66.0, 67.0], // HDD index = 0; payoff index = 0
+        vec![55.0, 60.0, 65.0], // HDD index = 15; payoff index = 7
+    ];
+    let actual = option
+        .price_burn_from_temperature_history(&histories, 65.0)
+        .unwrap();
+    let expected = 100.0 * 20.0 * ((1.0 + 0.0 + 7.0) / 3.0) * (-0.03_f64 * 0.5).exp();
+    assert!((actual - expected).abs() <= 32.0 * f64::EPSILON * expected);
 }
 
 #[test]

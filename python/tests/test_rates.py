@@ -1,5 +1,7 @@
 """Tests for rates functions: swaption pricing."""
 
+import math
+
 import pytest
 from conftest import is_nan
 from openferric import py_swaption_price
@@ -17,12 +19,17 @@ class TestSwaptionPrice:
     def test_payer_positive(self, swaption_params):
         price = py_swaption_price(**swaption_params, option_type="payer")
         # Independent SciPy 1.17.1 Black-76 evaluation on OpenFerric's
-        # documented annual fixed-leg schedule.
-        assert price == pytest.approx(9070.129921696538, abs=1e-8)
+        # documented annual fixed-leg schedule. The 256-ULP allowance covers
+        # curve construction, Black-76 operations, and the independent CDF
+        # implementations; it is not an economic price range.
+        reference = 9070.129921696538
+        assert price == pytest.approx(reference, rel=0.0, abs=256 * math.ulp(reference))
 
     def test_receiver_positive(self, swaption_params):
         price = py_swaption_price(**swaption_params, option_type="receiver")
-        assert price == pytest.approx(7052.63808672894, abs=1e-8)
+        # Same SciPy 1.17.1 Black-76 fixture and binary64-only budget as payer.
+        reference = 7052.63808672894
+        assert price == pytest.approx(reference, rel=0.0, abs=256 * math.ulp(reference))
 
     def test_call_alias(self, swaption_params):
         """'call' should be same as 'payer'."""
@@ -85,8 +92,8 @@ class TestForwardRateAgreement:
         fwd = (df1 / df2 - 1.0) / tau
         expected = notional * (fwd - fixed) * tau * df2
 
-        assert fra.forward_rate(curve) == pytest.approx(fwd, abs=32 * math.ulp(fwd))
-        assert fra.npv(curve) == pytest.approx(expected, abs=32 * math.ulp(expected))
+        assert fra.forward_rate(curve) == pytest.approx(fwd, rel=0.0, abs=32 * math.ulp(fwd))
+        assert fra.npv(curve) == pytest.approx(expected, rel=0.0, abs=32 * math.ulp(expected))
         assert "valuation_date" in repr(fra)
 
     def test_omitted_valuation_date_anchors_at_start(self):
@@ -112,4 +119,36 @@ class TestForwardRateAgreement:
         df = math.exp(-r * tau)
         fwd = (1.0 / df - 1.0) / tau
         expected = 100.0 * (fwd - 0.02) * tau * df
-        assert fra.npv(curve) == pytest.approx(expected, abs=32 * math.ulp(expected))
+        assert fra.npv(curve) == pytest.approx(expected, rel=0.0, abs=32 * math.ulp(expected))
+
+
+class TestXccySwapFrequencies:
+    def test_quarterly_dual_curve_matches_decimal_reference(self):
+        import math
+
+        from openferric import Frequency, XccySwap, YieldCurve
+
+        def curve(rate):
+            return YieldCurve([(float(t), math.exp(-rate * t)) for t in range(1, 6)])
+
+        ccy1_discount = curve(0.04)
+        ccy2_discount = curve(0.03)
+        ccy2_projection = curve(0.035)
+        quarterly = Frequency.quarterly()
+        swap = XccySwap(100_000_000.0, 90_000_000.0, 0.03, 0.0025, 5.0, 1.1111)
+
+        fixed = swap.fixed_leg_pv_ccy1_with_frequency(ccy1_discount, quarterly)
+        floating = swap.float_leg_pv_ccy2_with_frequency(ccy2_discount, ccy2_projection, quarterly)
+        npv = swap.npv_dual_curve_with_frequencies(
+            ccy1_discount,
+            ccy2_discount,
+            ccy2_projection,
+            quarterly,
+            quarterly,
+            True,
+        )
+
+        roundoff = 8 * math.ulp(max(fixed, floating))
+        assert fixed == pytest.approx(95_400_406.1524443, rel=0.0, abs=roundoff)
+        assert floating == pytest.approx(93_139_314.12169167, rel=0.0, abs=roundoff)
+        assert npv == pytest.approx(8_086_685.768167322, rel=0.0, abs=roundoff)

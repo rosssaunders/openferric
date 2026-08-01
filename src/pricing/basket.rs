@@ -1104,6 +1104,25 @@ mod tests {
         validate_or_repair_correlation_matrix,
     };
     use crate::pricing::european::black_scholes_price;
+    use statrs::distribution::{ContinuousCDF, Normal};
+
+    fn independent_black_scholes_call(
+        spot: f64,
+        strike: f64,
+        rate: f64,
+        dividend_yield: f64,
+        volatility: f64,
+        maturity: f64,
+    ) -> f64 {
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let sigma_sqrt_t = volatility * maturity.sqrt();
+        let d1 = ((spot / strike).ln()
+            + (rate - dividend_yield + 0.5 * volatility * volatility) * maturity)
+            / sigma_sqrt_t;
+        let d2 = d1 - sigma_sqrt_t;
+        spot * (-dividend_yield * maturity).exp() * normal.cdf(d1)
+            - strike * (-rate * maturity).exp() * normal.cdf(d2)
+    }
 
     #[test]
     fn basket_with_one_asset_reduces_to_vanilla_option() {
@@ -1137,6 +1156,118 @@ mod tests {
             bs,
             tol
         );
+    }
+
+    #[test]
+    fn one_asset_basket_sensitivities_match_black_scholes_bump_ladder() {
+        // The production API reports central-bump Greeks, so compare against
+        // the exact Black-Scholes values at those same bump points rather than
+        // silently mixing finite-difference and infinitesimal Greeks.
+        const N_PATHS: usize = 500_000;
+        const FOUR_SE_DELTA_BUDGET: f64 = 3.27e-3;
+        const FOUR_SE_VEGA_BUDGET: f64 = 4.18e-1;
+        let basket = BasketOption {
+            weights: vec![1.0],
+            strike: 100.0,
+            maturity: 1.0,
+            is_call: true,
+            basket_type: BasketType::Average,
+        };
+        let spot = 100.0;
+        let vol = 0.20;
+        let rate = 0.03;
+        let dividend = 0.01;
+        let sensitivities = basket_sensitivities(
+            &basket,
+            &[spot],
+            &[vol],
+            &[vec![1.0]],
+            rate,
+            &[dividend],
+            N_PATHS,
+        )
+        .unwrap();
+
+        let spot_bump = spot * SPOT_BUMP_REL;
+        let delta_reference = (independent_black_scholes_call(
+            spot + spot_bump,
+            basket.strike,
+            rate,
+            dividend,
+            vol,
+            basket.maturity,
+        ) - independent_black_scholes_call(
+            spot - spot_bump,
+            basket.strike,
+            rate,
+            dividend,
+            vol,
+            basket.maturity,
+        )) / (2.0 * spot_bump);
+        let vega_reference = (independent_black_scholes_call(
+            spot,
+            basket.strike,
+            rate,
+            dividend,
+            vol + VOL_BUMP_ABS,
+            basket.maturity,
+        ) - independent_black_scholes_call(
+            spot,
+            basket.strike,
+            rate,
+            dividend,
+            vol - VOL_BUMP_ABS,
+            basket.maturity,
+        )) / (2.0 * VOL_BUMP_ABS);
+
+        // The four-standard-error budgets were independently integrated under
+        // the normal density for the common-random-number payoff differences
+        // (SciPy 1.17.1): SE_delta=8.16680557e-4 and SE_vega=0.104449603.
+        assert!(
+            (sensitivities.delta[0] - delta_reference).abs() <= FOUR_SE_DELTA_BUDGET,
+            "basket delta={} BS bump reference={delta_reference}",
+            sensitivities.delta[0]
+        );
+        assert!(
+            (sensitivities.vega - vega_reference).abs() <= FOUR_SE_VEGA_BUDGET,
+            "basket vega={} BS bump reference={vega_reference}",
+            sensitivities.vega
+        );
+        // Correlation is not a parameter of a one-dimensional distribution.
+        assert_eq!(sensitivities.cega, 0.0);
+    }
+
+    #[test]
+    fn two_asset_zero_vol_basket_has_exact_deltas_and_zero_cega() {
+        // Strike zero makes the call payoff the positive weighted basket. At
+        // zero vol the entire valuation is deterministic, while the 2x2 input
+        // still forces cega through the off-diagonal correlation bump path.
+        let basket = BasketOption {
+            weights: vec![0.6, 0.4],
+            strike: 0.0,
+            maturity: 1.25,
+            is_call: true,
+            basket_type: BasketType::Average,
+        };
+        let dividends = [0.01, 0.02];
+        let sensitivities = basket_sensitivities(
+            &basket,
+            &[100.0, 80.0],
+            &[0.0, 0.0],
+            &[vec![1.0, 0.35], vec![0.35, 1.0]],
+            0.03,
+            &dividends,
+            256,
+        )
+        .unwrap();
+        let exact_delta = [
+            basket.weights[0] * (-dividends[0] * basket.maturity).exp(),
+            basket.weights[1] * (-dividends[1] * basket.maturity).exp(),
+        ];
+        for (actual, exact) in sensitivities.delta.iter().zip(exact_delta) {
+            assert!((actual - exact).abs() <= 2.0e-12);
+        }
+        assert_eq!(sensitivities.cega, 0.0);
     }
 
     #[test]

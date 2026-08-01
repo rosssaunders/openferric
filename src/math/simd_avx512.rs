@@ -20,6 +20,8 @@
 
 use std::arch::x86_64::*;
 
+use crate::math::fast_norm::accurate_norm_cdf;
+
 const LN_2_HI: f64 = 6.931_471_803_691_238e-1;
 const LN_2_LO: f64 = 1.908_214_929_270_587_7e-10;
 
@@ -413,6 +415,26 @@ pub unsafe fn norm_cdf_f64x8(x: __m512d) -> __m512d {
     let result = _mm512_mask_blend_pd(neg_mask, approx, reflected);
     let is_zero = _mm512_cmp_pd_mask(x, zero, _CMP_EQ_OQ);
     _mm512_mask_blend_pd(is_zero, result, _mm512_set1_pd(0.5))
+}
+
+/// Production-accuracy normal CDF evaluated independently in each AVX-512 lane.
+///
+/// AVX-512 has no `erfc` instruction.  The Cody evaluations are therefore
+/// scalar, while callers retain vectorized log, discounting, and payoff
+/// arithmetic. [`norm_cdf_f64x8`] remains the explicit fast A&S approximation.
+#[inline]
+#[target_feature(enable = "avx512f")]
+/// # Safety
+/// The caller must ensure AVX-512F is available on the executing CPU.
+pub unsafe fn accurate_norm_cdf_f64x8(x: __m512d) -> __m512d {
+    let mut lanes = [0.0_f64; 8];
+    // SAFETY: `lanes` contains eight contiguous f64 values.
+    _mm512_storeu_pd(lanes.as_mut_ptr(), x);
+    for value in &mut lanes {
+        *value = accurate_norm_cdf(*value);
+    }
+    // SAFETY: `lanes` contains eight contiguous f64 values.
+    _mm512_loadu_pd(lanes.as_ptr())
 }
 
 /// AVX-512 vectorized inverse normal CDF for 8 probabilities in `[0, 1]`.

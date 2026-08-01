@@ -8,7 +8,7 @@
 
 use openferric::engines::fft::{
     BlackScholesCharFn, CarrMadanParams, CgmyCharFn, NigCharFn, VarianceGammaCharFn,
-    carr_madan_fft_strikes,
+    carr_madan_fft_strikes, carr_madan_price_at_strikes,
 };
 
 const SPOT: f64 = 100.0;
@@ -85,6 +85,47 @@ fn fypy_cgmy_atm_call() {
         err < 5.0e-6,
         "fypy CGMY: got {price}, expected {reference}, err={err}"
     );
+}
+
+/// Deterministic default-grid regression for the CGMY production path.
+///
+/// The fypy assertion above is an external, converged-method reference and
+/// deliberately carries its source grid error. These values instead lock the
+/// exact finite Carr-Madan grid (`n=4096`, `eta=0.25`, `alpha=1.5`) used by
+/// OpenFerric so a numerical implementation change cannot hide inside that
+/// external tolerance.
+#[test]
+fn cgmy_default_finite_grid_binary64_lock() {
+    let cf = CgmyCharFn::risk_neutral(SPOT, RATE, DIVIDEND, MATURITY, 0.02, 5.0, 15.0, 1.2)
+        .expect("CGMY construction failed");
+    let strikes = [80.0, 90.0, 100.0, 110.0, 120.0];
+    let expected: [f64; 5] = [
+        23.005_036_990_350_163,
+        13.817_853_639_255_867,
+        5.802_224_526_781_332,
+        1.292_798_206_377_928_9,
+        0.184_960_954_698_136_45,
+    ];
+    let actual = carr_madan_price_at_strikes(
+        &cf,
+        RATE,
+        MATURITY,
+        SPOT,
+        &strikes,
+        CarrMadanParams::default(),
+    )
+    .expect("CGMY default-grid pricing failed");
+
+    for (((actual_strike, actual_price), expected_strike), expected_price) in
+        actual.iter().zip(strikes).zip(expected)
+    {
+        assert_eq!(*actual_strike, expected_strike);
+        let binary64_budget = 256.0 * f64::EPSILON * expected_price.abs().max(1.0);
+        assert!(
+            (actual_price - expected_price).abs() <= binary64_budget,
+            "CGMY finite-grid lock drifted at K={expected_strike}: actual={actual_price}, expected={expected_price}, budget={binary64_budget}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------

@@ -15,9 +15,9 @@ use openferric::instruments::{
     EmployeeStockOption, ExerciseSchedule, ExoticOption, ExpandOption, ForwardStartOption,
     FuturesOption, FxOption, GapOption, InverseFloaterNote, LookbackFixedOption,
     LookbackFloatingOption, MbsCashflow, MbsPassThrough, PhoenixAutocallable, Portfolio,
-    PowerOption, PrepaymentModel, PsaModel, QuantoOption, RangeAccrual, RealOptionBinomialSpec,
-    RealOptionInstrument, SnowballNote, SpreadOption, StructuredCoupon, SwingOption, Tarf,
-    TarfType, TargetRedemptionNote, Trade, TradeInstrument, TradeMetadata,
+    PowerOption, PrepaymentModel, PsaModel, QuantoOption, RangeAccrual, RateIncentivePrepayment,
+    RealOptionBinomialSpec, RealOptionInstrument, SnowballNote, SpreadOption, StructuredCoupon,
+    SwingOption, Tarf, TarfType, TargetRedemptionNote, Trade, TradeInstrument, TradeMetadata,
     TwoAssetCorrelationOption, VanillaOption, VarianceOptionQuote, VarianceSwap, VolatilitySwap,
     WeatherOption, WeatherSwap, WorstOfTwoCallOption,
 };
@@ -717,6 +717,9 @@ fn instrument_and_portfolio_roundtrip() {
     assert_roundtrip(&PsaModel { psa_speed: 1.5 });
     assert_roundtrip(&ConstantCpr { annual_cpr: 0.07 });
     assert_roundtrip(&PrepaymentModel::Psa(PsaModel { psa_speed: 2.0 }));
+    assert_roundtrip(&RateIncentivePrepayment {
+        first_payment_month: 7,
+    });
     assert_roundtrip(&MbsCashflow {
         month: 12,
         interest: 400.0,

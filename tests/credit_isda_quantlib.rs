@@ -14,11 +14,13 @@ use openferric::credit::cds_option::{CdsOption, fair_spread_from_hazard, risky_a
 use openferric::credit::{
     CdoTranche, Cds, CdsDateRule, CdsIndex, DatedCds, GaussianCopula, IsdaConventions,
     NthToDefaultBasket, ProtectionSide, SurvivalCurve, SyntheticCdo,
-    bootstrap_survival_curve_from_cds_spreads, cash_settle_date, first_to_default_spread_copula,
-    generate_imm_schedule, hazard_from_par_spread, next_imm_twentieth, previous_imm_twentieth,
-    price_isda_flat, price_midpoint_flat, step_in_date, vasicek_portfolio_loss_cdf,
+    bootstrap_survival_curve_from_cds_spreads, cash_settle_date, cash_settle_date_with_calendar,
+    first_to_default_spread_copula, generate_imm_schedule, hazard_from_par_spread,
+    next_imm_twentieth, previous_imm_twentieth, price_isda_flat, price_isda_flat_legacy_analytic,
+    price_isda_flat_with_calendar, price_midpoint_flat, step_in_date, step_in_date_with_calendar,
+    vasicek_portfolio_loss_cdf,
 };
-use openferric::rates::YieldCurve;
+use openferric::rates::{Calendar, YieldCurve};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -412,63 +414,86 @@ fn higher_recovery_rate_lowers_fair_spread() {
 // ===========================================================================
 
 #[test]
-fn isda_midpoint_cached_regression() {
-    // QuantLib creditdefaultswap.cpp testCachedValue() reference.
-    let evaluation_date = NaiveDate::from_ymd_opt(2006, 6, 9).unwrap();
-    let issue_date = NaiveDate::from_ymd_opt(2005, 6, 9).unwrap();
-    let maturity_date = NaiveDate::from_ymd_opt(2015, 6, 9).unwrap();
-
+fn midpoint_one_coupon_matches_quantlib_engine() {
+    // QuantLib-Python 1.43 MidPointCdsEngine fixture with an explicit
+    // 20-Mar-2026/20-Jun-2026 NullCalendar schedule. Both flat curves are
+    // continuous Act/360 (h=2%, r=3%); settlement and protection start on the
+    // evaluation date. This isolates the midpoint methodology without
+    // importing QuantLib's unrelated TARGET schedule conventions.
+    let evaluation_date = NaiveDate::from_ymd_opt(2026, 3, 20).unwrap();
     let cds = DatedCds {
-        side: ProtectionSide::Seller,
-        notional: 10_000.0,
-        running_spread: 0.0120,
+        side: ProtectionSide::Buyer,
+        notional: 10_000_000.0,
+        running_spread: 0.01,
         recovery_rate: 0.40,
-        issue_date,
-        maturity_date,
-        coupon_interval_months: 6,
-        date_rule: CdsDateRule::TwentiethImm,
+        issue_date: evaluation_date,
+        maturity_date: NaiveDate::from_ymd_opt(2026, 6, 20).unwrap(),
+        coupon_interval_months: 3,
+        date_rule: CdsDateRule::QuarterlyImm,
     };
 
     let result = price_midpoint_flat(
         &cds,
         evaluation_date,
-        0.01234,
-        0.06,
+        0.02,
+        0.03,
         IsdaConventions {
-            step_in_days: 1,
-            cash_settle_days: 1,
+            step_in_days: 0,
+            cash_settle_days: 0,
         },
     );
 
-    // QuantLib's fully dated cached values are 295.0153398 and
-    // 0.007517539081. OpenFerric's weekends-only schedule is a different
-    // convention, so pin its exact compatible cashflow result rather than
-    // accepting a one-dollar band around the incompatible value.
-    assert_relative_eq!(result.clean_npv, 295.440_979_236_107_86, epsilon = 1.0e-10);
-    assert_relative_eq!(
-        result.fair_spread,
-        0.007_517_859_639_424_599,
-        epsilon = 1.0e-14
+    let leg_roundoff = 256.0 * f64::EPSILON * 30_472.0;
+    assert!((result.clean_npv - 5_175.415_922_468_521).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - 5_175.415_922_468_521).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 25_295.982_529_405_283).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 30_471.398_451_873_803).abs() <= leg_roundoff);
+    assert_eq!(result.accrued_premium_pv, 0.0);
+    assert!(
+        (result.fair_spread - 0.012_045_943_823_867_037).abs()
+            <= 256.0 * f64::EPSILON * result.fair_spread
     );
 }
 
 #[test]
-fn isda_flat_vs_midpoint_same_sign_similar_magnitude() {
-    let eval = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
-    let cds = DatedCds::standard_imm(ProtectionSide::Buyer, eval, 5, 10_000_000.0, 0.01, 0.4);
+fn legacy_flat_integral_matches_high_precision_closed_form() {
+    // Independent 80-decimal mpmath evaluation of the one-period integrals
+    //   protection = integral h exp(-(r+h)t) dt
+    //   default accrual = integral t h exp(-(r+h)t) dt
+    // over T=92/360, with h=2%, r=3%. This test deliberately calls the
+    // explicitly named legacy API; the standard API has separate QuantLib
+    // ISDA-engine coverage below.
+    let evaluation_date = NaiveDate::from_ymd_opt(2026, 3, 20).unwrap();
+    let cds = DatedCds {
+        side: ProtectionSide::Buyer,
+        notional: 10_000_000.0,
+        running_spread: 0.01,
+        recovery_rate: 0.4,
+        issue_date: evaluation_date,
+        maturity_date: NaiveDate::from_ymd_opt(2026, 6, 20).unwrap(),
+        coupon_interval_months: 3,
+        date_rule: CdsDateRule::QuarterlyImm,
+    };
+    let result = price_isda_flat_legacy_analytic(
+        &cds,
+        evaluation_date,
+        0.02,
+        0.03,
+        IsdaConventions {
+            step_in_days: 0,
+            cash_settle_days: 0,
+        },
+    );
 
-    let hazard = 0.02;
-    let conventions = IsdaConventions::default();
-
-    let midpoint = price_midpoint_flat(&cds, eval, hazard, 0.03, conventions);
-    let isda = price_isda_flat(&cds, eval, hazard, 0.03, conventions);
-
-    assert_relative_eq!(midpoint.clean_npv, 91_491.321_504_181_63, epsilon = 1.0e-8);
-    assert_relative_eq!(isda.clean_npv, 91_496.742_298_545_37, epsilon = 1.0e-8);
-    assert_relative_eq!(
-        isda.clean_npv / midpoint.clean_npv,
-        1.000_059_249_273_861_4,
-        epsilon = 1.0e-14
+    let leg_roundoff = 128.0 * f64::EPSILON * 30_472.0;
+    assert!((result.clean_npv - 5_175.727_878_884_433).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - 5_175.727_878_884_433).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 25_295.844_702_206_76).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 30_471.572_581_091_194).abs() <= leg_roundoff);
+    assert_eq!(result.accrued_premium_pv, 0.0);
+    assert!(
+        (result.fair_spread - 0.012_046_078_294_603_427).abs()
+            <= 128.0 * f64::EPSILON * result.fair_spread
     );
 }
 
@@ -630,16 +655,325 @@ fn next_imm_twentieth_various_dates() {
 
 #[test]
 fn step_in_and_cash_settle_with_weekends() {
-    // Friday 2026-02-13 → step_in = Mon 2026-02-16 (T+1 business day)
+    // Standard CDS step-in is T+1 calendar day, even when that day is a
+    // weekend. Cash settlement remains T+3 business days.
     let friday = NaiveDate::from_ymd_opt(2026, 2, 13).unwrap();
     let si = step_in_date(friday);
-    assert_eq!(si.weekday(), chrono::Weekday::Mon);
-    assert!(si > friday);
+    assert_eq!(si, NaiveDate::from_ymd_opt(2026, 2, 14).unwrap());
+    assert_eq!(si.weekday(), chrono::Weekday::Sat);
 
     let cs = cash_settle_date(friday);
     assert!(cs > si);
     // Cash settle is T+3 business days from Friday → Wed
     assert_eq!(cs.weekday(), chrono::Weekday::Wed);
+}
+
+#[test]
+fn target_calendar_standard_cds_matches_quantlib_isda_engine() {
+    // QuantLib-Python 1.43 fixture using TARGET, DateGeneration::CDS,
+    // Following payments, unadjusted termination, Actual/360 coupons with
+    // Actual/360(true) for the final coupon, and IsdaCdsEngine configured with
+    // Taylor/HalfDayBias/Piecewise. Curves are flat continuously compounded
+    // Act/365F at h=2% and r=3%.
+    //
+    // 3 April 2026 is Good Friday and 6 April is Easter Monday. Step-in is
+    // nevertheless T+1 calendar day (3 April); only T+3 cash settlement moves
+    // through the TARGET holidays to 9 April.
+    let trade_date = NaiveDate::from_ymd_opt(2026, 4, 2).unwrap();
+    let target = Calendar::target();
+    assert_eq!(
+        step_in_date_with_calendar(trade_date, &target),
+        NaiveDate::from_ymd_opt(2026, 4, 3).unwrap()
+    );
+    assert_eq!(
+        cash_settle_date_with_calendar(trade_date, &target),
+        NaiveDate::from_ymd_opt(2026, 4, 9).unwrap()
+    );
+
+    let cds = DatedCds::standard_imm_with_calendar(
+        ProtectionSide::Buyer,
+        trade_date,
+        5,
+        10_000_000.0,
+        0.01,
+        0.4,
+        &target,
+    );
+    let result = price_isda_flat_with_calendar(
+        &cds,
+        trade_date,
+        0.02,
+        0.03,
+        IsdaConventions::default(),
+        &target,
+    );
+    assert_eq!(
+        result.step_in_date,
+        NaiveDate::from_ymd_opt(2026, 4, 3).unwrap()
+    );
+    assert_eq!(
+        result.cash_settle_date,
+        NaiveDate::from_ymd_opt(2026, 4, 9).unwrap()
+    );
+
+    // Explicit binary64 operation budgets against the external package
+    // values. These are rounding allowances, not economic price ranges.
+    let leg_roundoff = 256.0 * f64::EPSILON * 556_596.0;
+    assert!((result.clean_npv - 87_274.597_495_992_13).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - 83_387.945_406_5).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 467_861.873_043_582_1).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 551_249.818_450_082_1).abs() <= leg_roundoff);
+    assert!((result.accrued_premium_pv - 3_886.652_089_492_108).abs() <= leg_roundoff);
+    let spread_roundoff = 128.0 * f64::EPSILON * result.fair_spread.abs();
+    assert!((result.fair_spread - 0.011_881_018_501_732_185).abs() <= spread_roundoff);
+}
+
+#[test]
+fn target_pre_roll_trade_matches_quantlib_isda_engine() {
+    // QuantLib-Python 1.43 regression for the other side of the schedule-start
+    // boundary: T+1 is the raw June roll, but the Friday trade still belongs
+    // to the coupon period that started in March. This independently guards
+    // trade-date anchoring from the weekend-roll prepend case below.
+    let trade_date = NaiveDate::from_ymd_opt(2026, 6, 19).unwrap();
+    let target = Calendar::target();
+    let cds = DatedCds::standard_imm_with_calendar(
+        ProtectionSide::Buyer,
+        trade_date,
+        5,
+        10_000_000.0,
+        0.01,
+        0.4,
+        &target,
+    );
+    assert_eq!(
+        cds.issue_date,
+        NaiveDate::from_ymd_opt(2026, 3, 20).unwrap()
+    );
+    assert_eq!(
+        cds.maturity_date,
+        NaiveDate::from_ymd_opt(2031, 6, 20).unwrap()
+    );
+
+    let result = price_isda_flat_with_calendar(
+        &cds,
+        trade_date,
+        0.02,
+        0.03,
+        IsdaConventions::default(),
+        &target,
+    );
+    assert_eq!(
+        result.step_in_date,
+        NaiveDate::from_ymd_opt(2026, 6, 20).unwrap()
+    );
+    assert_eq!(
+        result.cash_settle_date,
+        NaiveDate::from_ymd_opt(2026, 6, 24).unwrap()
+    );
+
+    let leg_roundoff = 256.0 * f64::EPSILON * 532_000.0;
+    assert!((result.clean_npv - 84_111.219_871_519_83).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - 58_566.164_441_360_63).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 472_823.974_230_736_4).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 531_390.138_672_097).abs() <= leg_roundoff);
+    assert!((result.accrued_premium_pv - 25_545.055_430_159_2).abs() <= leg_roundoff);
+    assert!(
+        (result.fair_spread - 0.011_880_509_372_028_364).abs()
+            <= 128.0 * f64::EPSILON * result.fair_spread
+    );
+}
+
+#[test]
+fn target_weekend_roll_trade_matches_quantlib_isda_engine() {
+    // QuantLib-Python 1.43 fixture with the same engine and curve settings as
+    // the preceding test. Trade date is the raw December IMM twentieth, but
+    // it is a Saturday and Following-adjusts to Monday the 22nd. QuantLib's
+    // DateGeneration::CDS therefore prepends the September roll, retaining the
+    // live accrued coupon and its rebate.
+    let trade_date = NaiveDate::from_ymd_opt(2025, 12, 20).unwrap();
+    let target = Calendar::target();
+    let cds = DatedCds::standard_imm_with_calendar(
+        ProtectionSide::Buyer,
+        trade_date,
+        5,
+        10_000_000.0,
+        0.01,
+        0.4,
+        &target,
+    );
+    assert_eq!(
+        cds.issue_date,
+        NaiveDate::from_ymd_opt(2025, 9, 20).unwrap()
+    );
+    assert_eq!(
+        cds.maturity_date,
+        NaiveDate::from_ymd_opt(2031, 3, 20).unwrap()
+    );
+
+    let result = price_isda_flat_with_calendar(
+        &cds,
+        trade_date,
+        0.02,
+        0.03,
+        IsdaConventions::default(),
+        &target,
+    );
+    assert_eq!(
+        result.step_in_date,
+        NaiveDate::from_ymd_opt(2025, 12, 21).unwrap()
+    );
+    assert_eq!(
+        result.cash_settle_date,
+        NaiveDate::from_ymd_opt(2025, 12, 24).unwrap()
+    );
+
+    let leg_roundoff = 256.0 * f64::EPSILON * 555_000.0;
+    assert!((result.clean_npv - 87_695.853_011_545_45).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - 62_704.070_838_678_45).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 491_329.437_728_712_16).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 554_033.508_567_390_6).abs() <= leg_roundoff);
+    assert!((result.accrued_premium_pv - 24_991.782_172_866_995).abs() <= leg_roundoff);
+    assert!(
+        (result.fair_spread - 0.011_880_522_663_498_351).abs()
+            <= 128.0 * f64::EPSILON * result.fair_spread
+    );
+}
+
+#[test]
+fn target_zero_year_one_coupon_cds_matches_quantlib_isda_engine() {
+    // QuantLib-Python 1.43 permits a zero-year CDS tenor by rolling maturity
+    // to the next IMM twentieth. This produces a single coupon period. The
+    // FixedRateLeg one-period branch uses ordinary Act/360 rather than the
+    // multi-period CDS last-coupon counter Actual/360(includeLastDay=true).
+    let trade_date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+    let target = Calendar::target();
+    let cds = DatedCds::standard_imm_with_calendar(
+        ProtectionSide::Buyer,
+        trade_date,
+        0,
+        10_000_000.0,
+        0.01,
+        0.4,
+        &target,
+    );
+    assert_eq!(
+        cds.issue_date,
+        NaiveDate::from_ymd_opt(2025, 12, 20).unwrap()
+    );
+    assert_eq!(
+        cds.maturity_date,
+        NaiveDate::from_ymd_opt(2026, 3, 20).unwrap()
+    );
+
+    let result = price_isda_flat_with_calendar(
+        &cds,
+        trade_date,
+        0.02,
+        0.03,
+        IsdaConventions::default(),
+        &target,
+    );
+    let leg_roundoff = 256.0 * f64::EPSILON * 25_000.0;
+    assert!((result.clean_npv - 3_603.940_509_960_591).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - (-3_337.650_639_540_039_3)).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 24_286.780_544_345_394).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 20_949.129_904_805_355).abs() <= leg_roundoff);
+    assert!((result.accrued_premium_pv - 6_941.591_149_500_63).abs() <= leg_roundoff);
+    // fair = coupon * protection / (premium - rebate). Propagate the package
+    // leg-rounding budget through that conditioned subtraction and division.
+    let fair_denominator = 24_286.780_544_345_394 - 6_941.591_149_500_63;
+    let fair_roundoff = 0.01
+        * (leg_roundoff / fair_denominator
+            + 20_949.129_904_805_355 * (2.0 * leg_roundoff) / fair_denominator.powi(2));
+    assert!((result.fair_spread - 0.012_077_775_242_414_898).abs() <= fair_roundoff);
+}
+
+#[test]
+fn target_same_day_cash_excludes_accrued_rebate_like_quantlib() {
+    // QuantLib-Python 1.43 with cashSettlementDays=0. The accrued rebate cash
+    // flow occurs on the evaluation date and IsdaCdsEngine's default
+    // includeSettlementDateFlows=false setting excludes it from both NPV and
+    // the fair-spread annuity. A requested step-in of zero is independently
+    // floored to the engine's effective T+1 protection start.
+    let trade_date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+    let target = Calendar::target();
+    let cds = DatedCds::standard_imm_with_calendar(
+        ProtectionSide::Buyer,
+        trade_date,
+        5,
+        10_000_000.0,
+        0.01,
+        0.4,
+        &target,
+    );
+    let result = price_isda_flat_with_calendar(
+        &cds,
+        trade_date,
+        0.02,
+        0.03,
+        IsdaConventions {
+            step_in_days: 0,
+            cash_settle_days: 0,
+        },
+        &target,
+    );
+    assert_eq!(
+        result.step_in_date,
+        NaiveDate::from_ymd_opt(2026, 1, 16).unwrap()
+    );
+    assert_eq!(result.cash_settle_date, trade_date);
+    assert_eq!(result.clean_npv, result.dirty_npv);
+    assert_eq!(result.accrued_premium_pv, 0.0);
+
+    let price_roundoff = 256.0 * f64::EPSILON * 555_000.0;
+    assert!((result.clean_npv - 79_733.364_589_694_6).abs() <= price_roundoff);
+    assert!(
+        (result.fair_spread - 0.011_704_747_084_629_825).abs()
+            <= 128.0 * f64::EPSILON * result.fair_spread
+    );
+}
+
+#[test]
+fn target_zero_day_cash_on_holiday_follows_then_includes_rebate() {
+    // QuantLib-Python 1.43 cashSettlementDays=0 fixture on New Year's Day.
+    // Calendar::advance(0 Days, Following) moves settlement to 2 January, so
+    // unlike a zero-lag business-day trade the accrued rebate has not occurred
+    // at evaluation and must be included.
+    let trade_date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let target = Calendar::target();
+    let cds = DatedCds::standard_imm_with_calendar(
+        ProtectionSide::Buyer,
+        trade_date,
+        5,
+        10_000_000.0,
+        0.01,
+        0.4,
+        &target,
+    );
+    let result = price_isda_flat_with_calendar(
+        &cds,
+        trade_date,
+        0.02,
+        0.03,
+        IsdaConventions {
+            step_in_days: 1,
+            cash_settle_days: 0,
+        },
+        &target,
+    );
+    assert_eq!(
+        result.step_in_date,
+        NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()
+    );
+    assert_eq!(result.cash_settle_date, result.step_in_date);
+
+    let price_roundoff = 256.0 * f64::EPSILON * 555_000.0;
+    assert!((result.clean_npv - 87_230.293_300_394_62).abs() <= price_roundoff);
+    assert!((result.accrued_premium_pv - 3_055.304_424_323_681).abs() <= price_roundoff);
+    assert!(
+        (result.fair_spread - 0.011_880_910_749_361_102).abs()
+            <= 128.0 * f64::EPSILON * result.fair_spread
+    );
 }
 
 #[test]
@@ -1098,6 +1432,121 @@ fn first_to_default_spread_exceeds_single_name() {
         (mean - expected).abs() <= 4.0 * std_error,
         "MC mean {mean} differs from exponential-minimum reference {expected} by more than 4 stderr ({})",
         4.0 * std_error
+    );
+}
+
+#[test]
+fn correlated_first_to_default_matches_scipy_factor_quadrature() {
+    // Independent oracle generated with SciPy 1.17.1 adaptive quadrature and
+    // NumPy 2.4.3 Gauss-Hermite integration.  The five names have flat 2% hazards;
+    // the discount rate is 3%, recovery is 40%, maturity is five years, and
+    // premiums are quarterly with accrued premium paid at the default time.
+    //
+    // GaussianCopula::rho is a factor loading, not pair correlation:
+    // Z_i = rho*M + sqrt(1-rho^2)*epsilon_i.  At rho=.3, conditioning on M
+    // gives basket survival
+    //   E[Phi((Phi^-1(exp(-.02*t)) - .3*M)/sqrt(1-.3^2))^5].
+    // Integrating the discounted first-default density and the engine's exact
+    // accrued-premium cashflows gives protection PV=.20989099399966304,
+    // risky annuity=3.7022425930086347, and the fair-spread target below.
+    const SCIPY_REFERENCE: f64 = 0.056_692_933_735_899_474;
+    let discount_curve = flat_discount_curve(0.03, 20.0);
+    let survival_curve = flat_survival_curve(0.02, 20.0);
+    let curves = vec![survival_curve; 5];
+    let copula = GaussianCopula::new(0.3);
+
+    // Independent deterministic batches measure the sampling error of the
+    // Monte Carlo estimator.  The assertion is against the quadrature price,
+    // never against an RNG snapshot or a broad economic range.
+    let batch_prices: Vec<f64> = (0..32_u64)
+        .map(|batch| {
+            first_to_default_spread_copula(
+                1.0,
+                5.0,
+                0.4,
+                4,
+                &discount_curve,
+                &curves,
+                &copula,
+                10_000,
+                10_000 + batch,
+            )
+        })
+        .collect();
+    let batch_count = batch_prices.len() as f64;
+    let mean = batch_prices.iter().sum::<f64>() / batch_count;
+    let variance = batch_prices
+        .iter()
+        .map(|price| (price - mean).powi(2))
+        .sum::<f64>()
+        / (batch_count - 1.0);
+    let std_error = (variance / batch_count).sqrt();
+
+    assert!(
+        (mean - SCIPY_REFERENCE).abs() <= 4.0 * std_error,
+        "correlated FTD MC mean {mean:.12} differs from SciPy factor-quadrature \
+         reference {SCIPY_REFERENCE:.12} by more than 4 stderr ({:.12})",
+        4.0 * std_error
+    );
+}
+
+#[test]
+fn correlated_first_to_default_matches_financepy_gaussian_copula() {
+    // Independent FinancePy 1.0.1 Gaussian-copula reference for a contract
+    // whose date conventions map exactly to this API's year-fraction model:
+    //
+    //   value date       2025-01-01
+    //   maturity         2027-01-01 (exactly 730 days / 365 = 2 years)
+    //   premium          annual, ACT/365F, no calendar adjustment
+    //   five-name curves exp(-.02*t), recovery 40%, continuous r=3%
+    //
+    // OpenFerric's rho=.3 is a factor loading, so FinancePy was given
+    // corr_matrix_generator(.09, 5).  CDSBasket.value_gaussian_mc was run in
+    // 32 independent batches of 200,000 draws (FinancePy adds each draw's
+    // antithetic variate, hence 400,000 paths per batch), seeds 42000..42031.
+    // FinancePy 1.0.1's value_legs_mc looks for the old singular attribute
+    // `accrual_start_dt`; the generation script aliases it to the unchanged
+    // schedule value `accrual_start_dts[0]` (2025-01-01).  This repairs an
+    // attribute rename only and leaves the package's pricing logic intact.
+    const FINANCEPY_REFERENCE: f64 = 0.058_579_811_257_707_906;
+    const FINANCEPY_STD_ERROR: f64 = 3.949_647_227_264_606e-5;
+
+    let discount_curve = flat_discount_curve(0.03, 3.0);
+    let survival_curve = flat_survival_curve(0.02, 3.0);
+    let curves = vec![survival_curve; 5];
+    let copula = GaussianCopula::new(0.3);
+
+    let batch_prices: Vec<f64> = (0..32_u64)
+        .map(|batch| {
+            first_to_default_spread_copula(
+                1.0,
+                2.0,
+                0.4,
+                1,
+                &discount_curve,
+                &curves,
+                &copula,
+                10_000,
+                20_000 + batch,
+            )
+        })
+        .collect();
+    let batch_count = batch_prices.len() as f64;
+    let mean = batch_prices.iter().sum::<f64>() / batch_count;
+    let variance = batch_prices
+        .iter()
+        .map(|price| (price - mean).powi(2))
+        .sum::<f64>()
+        / (batch_count - 1.0);
+    let openferric_std_error = (variance / batch_count).sqrt();
+    let combined_std_error = openferric_std_error.hypot(FINANCEPY_STD_ERROR);
+
+    assert!(
+        (mean - FINANCEPY_REFERENCE).abs() <= 4.0 * combined_std_error,
+        "OpenFerric correlated FTD {mean:.12} +/- {openferric_std_error:.12} differs from \
+         FinancePy 1.0.1 {FINANCEPY_REFERENCE:.12} +/- {FINANCEPY_STD_ERROR:.12} by more \
+         than four combined standard errors ({:.12})",
+        4.0 * combined_std_error
     );
 }
 

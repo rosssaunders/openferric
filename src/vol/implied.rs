@@ -143,7 +143,7 @@ pub fn lets_be_rational_initial_guess(
 /// let sigma_true = 0.30;
 /// let market = black_scholes_price(OptionType::Call, s, k, r, sigma_true, t);
 /// let sigma = implied_vol(OptionType::Call, s, k, r, t, market, 1.0e-12, 64).unwrap();
-/// assert!((sigma - sigma_true).abs() < 1.0e-6);
+/// assert!((sigma - sigma_true).abs() < 1.0e-10);
 /// ```
 pub fn implied_vol(
     option_type: OptionType,
@@ -195,7 +195,7 @@ pub fn implied_vol(
 ///
 /// let market = black_scholes_price(OptionType::Put, 100.0, 110.0, 0.02, 0.35, 0.75);
 /// let iv = implied_vol_newton(OptionType::Put, 100.0, 110.0, 0.02, 0.75, market, 1.0e-12, 100).unwrap();
-/// assert!(iv > 0.30 && iv < 0.40);
+/// assert!((iv - 0.35).abs() < 1.0e-10);
 /// ```
 pub fn implied_vol_newton(
     option_type: OptionType,

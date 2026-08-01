@@ -24,6 +24,26 @@ mod batch_workspace_tests {
         );
     }
 
+    #[track_caller]
+    fn assert_vector_roundoff_close(label: &str, actual: f64, expected: f64, operation_scale: f64) {
+        // The SIMD log/PDF polynomials are independently bounded at roughly
+        // 2e-14 over the pricing domain.  Convert that and ordinary expression
+        // grouping into an explicit binary64 operation budget; this is not an
+        // economic price/Greek tolerance.
+        let scale = actual
+            .abs()
+            .max(expected.abs())
+            .max(operation_scale.abs())
+            .max(1.0);
+        let tolerance = 1_024.0 * f64::EPSILON * scale;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.17e}, reference={expected:.17e}, \
+             error={:.3e}, vector-roundoff budget={tolerance:.3e}",
+            (actual - expected).abs()
+        );
+    }
+
     fn bs_greeks_reference(
         is_call: bool,
         spot: f64,
@@ -41,18 +61,16 @@ mod batch_workspace_tests {
         let pdf = normal_pdf(d1);
         let nd1 = normal_cdf(d1);
         let nd2 = normal_cdf(d2);
-        let delta = if is_call {
-            df_q * nd1
-        } else {
-            df_q * (nd1 - 1.0)
-        };
+        let nmd1 = normal_cdf(-d1);
+        let nmd2 = normal_cdf(-d2);
+        let delta = if is_call { df_q * nd1 } else { -df_q * nmd1 };
         let gamma = df_q * pdf / (spot * vol * sqrt_t);
         let vega = spot * df_q * pdf * sqrt_t;
         let theta_common = -spot * df_q * pdf * vol / (2.0 * sqrt_t);
         let theta = if is_call {
             theta_common + q * spot * df_q * nd1 - r * strike * df_r * nd2
         } else {
-            theta_common - q * spot * df_q * (1.0 - nd1) + r * strike * df_r * (1.0 - nd2)
+            theta_common - q * spot * df_q * nmd1 + r * strike * df_r * nmd2
         };
         (delta, gamma, vega, theta)
     }
@@ -97,12 +115,11 @@ mod batch_workspace_tests {
                         0.24,
                         1.3,
                     );
-                    // The batch path uses the fast A&S CDF approximation.
-                    // Its 7.5e-8 absolute CDF error translates to a
-                    // price-level bound of roughly (S + K) * 7.5e-8.
-                    assert!(
-                        (guarded[index + 1] - scalar).abs() <= 5.0e-5,
-                        "SIMD/scalar mismatch at length {len}, index {index}"
+                    assert_vector_roundoff_close(
+                        &format!("price length={len} index={index}"),
+                        guarded[index + 1],
+                        scalar,
+                        adjusted_spot + strikes[index] * (-0.03_f64 * 1.3).exp(),
                     );
                 }
 
@@ -138,36 +155,29 @@ mod batch_workspace_tests {
                         0.24,
                         1.3,
                     );
-                    // A&S has a documented 7.5e-8 absolute CDF bound. Delta
-                    // inherits that bound; theta multiplies it by the two
-                    // carry terms. Gamma and vega depend only on the much
-                    // tighter exp/ln kernels.
-                    assert!(
-                        (delta[index + 1] - reference.0).abs() <= 8.0e-8,
-                        "delta length={len} index={index}: got={} ref={}",
+                    assert_vector_roundoff_close(
+                        &format!("delta length={len} index={index}"),
                         delta[index + 1],
-                        reference.0
+                        reference.0,
+                        1.0,
                     );
-                    assert!(
-                        (gamma[index + 1] - reference.1).abs() <= 5.0e-12,
-                        "gamma length={len} index={index}: got={} ref={}",
+                    assert_vector_roundoff_close(
+                        &format!("gamma length={len} index={index}"),
                         gamma[index + 1],
-                        reference.1
+                        reference.1,
+                        1.0,
                     );
-                    // Vega multiplies PDF error by S*sqrt(T); the measured
-                    // 1e-11 ln-kernel absolute bound therefore permits a few
-                    // nanounits of price-sensitivity error at this scale.
-                    assert!(
-                        (vega[index + 1] - reference.2).abs() <= 5.0e-9,
-                        "vega length={len} index={index}: got={} ref={}",
+                    assert_vector_roundoff_close(
+                        &format!("vega length={len} index={index}"),
                         vega[index + 1],
-                        reference.2
+                        reference.2,
+                        spots[index] * 1.3_f64.sqrt(),
                     );
-                    assert!(
-                        (theta[index + 1] - reference.3).abs() <= 1.0e-6,
-                        "theta length={len} index={index}: got={} ref={}",
+                    assert_vector_roundoff_close(
+                        &format!("theta length={len} index={index}"),
                         theta[index + 1],
-                        reference.3
+                        reference.3,
+                        spots[index] + strikes[index],
                     );
                 }
             }
@@ -739,6 +749,54 @@ mod batch_workspace_tests {
     }
 
     #[test]
+    fn near_routing_boundary_put_preserves_price_and_greeks() {
+        // midpoint = ln(S/K)/(vol*sqrt(T)) = 7.9, just inside the ordinary
+        // SIMD route's cutoff at 8.0; d1=8.4 is already far enough into the
+        // upper tail that Phi(d1) rounds to 1.  Recovering either the put price
+        // by parity or delta as Phi(d1)-1 therefore erased a representable
+        // result.  Sixteen lanes exercise complete WASM/NEON/AVX2/AVX-512
+        // vectors whenever those backends are selected.
+        const EXPECTED_PRICE: f64 = 7.878_301_698_281_711e-13;
+        const EXPECTED_DELTA: f64 = -2.232_393_197_288_031e-17;
+        const EXPECTED_GAMMA: f64 = 7.048_137_000_654_067e-22;
+        const EXPECTED_VEGA: f64 = 5.127_753_636_796_672e-11;
+        const EXPECTED_THETA: f64 = -2.563_876_818_398_336e-11;
+
+        let spots = [269_728.232_826_851; 16];
+        let strikes = [100.0; 16];
+        let prices = bs_price_batch(&spots, &strikes, 0.0, 0.0, 1.0, 1.0, false);
+        let (delta, gamma, vega, theta) =
+            bs_greeks_batch(&spots, &strikes, 0.0, 0.0, 1.0, 1.0, false);
+
+        // Independent SciPy 1.17.1 `ndtr` values, evaluated with Phi(-d1)
+        // and Phi(-d2) directly.  A relative budget is required here: an
+        // ordinary absolute epsilon would allow the old zero result.
+        for (lane, values) in prices
+            .iter()
+            .zip(delta.iter())
+            .zip(gamma.iter())
+            .zip(vega.iter())
+            .zip(theta.iter())
+            .enumerate()
+        {
+            let ((((&price, &delta), &gamma), &vega), &theta) = values;
+            for (label, actual, expected) in [
+                ("price", price, EXPECTED_PRICE),
+                ("delta", delta, EXPECTED_DELTA),
+                ("gamma", gamma, EXPECTED_GAMMA),
+                ("vega", vega, EXPECTED_VEGA),
+                ("theta", theta, EXPECTED_THETA),
+            ] {
+                let relative_error = ((actual - expected) / expected).abs();
+                assert!(
+                    relative_error <= 2.0e-12,
+                    "lane={lane} {label}: actual={actual:.17e}, expected={expected:.17e}, relative_error={relative_error:.3e}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn batch_price_and_greeks_handle_zero_and_invalid_spot_strike_lanes() {
         let spots = [
             0.0,
@@ -885,6 +943,23 @@ mod simd_tests {
     use openferric::math::{normal_cdf, normal_pdf};
     use openferric::pricing::european::black_scholes_price;
 
+    #[track_caller]
+    fn assert_vector_roundoff_close(label: &str, actual: f64, expected: f64, operation_scale: f64) {
+        let tolerance = 1_024.0
+            * f64::EPSILON
+            * actual
+                .abs()
+                .max(expected.abs())
+                .max(operation_scale.abs())
+                .max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.17e}, reference={expected:.17e}, \
+             error={:.3e}, vector-roundoff budget={tolerance:.3e}",
+            (actual - expected).abs()
+        );
+    }
+
     fn bs_greeks_scalar_reference(
         is_call: bool,
         s: f64,
@@ -904,11 +979,13 @@ mod simd_tests {
         let df_r = (-r * t).exp();
         let df_q = (-q * t).exp();
         let pdf = normal_pdf(d1);
+        let nmd1 = normal_cdf(-d1);
+        let nmd2 = normal_cdf(-d2);
 
         let delta = if is_call {
             df_q * normal_cdf(d1)
         } else {
-            df_q * (normal_cdf(d1) - 1.0)
+            -df_q * nmd1
         };
         let gamma = df_q * pdf / (s * vol * sqrt_t);
         let vega = s * df_q * pdf * sqrt_t;
@@ -916,14 +993,13 @@ mod simd_tests {
             -s * df_q * pdf * vol / (2.0 * sqrt_t) + q * s * df_q * normal_cdf(d1)
                 - r * k * df_r * normal_cdf(d2)
         } else {
-            -s * df_q * pdf * vol / (2.0 * sqrt_t) - q * s * df_q * normal_cdf(-d1)
-                + r * k * df_r * normal_cdf(-d2)
+            -s * df_q * pdf * vol / (2.0 * sqrt_t) - q * s * df_q * nmd1 + r * k * df_r * nmd2
         };
         (delta, gamma, vega, theta)
     }
 
     #[test]
-    fn simd_bs_price_matches_scalar_closely() {
+    fn simd_bs_price_matches_scalar_with_vector_roundoff_budget() {
         let mut rng = StdRng::seed_from_u64(1234);
         let n = 100usize;
         let mut spots = Vec::with_capacity(n);
@@ -949,15 +1025,11 @@ mod simd_tests {
                     OptionType::Put
                 };
                 let scalar = black_scholes_price(option_type, adjusted_spot, strikes[i], r, vol, t);
-                // The batch path uses the fast A&S normal CDF (~7.5e-8 abs
-                // error) while the scalar reference now uses the tail-accurate
-                // Cody CDF, so the bound is (S + K) * 7.5e-8 ~ 3e-5.
-                assert!(
-                    (simd[i] - scalar).abs() <= 5e-5,
-                    "idx {i}: simd={} scalar={} diff={}",
+                assert_vector_roundoff_close(
+                    &format!("price index={i}"),
                     simd[i],
                     scalar,
-                    (simd[i] - scalar).abs()
+                    adjusted_spot + strikes[i] * (-r * t).exp(),
                 );
             }
         }
@@ -985,7 +1057,7 @@ mod simd_tests {
     }
 
     #[test]
-    fn simd_bs_greeks_match_independent_scalar_within_1e_minus_6() {
+    fn simd_bs_greeks_match_independent_scalar_with_vector_roundoff_budget() {
         let mut rng = StdRng::seed_from_u64(42);
         let n = 100usize;
         let mut spots = Vec::with_capacity(n);
@@ -1009,10 +1081,10 @@ mod simd_tests {
                 let (d_ref, g_ref, v_ref, th_ref) =
                     bs_greeks_scalar_reference(is_call, spots[i], strikes[i], r, q, vol, t);
 
-                assert!((delta[i] - d_ref).abs() <= 1e-6);
-                assert!((gamma[i] - g_ref).abs() <= 1e-6);
-                assert!((vega[i] - v_ref).abs() <= 1e-6);
-                assert!((theta[i] - th_ref).abs() <= 1e-6);
+                assert_vector_roundoff_close("delta", delta[i], d_ref, 1.0);
+                assert_vector_roundoff_close("gamma", gamma[i], g_ref, 1.0);
+                assert_vector_roundoff_close("vega", vega[i], v_ref, spots[i] * t.sqrt());
+                assert_vector_roundoff_close("theta", theta[i], th_ref, spots[i] + strikes[i]);
             }
         }
     }
@@ -1682,7 +1754,7 @@ mod neon_tests {
     }
 
     #[test]
-    fn neon_bs_price_matches_scalar_closely() {
+    fn neon_bs_price_matches_scalar_with_vector_roundoff_budget() {
         let mut rng = StdRng::seed_from_u64(2026);
         let n = 128usize;
         let mut spots = Vec::with_capacity(n);
@@ -1708,12 +1780,11 @@ mod neon_tests {
                     OptionType::Put
                 };
                 let scalar = black_scholes_price(option_type, adjusted_spot, strikes[i], r, vol, t);
-                // The batch path uses the fast A&S normal CDF (~7.5e-8 abs
-                // error) while the scalar reference now uses the tail-accurate
-                // Cody CDF, so the bound is (S + K) * 7.5e-8 ~ 3e-5.
+                let operation_scale = adjusted_spot + strikes[i] * (-r * t).exp();
+                let tolerance = 1_024.0 * f64::EPSILON * operation_scale.max(1.0);
                 assert!(
-                    (batch[i] - scalar).abs() <= 5e-5,
-                    "idx {i}: neon={} scalar={} diff={}",
+                    (batch[i] - scalar).abs() <= tolerance,
+                    "idx {i}: neon={} scalar={} diff={} vector-roundoff budget={tolerance}",
                     batch[i],
                     scalar,
                     (batch[i] - scalar).abs()
@@ -1734,8 +1805,8 @@ mod neon_tests {
                 let out = bs_price_batch(&spots, &strikes, r, q, vol, t, is_call);
                 let lane = out[0];
                 for (i, &price) in out.iter().enumerate() {
-                    // The scalar tail shares the vector body's A&S CDF family;
-                    // only ULP-level ln/FMA grouping differences remain.
+                    // Accurate per-lane CDF values are shared by the vector
+                    // body and scalar tail; only ln/FMA grouping differs.
                     assert!(
                         (price - lane).abs() <= 1e-12 * lane.abs(),
                         "n={n} is_call={is_call} idx {i}: tail={price} lane={lane} diff={}",
