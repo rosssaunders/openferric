@@ -388,6 +388,32 @@ impl Market {
             .escrowed_spot_adjustment(self.spot, self.rate, maturity)
     }
 
+    /// Escrowed-model tradable spot `S*(0)` for an option expiring at `maturity`.
+    ///
+    /// Early-exercise engines diffuse this component with carry
+    /// `rate - dividend_yield` (no discrete-dividend smear) and reconstruct
+    /// the observed spot for exercise payoffs via
+    /// [`Market::escrowed_reconstruction`].
+    #[inline]
+    pub fn escrowed_spot(&self, maturity: f64) -> f64 {
+        self.dividend_schedule
+            .escrowed_spot(self.spot, self.rate, self.dividend_yield, maturity)
+    }
+
+    /// Escrowed-model reconstruction coefficients `(P(t), A(t))` at `time`.
+    ///
+    /// Observed spot is `S(t) = (S*(t) + A(t)) / P(t)`; see
+    /// [`crate::market::DividendSchedule::escrowed_reconstruction`].
+    #[inline]
+    pub fn escrowed_reconstruction(&self, time: f64, maturity: f64) -> (f64, f64) {
+        self.dividend_schedule.escrowed_reconstruction(
+            time,
+            self.rate,
+            self.dividend_yield,
+            maturity,
+        )
+    }
+
     /// Resolves volatility for strike and expiry.
     #[inline]
     pub fn vol(&self, strike: f64, expiry: f64) -> f64 {

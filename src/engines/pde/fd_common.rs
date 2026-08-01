@@ -1,4 +1,5 @@
 use crate::core::{OptionType, PricingError};
+use crate::market::Market;
 
 #[inline]
 pub(super) fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
@@ -6,6 +7,103 @@ pub(super) fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 
         OptionType::Call => (spot - strike).max(0.0),
         OptionType::Put => (strike - spot).max(0.0),
     }
+}
+
+/// Per-time-step escrowed discrete-dividend data for PDE engines.
+///
+/// With a discrete schedule the finite-difference grid carries the escrowed
+/// spot `S*`; the observed spot at time `t` is `S = (S* + cash) / prop`, so
+/// exercise payoffs on grid nodes use `intrinsic(S*, K*prop - cash) / prop`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EscrowedStep {
+    /// Proportional factor `P(t)` of the remaining schedule events.
+    pub prop: f64,
+    /// Additive cash adjustment `A(t)` of the remaining schedule events.
+    pub cash: f64,
+    /// Ex-date of the last remaining discrete event, if any.
+    pub last_event_time: Option<f64>,
+}
+
+impl EscrowedStep {
+    /// Strike equivalent on the escrowed grid: `K * P(t) - A(t)`.
+    #[inline]
+    pub fn adjusted_strike(&self, strike: f64) -> f64 {
+        strike.mul_add(self.prop, -self.cash)
+    }
+
+    /// Payoff scale `1 / P(t)`.
+    #[inline]
+    pub fn scale(&self) -> f64 {
+        1.0 / self.prop
+    }
+
+    /// Exercise payoff at escrowed grid level `s_star`.
+    #[inline]
+    pub fn exercise_value(&self, option_type: OptionType, s_star: f64, strike: f64) -> f64 {
+        intrinsic(option_type, s_star, self.adjusted_strike(strike)) / self.prop
+    }
+
+    /// American put Dirichlet value at `S* = 0`.
+    ///
+    /// The spot path at `S* = 0` is the deterministic dividend stream, so the
+    /// holder either exercises now (`K - A/P`) or waits until just after the
+    /// last remaining ex-date and receives `~K` discounted. Without remaining
+    /// events this degenerates to `K`, the standard American put boundary.
+    #[inline]
+    pub fn put_floor_at_zero(&self, strike: f64, rate: f64, time: f64) -> f64 {
+        let exercise_now = self.adjusted_strike(strike).max(0.0) / self.prop;
+        match self.last_event_time {
+            Some(t_last) if t_last > time => {
+                exercise_now.max(strike * (-rate * (t_last - time)).exp())
+            }
+            _ => exercise_now,
+        }
+    }
+}
+
+/// Builds the per-step escrowed adjustments on a uniform time grid, or `None`
+/// when the market has no discrete dividends (identity, hot path untouched).
+pub(super) fn escrowed_steps(
+    market: &Market,
+    expiry: f64,
+    time_steps: usize,
+) -> Option<Vec<EscrowedStep>> {
+    if !market.has_discrete_dividends() {
+        return None;
+    }
+    let events = market.dividends().events();
+    Some(
+        (0..=time_steps)
+            .map(|n| {
+                let t = expiry * n as f64 / time_steps as f64;
+                let (prop, cash) = market.escrowed_reconstruction(t, expiry);
+                let last_event_time = events
+                    .iter()
+                    .rev()
+                    .find(|ev| ev.time <= expiry && ev.time > t)
+                    .map(|ev| ev.time);
+                EscrowedStep {
+                    prop,
+                    cash,
+                    last_event_time,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Escrowed-model root spot `S*(0)`; errors when dividends exceed spot value.
+pub(super) fn escrowed_root_spot(market: &Market, expiry: f64) -> Result<f64, PricingError> {
+    if !market.has_discrete_dividends() {
+        return Ok(market.spot);
+    }
+    let s_star = market.escrowed_spot(expiry);
+    if !s_star.is_finite() || s_star <= 0.0 {
+        return Err(PricingError::InvalidInput(
+            "discrete dividend schedule exceeds spot under the escrowed model".to_string(),
+        ));
+    }
+    Ok(s_star)
 }
 
 pub(super) fn bermudan_exercise_steps(dates: &[f64], expiry: f64, steps: usize) -> Vec<bool> {

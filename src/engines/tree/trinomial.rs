@@ -13,6 +13,8 @@ use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, Pricin
 use crate::instruments::vanilla::VanillaOption;
 use crate::market::Market;
 
+use super::binomial::{escrowed_exercise_adjustments, escrowed_root_spot};
+
 /// Recombining trinomial tree engine for vanilla options.
 #[derive(Debug, Clone)]
 pub struct TrinomialTreeEngine {
@@ -78,8 +80,12 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         let u = (vol * (2.0 * dt).sqrt()).exp();
         let d = 1.0 / u;
 
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let nu = market.rate - effective_dividend_yield;
+        // Escrowed discrete-dividend model: diffuse S* with the true
+        // continuous yield only; exercise payoffs are strike-adjusted below.
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let exercise_adj =
+            escrowed_exercise_adjustments(market, instrument.strike, instrument.expiry, self.steps);
+        let nu = market.rate - market.dividend_yield;
         let a = (nu * dt / 2.0).exp();
         let b = (vol * (dt / 2.0).sqrt()).exp();
         let denom = b - 1.0 / b;
@@ -124,7 +130,7 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
         // multiply by u at each step.
         let mut values = vec![0.0_f64; 2 * self.steps + 1];
         {
-            let mut st = market.spot * d.powi(self.steps as i32);
+            let mut st = spot0 * d.powi(self.steps as i32);
             for value in values.iter_mut().take(2 * self.steps + 1) {
                 *value = intrinsic(instrument.option_type, st, instrument.strike);
                 st *= u;
@@ -151,14 +157,18 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
             let cur_width = 2 * i + 1;
 
             if can_exercise {
-                let mut st = market.spot * d.powi(i as i32);
+                // intrinsic((S* + A)/P, K) == intrinsic(S*, K*P - A) / P.
+                let (ex_strike, ex_scale) = exercise_adj
+                    .as_ref()
+                    .map_or((instrument.strike, 1.0), |adj| adj[i]);
+                let mut st = spot0 * d.powi(i as i32);
                 for k in 0..cur_width {
                     // FMA chain: disc_pu * up + disc_pm * mid + disc_pd * down
                     let continuation = disc_pu.mul_add(
                         values[k + 2],
                         disc_pm.mul_add(values[k + 1], disc_pd * values[k]),
                     );
-                    let exercise = intrinsic(instrument.option_type, st, instrument.strike);
+                    let exercise = intrinsic(instrument.option_type, st, ex_strike) * ex_scale;
                     values[k] = continuation.max(exercise);
                     st *= u;
                 }

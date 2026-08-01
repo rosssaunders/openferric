@@ -48,6 +48,46 @@ fn bermudan_exercise_steps(dates: &[f64], expiry: f64, steps: usize) -> Vec<bool
     flags
 }
 
+/// Escrowed-model per-step exercise adjustment `(adjusted_strike, scale)`.
+///
+/// The lattice diffuses the escrowed spot `S*`; the observed spot at step `i`
+/// is `S = (S* + A_i) / P_i`, so the exercise payoff on lattice nodes is
+/// `intrinsic(S*, K * P_i - A_i) / P_i`. Returns `None` when the market has
+/// no discrete dividends (identity adjustment, hot path untouched).
+pub(crate) fn escrowed_exercise_adjustments(
+    market: &Market,
+    strike: f64,
+    expiry: f64,
+    steps: usize,
+) -> Option<Vec<(f64, f64)>> {
+    if !market.has_discrete_dividends() {
+        return None;
+    }
+    Some(
+        (0..=steps)
+            .map(|i| {
+                let t = expiry * i as f64 / steps as f64;
+                let (prop, cash) = market.escrowed_reconstruction(t, expiry);
+                (strike.mul_add(prop, -cash), 1.0 / prop)
+            })
+            .collect(),
+    )
+}
+
+/// Escrowed-model root spot `S*(0)`; errors when dividends exceed spot value.
+pub(crate) fn escrowed_root_spot(market: &Market, expiry: f64) -> Result<f64, PricingError> {
+    if !market.has_discrete_dividends() {
+        return Ok(market.spot);
+    }
+    let s_star = market.escrowed_spot(expiry);
+    if !s_star.is_finite() || s_star <= 0.0 {
+        return Err(PricingError::InvalidInput(
+            "discrete dividend schedule exceeds spot under the escrowed model".to_string(),
+        ));
+    }
+    Ok(s_star)
+}
+
 impl PricingEngine<VanillaOption> for BinomialTreeEngine {
     fn price(
         &self,
@@ -77,8 +117,14 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
         let dt = instrument.expiry / self.steps as f64;
         let u = (vol * dt.sqrt()).exp();
         let d = 1.0 / u;
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let growth = ((market.rate - effective_dividend_yield) * dt).exp();
+        // Discrete dividends use the escrowed model: the lattice diffuses the
+        // escrowed spot S* with the true continuous yield only, and exercise
+        // payoffs reconstruct the observed spot per step. Smearing the
+        // schedule into an effective yield misprices early exercise.
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let exercise_adj =
+            escrowed_exercise_adjustments(market, instrument.strike, instrument.expiry, self.steps);
+        let growth = ((market.rate - market.dividend_yield) * dt).exp();
         let p = (growth - d) / (u - d);
         if !(0.0..=1.0).contains(&p) || !p.is_finite() {
             return Err(PricingError::NumericalError(
@@ -110,14 +156,15 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
 
         let mut values = vec![0.0_f64; self.steps + 1];
         {
-            let mut st = market.spot * d.powi(self.steps as i32);
+            // No remaining dividends at expiry: payoff on S* equals payoff on S.
+            let mut st = spot0 * d.powi(self.steps as i32);
             for value in values.iter_mut().take(self.steps + 1) {
                 *value = intrinsic(instrument.option_type, st, instrument.strike);
                 st *= ratio;
             }
         }
 
-        let mut base = market.spot * d.powi((self.steps - 1) as i32);
+        let mut base = spot0 * d.powi((self.steps - 1) as i32);
         for i in (0..self.steps).rev() {
             let can_exercise = if let Some(flags) = &bermudan_flags {
                 flags[i]
@@ -126,10 +173,14 @@ impl PricingEngine<VanillaOption> for BinomialTreeEngine {
             };
 
             if can_exercise {
+                // intrinsic((S* + A)/P, K) == intrinsic(S*, K*P - A) / P.
+                let (ex_strike, ex_scale) = exercise_adj
+                    .as_ref()
+                    .map_or((instrument.strike, 1.0), |adj| adj[i]);
                 let mut st = base;
                 for j in 0..=i {
                     let continuation = disc_p.mul_add(values[j + 1], disc_1mp * values[j]);
-                    let exercise = intrinsic(instrument.option_type, st, instrument.strike);
+                    let exercise = intrinsic(instrument.option_type, st, ex_strike) * ex_scale;
                     values[j] = continuation.max(exercise);
                     st *= ratio;
                 }

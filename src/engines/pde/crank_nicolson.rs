@@ -13,6 +13,8 @@ use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, Pricin
 use crate::instruments::{BermudanOption, vanilla::VanillaOption};
 use crate::market::Market;
 
+use super::fd_common::{EscrowedStep, escrowed_root_spot, escrowed_steps};
+
 /// Exercise-boundary estimate at a Bermudan decision time from Crank-Nicolson.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PdeExerciseBoundaryPoint {
@@ -126,6 +128,7 @@ fn boundary_values(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bermudan_boundary_values(
     option_type: OptionType,
     step: usize,
@@ -134,6 +137,7 @@ fn bermudan_boundary_values(
     rate: f64,
     dividend_yield: f64,
     s_max: f64,
+    div_steps: Option<&[EscrowedStep]>,
 ) -> (f64, f64) {
     let future = step_schedule
         .iter()
@@ -141,12 +145,19 @@ fn bermudan_boundary_values(
         .skip(step)
         .filter_map(|(j, e)| e.map(|(_, k)| (j, k)));
 
+    // With discrete dividends the grid carries the escrowed spot S*, so a
+    // future exercise at step j pays intrinsic on the reconstructed spot:
+    // strike becomes k*P_j - A_j scaled by 1/P_j (identity without a schedule).
     match option_type {
         OptionType::Put => {
             let mut lower = 0.0_f64;
             for (j, k) in future {
                 let tau = (j - step) as f64 * dt;
-                lower = lower.max(k * (-rate * tau).exp());
+                let (k_ex, ex_scale) = match div_steps {
+                    Some(adj) => (adj[j].adjusted_strike(k), adj[j].scale()),
+                    None => (k, 1.0),
+                };
+                lower = lower.max(k_ex.max(0.0) * ex_scale * (-rate * tau).exp());
             }
             (lower, 0.0)
         }
@@ -154,8 +165,14 @@ fn bermudan_boundary_values(
             let mut upper = 0.0_f64;
             for (j, k) in future {
                 let tau = (j - step) as f64 * dt;
+                let (k_ex, ex_scale) = match div_steps {
+                    Some(adj) => (adj[j].adjusted_strike(k), adj[j].scale()),
+                    None => (k, 1.0),
+                };
                 upper = upper.max(
-                    (s_max * (-dividend_yield * tau).exp() - k * (-rate * tau).exp()).max(0.0),
+                    ((s_max * (-dividend_yield * tau).exp() - k_ex * (-rate * tau).exp())
+                        * ex_scale)
+                        .max(0.0),
                 );
             }
             (0.0, upper)
@@ -289,8 +306,13 @@ impl CrankNicolsonEngine {
         let n_t = self.time_steps;
         let n_s = self.space_steps;
         let dt = instrument.expiry / n_t as f64;
+        // Escrowed discrete-dividend model: the grid carries S*, diffused with
+        // the true continuous yield only; exercise projections reconstruct the
+        // observed spot per decision date.
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let div_steps = escrowed_steps(market, instrument.expiry, n_t);
         let max_strike = schedule.iter().map(|(_, k)| *k).fold(0.0_f64, f64::max);
-        let s_anchor = market.spot.max(max_strike).max(1.0e-8);
+        let s_anchor = spot0.max(max_strike).max(1.0e-8);
         let s_max = self.s_max_multiplier * s_anchor;
         let ds = s_max / n_s as f64;
 
@@ -326,8 +348,8 @@ impl CrankNicolsonEngine {
         let half_dt = 0.5 * dt;
         let inv_2ds = 1.0 / (2.0 * ds);
         let inv_ds2 = 1.0 / (ds * ds);
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let drift = market.rate - effective_dividend_yield;
+        let dividend_yield = market.dividend_yield;
+        let drift = market.rate - dividend_yield;
 
         let mut boundary_rev = vec![PdeExerciseBoundaryPoint {
             time: instrument.expiry,
@@ -343,8 +365,9 @@ impl CrankNicolsonEngine {
                 &step_schedule,
                 dt,
                 market.rate,
-                effective_dividend_yield,
+                dividend_yield,
                 s_max,
+                div_steps.as_deref(),
             );
 
             for k in 0..interior_n {
@@ -396,33 +419,44 @@ impl CrankNicolsonEngine {
             )?;
 
             if let Some((time, strike)) = step_schedule[n] {
+                // Escrowed model: exercise compares against the reconstructed
+                // spot, i.e. adjusted strike K*P - A and payoff scale 1/P.
+                let (ex_strike, ex_scale) = match &div_steps {
+                    Some(adj) => (adj[n].adjusted_strike(strike), adj[n].scale()),
+                    None => (strike, 1.0),
+                };
                 for (i, v) in next_values.iter_mut().enumerate() {
                     let s = i as f64 * ds;
                     let continuation = *v;
-                    let exercise = intrinsic(instrument.option_type, s, strike);
+                    let exercise = intrinsic(instrument.option_type, s, ex_strike) * ex_scale;
                     diff_buf[i] = exercise - continuation;
                     *v = continuation.max(exercise);
                 }
+                // The estimated boundary lives on the S* grid; report it in
+                // observed-spot units via S = (S* + A) / P.
+                let boundary_spot =
+                    estimate_exercise_boundary(instrument.option_type, &diff_buf, ds).map(|b| {
+                        match &div_steps {
+                            Some(adj) => (b + adj[n].cash) / adj[n].prop,
+                            None => b,
+                        }
+                    });
                 boundary_rev.push(PdeExerciseBoundaryPoint {
                     time,
                     strike,
-                    boundary_spot: estimate_exercise_boundary(
-                        instrument.option_type,
-                        &diff_buf,
-                        ds,
-                    ),
+                    boundary_spot,
                 });
             }
 
             std::mem::swap(&mut values, &mut next_values);
         }
 
-        let price = if market.spot <= 0.0 {
+        let price = if spot0 <= 0.0 {
             values[0]
-        } else if market.spot >= s_max {
+        } else if spot0 >= s_max {
             values[n_s]
         } else {
-            let x = market.spot / ds;
+            let x = spot0 / ds;
             let i = x.floor() as usize;
             let w = x - i as f64;
             (1.0 - w) * values[i] + w * values[i + 1]
@@ -514,8 +548,13 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         let inv_ds2 = 1.0 / (ds * ds);
         let inv_2ds = 1.0 / (2.0 * ds);
         let half_vol2 = 0.5 * vol * vol;
-        let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);
-        let drift = market.rate - effective_dividend_yield;
+        // Escrowed discrete-dividend model: the grid carries S*, diffused
+        // with the true continuous yield only; exercise obstacles are
+        // reconstructed per step below.
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let div_steps = escrowed_steps(market, instrument.expiry, n_t);
+        let dividend_yield = market.dividend_yield;
+        let drift = market.rate - dividend_yield;
         let half_dt = 0.5 * dt;
 
         for k in 0..interior_n {
@@ -557,15 +596,31 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
 
         for n in (0..n_t).rev() {
             let tau_new = instrument.expiry - n as f64 * dt;
-            let (lower_new, upper_new) = boundary_values(
+            let (mut lower_new, mut upper_new) = boundary_values(
                 instrument.option_type,
                 is_american,
                 instrument.strike,
                 market.rate,
-                effective_dividend_yield,
+                dividend_yield,
                 s_max,
                 tau_new,
             );
+            if is_american && let Some(adj) = &div_steps {
+                let sa = &adj[n];
+                match instrument.option_type {
+                    OptionType::Put => {
+                        lower_new =
+                            sa.put_floor_at_zero(instrument.strike, market.rate, n as f64 * dt);
+                    }
+                    OptionType::Call => {
+                        upper_new = upper_new.max(sa.exercise_value(
+                            OptionType::Call,
+                            s_max,
+                            instrument.strike,
+                        ));
+                    }
+                }
+            }
 
             // RHS = B * values; use FMA chains for the tridiagonal multiply.
             // SIMD path when available, otherwise scalar FMA.
@@ -634,12 +689,18 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             if can_exercise {
                 // Branchless early-exercise: the match on is_call is hoisted
                 // out of the loop by the compiler; inner body is just maxsd ops.
+                // Escrowed model: intrinsic((S*+A)/P, K) == intrinsic(S*, K*P-A)/P,
+                // so the per-step adjustment is a strike shift plus a scale.
+                let (ex_strike, ex_scale) = match &div_steps {
+                    Some(adj) => (adj[n].adjusted_strike(strike), adj[n].scale()),
+                    None => (strike, 1.0),
+                };
                 for (i, v) in next_values.iter_mut().enumerate() {
                     let s = i as f64 * ds;
                     let exercise_value = if is_call {
-                        (s - strike).max(0.0)
+                        (s - ex_strike).max(0.0) * ex_scale
                     } else {
-                        (strike - s).max(0.0)
+                        (ex_strike - s).max(0.0) * ex_scale
                     };
                     *v = v.max(exercise_value);
                 }
@@ -649,12 +710,12 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
             std::mem::swap(&mut values, &mut next_values);
         }
 
-        let price = if market.spot <= 0.0 {
+        let price = if spot0 <= 0.0 {
             values[0]
-        } else if market.spot >= s_max {
+        } else if spot0 >= s_max {
             values[n_s]
         } else {
-            let x = market.spot / ds;
+            let x = spot0 / ds;
             let i = x.floor() as usize;
             let w = x - i as f64;
             (1.0 - w) * values[i] + w * values[i + 1]

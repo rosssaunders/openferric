@@ -9,8 +9,10 @@ use crate::market::Market;
 
 use super::fd_common::{
     bermudan_exercise_steps, boundary_values, build_operator_coefficients,
-    build_stretched_spot_grid, explicit_cfl_dt_max, interpolate_on_grid, intrinsic,
+    build_stretched_spot_grid, escrowed_root_spot, escrowed_steps, explicit_cfl_dt_max,
+    interpolate_on_grid, intrinsic,
 };
+use crate::core::OptionType;
 
 /// Forward-Euler explicit finite-difference engine for the Black-Scholes PDE.
 ///
@@ -121,11 +123,17 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
         let n_s = self.space_steps;
         let dt = instrument.expiry / n_t as f64;
 
-        let s_anchor = market.spot.max(instrument.strike).max(1.0e-8);
+        // Escrowed discrete-dividend model: the grid carries S*, diffused
+        // with the true continuous yield only; exercise obstacles are
+        // reconstructed per step below.
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
+        let div_steps = escrowed_steps(market, instrument.expiry, n_t);
+
+        let s_anchor = spot0.max(instrument.strike).max(1.0e-8);
         let s_max = self.s_max_multiplier * s_anchor;
         let grid = build_stretched_spot_grid(n_s, s_max, instrument.strike, self.grid_stretch)?;
 
-        let dividend_yield = market.effective_dividend_yield(instrument.expiry);
+        let dividend_yield = market.dividend_yield;
         let (a, b, c) = build_operator_coefficients(&grid, market.rate, dividend_yield, vol);
 
         let dt_max = explicit_cfl_dt_max(&a, &b, &c, self.cfl_safety_factor)?;
@@ -152,7 +160,7 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
 
         for n in (0..n_t).rev() {
             let tau_new = instrument.expiry - n as f64 * dt;
-            let (lower_bv, upper_bv) = boundary_values(
+            let (mut lower_bv, mut upper_bv) = boundary_values(
                 instrument.option_type,
                 is_american,
                 instrument.strike,
@@ -161,6 +169,22 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 s_max,
                 tau_new,
             );
+            if is_american && let Some(adj) = &div_steps {
+                let sa = &adj[n];
+                match instrument.option_type {
+                    OptionType::Put => {
+                        lower_bv =
+                            sa.put_floor_at_zero(instrument.strike, market.rate, n as f64 * dt);
+                    }
+                    OptionType::Call => {
+                        upper_bv = upper_bv.max(sa.exercise_value(
+                            OptionType::Call,
+                            s_max,
+                            instrument.strike,
+                        ));
+                    }
+                }
+            }
 
             next_values[0] = lower_bv;
             next_values[n_s] = upper_bv;
@@ -179,19 +203,23 @@ impl PricingEngine<VanillaOption> for ExplicitFdEngine {
                 }
             };
             if can_exercise {
+                // Escrowed model: intrinsic((S*+A)/P, K) == intrinsic(S*, K*P-A)/P.
+                let (ex_strike, ex_scale) = match &div_steps {
+                    Some(adj) => {
+                        let sa = &adj[n];
+                        (sa.adjusted_strike(instrument.strike), sa.scale())
+                    }
+                    None => (instrument.strike, 1.0),
+                };
                 for (i, v) in next_values.iter_mut().enumerate() {
-                    *v = v.max(intrinsic(
-                        instrument.option_type,
-                        grid[i],
-                        instrument.strike,
-                    ));
+                    *v = v.max(intrinsic(instrument.option_type, grid[i], ex_strike) * ex_scale);
                 }
             }
 
             std::mem::swap(&mut values, &mut next_values);
         }
 
-        let price = interpolate_on_grid(market.spot, &grid, &values);
+        let price = interpolate_on_grid(spot0, &grid, &values);
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(DiagKey::NumTimeSteps, n_t as f64);

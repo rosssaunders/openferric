@@ -200,6 +200,70 @@ impl DividendSchedule {
         self.prepaid_forward_spot(spot, rate, 0.0, maturity)
     }
 
+    /// Escrowed-model reconstruction coefficients at time `t` for maturity `T`.
+    ///
+    /// Under the escrowed (Haug-Haug-Lewis) dividend model the tradable
+    /// component `S*` diffuses as a jump-free GBM with carry `r - q` and the
+    /// observed spot is recovered as `S(t) = (S*(t) + A(t)) / P(t)`, where
+    /// this method returns `(P(t), A(t))`:
+    ///
+    /// - `P(t) = prod (1 - p_i)` over proportional events with `t < t_i <= T`,
+    /// - `A(t) = sum D_i * exp(-(r - q) (t_i - t)) * P(t_i)` over cash events
+    ///   with `t < t_i <= T` (each cash amount is scaled by the proportional
+    ///   factor of the events after it, matching [`Self::forward_price`]).
+    ///
+    /// At `t = 0` this gives `S*(0) = S(0) * P(0) - A(0)` with
+    /// `E[S*(T)] = forward_price(T)`, so European prices under this transform
+    /// reproduce the escrowed analytic (prepaid-forward) values exactly. With
+    /// an empty schedule the result is the identity `(1, 0)`.
+    pub fn escrowed_reconstruction(
+        &self,
+        time: f64,
+        rate: f64,
+        continuous_dividend_yield: f64,
+        maturity: f64,
+    ) -> (f64, f64) {
+        let carry = rate - continuous_dividend_yield;
+        let mut prop = 1.0_f64;
+        let mut cash = 0.0_f64;
+        // Reverse order so `prop` holds the proportional factor of the events
+        // strictly after the cash event currently being accumulated.
+        for event in self.events.iter().rev() {
+            if event.time > maturity {
+                continue;
+            }
+            if event.time <= time {
+                break;
+            }
+            match event.kind {
+                DividendKind::Cash(amount) => {
+                    cash += amount * (-carry * (event.time - time)).exp() * prop;
+                }
+                DividendKind::Proportional(ratio) => prop *= 1.0 - ratio,
+            }
+        }
+        (prop, cash)
+    }
+
+    /// Escrowed-model tradable spot `S*(0) = S(0) * P(0) - A(0)` for maturity `T`.
+    ///
+    /// This equals `prepaid_forward_spot(T) * exp(q T)`: the discrete-dividend
+    /// impact is stripped out while the continuous yield `q` stays in the
+    /// diffusion carry, so lattice/PDE engines can diffuse `S*` with drift
+    /// `r - q` and recover forward-matching prices.
+    #[inline]
+    pub fn escrowed_spot(
+        &self,
+        spot: f64,
+        rate: f64,
+        continuous_dividend_yield: f64,
+        maturity: f64,
+    ) -> f64 {
+        let (prop, cash) =
+            self.escrowed_reconstruction(0.0, rate, continuous_dividend_yield, maturity);
+        spot * prop - cash
+    }
+
     /// Equivalent continuous dividend yield implied by the schedule up to `T`.
     pub fn effective_dividend_yield(
         &self,
@@ -466,6 +530,47 @@ mod tests {
         assert!(prepaid < spot);
         assert!(q_eff > 0.0);
         assert_relative_eq!(prepaid * (r * t).exp(), fwd, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn escrowed_reconstruction_is_forward_consistent_for_mixed_schedules() {
+        let schedule = DividendSchedule::new(vec![
+            DividendEvent::cash(0.25, 1.0).expect("valid cash event"),
+            DividendEvent::proportional(0.5, 0.02).expect("valid proportional event"),
+            DividendEvent::cash(0.75, 0.5).expect("valid cash event"),
+        ])
+        .expect("valid schedule");
+
+        let spot = 100.0;
+        let r = 0.03;
+        let q = 0.01;
+        let t = 1.0;
+
+        // S*(0) grown at carry must reproduce the mixed-schedule forward.
+        let s_star = schedule.escrowed_spot(spot, r, q, t);
+        let fwd = schedule.forward_price(spot, r, q, t);
+        assert_relative_eq!(s_star * ((r - q) * t).exp(), fwd, epsilon = 1e-12);
+
+        // Equivalent characterization: S*(0) = prepaid forward * e^{qT}.
+        assert_relative_eq!(
+            s_star,
+            schedule.prepaid_forward_spot(spot, r, q, t) * (q * t).exp(),
+            epsilon = 1e-12
+        );
+
+        // Reconstruction at t=0 is the identity on observed spot.
+        let (p0, a0) = schedule.escrowed_reconstruction(0.0, r, q, t);
+        assert_relative_eq!((s_star + a0) / p0, spot, epsilon = 1e-12);
+
+        // After all ex-dates the transform degenerates to the identity.
+        let (p_late, a_late) = schedule.escrowed_reconstruction(0.9, r, q, t);
+        assert_relative_eq!(p_late, 1.0, epsilon = 1e-15);
+        assert_relative_eq!(a_late, 0.0, epsilon = 1e-15);
+
+        // Empty schedule: identity everywhere.
+        let empty = DividendSchedule::empty();
+        assert_eq!(empty.escrowed_reconstruction(0.3, r, q, t), (1.0, 0.0));
+        assert_relative_eq!(empty.escrowed_spot(spot, r, q, t), spot, epsilon = 1e-15);
     }
 
     #[test]
