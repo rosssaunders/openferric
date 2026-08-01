@@ -409,9 +409,24 @@ fn strata_accrued_interest_semiannual_quarter() {
 // 8. Clean vs dirty price
 // ===========================================================================
 
-/// Clean = dirty - accrued at any settlement date.
+/// Settlement-aware clean/dirty prices against hand-computed anchors.
+///
+/// Dirty price at settlement `s` is the value AT `s` of the cashflows paid
+/// strictly after `s`, forward-valued with DF(s, t) = DF(0, t) / DF(0, s);
+/// clean = dirty - accrued. The flat continuous curve has ln DF linear in t,
+/// so log-linear interpolation reproduces exp(-r t) exactly at every time
+/// used here and tight epsilons are safe.
+///
+/// Anchors hand-computed from first principles (10y 6% semiannual bond,
+/// face 100, flat 4% continuously-compounded curve, s = 3.7):
+///   dirty(3.7)   = sum_{t in {4.0, 4.5, .., 9.5}} 3 * exp(-0.04 (t - 3.7))
+///                  + 103 * exp(-0.04 (10 - 3.7))   = 111.997548830
+///   accrued(3.7) = 3 * (3.7 - 3.5) / 0.5           = 1.2
+///   clean(3.7)   = 111.997548830 - 1.2             = 110.797548830
+/// (The pre-fix implementation returned the t=0 PV of ALL 20 coupons,
+/// 115.991126 dirty / 114.791126 clean, which is not a market clean price.)
 #[test]
-fn strata_clean_equals_dirty_minus_accrued() {
+fn strata_clean_and_dirty_at_settlement_anchor() {
     let rate = 0.04;
     let curve = flat_continuous_curve(rate, 12.0);
 
@@ -423,12 +438,61 @@ fn strata_clean_equals_dirty_minus_accrued() {
         day_count: DayCountConvention::Act365Fixed,
     };
 
-    // Test at several settlement dates within the bond's life
-    for settlement in [0.1, 0.25, 0.4, 0.75, 1.3, 3.7, 9.9] {
-        let dirty = bond.dirty_price(&curve);
+    let settlement = 3.7;
+    let dirty = bond.dirty_price_at(&curve, settlement);
+    let accrued = bond.accrued_interest(settlement);
+    let clean = bond.clean_price(&curve, settlement);
+
+    assert_relative_eq!(dirty, 111.997548830, epsilon = 1.0e-9);
+    assert_relative_eq!(accrued, 1.2, epsilon = 1.0e-12);
+    assert_relative_eq!(clean, 110.797548830, epsilon = 1.0e-9);
+}
+
+/// Clean = dirty-at-settlement - accrued at any settlement date, and the
+/// settlement-zero case degenerates to the t=0 dirty price.
+#[test]
+fn strata_clean_equals_settlement_dirty_minus_accrued() {
+    let rate = 0.04;
+    let curve = flat_continuous_curve(rate, 12.0);
+
+    let bond = FixedRateBond {
+        face_value: 100.0,
+        coupon_rate: 0.06,
+        frequency: 2,
+        maturity: 10.0,
+        day_count: DayCountConvention::Act365Fixed,
+    };
+
+    // Settlement 0 must reproduce today's dirty price exactly (regression
+    // guard for the pre-settlement-aware behavior).
+    assert_relative_eq!(
+        bond.clean_price(&curve, 0.0),
+        bond.dirty_price(&curve),
+        epsilon = 1.0e-12
+    );
+
+    // Test at several settlement dates within the bond's life. All times
+    // here are >= 1.0, inside the curve's node range, so no extrapolation.
+    for settlement in [1.3, 3.7, 9.9] {
+        let dirty = bond.dirty_price_at(&curve, settlement);
         let accrued = bond.accrued_interest(settlement);
         let clean = bond.clean_price(&curve, settlement);
 
         assert_relative_eq!(clean, dirty - accrued, epsilon = 1.0e-12);
+
+        // The settlement dirty price must equal the directly-computed
+        // forward value of the remaining cashflows on the flat curve.
+        let mut expected = 0.0;
+        let mut t = 0.5;
+        while t < bond.maturity - 1.0e-12 {
+            if t > settlement + 1.0e-12 {
+                expected += 3.0 * (-rate * (t - settlement)).exp();
+            }
+            t += 0.5;
+        }
+        if bond.maturity > settlement {
+            expected += 103.0 * (-rate * (bond.maturity - settlement)).exp();
+        }
+        assert_relative_eq!(dirty, expected, epsilon = 1.0e-9);
     }
 }
