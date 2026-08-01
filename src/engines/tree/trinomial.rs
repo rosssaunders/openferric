@@ -227,9 +227,15 @@ mod tests {
             .price(&option, &market)
             .unwrap();
 
-        assert_eq!(
-            coarse.price, 10.465673125049921,
-            "200-step trinomial finite-grid value changed"
+        let coarse_reference = 10.465_673_125_049_921;
+        // Early-exercise max operations accumulate a measured 146 scaled-eps
+        // Linux/MSVC difference at 200 steps; retain one power-of-two guard.
+        let coarse_roundoff = 256.0 * f64::EPSILON * coarse_reference;
+        assert!(
+            (coarse.price - coarse_reference).abs() <= coarse_roundoff,
+            "200-step trinomial={:.17}, reference={coarse_reference:.17}, \
+             roundoff budget={coarse_roundoff:.3e}",
+            coarse.price
         );
 
         // QuantLib 1.43 BinomialVanillaEngine("crr"), 20,000 steps.  The
@@ -271,9 +277,14 @@ mod tests {
             .price(&option, &market)
             .unwrap();
 
-        assert_eq!(
-            coarse.price, 10.430611662248863,
-            "50-step trinomial finite-grid value changed"
+        let coarse_reference = 10.430_611_662_248_863;
+        // The measured Linux/MSVC difference is 11 scaled epsilons.
+        let coarse_roundoff = 16.0 * f64::EPSILON * coarse_reference;
+        assert!(
+            (coarse.price - coarse_reference).abs() <= coarse_roundoff,
+            "50-step trinomial={:.17}, reference={coarse_reference:.17}, \
+             roundoff budget={coarse_roundoff:.3e}",
+            coarse.price
         );
 
         let coarse_extrapolated = 2.0 * mid.price - coarse.price;
