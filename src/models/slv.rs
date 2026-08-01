@@ -836,6 +836,104 @@ mod tests {
         }
     }
 
+    /// A calibrated SLV model must reproduce the *non-flat* vanilla surface,
+    /// even when the variance factor has non-zero vol-of-vol and correlation.
+    /// The independent targets are the exact Black-Scholes prices implied by
+    /// the sampled market surface actually consumed by the calibrator; only
+    /// the particle/price Monte Carlo error is statistical.
+    #[test]
+    fn slv_reprices_nonflat_surface_with_stochastic_variance() {
+        let smile = SmileSurface {
+            base: 0.22,
+            spot: 100.0,
+            skew: 0.18,
+        };
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.015)
+            .dividend_yield(0.0)
+            .vol_surface(Box::new(smile.clone()))
+            .build()
+            .expect("valid non-flat market");
+        let params = SlvParams {
+            v0: 0.22_f64.powi(2),
+            kappa: 1.6,
+            theta: 0.22_f64.powi(2),
+            xi: 0.65,
+            rho: -0.55,
+        };
+        let maturity = 0.75;
+        let n_paths = 24_000;
+        let n_steps = 64;
+        let coarse_leverage =
+            calibrate_leverage_surface(&market, params, maturity, n_paths / 2, n_steps)
+                .expect("coarse SLV leverage calibration");
+        let leverage = calibrate_leverage_surface(&market, params, maturity, n_paths, n_steps)
+            .expect("SLV leverage calibration");
+
+        // SciPy 1.17.1 (`scipy.special.ndtr`) Black-Scholes values for the
+        // vols returned by Market's sampled/interpolated surface. Hard-coding
+        // both layers of the oracle keeps this test independent of
+        // OpenFerric's Black-Scholes implementation and makes an accidental
+        // change to MarketBuilder's sampling contract visible.
+        // The final column is a fixed convergence budget measured from the
+        // deterministic 12k -> 24k particle refinement. It is deliberately
+        // recorded up front rather than derived from the price error under
+        // test, so a future calibration regression cannot widen its own
+        // acceptance interval.
+        let reference_prices: [(f64, f64, f64, f64); 3] = [
+            (
+                85.0,
+                0.222_980_449_447_752_03,
+                17.724_277_192_678_628,
+                0.045_5,
+            ),
+            (100.0, 0.217_5, 8.034_046_055_987_29, 0.011_6),
+            (
+                115.0,
+                0.221_016_012_096_565_88,
+                3.052_289_391_872_996_3,
+                0.020_8,
+            ),
+        ];
+        for (strike, target_vol, target, calibration_budget) in reference_prices {
+            assert!(
+                (market.vol_for(strike, maturity) - target_vol).abs() <= 8.0 * f64::EPSILON,
+                "K={strike}: sampled market vol={} SciPy fixture vol={target_vol}",
+                market.vol_for(strike, maturity)
+            );
+            let option = VanillaOption::european_call(strike, maturity);
+            let coarse = price_with_leverage_surface(
+                &option,
+                &market,
+                params,
+                &coarse_leverage,
+                n_paths,
+                n_steps,
+            );
+            let result =
+                price_with_leverage_surface(&option, &market, params, &leverage, n_paths, n_steps);
+            let stderr = result.stderr.expect("SLV reports stderr");
+            // Same pricing paths are used for the half/full-particle surfaces,
+            // so their difference isolates the leverage-calibration error from
+            // terminal payoff sampling error.  The SciPy reference is stable
+            // to binary64 round-off.
+            let calibration_shift = (result.price - coarse.price).abs();
+            let reference_uncertainty = 16.0 * f64::EPSILON * target.abs().max(1.0);
+            let tolerance = 4.0 * stderr + calibration_budget + reference_uncertainty;
+            assert!(
+                calibration_shift <= calibration_budget,
+                "K={strike}: half/full particle calibration difference={calibration_shift} fixed_budget={calibration_budget}"
+            );
+
+            assert!(
+                (result.price - target).abs() <= tolerance,
+                "K={strike}: price={} target={target} target_vol={target_vol} stderr={stderr} calibration_shift={calibration_shift} calibration_budget={calibration_budget} reference_uncertainty={reference_uncertainty} tolerance={tolerance}",
+                result.price
+            );
+        }
+    }
+
     #[test]
     fn leverage_matches_exact_deterministic_conditional_variance_identity() {
         let sigma = 0.2;

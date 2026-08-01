@@ -5,7 +5,7 @@ use openferric::core::PricingEngine;
 use openferric::engines::analytic::BlackScholesEngine;
 use openferric::engines::fft::{
     BlackScholesCharFn, CarrMadanParams, carr_madan_fft, carr_madan_fft_complex,
-    carr_madan_fft_strikes, heston_price_fft,
+    carr_madan_price_at_strikes, heston_price_fft,
 };
 use openferric::instruments::VanillaOption;
 use openferric::market::Market;
@@ -94,7 +94,11 @@ fn bench_bs_fft_vs_analytic(c: &mut Criterion) {
     let cf = BlackScholesCharFn::new(spot, rate, 0.0, vol, maturity);
     let strikes: Vec<f64> = (0..10).map(|i| 80.0 + i as f64 * 5.0).collect();
 
-    let fft_prices = carr_madan_fft_strikes(
+    // Benchmark setup is also exercised by `cargo test --all-targets`.  Use
+    // the exact-strike FRFT path here: interpolating the default FFT grid has
+    // a measured, strike-dependent discretization error and is not an exact
+    // pricing oracle (that interpolation budget is tested in `fft_test`).
+    let fft_prices = carr_madan_price_at_strikes(
         &cf,
         rate,
         maturity,
@@ -107,7 +111,7 @@ fn bench_bs_fft_vs_analytic(c: &mut Criterion) {
     for (k, fft_px) in &fft_prices {
         let bs = black_scholes_price(OptionType::Call, spot, *k, rate, vol, maturity);
         assert!(
-            (fft_px - bs).abs() < 1e-4,
+            (fft_px - bs).abs() < 3.0e-12,
             "BS FFT mismatch at K={k}: fft={fft_px} bs={bs}"
         );
     }

@@ -56,7 +56,9 @@ pub use exotic::{
 };
 pub use funding_rate_swap::FundingRateSwap;
 pub use fx::FxOption;
-pub use mbs::{ConstantCpr, MbsCashflow, MbsPassThrough, PrepaymentModel, PsaModel};
+pub use mbs::{
+    ConstantCpr, MbsCashflow, MbsPassThrough, PrepaymentModel, PsaModel, RateIncentivePrepayment,
+};
 pub use power::PowerOption;
 pub use rainbow::{BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption};
 pub use range_accrual::{DualRangeAccrual, RangeAccrual};

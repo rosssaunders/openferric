@@ -13,6 +13,16 @@ use approx::assert_relative_eq;
 use openferric::credit::isda::hazard_from_par_spread;
 use openferric::credit::{CdoTranche, SyntheticCdo};
 
+fn assert_binary64_close(label: &str, actual: f64, expected: f64) {
+    let tolerance = 64.0 * f64::EPSILON * expected.abs().max(1.0);
+    let error = (actual - expected).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: expected={expected:.17e}, actual={actual:.17e}, \
+         error={error:.3e}, binary64 budget={tolerance:.3e}"
+    );
+}
+
 fn base_cdo() -> SyntheticCdo {
     SyntheticCdo {
         num_names: 125,
@@ -67,7 +77,7 @@ fn cdo_hazard_rate_pins_to_isda_credit_triangle() {
                 epsilon = 0.0
             );
             // Closed form, independently: h = s / (1 - R).
-            assert_relative_eq!(cdo.hazard_rate(), s / (1.0 - r), epsilon = 1.0e-15);
+            assert_binary64_close("credit-triangle hazard", cdo.hazard_rate(), s / (1.0 - r));
         }
     }
 }
@@ -82,7 +92,11 @@ fn cdo_hazard_rate_pins_to_isda_credit_triangle() {
 fn pool_default_probability_matches_hand_computed_anchor() {
     let cdo = base_cdo();
     let pd_5y = cdo.default_probability(5.0);
-    assert_relative_eq!(pd_5y, 0.079_955_585_370_676_7, epsilon = 1.0e-12);
+    assert_binary64_close(
+        "5y pool default probability",
+        pd_5y,
+        0.079_955_585_370_676_71,
+    );
     // Explicitly reject the pre-fix value.
     assert!((pd_5y - 0.048_771).abs() > 0.02);
 }
@@ -96,11 +110,15 @@ fn portfolio_expected_loss_matches_credit_triangle_closed_form() {
     let t = 5.0;
     let closed_form = (1.0 - cdo.recovery_rate)
         * (1.0 - (-cdo.pool_spread * t / (1.0 - cdo.recovery_rate)).exp());
-    assert_relative_eq!(closed_form, 0.047_973_351_222_406, epsilon = 1.0e-12);
-    assert_relative_eq!(
+    assert_binary64_close(
+        "portfolio expected-loss closed form",
+        closed_form,
+        0.047_973_351_222_406_03,
+    );
+    assert_binary64_close(
+        "portfolio expected loss",
         cdo.portfolio_expected_loss(t),
         closed_form,
-        epsilon = 1.0e-12
     );
 }
 
@@ -115,27 +133,27 @@ fn zero_correlation_tranche_losses_match_hand_computation() {
     let mut cdo = base_cdo();
     cdo.correlation = 0.0;
     let t = 5.0;
-    let pool_loss = 0.047_973_351_222_406;
+    let pool_loss = 0.047_973_351_222_406_03;
 
     let equity = equity_tranche();
     let mezz = mezz_tranche();
     let senior = senior_tranche();
 
     // Expected tranche loss in currency units = notional * loss fraction.
-    assert_relative_eq!(
+    assert_binary64_close(
+        "zero-correlation equity loss",
         cdo.expected_tranche_loss(&equity, t),
-        equity.notional * 1.0,
-        epsilon = 1.0e-10
+        equity.notional,
     );
-    assert_relative_eq!(
+    assert_binary64_close(
+        "zero-correlation mezzanine loss",
         cdo.expected_tranche_loss(&mezz, t),
         mezz.notional * ((pool_loss - 0.03) / 0.04),
-        epsilon = 1.0e-10
     );
-    assert_relative_eq!(
+    assert_binary64_close(
+        "zero-correlation senior loss",
         cdo.expected_tranche_loss(&senior, t),
         0.0,
-        epsilon = 1.0e-12
     );
 }
 
@@ -148,10 +166,13 @@ fn tranche_expected_losses_sum_to_corrected_pool_loss() {
     let sum = cdo.expected_tranche_loss(&equity_tranche(), t)
         + cdo.expected_tranche_loss(&mezz_tranche(), t)
         + cdo.expected_tranche_loss(&senior_tranche(), t);
-    assert_relative_eq!(sum, cdo.portfolio_expected_loss(t), epsilon = 4.0e-3);
+    // Supplemental partition identity. The primary SciPy LHP quadrature suite
+    // (`credit_isda_quantlib`) establishes the individual tranche values; the
+    // remaining 2e-10 is its documented inverse-normal/quadrature budget.
+    assert_relative_eq!(sum, cdo.portfolio_expected_loss(t), epsilon = 2.0e-10);
     // The pool loss itself is the hand-computed anchor, so the sum is
     // pinned to an external value, not a self-referential one.
-    assert_relative_eq!(sum, 0.047_973_351_222_406, epsilon = 4.0e-3);
+    assert_relative_eq!(sum, 0.047_973_351_222_406_03, epsilon = 2.0e-10);
 }
 
 /// Negative risk-free rates must change PVs. The pre-fix discount_factor
@@ -170,6 +191,52 @@ fn negative_rates_are_not_floored_to_zero() {
     let mut cdo_zero = base_cdo();
     cdo_zero.risk_free_rate = 0.0;
 
+    // Independent SciPy 1.17.1 LHP factor quadrature over quarterly payment
+    // dates, epsabs=epsrel=1e-14 and split at both tranche kinks. The 5e-11
+    // PV and 2e-10 spread budgets isolate the crate's documented inverse-
+    // normal approximation error; they are not economic-price ranges.
+    assert_relative_eq!(
+        cdo_neg.protection_leg_pv(&mezz),
+        0.014_120_759_741_736_854,
+        epsilon = 5.0e-11
+    );
+    assert_relative_eq!(
+        cdo_neg.premium_leg_pv(&mezz, mezz.spread),
+        0.003_553_350_899_221_205_6,
+        epsilon = 5.0e-11
+    );
+    assert_relative_eq!(
+        cdo_neg.fair_spread(&mezz),
+        0.079_478_554_987_810_12,
+        epsilon = 2.0e-10
+    );
+    assert_relative_eq!(
+        cdo_neg.npv(&mezz),
+        0.010_567_408_842_515_648,
+        epsilon = 5.0e-11
+    );
+    assert_relative_eq!(
+        cdo_zero.protection_leg_pv(&mezz),
+        0.013_376_354_771_248_778,
+        epsilon = 5.0e-11
+    );
+    assert_relative_eq!(
+        cdo_zero.premium_leg_pv(&mezz, mezz.spread),
+        0.003_382_112_652_435_168,
+        epsilon = 5.0e-11
+    );
+    assert_relative_eq!(
+        cdo_zero.fair_spread(&mezz),
+        0.079_100_586_798_122_29,
+        epsilon = 2.0e-10
+    );
+    assert_relative_eq!(
+        cdo_zero.npv(&mezz),
+        0.009_994_242_118_813_61,
+        epsilon = 5.0e-11
+    );
+
+    // Supplemental monotonicity checks preserve the historical bug signature.
     // With r = -2%, every discount factor exceeds 1, so both legs must be
     // strictly larger than at r = 0%.
     assert!(
@@ -201,6 +268,6 @@ fn npv_is_zero_at_fair_spread_under_negative_rates() {
             spread: fair,
             ..tranche
         };
-        assert_relative_eq!(cdo.npv(&at_par), 0.0, epsilon = 1.0e-12);
+        assert_binary64_close("NPV at fair spread", cdo.npv(&at_par), 0.0);
     }
 }

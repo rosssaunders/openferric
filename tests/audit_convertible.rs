@@ -72,21 +72,27 @@ fn always_callable_straight_bond_converges_to_pv_of_call() {
     //
     // Under the engine's always-callable model the rational issuer calls as
     // soon as the hold value exceeds 90, so the bond is worth
-    // PV(call) = 90 * exp(-0.05 * 5) = 70.09207... (closed-form anchor),
-    // NOT PV(face) = 77.88. With the terminal call cap removed the finite-step
-    // price approaches PV(call) from above at O(dt); at 500 steps it must lie
-    // in [70.09, 70.14] (verified: 70.127125 with the cap applied only at
-    // interior steps, converging to 70.093823 by 10000 steps).
+    // PV(call) = 90 * exp(-0.05 * 5) = 70.09207... (continuous-exercise
+    // limit), NOT PV(face) = 77.88.  On the finite 500-step convention the
+    // terminal face is capped to 90 one step before maturity, then discounted
+    // through the remaining 499 intervals.  This gives an exact finite-grid
+    // target rather than a broad interval around the limiting value.
     let market = flat_market(100.0, 0.05, 0.20);
-    let engine = ConvertibleBinomialEngine::new(0.0).with_steps(500);
+    let steps = 500_usize;
+    let engine = ConvertibleBinomialEngine::new(0.0).with_steps(steps);
 
     let bond = ConvertibleBond::new(100.0, 0.0, 5.0, 0.0, Some(90.0), None);
     let price = engine.price(&bond, &market).unwrap().price;
 
-    let pv_call = 90.0 * (-0.05_f64 * 5.0).exp();
+    let finite_grid_reference = 90.0 * (-0.05_f64 * 5.0 * (steps - 1) as f64 / steps as f64).exp();
+    // Backward induction and the closed form order binary64 operations
+    // differently.  The measured difference is 42 scaled epsilons; 128
+    // scaled epsilons is an accumulated-roundoff budget, not a price band.
+    let roundoff = 128.0 * f64::EPSILON * finite_grid_reference;
     assert!(
-        (pv_call - 1e-9..=70.14).contains(&price),
-        "always-callable straight bond: expected price in [{pv_call:.6}, 70.14], got {price:.6}"
+        (price - finite_grid_reference).abs() <= roundoff,
+        "always-callable straight bond: expected finite-grid price \
+         {finite_grid_reference:.17e}, got {price:.17e}, binary64 budget={roundoff:.3e}"
     );
 }
 
@@ -131,5 +137,62 @@ fn callable_convertible_never_exceeds_non_callable() {
     assert!(
         with_call_price <= no_call_price + 1e-12,
         "callable {with_call_price} must not exceed non-callable {no_call_price}"
+    );
+}
+
+#[test]
+fn fully_featured_convertible_matches_independent_decimal_crr_grid() {
+    // Full non-degenerate contract: coupon-bearing, convertible, issuer
+    // callable, holder puttable, dividend-paying equity, nonzero volatility,
+    // and a nonzero credit spread.  Across the tree the call, put, conversion,
+    // and continuation branches all bind.
+    //
+    // The finite-grid reference was generated independently with Python's
+    // 60-digit `decimal` arithmetic.  Its recurrence materialized every tree
+    // level and applied
+    //
+    //   max(conversion, put, min(call,
+    //       exp(-(r+s)dt) * (p V_up + (1-p)V_down + face*coupon*dt)))
+    //
+    // at interior nodes, with max(face, conversion, put) at maturity.  No
+    // OpenFerric code or output entered the calculation.
+    let market = Market::builder()
+        .spot(100.0)
+        .rate(0.04)
+        .dividend_yield(0.015)
+        .flat_vol(0.25)
+        .build()
+        .unwrap();
+    let bond = ConvertibleBond::new(100.0, 0.04, 5.0, 1.0, Some(120.0), Some(110.0));
+
+    let finite_grid_price = ConvertibleBinomialEngine::new(0.015)
+        .with_steps(512)
+        .price(&bond, &market)
+        .unwrap()
+        .price;
+    const DECIMAL_512_STEP_REFERENCE: f64 = 114.386_876_176_185_11;
+    const BINARY64_ACCUMULATION_BUDGET: f64 = 5.0e-10;
+    assert!(
+        (finite_grid_price - DECIMAL_512_STEP_REFERENCE).abs() <= BINARY64_ACCUMULATION_BUDGET,
+        "fully featured convertible finite-grid price: \
+         actual={finite_grid_price:.17e}, \
+         independent decimal reference={DECIMAL_512_STEP_REFERENCE:.17e}, \
+         roundoff budget={BINARY64_ACCUMULATION_BUDGET:.3e}"
+    );
+
+    // CRR exercise boundaries produce the familiar even/odd grid ripple.  A
+    // 512-to-1024 refinement changes this 114.39 price by 0.04297 (4.3 bp of
+    // notional); the explicit 0.0431 budget is discretization error and is
+    // deliberately kept separate from the exact finite-grid assertion above.
+    let refined_price = ConvertibleBinomialEngine::new(0.015)
+        .with_steps(1_024)
+        .price(&bond, &market)
+        .unwrap()
+        .price;
+    const GRID_512_TO_1024_BUDGET: f64 = 4.31e-2;
+    assert!(
+        (refined_price - finite_grid_price).abs() <= GRID_512_TO_1024_BUDGET,
+        "fully featured convertible grid change: p512={finite_grid_price:.12}, \
+         p1024={refined_price:.12}, budget={GRID_512_TO_1024_BUDGET:.3e}"
     );
 }

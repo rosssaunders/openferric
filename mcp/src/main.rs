@@ -376,7 +376,10 @@ mod tests {
         let price = result["structuredContent"]["price"]
             .as_f64()
             .expect("numeric price");
-        assert!((price - 10.4506).abs() < 1.0e-3);
+        // Full-precision Black-Scholes reference (the protocol serializes an
+        // IEEE-754 number, so there is no reason to accept a four-decimal
+        // plausibility band at this boundary).
+        assert!((price - 10.450_583_572_185_565).abs() < 2.0e-12);
     }
 
     #[test]

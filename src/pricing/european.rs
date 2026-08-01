@@ -51,7 +51,8 @@ pub struct Greeks {
 ///
 /// let call = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
 /// let put = black_scholes_price(OptionType::Put, 100.0, 100.0, 0.05, 0.20, 1.0);
-/// assert!(call > put);
+/// assert!((call - 10.450_583_572_185_565).abs() < 2.0e-12);
+/// assert!((put - 5.573_526_022_256_971).abs() < 2.0e-12);
 /// ```
 pub fn black_scholes_price(
     option_type: OptionType,
@@ -81,7 +82,8 @@ pub fn black_scholes_price(
 ///
 /// let call = black_76_price(OptionType::Call, 103.0, 100.0, 0.03, 0.18, 1.0);
 /// let put = black_76_price(OptionType::Put, 103.0, 100.0, 0.03, 0.18, 1.0);
-/// assert!(call > 0.0 && put > 0.0);
+/// assert!((call - 8.614_158_019_493_772).abs() < 2.0e-12);
+/// assert!((put - 5.702_821_418_848_247).abs() < 2.0e-12);
 /// ```
 pub fn black_76_price(option_type: OptionType, f: f64, k: f64, r: f64, sigma: f64, t: f64) -> f64 {
     crate::engines::analytic::black76_price(option_type, f, k, r, sigma, t).unwrap_or(f64::NAN)

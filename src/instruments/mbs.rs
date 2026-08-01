@@ -1,10 +1,15 @@
 //! Module `instruments::mbs`.
 //!
-//! Implements mbs abstractions and re-exports used by adjacent pricing/model modules.
+//! Implements MBS abstractions and re-exports used by adjacent pricing/model modules.
+//! In this module, [`MbsPassThrough::coupon_rate`] is the pool's gross mortgage
+//! coupon/WAC: scheduled amortization and refinancing incentive use that gross
+//! rate, while pass-through interest is paid at `coupon_rate - servicing_fee`.
 //!
 //! References: Hull (11th ed.) for market conventions and payoff identities, with module-specific equations referenced by the concrete engines and models imported here.
 //!
-//! Key types and purpose: `PsaModel`, `ConstantCpr`, `PrepaymentModel`, `MbsPassThrough`, `MbsCashflow` define the core data contracts for this module.
+//! Key types and purpose: `PsaModel`, `ConstantCpr`, `PrepaymentModel`,
+//! `RateIncentivePrepayment`, `MbsPassThrough`, and `MbsCashflow` define the
+//! core data contracts for this module.
 //!
 //! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
 //!
@@ -21,14 +26,32 @@ pub struct PsaModel {
 }
 
 impl PsaModel {
+    /// Largest valid PSA multiplier. At this boundary the plateau CPR is 100%.
+    pub const MAX_SPEED: f64 = 1.0 / 0.06;
+
+    /// Validates that the complete PSA path has CPR in `[0, 1]`.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.psa_speed.is_finite() || !(0.0..=Self::MAX_SPEED).contains(&self.psa_speed) {
+            return Err(format!(
+                "psa_speed must be finite and in [0, {}]",
+                Self::MAX_SPEED
+            ));
+        }
+        Ok(())
+    }
+
     /// Annual Conditional Prepayment Rate at the given month (1-indexed).
     pub fn cpr(&self, month: u32) -> f64 {
-        let base_cpr = if month <= 30 {
-            0.06 * (month as f64) / 30.0
+        // Express the plateau as speed / max_speed so the valid upper
+        // boundary evaluates to exactly 100% CPR in binary64. Computing
+        // 0.06 * max_speed leaves a one-ulp gap whose twelfth root produces a
+        // materially incorrect SMM below 100%.
+        let plateau_cpr = self.psa_speed / Self::MAX_SPEED;
+        if month <= 30 {
+            plateau_cpr * f64::from(month) / 30.0
         } else {
-            0.06
-        };
-        base_cpr * self.psa_speed
+            plateau_cpr
+        }
     }
 
     /// Single Monthly Mortality rate: SMM = 1 - (1 - CPR)^(1/12).
@@ -47,6 +70,116 @@ pub struct ConstantCpr {
 impl ConstantCpr {
     pub fn smm(&self) -> f64 {
         1.0 - (1.0 - self.annual_cpr).powf(1.0 / 12.0)
+    }
+}
+
+/// Transparent refinancing-incentive prepayment model.
+///
+/// This uses the deterministic Office of Thrift Supervision refinancing
+/// coefficients and the seasoning/seasonality factors shown by MathWorks in
+/// its modified Richard--Roll example. It combines refinancing incentive,
+/// seasoning, and calendar seasonality:
+///
+/// `CPR = refinancing_incentive * seasoning * seasonality`.
+///
+/// It deliberately does not claim to be a calibrated borrower model or the
+/// full Richard--Roll model: in particular, it has no burnout factor. The
+/// explicit refinancing-rate scenario supplied to [`MbsPassThrough`] controls
+/// the rate response. MathWorks' example feeds its pass-through `CouponRate`
+/// into the incentive formula; OpenFerric instead uses the gross WAC stored in
+/// [`MbsPassThrough::coupon_rate`], consistently with this module's amortization
+/// and servicing-fee convention.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RateIncentivePrepayment {
+    /// Calendar month of the loan's first scheduled payment (January = 1).
+    pub first_payment_month: u8,
+}
+
+impl RateIncentivePrepayment {
+    /// Ginnie Mae 30-year single-family seasonality multipliers used by the
+    /// published OTS/modified Richard--Roll example, January through December.
+    pub const SEASONALITY: [f64; 12] = [
+        0.94, 0.76, 0.73, 0.96, 0.98, 0.92, 0.99, 1.10, 1.18, 1.21, 1.23, 0.97,
+    ];
+
+    /// Creates a model and validates the calendar-month convention.
+    pub fn new(first_payment_month: u8) -> Result<Self, String> {
+        let model = Self {
+            first_payment_month,
+        };
+        model.validate()?;
+        Ok(model)
+    }
+
+    /// Validates model fields.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=12).contains(&self.first_payment_month) {
+            return Err("first_payment_month must be in 1..=12".to_string());
+        }
+        Ok(())
+    }
+
+    /// Annual refinancing-incentive CPR before seasoning and seasonality.
+    ///
+    /// Both rates are decimal annual rates.  `mortgage_coupon_rate` is the
+    /// MBS gross coupon/WAC and `refinancing_rate` is the contemporaneous
+    /// mortgage rate available to borrowers.
+    pub fn refinancing_incentive(
+        mortgage_coupon_rate: f64,
+        refinancing_rate: f64,
+    ) -> Result<f64, String> {
+        if !mortgage_coupon_rate.is_finite() || mortgage_coupon_rate < 0.0 {
+            return Err("mortgage_coupon_rate must be finite and >= 0".to_string());
+        }
+        if !refinancing_rate.is_finite() || refinancing_rate <= 0.0 {
+            return Err("refinancing_rate must be finite and > 0".to_string());
+        }
+
+        let ratio = mortgage_coupon_rate / refinancing_rate;
+        Ok(0.2406 - 0.1389 * (5.952 * (1.089 - ratio)).atan())
+    }
+
+    /// Annual CPR for a 1-indexed loan-age month and refinancing rate.
+    pub fn cpr(
+        &self,
+        loan_age_month: u32,
+        mortgage_coupon_rate: f64,
+        refinancing_rate: f64,
+    ) -> Result<f64, String> {
+        self.validate()?;
+        if loan_age_month == 0 {
+            return Err("loan_age_month must be >= 1".to_string());
+        }
+
+        let refinancing = Self::refinancing_incentive(mortgage_coupon_rate, refinancing_rate)?;
+        let seasoning = f64::from(loan_age_month.min(30)) / 30.0;
+        let age_month_offset = ((loan_age_month - 1) % 12) as usize;
+        let calendar_month = (usize::from(self.first_payment_month) - 1 + age_month_offset) % 12;
+        let cpr = refinancing * seasoning * Self::SEASONALITY[calendar_month];
+
+        if !(0.0..1.0).contains(&cpr) {
+            return Err("rate-incentive CPR must be in [0, 1)".to_string());
+        }
+        Ok(cpr)
+    }
+
+    /// Single Monthly Mortality rate for a 1-indexed loan-age month.
+    pub fn smm(
+        &self,
+        loan_age_month: u32,
+        mortgage_coupon_rate: f64,
+        refinancing_rate: f64,
+    ) -> Result<f64, String> {
+        let cpr = self.cpr(loan_age_month, mortgage_coupon_rate, refinancing_rate)?;
+        Ok(1.0 - (1.0 - cpr).powf(1.0 / 12.0))
+    }
+}
+
+impl Default for RateIncentivePrepayment {
+    fn default() -> Self {
+        Self {
+            first_payment_month: 1,
+        }
     }
 }
 
@@ -70,11 +203,20 @@ impl PrepaymentModel {
 /// MBS pass-through security.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MbsPassThrough {
+    /// Current pool balance at [`Self::age`].
     pub original_balance: f64,
+    /// Gross mortgage coupon / weighted-average coupon (WAC).
+    ///
+    /// This rate drives scheduled amortization and the refinancing incentive.
+    /// Investor pass-through interest uses this rate less [`Self::servicing_fee`].
     pub coupon_rate: f64,
+    /// Annual servicing strip deducted from the gross WAC for investor interest.
     pub servicing_fee: f64,
+    /// Original mortgage term in months.
     pub original_term: u32,
+    /// Current loan age in months.
     pub age: u32,
+    /// PSA or constant-CPR assumption used by the legacy, rate-independent APIs.
     pub prepayment: PrepaymentModel,
 }
 
@@ -113,9 +255,7 @@ impl MbsPassThrough {
         }
         match &self.prepayment {
             PrepaymentModel::Psa(m) => {
-                if !m.psa_speed.is_finite() || m.psa_speed < 0.0 {
-                    return Err("mbs psa_speed must be finite and >= 0".to_string());
-                }
+                m.validate().map_err(|error| format!("mbs {error}"))?;
             }
             PrepaymentModel::ConstantCpr(m) => {
                 if !m.annual_cpr.is_finite() || !(0.0..=1.0).contains(&m.annual_cpr) {
@@ -126,12 +266,10 @@ impl MbsPassThrough {
         Ok(())
     }
 
-    /// Generate the monthly cashflow schedule.
-    pub fn cashflows(&self) -> Vec<MbsCashflow> {
-        if self.validate().is_err() {
-            return Vec::new();
-        }
-
+    fn cashflows_from_smm(
+        &self,
+        mut smm_for_month: impl FnMut(u32, u32) -> f64,
+    ) -> Vec<MbsCashflow> {
         let net_coupon = self.coupon_rate - self.servicing_fee;
         let monthly_net = net_coupon / 12.0;
         let monthly_gross = self.coupon_rate / 12.0;
@@ -155,14 +293,18 @@ impl MbsPassThrough {
             // Scheduled principal: standard amortization payment minus interest (at gross rate)
             let periods_left = remaining_term - period + 1;
             let scheduled_payment = if monthly_gross > 0.0 {
-                balance * monthly_gross / (1.0 - (1.0 + monthly_gross).powi(-(periods_left as i32)))
+                // `1 - (1 + r)^-n` loses several digits for short pools or
+                // small coupons.  The log1p/expm1 form is algebraically
+                // identical and remains accurate as `r` approaches zero.
+                let denominator = -(-f64::from(periods_left) * monthly_gross.ln_1p()).exp_m1();
+                balance * monthly_gross / denominator
             } else {
                 balance / periods_left as f64
             };
             let scheduled_principal = scheduled_payment - balance * monthly_gross;
 
             // Prepayment on remaining balance after scheduled principal
-            let smm = self.prepayment.smm(month);
+            let smm = smm_for_month(month, period);
             let prepayment = (balance - scheduled_principal) * smm;
 
             let total_principal = scheduled_principal + prepayment;
@@ -185,6 +327,83 @@ impl MbsPassThrough {
         result
     }
 
+    /// Generate the monthly cashflow schedule.
+    pub fn cashflows(&self) -> Vec<MbsCashflow> {
+        if self.validate().is_err() {
+            return Vec::new();
+        }
+
+        self.cashflows_from_smm(|month, _period| self.prepayment.smm(month))
+    }
+
+    fn validate_rate_curve(
+        rates: &[f64],
+        remaining_term: usize,
+        name: &str,
+        require_positive: bool,
+    ) -> Result<(), String> {
+        let valid_length = if remaining_term == 0 {
+            rates.is_empty() || rates.len() == 1
+        } else {
+            rates.len() == 1 || rates.len() == remaining_term
+        };
+        if !valid_length {
+            return Err(format!(
+                "{name} must contain one value or one value per remaining payment ({remaining_term})"
+            ));
+        }
+        for &rate in rates {
+            if !rate.is_finite() {
+                return Err(format!("{name} values must be finite"));
+            }
+            if require_positive && rate <= 0.0 {
+                return Err(format!("{name} values must be > 0"));
+            }
+            if !require_positive && 1.0 + rate / 12.0 <= 0.0 {
+                return Err(format!(
+                    "{name} values must produce a positive monthly discount base"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn curve_value(rates: &[f64], period: usize) -> f64 {
+        if rates.len() == 1 {
+            rates[0]
+        } else {
+            rates[period]
+        }
+    }
+
+    /// Generate cashflows under an explicit monthly refinancing-rate scenario.
+    ///
+    /// `refinancing_rates` contains either one annual rate (broadcast to every
+    /// remaining month) or one rate per remaining payment.  This method uses
+    /// the MBS gross [`Self::coupon_rate`] as the mortgage coupon and replaces
+    /// the instrument's embedded PSA/constant-CPR assumption for this scenario.
+    pub fn cashflows_with_refinancing_rates(
+        &self,
+        model: &RateIncentivePrepayment,
+        refinancing_rates: &[f64],
+    ) -> Result<Vec<MbsCashflow>, String> {
+        self.validate()?;
+        model.validate()?;
+        let remaining_term = self.original_term.saturating_sub(self.age) as usize;
+        Self::validate_rate_curve(refinancing_rates, remaining_term, "refinancing_rates", true)?;
+        if remaining_term == 0 {
+            return Ok(Vec::new());
+        }
+
+        Ok(self.cashflows_from_smm(|month, period| {
+            let rate = Self::curve_value(refinancing_rates, period as usize - 1);
+            // Inputs were fully validated above, so this cannot fail.
+            model
+                .smm(month, self.coupon_rate, rate)
+                .expect("validated rate-incentive prepayment inputs")
+        }))
+    }
+
     /// Present value of a pre-computed cashflow schedule at a flat yield.
     ///
     /// The prepayment-driven schedule does not depend on the discount rate,
@@ -197,6 +416,16 @@ impl MbsPassThrough {
             .sum()
     }
 
+    fn pv_of_cashflows_with_yield_curve(cfs: &[MbsCashflow], discount_yields: &[f64]) -> f64 {
+        cfs.iter()
+            .enumerate()
+            .map(|(period, cf)| {
+                let annual_yield = Self::curve_value(discount_yields, period);
+                cf.total_cashflow * (1.0 + annual_yield / 12.0).powi(-(cf.month as i32))
+            })
+            .sum()
+    }
+
     /// Price given a constant discount rate (yield), as a fraction of current balance.
     ///
     /// Returns `NaN` for invalid instrument definitions (see [`Self::validate`]).
@@ -205,6 +434,47 @@ impl MbsPassThrough {
             return f64::NAN;
         }
         Self::pv_of_cashflows(&self.cashflows(), yield_rate)
+    }
+
+    /// Price under explicit refinancing-rate and discount-yield scenarios.
+    ///
+    /// Each curve contains either one annual nominal rate (broadcast) or one
+    /// rate per remaining monthly payment.  Discount-yield entry `i` is the
+    /// annual nominal spot yield for payment month `i`, compounded monthly.
+    pub fn price_with_rate_scenario(
+        &self,
+        model: &RateIncentivePrepayment,
+        refinancing_rates: &[f64],
+        discount_yields: &[f64],
+    ) -> Result<f64, String> {
+        let cfs = self.cashflows_with_refinancing_rates(model, refinancing_rates)?;
+        let remaining_term = self.original_term.saturating_sub(self.age) as usize;
+        Self::validate_rate_curve(discount_yields, remaining_term, "discount_yields", false)?;
+        if remaining_term == 0 {
+            return Ok(0.0);
+        }
+        Ok(Self::pv_of_cashflows_with_yield_curve(
+            &cfs,
+            discount_yields,
+        ))
+    }
+
+    /// Weighted Average Life under an explicit refinancing-rate scenario.
+    pub fn wal_with_refinancing_rates(
+        &self,
+        model: &RateIncentivePrepayment,
+        refinancing_rates: &[f64],
+    ) -> Result<f64, String> {
+        let cfs = self.cashflows_with_refinancing_rates(model, refinancing_rates)?;
+        let total_principal: f64 = cfs.iter().map(|c| c.total_principal).sum();
+        if total_principal == 0.0 {
+            return Ok(0.0);
+        }
+        let weighted: f64 = cfs
+            .iter()
+            .map(|c| c.total_principal * f64::from(c.month) / 12.0)
+            .sum();
+        Ok(weighted / total_principal)
     }
 
     /// Weighted Average Life in years.
@@ -277,6 +547,37 @@ impl MbsPassThrough {
         let p_down = Self::pv_of_cashflows(&cfs, yield_rate - bump);
         let p0 = Self::pv_of_cashflows(&cfs, yield_rate);
         (p_down - p_up) / (2.0 * bump * p0)
+    }
+
+    /// Effective duration for a parallel market-rate scenario shift.
+    ///
+    /// Both discount yields and refinancing rates are shifted, and the
+    /// prepayment cashflows are rebuilt for each side of the bump.  This is a
+    /// deterministic scenario duration, not a stochastic OAS model.
+    pub fn effective_duration_with_rate_scenario(
+        &self,
+        model: &RateIncentivePrepayment,
+        refinancing_rates: &[f64],
+        discount_yields: &[f64],
+        bump: f64,
+    ) -> Result<f64, String> {
+        if !bump.is_finite() || bump <= 0.0 {
+            return Err("bump must be finite and > 0".to_string());
+        }
+
+        let p0 = self.price_with_rate_scenario(model, refinancing_rates, discount_yields)?;
+        if !p0.is_finite() || p0 <= 0.0 {
+            return Err("unshifted scenario price must be finite and > 0".to_string());
+        }
+
+        let refinancing_up: Vec<f64> = refinancing_rates.iter().map(|r| r + bump).collect();
+        let refinancing_down: Vec<f64> = refinancing_rates.iter().map(|r| r - bump).collect();
+        let discount_up: Vec<f64> = discount_yields.iter().map(|r| r + bump).collect();
+        let discount_down: Vec<f64> = discount_yields.iter().map(|r| r - bump).collect();
+        let p_up = self.price_with_rate_scenario(model, &refinancing_up, &discount_up)?;
+        let p_down = self.price_with_rate_scenario(model, &refinancing_down, &discount_down)?;
+
+        Ok((p_down - p_up) / (2.0 * bump * p0))
     }
 }
 
@@ -385,6 +686,64 @@ mod tests {
         assert_relative_eq!(psa.cpr(30), 0.18, epsilon = 1.0e-15);
     }
 
+    #[test]
+    fn psa_speed_boundary_is_finite_and_larger_speeds_are_rejected() {
+        let boundary = PsaModel {
+            psa_speed: PsaModel::MAX_SPEED,
+        };
+        assert!(boundary.validate().is_ok());
+        assert_relative_eq!(boundary.cpr(30), 1.0, epsilon = 2.0e-16);
+        assert_relative_eq!(boundary.smm(30), 1.0, epsilon = 2.0e-16);
+
+        let boundary_mbs = make_mbs(PrepaymentModel::Psa(boundary));
+        assert!(boundary_mbs.validate().is_ok());
+        assert!(boundary_mbs.price(0.05).is_finite());
+        assert!(
+            boundary_mbs
+                .cashflows()
+                .iter()
+                .all(|cashflow| cashflow.total_cashflow.is_finite())
+        );
+
+        let invalid = PsaModel { psa_speed: 20.0 };
+        assert!(invalid.validate().is_err());
+        let invalid_mbs = make_mbs(PrepaymentModel::Psa(invalid));
+        assert!(invalid_mbs.validate().is_err());
+        assert!(invalid_mbs.cashflows().is_empty());
+        assert!(invalid_mbs.price(0.05).is_nan());
+    }
+
+    #[test]
+    fn rate_incentive_matches_ots_reference_formula_exactly() {
+        // Independently evaluated with 70-digit Decimal arithmetic.  The
+        // formula and coefficients are the OTS values reproduced in the
+        // MathWorks modified Richard--Roll example.
+        let cases = [
+            (0.8, 0.095_560_426_948_413_43),
+            (1.0, 0.172_935_392_137_225_9),
+            (1.089, 0.240_6),
+            (1.2, 0.321_695_509_253_931_6),
+            (1.5, 0.404_882_508_835_867_8),
+        ];
+        for (coupon_to_refi_ratio, expected) in cases {
+            let actual =
+                RateIncentivePrepayment::refinancing_incentive(coupon_to_refi_ratio, 1.0).unwrap();
+            assert_relative_eq!(actual, expected, epsilon = 2.0e-16);
+        }
+
+        let model = RateIncentivePrepayment::default();
+        assert_relative_eq!(
+            model.cpr(30, 0.06, 0.045).unwrap(),
+            0.345_104_608_673_138_1,
+            epsilon = 3.0e-16
+        );
+        assert_relative_eq!(
+            model.smm(30, 0.06, 0.045).unwrap(),
+            0.034_658_460_837_010_67,
+            epsilon = 3.0e-16
+        );
+    }
+
     fn make_mbs(prepayment: PrepaymentModel) -> MbsPassThrough {
         MbsPassThrough {
             original_balance: 100.0,
@@ -394,6 +753,262 @@ mod tests {
             age: 0,
             prepayment,
         }
+    }
+
+    #[test]
+    fn rate_incentive_flat_scenario_matches_decimal_cashflow_reference() {
+        let mut mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 1.0 }));
+        mbs.servicing_fee = 0.005;
+        let model = RateIncentivePrepayment::default();
+
+        let cfs = mbs
+            .cashflows_with_refinancing_rates(&model, &[0.045])
+            .unwrap();
+        assert_eq!(cfs.len(), 360);
+        assert_relative_eq!(
+            cfs[0].scheduled_principal,
+            0.099_550_525_152_752_4,
+            epsilon = 2.0e-14
+        );
+        assert_relative_eq!(
+            cfs[0].prepayment,
+            0.098_379_959_297_010_2,
+            epsilon = 2.0e-14
+        );
+        assert_relative_eq!(
+            cfs[29].prepayment,
+            2.010_471_950_656_109_7,
+            epsilon = 3.0e-13
+        );
+
+        let price = mbs
+            .price_with_rate_scenario(&model, &[0.045], &[0.05])
+            .unwrap();
+        let wal = mbs.wal_with_refinancing_rates(&model, &[0.045]).unwrap();
+        let duration = mbs
+            .effective_duration_with_rate_scenario(&model, &[0.045], &[0.05], 0.0001)
+            .unwrap();
+
+        assert_relative_eq!(price, 101.449_723_054_539_36, epsilon = 2.0e-12);
+        assert_relative_eq!(wal, 3.248_112_193_095_725, epsilon = 2.0e-13);
+        assert_relative_eq!(duration, 2.688_623_246_183_667_6, epsilon = 3.0e-11);
+    }
+
+    #[test]
+    fn rate_incentive_nonflat_scenario_matches_decimal_reference() {
+        let mut mbs = make_mbs(PrepaymentModel::ConstantCpr(ConstantCpr {
+            annual_cpr: 0.0,
+        }));
+        mbs.servicing_fee = 0.005;
+        let model = RateIncentivePrepayment::default();
+        let refinancing_rates: Vec<f64> = (1..=360)
+            .map(|month| {
+                if month <= 120 {
+                    0.065 - 0.025 * f64::from(month) / 120.0
+                } else {
+                    0.04 + 0.015 * f64::from(month - 120) / 240.0
+                }
+            })
+            .collect();
+        let discount_yields: Vec<f64> = (1..=360)
+            .map(|month| 0.04 + 0.01 * f64::from(month) / 360.0)
+            .collect();
+
+        // Full independent Decimal recurrence using the same explicitly
+        // documented rate paths (not values produced by this Rust engine).
+        let price = mbs
+            .price_with_rate_scenario(&model, &refinancing_rates, &discount_yields)
+            .unwrap();
+        let wal = mbs
+            .wal_with_refinancing_rates(&model, &refinancing_rates)
+            .unwrap();
+        assert_relative_eq!(price, 105.347_972_378_988_2, epsilon = 3.0e-12);
+        assert_relative_eq!(wal, 4.609_516_586_471_395, epsilon = 3.0e-13);
+    }
+
+    #[test]
+    fn aged_pool_rollover_and_curve_indices_match_decimal_reference() {
+        let mbs = MbsPassThrough {
+            original_balance: 100.0,
+            coupon_rate: 0.06,
+            servicing_fee: 0.005,
+            original_term: 15,
+            age: 10,
+            prepayment: PrepaymentModel::ConstantCpr(ConstantCpr { annual_cpr: 0.0 }),
+        };
+        let model = RateIncentivePrepayment::default();
+        let refinancing_rates = [0.07, 0.06, 0.05, 0.04, 0.03];
+        let discount_yields = [0.03, 0.035, 0.04, 0.045, 0.05];
+
+        // The first three remaining payments use loan-age months 11, 12 and
+        // 13. With a January first-payment month, their calendar multipliers
+        // are November, December and January respectively.
+        assert_relative_eq!(
+            model.cpr(11, 0.06, refinancing_rates[0]).unwrap(),
+            0.049_391_648_067_763_375,
+            epsilon = 2.0e-16
+        );
+        assert_relative_eq!(
+            model.cpr(12, 0.06, refinancing_rates[1]).unwrap(),
+            0.067_098_932_149_243_65,
+            epsilon = 2.0e-16
+        );
+        assert_relative_eq!(
+            model.cpr(13, 0.06, refinancing_rates[2]).unwrap(),
+            0.131_037_304_102_768_13,
+            epsilon = 3.0e-16
+        );
+
+        let cashflows = mbs
+            .cashflows_with_refinancing_rates(&model, &refinancing_rates)
+            .unwrap();
+        assert_eq!(
+            cashflows
+                .iter()
+                .map(|cashflow| cashflow.month)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+
+        // Independent 80-digit Decimal recurrence. Distinct rates in every
+        // remaining month make any age or rate-vector off-by-one visible.
+        let expected_prepayments = [
+            0.337_814_060_114_554_9,
+            0.346_537_264_592_425_1,
+            0.464_269_126_484_602_1,
+            0.253_696_067_603_719_95,
+            0.0,
+        ];
+        let expected_balances = [
+            79.861_188_442_335_63,
+            59.698_471_438_949_34,
+            39.433_878_454_802_085,
+            19.512_412_584_304_557,
+            0.0,
+        ];
+        for ((cashflow, expected_prepayment), expected_balance) in cashflows
+            .iter()
+            .zip(expected_prepayments)
+            .zip(expected_balances)
+        {
+            assert_relative_eq!(cashflow.prepayment, expected_prepayment, epsilon = 3.0e-14);
+            assert_relative_eq!(
+                cashflow.remaining_balance,
+                expected_balance,
+                epsilon = 8.0e-14
+            );
+        }
+        assert_relative_eq!(
+            cashflows[0].interest,
+            0.458_333_333_333_333_3,
+            epsilon = 2.0e-16
+        );
+        assert_relative_eq!(
+            cashflows[0].scheduled_principal,
+            19.800_997_497_549_81,
+            epsilon = 2.0e-14
+        );
+
+        let price = mbs
+            .price_with_rate_scenario(&model, &refinancing_rates, &discount_yields)
+            .unwrap();
+        let wal = mbs
+            .wal_with_refinancing_rates(&model, &refinancing_rates)
+            .unwrap();
+        assert_relative_eq!(price, 100.291_494_624_406_17, epsilon = 3.0e-14);
+        assert_relative_eq!(wal, 0.248_754_959_100_326_35, epsilon = 3.0e-15);
+    }
+
+    #[test]
+    fn tiny_coupon_annuity_denominator_stays_stable() {
+        let mbs = MbsPassThrough {
+            original_balance: 100.0,
+            coupon_rate: 1.2e-11,
+            servicing_fee: 0.0,
+            original_term: 2,
+            age: 0,
+            prepayment: PrepaymentModel::ConstantCpr(ConstantCpr { annual_cpr: 0.0 }),
+        };
+
+        let cashflows = mbs.cashflows();
+        let monthly_coupon = mbs.coupon_rate / 12.0;
+        // For a two-payment annuity the first scheduled principal simplifies
+        // exactly to B / (2 + r).  The direct power-difference formula loses
+        // roughly 4.4e-3 here through cancellation.
+        let expected_first_principal = mbs.original_balance / (2.0 + monthly_coupon);
+        assert_relative_eq!(
+            cashflows[0].scheduled_principal,
+            expected_first_principal,
+            epsilon = 2.0e-14
+        );
+        assert_relative_eq!(
+            cashflows
+                .iter()
+                .map(|cashflow| cashflow.total_principal)
+                .sum::<f64>(),
+            mbs.original_balance,
+            epsilon = 2.0e-14
+        );
+    }
+
+    #[test]
+    fn gross_wac_drives_amortization_and_incentive_while_interest_is_net() {
+        let mbs = MbsPassThrough {
+            original_balance: 100.0,
+            coupon_rate: 0.06,
+            servicing_fee: 0.005,
+            original_term: 360,
+            age: 0,
+            prepayment: PrepaymentModel::ConstantCpr(ConstantCpr { annual_cpr: 0.0 }),
+        };
+        let model = RateIncentivePrepayment::default();
+        let cashflow = &mbs
+            .cashflows_with_refinancing_rates(&model, &[0.045])
+            .unwrap()[0];
+
+        let gross_wac_smm = model.smm(1, 0.06, 0.045).unwrap();
+        let pass_through_coupon_smm = model.smm(1, 0.055, 0.045).unwrap();
+        assert_relative_eq!(
+            cashflow.interest,
+            100.0 * (0.06 - 0.005) / 12.0,
+            epsilon = 2.0e-16
+        );
+        assert_relative_eq!(
+            cashflow.prepayment,
+            (100.0 - cashflow.scheduled_principal) * gross_wac_smm,
+            epsilon = 2.0e-15
+        );
+        assert!(
+            (cashflow.prepayment
+                - (100.0 - cashflow.scheduled_principal) * pass_through_coupon_smm)
+                .abs()
+                > 0.01
+        );
+    }
+
+    #[test]
+    fn rate_incentive_scenario_validates_inputs_and_responds_to_rates() {
+        assert!(RateIncentivePrepayment::new(0).is_err());
+        assert!(RateIncentivePrepayment::new(13).is_err());
+        let model = RateIncentivePrepayment::new(1).unwrap();
+        assert!(model.cpr(0, 0.06, 0.05).is_err());
+        assert!(model.cpr(1, 0.06, 0.0).is_err());
+
+        let mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 1.0 }));
+        assert!(mbs.cashflows_with_refinancing_rates(&model, &[]).is_err());
+        assert!(
+            mbs.cashflows_with_refinancing_rates(&model, &[0.05, 0.04])
+                .is_err()
+        );
+        assert!(mbs.price_with_rate_scenario(&model, &[0.05], &[]).is_err());
+        assert!(
+            mbs.effective_duration_with_rate_scenario(&model, &[0.05], &[0.05], 0.0)
+                .is_err()
+        );
+
+        let fast_wal = mbs.wal_with_refinancing_rates(&model, &[0.04]).unwrap();
+        let slow_wal = mbs.wal_with_refinancing_rates(&model, &[0.075]).unwrap();
+        assert!(fast_wal < slow_wal);
     }
 
     #[test]

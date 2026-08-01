@@ -9,7 +9,8 @@ use crate::rates::{FundingRateCurve, YieldCurve};
 
 /// Standard 1bp rate bump.
 pub const FUNDING_RATE_BUMP_BP: f64 = 1.0e-4;
-/// Standard 1 vol-point bump.
+/// Legacy one-vol-point reporting bump retained for API compatibility.
+/// Linear funding-rate swaps do not use it because their vega is exactly zero.
 pub const FUNDING_RATE_VOL_BUMP: f64 = 1.0e-2;
 
 /// Risk outputs for a funding-rate swap.
@@ -59,16 +60,19 @@ pub fn funding_rate_swap_discount_dv01(
         - swap.mark_to_market(curve, Some(discount_curve), as_of)
 }
 
-/// PV change from a one vol-point shift in funding-rate volatility.
+/// Funding-rate volatility sensitivity.
+///
+/// The swap payoff is linear in each realised funding rate. Under the
+/// supplied deterministic discount curve its value depends only on the
+/// conditional forward means, so volatility drops out exactly and vega is
+/// zero. A nonlinear funding option would require a stochastic-rate model.
 pub fn funding_rate_swap_vega(
-    swap: &FundingRateSwap,
-    curve: &FundingRateCurve,
-    discount_curve: Option<&YieldCurve>,
-    as_of: DateTime<Utc>,
+    _swap: &FundingRateSwap,
+    _curve: &FundingRateCurve,
+    _discount_curve: Option<&YieldCurve>,
+    _as_of: DateTime<Utc>,
 ) -> f64 {
-    let bumped_curve = curve.volatility_shifted(FUNDING_RATE_VOL_BUMP);
-    swap.mark_to_market(&bumped_curve, discount_curve, as_of)
-        - swap.mark_to_market(curve, discount_curve, as_of)
+    0.0
 }
 
 /// Time decay from advancing one funding settlement interval.
@@ -117,12 +121,11 @@ fn bump_discount_curve(discount_curve: &YieldCurve, bump: f64) -> YieldCurve {
 
 #[cfg(test)]
 mod tests {
-    use approx::assert_relative_eq;
     use chrono::{DateTime, NaiveDate, Utc};
 
     use super::{
         FUNDING_RATE_BUMP_BP, funding_rate_swap_discount_dv01, funding_rate_swap_dv01,
-        funding_rate_swap_mtm, funding_rate_swap_risks,
+        funding_rate_swap_risks,
     };
     use crate::instruments::FundingRateSwap;
     use crate::rates::{FundingRateCurve, YieldCurve};
@@ -157,10 +160,17 @@ mod tests {
             * swap.interval_year_fraction()
             * FUNDING_RATE_BUMP_BP;
 
-        assert_relative_eq!(
-            funding_rate_swap_dv01(&swap, &curve, None, as_of),
-            expected,
-            epsilon = 1.0e-12
+        let actual = funding_rate_swap_dv01(&swap, &curve, None, as_of);
+        let unbumped_mtm_scale = remaining_intervals
+            * (0.05 - swap.fixed_rate).abs()
+            * swap.notional
+            * swap.interval_year_fraction();
+        let cancellation_roundoff = 32.0 * f64::EPSILON * unbumped_mtm_scale;
+        assert!(
+            (actual - expected).abs() <= cancellation_roundoff,
+            "funding DV01 error {:e} exceeds binary64 cancellation budget \
+             {cancellation_roundoff:e}",
+            actual - expected
         );
     }
 
@@ -184,25 +194,34 @@ mod tests {
         ]);
         let as_of = dt(2026, 1, 1, 0);
 
-        let expected = funding_rate_swap_mtm(
-            &swap,
-            &curve,
-            Some(&super::bump_discount_curve(
-                &discount_curve,
-                FUNDING_RATE_BUMP_BP,
-            )),
-            as_of,
-        ) - funding_rate_swap_mtm(&swap, &curve, Some(&discount_curve), as_of);
+        // Independent cashflow identity: a parallel continuously compounded
+        // zero-rate bump multiplies DF(t_i) by exp(-bump*t_i).
+        let interval_pnl = (0.13 - swap.fixed_rate) * swap.notional * swap.interval_year_fraction();
+        let expected = [interval, 2.0 * interval, 3.0 * interval]
+            .into_iter()
+            .map(|time| {
+                interval_pnl
+                    * discount_curve.discount_factor(time)
+                    * ((-FUNDING_RATE_BUMP_BP * time).exp() - 1.0)
+            })
+            .sum::<f64>();
 
-        assert_relative_eq!(
-            funding_rate_swap_discount_dv01(&swap, &curve, Some(&discount_curve), as_of),
-            expected,
-            epsilon = 1.0e-12
+        let actual = funding_rate_swap_discount_dv01(&swap, &curve, Some(&discount_curve), as_of);
+        let unbumped_leg_scale = interval_pnl.abs()
+            * [interval, 2.0 * interval, 3.0 * interval]
+                .into_iter()
+                .map(|time| discount_curve.discount_factor(time))
+                .sum::<f64>();
+        let cancellation_roundoff = 32.0 * f64::EPSILON * unbumped_leg_scale;
+        assert!(
+            (actual - expected).abs() <= cancellation_roundoff,
+            "discount DV01 error {:e} exceeds binary64 cancellation budget \
+             {cancellation_roundoff:e}",
+            actual - expected
         );
-        assert_relative_eq!(
+        assert_eq!(
             funding_rate_swap_discount_dv01(&swap, &curve, None, as_of),
-            0.0,
-            epsilon = 1.0e-12
+            0.0
         );
     }
 
@@ -222,17 +241,33 @@ mod tests {
         let interval_pnl = (0.05 - swap.fixed_rate) * swap.notional * swap.interval_year_fraction();
         let risks = funding_rate_swap_risks(&swap, &curve, None, as_of);
 
-        assert_relative_eq!(risks.mtm, 3.0 * interval_pnl, epsilon = 1.0e-12);
-        assert_relative_eq!(
-            risks.dv01,
-            3.0 * swap.notional * swap.interval_year_fraction() * FUNDING_RATE_BUMP_BP,
-            epsilon = 1.0e-12
+        let expected_mtm = 3.0 * interval_pnl;
+        let mtm_roundoff = 8.0 * f64::EPSILON * expected_mtm.abs();
+        assert!(
+            (risks.mtm - expected_mtm).abs() <= mtm_roundoff,
+            "aggregate MTM error {:e} exceeds binary64 budget {mtm_roundoff:e}",
+            risks.mtm - expected_mtm
+        );
+        let expected_dv01 =
+            3.0 * swap.notional * swap.interval_year_fraction() * FUNDING_RATE_BUMP_BP;
+        let dv01_cancellation_roundoff = 32.0 * f64::EPSILON * expected_mtm.abs();
+        assert!(
+            (risks.dv01 - expected_dv01).abs() <= dv01_cancellation_roundoff,
+            "aggregate DV01 error {:e} exceeds binary64 cancellation budget \
+             {dv01_cancellation_roundoff:e}",
+            risks.dv01 - expected_dv01
         );
         // FundingRateCurve currently has no volatility state, so its documented
         // volatility shift is a no-op and vega is exactly zero.
-        assert_relative_eq!(risks.vega, 0.0, epsilon = 1.0e-15);
+        assert_eq!(risks.vega, 0.0);
         // Advancing to the first settlement removes exactly one undiscounted
         // interval from the remaining MTM.
-        assert_relative_eq!(risks.theta, -interval_pnl, epsilon = 1.0e-12);
+        let theta_cancellation_roundoff = 16.0 * f64::EPSILON * expected_mtm.abs();
+        assert!(
+            (risks.theta + interval_pnl).abs() <= theta_cancellation_roundoff,
+            "theta error {:e} exceeds binary64 cancellation budget \
+             {theta_cancellation_roundoff:e}",
+            risks.theta + interval_pnl
+        );
     }
 }

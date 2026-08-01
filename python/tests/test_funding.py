@@ -24,6 +24,7 @@ from openferric import (
     funding_rate_swap_mtm,
     funding_rate_swap_risks,
     funding_rate_swap_theta,
+    funding_rate_swap_vega,
 )
 
 
@@ -57,13 +58,13 @@ class TestFundingRateCurve:
         assert len(curve.snapshots()) == 4
         assert curve.snapshots()[0].venue == "Binance"
         assert len(curve.nodes()) == 4
-        assert curve.forward_rate(0.0) == pytest.approx(0.00010, abs=ABS_TOL)
-        assert curve.forward_rate(1.0 / (1095.0 * 2.0)) == pytest.approx(0.00011, abs=1e-12)
+        assert curve.forward_rate(0.0) == pytest.approx(0.00010, rel=0.0, abs=ABS_TOL)
+        assert curve.forward_rate(1.0 / (1095.0 * 2.0)) == pytest.approx(0.00011, rel=0.0, abs=1e-12)
         assert curve.discount_factor(2.0 / 1095.0) < 1.0
 
         stats = FundingRateStats.from_rates([snapshot.rate for snapshot in snapshots])
         assert stats.window_size == 4
-        assert stats.mean == pytest.approx(0.00013, abs=1e-12)
+        assert stats.mean == pytest.approx(0.00013, rel=0.0, abs=1e-12)
 
         rolling = curve.rolling_stats(3)
         assert len(rolling) == 2
@@ -75,8 +76,8 @@ class TestFundingRateCurve:
         venue_b = FundingRateCurve(build_snapshots("Bybit", "BTCUSDT", [0.0003, 0.0003]))
         composite = MultiVenueFundingCurve([(venue_a, 1.0), (venue_b, 3.0)])
 
-        assert composite.forward_rate(0.0) == pytest.approx(0.00025, abs=1e-12)
-        assert composite.cumulative_index(1.0 / 1095.0) == pytest.approx(0.00025, abs=1e-12)
+        assert composite.forward_rate(0.0) == pytest.approx(0.00025, rel=0.0, abs=1e-12)
+        assert composite.cumulative_index(1.0 / 1095.0) == pytest.approx(0.00025, rel=0.0, abs=1e-12)
 
 
 class TestFundingRateSwap:
@@ -105,11 +106,15 @@ class TestFundingRateSwap:
                 ("2026-01-02T00:00:00Z", 0.11),
             ]
         )
-        expected_realized = ((0.12 - 0.10) + (0.08 - 0.10) + (0.11 - 0.10)) * 1_000.0 * (8.0 / 8760.0)
-        assert realized == pytest.approx(expected_realized, abs=1e-12)
+        interval = 8.0 / 8760.0
+        realized_rates = [0.12, 0.08, 0.11]
+        expected_realized = sum(rate - 0.10 for rate in realized_rates) * 1_000.0 * interval
+        realized_cashflow_scale = sum(abs(rate - 0.10) * 1_000.0 * interval for rate in realized_rates)
+        assert abs(realized - expected_realized) <= 32.0 * math.ulp(1.0) * realized_cashflow_scale
 
         mtm = funding_rate_swap_mtm(swap, curve, "2026-01-01T08:00:00Z")
-        assert mtm == pytest.approx(2.0 * (0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0), abs=1e-12)
+        expected_mtm = 2.0 * (0.13 - 0.10) * 1_000.0 * interval
+        assert abs(mtm - expected_mtm) <= 16.0 * math.ulp(1.0) * abs(expected_mtm)
 
         discount_curve = YieldCurve(
             [
@@ -123,8 +128,10 @@ class TestFundingRateSwap:
             "2026-01-01T08:00:00Z",
             discount_curve=discount_curve,
         )
-        expected_interval = (0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0)
-        assert discounted_mtm == pytest.approx(expected_interval * 0.99 + expected_interval * 0.97, abs=1e-12)
+        expected_interval = (0.13 - 0.10) * 1_000.0 * interval
+        expected_discounted_mtm = expected_interval * 0.99 + expected_interval * 0.97
+        discounted_leg_scale = abs(expected_interval * 0.99) + abs(expected_interval * 0.97)
+        assert abs(discounted_mtm - expected_discounted_mtm) <= 32.0 * math.ulp(1.0) * discounted_leg_scale
 
         dv01 = funding_rate_swap_dv01(
             FundingRateSwap(
@@ -138,7 +145,9 @@ class TestFundingRateSwap:
             FundingRateCurve.flat(0.05),
             "2026-01-01T00:00:00Z",
         )
-        assert dv01 == pytest.approx(3.0 * 5_000.0 * (8.0 / 8760.0) * 1.0e-4, abs=1e-12)
+        expected_dv01 = 3.0 * 5_000.0 * interval * 1.0e-4
+        unbumped_mtm_scale = 3.0 * (0.05 - 0.04) * 5_000.0 * interval
+        assert abs(dv01 - expected_dv01) <= 32.0 * math.ulp(1.0) * unbumped_mtm_scale
 
         discount_dv01 = funding_rate_swap_discount_dv01(
             swap,
@@ -146,10 +155,26 @@ class TestFundingRateSwap:
             "2026-01-01T08:00:00Z",
             discount_curve=discount_curve,
         )
-        assert discount_dv01 < 0.0
+        expected_discount_dv01 = expected_interval * (
+            0.99 * math.expm1(-1.0e-4 * interval) + 0.97 * math.expm1(-1.0e-4 * 2.0 * interval)
+        )
+        cancellation_budget = 32.0 * math.ulp(discounted_mtm)
+        assert abs(discount_dv01 - expected_discount_dv01) <= cancellation_budget
+        assert funding_rate_swap_discount_dv01(swap, curve, "2026-01-01T08:00:00Z") == 0.0
+        assert (
+            funding_rate_swap_vega(
+                swap,
+                curve,
+                "2026-01-01T08:00:00Z",
+                discount_curve=discount_curve,
+            )
+            == 0.0
+        )
 
         theta = funding_rate_swap_theta(swap, curve, "2026-01-01T00:00:00Z")
-        assert theta == pytest.approx(-(0.13 - 0.10) * 1_000.0 * (8.0 / 8760.0), abs=1e-12)
+        expected_theta = -(0.13 - 0.10) * 1_000.0 * interval
+        full_mtm_scale = 3.0 * abs(expected_theta)
+        assert abs(theta - expected_theta) <= 32.0 * math.ulp(1.0) * full_mtm_scale
 
         risks = funding_rate_swap_risks(
             swap,
@@ -157,7 +182,8 @@ class TestFundingRateSwap:
             "2026-01-01T08:00:00Z",
             discount_curve=discount_curve,
         )
-        assert risks.mtm == pytest.approx(discounted_mtm, abs=1e-12)
+        assert risks.mtm == discounted_mtm
+        assert risks.vega == 0.0
         assert set(risks.to_dict()) == {"mtm", "dv01", "vega", "theta"}
 
 
@@ -176,8 +202,8 @@ class TestMarginAndLiquidation:
         assert math.isfinite(liquidation_rate)
 
         leverage = InherentLeverage.leverage(5_000_000.0, 125_000.0)
-        assert leverage == pytest.approx(40.0, abs=ABS_TOL)
-        assert InherentLeverage.leveraged_return(0.01, leverage) == pytest.approx(0.4, abs=ABS_TOL)
+        assert leverage == pytest.approx(40.0, rel=0.0, abs=ABS_TOL)
+        assert InherentLeverage.leveraged_return(0.01, leverage) == pytest.approx(0.4, rel=0.0, abs=ABS_TOL)
 
         position = LiquidationPosition(
             -5_000_000.0,

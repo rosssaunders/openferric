@@ -36,7 +36,7 @@
 //! use openferric::pricing::european::black_scholes_price;
 //!
 //! let px = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
-//! assert!(px > 10.0 && px < 11.0);
+//! assert!((px - 10.450_583_572_185_565).abs() < 2.0e-12);
 //! ```
 //!
 //! Compute Greeks:

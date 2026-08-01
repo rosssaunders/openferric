@@ -132,7 +132,7 @@ impl Clone for FundingRateCurve {
     fn clone(&self) -> Self {
         // All fields are immutable after construction; the interpolator is
         // shared via Arc rather than rebuilt (clones sit on bump-and-reprice
-        // paths such as parallel_shifted/volatility_shifted).
+        // paths such as parallel_shifted).
         Self {
             snapshots: self.snapshots.clone(),
             anchor_timestamp: self.anchor_timestamp,
@@ -269,12 +269,16 @@ impl FundingRateCurve {
         if shifted.is_empty() {
             return self.clone();
         }
-        Self::new(shifted)
+        Self::new_with_interpolation(shifted, self.interpolation_mode)
     }
 
-    /// Returns a copy with a volatility shift (stub — returns self since
-    /// the snapshot-based curve has no volatility parameter; provided for
-    /// API compatibility with pricing engines).
+    /// Identity transform retained for API compatibility.
+    ///
+    /// A funding forward curve stores conditional expected rates, not a
+    /// volatility state. Consequently a volatility bump is undefined at the
+    /// curve level and this method deliberately leaves the curve unchanged.
+    /// Linear funding swaps have exact zero vega; nonlinear funding options
+    /// require a separate stochastic model rather than this method.
     pub fn volatility_shifted(&self, _bump: f64) -> Self {
         self.clone()
     }
@@ -665,6 +669,31 @@ mod tests {
             rate2 > 0.001,
             "should have jumped to higher rate at second node"
         );
+    }
+
+    #[test]
+    fn parallel_shift_preserves_piecewise_constant_interpolation_exactly() {
+        let curve = FundingRateCurve::new_with_interpolation(
+            vec![
+                snapshot("binance", "BTCUSDT", 0.001, 2025, 1, 1, 0),
+                snapshot("binance", "BTCUSDT", 0.005, 2025, 7, 1, 0),
+            ],
+            FundingRateInterpolation::PiecewiseConstant,
+        );
+        let bump_apr = 0.1095; // exactly 0.0001 per eight-hour period
+        let shifted = curve.parallel_shifted(bump_apr);
+
+        assert_eq!(
+            shifted.interpolation_mode(),
+            FundingRateInterpolation::PiecewiseConstant
+        );
+        for time in [0.0, 0.1, 0.25, 0.49, 0.75] {
+            assert_relative_eq!(
+                shifted.forward_rate(time),
+                curve.forward_rate(time) + 0.0001,
+                epsilon = 2.0e-16
+            );
+        }
     }
 
     #[test]

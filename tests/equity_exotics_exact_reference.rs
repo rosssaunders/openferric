@@ -11,6 +11,8 @@
 //!   to the published two-asset max/min basket cases).
 //! - SciPy 1.17.1 `scipy.stats.norm.cdf`, evaluated independently for the
 //!   cash/asset/gap digital, quanto, FX, and one-asset basket values below.
+//! - SciPy 1.17.1 independently scrambled Sobol replicates and NumPy 2.4.3
+//!   Cholesky correlation for the general stochastic basket values below.
 //! - Deterministic limiting cases are derived directly from their discounted
 //!   contractual cash flows and therefore have no Monte Carlo tolerance.
 
@@ -57,6 +59,30 @@ fn assert_close(label: &str, actual: f64, expected: f64, tolerance: f64) {
     assert!(
         error <= tolerance,
         "{label}: expected={expected:.15}, actual={actual:.15}, error={error:.3e}, tolerance={tolerance:.3e}"
+    );
+}
+
+fn assert_mc_matches_qmc(
+    label: &str,
+    actual: f64,
+    implementation_stderr: Option<f64>,
+    reference: f64,
+    reference_stderr: f64,
+) {
+    let implementation_stderr = implementation_stderr.expect("MC reports standard error");
+    assert!(
+        implementation_stderr.is_finite() && implementation_stderr > 0.0,
+        "{label}: invalid implementation standard error {implementation_stderr}"
+    );
+    let combined_stderr = implementation_stderr.hypot(reference_stderr);
+    let roundoff = 32.0 * f64::EPSILON * actual.abs().max(reference.abs()).max(1.0);
+    let budget = 4.0 * combined_stderr + roundoff;
+    let error = (actual - reference).abs();
+    assert!(
+        error <= budget,
+        "{label}: reference={reference:.17e} +/- {reference_stderr:.3e}, \
+         actual={actual:.17e} +/- {implementation_stderr:.3e}, \
+         error={error:.3e}, four-combined-stderr budget={budget:.3e}"
     );
 }
 
@@ -881,6 +907,169 @@ fn best_and_worst_basket_mc_match_quantlib_stulz_references() {
         let tolerance = 4.0 * result.stderr.expect("MC stderr") + 1.0e-5;
         assert_close("QuantLib basket MC", result.price, expected, tolerance);
     }
+}
+
+#[test]
+fn general_stochastic_baskets_match_independent_scipy_sobol_references() {
+    // Each cached oracle below is the mean of 32 independently Owen-scrambled
+    // SciPy 1.17.1 Sobol replicates with 2^20 points per replicate. NumPy 2.4.3
+    // maps the Sobol uniforms through the inverse normal CDF and applies a
+    // Cholesky factor to the stated correlation matrix. REFERENCE_SE is the
+    // sample standard deviation of the 32 replicate prices divided by sqrt(32).
+    // The implementation uses an unrelated Xoshiro pseudorandom stream.
+    const IMPLEMENTATION_PATHS: usize = 500_000;
+
+    let spots3 = [100.0, 98.0, 102.0];
+    let vols3 = [0.25, 0.22, 0.20];
+    let dividends3 = [0.0; 3];
+    let corr3 = [
+        vec![1.0, 0.40, 0.20],
+        vec![0.40, 1.0, 0.30],
+        vec![0.20, 0.30, 1.0],
+    ];
+    // Scramble seeds 273000..273031. BasketType::BestOf/WorstOf prices calls
+    // on max/min_i(S_i(T)/S_i(0)) with K=1, r=1%, q_i=0, and T=1.
+    for (basket_type, label, reference, reference_stderr) in [
+        (
+            BasketType::BestOf,
+            "three-asset best-of call",
+            0.193_257_668_769_514_9,
+            8.057_553_280_924_98e-8,
+        ),
+        (
+            BasketType::WorstOf,
+            "three-asset worst-of call",
+            0.017_982_413_968_364_988,
+            2.996_601_505_311_016e-8,
+        ),
+    ] {
+        let basket = BasketOption {
+            weights: vec![],
+            strike: 1.0,
+            maturity: 1.0,
+            is_call: true,
+            basket_type,
+        };
+        let result = price_basket_mc_with_copula(
+            &basket,
+            &spots3,
+            &vols3,
+            &corr3,
+            0.01,
+            &dividends3,
+            IMPLEMENTATION_PATHS,
+            BasketCopula::Gaussian,
+        );
+        assert_mc_matches_qmc(
+            label,
+            result.price,
+            result.stderr,
+            reference,
+            reference_stderr,
+        );
+    }
+
+    // Five-asset weighted-average call with K=100, r=2%, q_i=0, T=1 and
+    // the exact two-factor loadings below. The independent reference uses the
+    // implied correlation rho_ij=sum_k(beta_ik*beta_jk), not the factor sampler
+    // under test. Scramble seeds are 183000..183031.
+    let factor_basket = BasketOption {
+        weights: vec![0.30, 0.25, 0.20, 0.15, 0.10],
+        strike: 100.0,
+        maturity: 1.0,
+        is_call: true,
+        basket_type: BasketType::Average,
+    };
+    let factor_model = FactorCorrelationModel::MultiFactor {
+        loadings: vec![
+            vec![0.60, 0.10],
+            vec![0.50, -0.10],
+            vec![0.40, 0.20],
+            vec![0.35, -0.20],
+            vec![0.25, 0.15],
+        ],
+    };
+    let factor_result = price_basket_mc_with_factor_model(
+        &factor_basket,
+        &[100.0, 101.0, 99.0, 97.0, 103.0],
+        &[0.20, 0.22, 0.18, 0.21, 0.19],
+        &factor_model,
+        0.02,
+        &[0.0; 5],
+        IMPLEMENTATION_PATHS,
+        BasketCopula::Gaussian,
+    );
+    assert_mc_matches_qmc(
+        "five-asset two-factor average call",
+        factor_result.price,
+        factor_result.stderr,
+        5.919_332_695_780_863,
+        1.178_336_468_285_617_3e-5,
+    );
+
+    // Three-asset outperformance call: S=[100,95,105], sigma=[20%,22%,21%],
+    // rho=[[1,.4,.35],[.4,1,.3],[.35,.3,1]], r=2%, q_i=0, T=1,
+    // leader=asset 0, lagger=.5*S1+.5*S2, K=1. Seeds 293000..293031.
+    let outperformance = OutperformanceBasketOption {
+        leader_index: 0,
+        lagger_weights: vec![0.0, 0.5, 0.5],
+        strike: 1.0,
+        maturity: 1.0,
+        option_type: OptionType::Call,
+    };
+    let outperformance_result = price_outperformance_basket_mc(
+        &outperformance,
+        &[100.0, 95.0, 105.0],
+        &[0.20, 0.22, 0.21],
+        &[
+            vec![1.0, 0.40, 0.35],
+            vec![0.40, 1.0, 0.30],
+            vec![0.35, 0.30, 1.0],
+        ],
+        0.02,
+        &[0.0; 3],
+        IMPLEMENTATION_PATHS,
+    );
+    assert_mc_matches_qmc(
+        "three-asset outperformance call",
+        outperformance_result.price,
+        outperformance_result.stderr,
+        0.083_727_546_602_651_91,
+        4.063_382_457_167_203_4e-8,
+    );
+
+    // Two-asset quanto average call: S=[100,98], weights=[.6,.4], K=100,
+    // sigma=[20%,22%], rho12=.4, q_i=1%, T=1, FX=1.2, sigma_FX=12%,
+    // rho_asset,FX=[.3,.25], rd=3%, rf=2%. Seeds 203000..203031.
+    let quanto = QuantoBasketOption {
+        basket: BasketOption {
+            weights: vec![0.60, 0.40],
+            strike: 100.0,
+            maturity: 1.0,
+            is_call: true,
+            basket_type: BasketType::Average,
+        },
+        fx_rate: 1.20,
+        fx_vol: 0.12,
+        asset_fx_corr: vec![0.30, 0.25],
+        domestic_rate: 0.03,
+        foreign_rate: 0.02,
+    };
+    let quanto_result = price_quanto_basket_mc(
+        &quanto,
+        &[100.0, 98.0],
+        &[0.20, 0.22],
+        &[vec![1.0, 0.40], vec![0.40, 1.0]],
+        &[0.01, 0.01],
+        IMPLEMENTATION_PATHS,
+    );
+    assert_mc_matches_qmc(
+        "two-asset quanto average call",
+        quanto_result.price,
+        quanto_result.stderr,
+        7.820_441_594_319_476,
+        1.553_014_744_327_432_6e-6,
+    );
 }
 
 #[test]

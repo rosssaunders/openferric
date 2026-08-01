@@ -19,6 +19,7 @@ use openferric_core::instruments::{
     PhoenixAutocallable as CorePhoenixAutocallable, PowerOption as CorePowerOption,
     PrepaymentModel as CorePrepaymentModel, PsaModel as CorePsaModel,
     QuantoBasketOption as CoreQuantoBasketOption, RangeAccrual as CoreRangeAccrual,
+    RateIncentivePrepayment as CoreRateIncentivePrepayment,
     RealOptionBinomialSpec as CoreRealOptionBinomialSpec, SpreadOption as CoreSpreadOption,
     SwingOption as CoreSwingOption, Tarf as CoreTarf, TarfType as CoreTarfType,
     TwoAssetCorrelationOption as CoreTwoAssetCorrelationOption, VanillaOption as CoreVanillaOption,
@@ -1812,16 +1813,26 @@ impl PsaModel {
 #[pymethods]
 impl PsaModel {
     #[new]
-    fn new(psa_speed: f64) -> Self {
-        Self { psa_speed }
+    fn new(psa_speed: f64) -> PyResult<Self> {
+        let model = Self { psa_speed };
+        model.to_core().validate().map_err(map_err_string)?;
+        Ok(model)
     }
 
-    fn cpr(&self, month: u32) -> f64 {
-        self.to_core().cpr(month)
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
     }
 
-    fn smm(&self, month: u32) -> f64 {
-        self.to_core().smm(month)
+    fn cpr(&self, month: u32) -> PyResult<f64> {
+        let model = self.to_core();
+        model.validate().map_err(map_err_string)?;
+        Ok(model.cpr(month))
+    }
+
+    fn smm(&self, month: u32) -> PyResult<f64> {
+        let model = self.to_core();
+        model.validate().map_err(map_err_string)?;
+        Ok(model.smm(month))
     }
 }
 
@@ -1837,6 +1848,61 @@ impl ConstantCpr {
         CoreConstantCpr {
             annual_cpr: self.annual_cpr,
         }
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone)]
+pub struct RateIncentivePrepayment {
+    #[pyo3(get, set)]
+    pub first_payment_month: u8,
+}
+
+impl RateIncentivePrepayment {
+    fn to_core(&self) -> CoreRateIncentivePrepayment {
+        CoreRateIncentivePrepayment {
+            first_payment_month: self.first_payment_month,
+        }
+    }
+}
+
+#[pymethods]
+impl RateIncentivePrepayment {
+    #[new]
+    #[pyo3(signature = (first_payment_month=1))]
+    fn new(first_payment_month: u8) -> PyResult<Self> {
+        CoreRateIncentivePrepayment::new(first_payment_month).map_err(map_err_string)?;
+        Ok(Self {
+            first_payment_month,
+        })
+    }
+
+    #[staticmethod]
+    fn refinancing_incentive(mortgage_coupon_rate: f64, refinancing_rate: f64) -> PyResult<f64> {
+        CoreRateIncentivePrepayment::refinancing_incentive(mortgage_coupon_rate, refinancing_rate)
+            .map_err(map_err_string)
+    }
+
+    fn cpr(
+        &self,
+        loan_age_month: u32,
+        mortgage_coupon_rate: f64,
+        refinancing_rate: f64,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .cpr(loan_age_month, mortgage_coupon_rate, refinancing_rate)
+            .map_err(map_err_string)
+    }
+
+    fn smm(
+        &self,
+        loan_age_month: u32,
+        mortgage_coupon_rate: f64,
+        refinancing_rate: f64,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .smm(loan_age_month, mortgage_coupon_rate, refinancing_rate)
+            .map_err(map_err_string)
     }
 }
 
@@ -2012,12 +2078,44 @@ impl MbsPassThrough {
             .collect()
     }
 
+    fn cashflows_with_refinancing_rates(
+        &self,
+        model: RateIncentivePrepayment,
+        refinancing_rates: Vec<f64>,
+    ) -> PyResult<Vec<MbsCashflow>> {
+        self.to_core()
+            .cashflows_with_refinancing_rates(&model.to_core(), &refinancing_rates)
+            .map(|cashflows| cashflows.into_iter().map(MbsCashflow::from_core).collect())
+            .map_err(map_err_string)
+    }
+
     fn price(&self, yield_rate: f64) -> f64 {
         self.to_core().price(yield_rate)
     }
 
+    fn price_with_rate_scenario(
+        &self,
+        model: RateIncentivePrepayment,
+        refinancing_rates: Vec<f64>,
+        discount_yields: Vec<f64>,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .price_with_rate_scenario(&model.to_core(), &refinancing_rates, &discount_yields)
+            .map_err(map_err_string)
+    }
+
     fn wal(&self) -> f64 {
         self.to_core().wal()
+    }
+
+    fn wal_with_refinancing_rates(
+        &self,
+        model: RateIncentivePrepayment,
+        refinancing_rates: Vec<f64>,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .wal_with_refinancing_rates(&model.to_core(), &refinancing_rates)
+            .map_err(map_err_string)
     }
 
     fn oas(&self, market_price: f64, base_yields: Vec<f64>) -> f64 {
@@ -2026,6 +2124,23 @@ impl MbsPassThrough {
 
     fn effective_duration(&self, yield_rate: f64) -> f64 {
         self.to_core().effective_duration(yield_rate)
+    }
+
+    fn effective_duration_with_rate_scenario(
+        &self,
+        model: RateIncentivePrepayment,
+        refinancing_rates: Vec<f64>,
+        discount_yields: Vec<f64>,
+        bump: f64,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .effective_duration_with_rate_scenario(
+                &model.to_core(),
+                &refinancing_rates,
+                &discount_yields,
+                bump,
+            )
+            .map_err(map_err_string)
     }
 }
 
@@ -3331,6 +3446,7 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SwingOption>()?;
     module.add_class::<PsaModel>()?;
     module.add_class::<ConstantCpr>()?;
+    module.add_class::<RateIncentivePrepayment>()?;
     module.add_class::<PrepaymentModel>()?;
     module.add_class::<MbsCashflow>()?;
     module.add_class::<MbsPassThrough>()?;

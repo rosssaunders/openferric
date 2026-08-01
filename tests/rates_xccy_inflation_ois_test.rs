@@ -1,7 +1,7 @@
 use approx::assert_relative_eq;
 
 use openferric::rates::{
-    InflationCurveBuilder, InflationIndexedBond, OvernightIndexSwap, XccySwap,
+    Frequency, InflationCurveBuilder, InflationIndexedBond, OvernightIndexSwap, XccySwap,
     YearOnYearInflationSwap, YieldCurve, ZeroCouponInflationSwap,
 };
 
@@ -13,6 +13,224 @@ fn flat_curve_continuous(rate: f64, max_tenor_years: u32) -> YieldCurve {
         })
         .collect();
     YieldCurve::new(tenors)
+}
+
+#[test]
+fn xccy_quarterly_dual_curve_cashflows_match_high_precision_reference() {
+    // Independent Python Decimal (80 digits) reference.  Each quarterly
+    // floating coupon uses (DFp(t0)/DFp(t1)-1) and both legs are discounted
+    // at their own continuously compounded flat curve:
+    //   N1=100m, N2=90m, K=3%, spread=25bp, FX=1.1111, T=5
+    //   r1=4%, r2_discount=3%, r2_projection=3.5%.
+    let ccy1_discount = flat_curve_continuous(0.04, 5);
+    let ccy2_discount = flat_curve_continuous(0.03, 5);
+    let ccy2_projection = flat_curve_continuous(0.035, 5);
+    let swap = XccySwap {
+        notional1: 100_000_000.0,
+        notional2: 90_000_000.0,
+        fixed_rate: 0.03,
+        float_spread: 0.0025,
+        tenor: 5.0,
+        fx_spot: 1.1111,
+    };
+
+    let fixed = swap.fixed_leg_pv_ccy1_with_frequency(&ccy1_discount, Frequency::Quarterly);
+    let floating = swap.float_leg_pv_ccy2_with_frequency(
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::Quarterly,
+    );
+    let npv = swap.npv_dual_curve_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::Quarterly,
+        Frequency::Quarterly,
+        true,
+    );
+
+    // Eight binary64 rounding units per accumulated leg also covers the
+    // cancellation in NPV; this is about 1.7e-7 currency units, not a pricing
+    // tolerance.
+    let roundoff = 8.0 * f64::EPSILON * fixed.max(floating);
+    assert!((fixed - 95_400_406.152_444_3).abs() <= roundoff);
+    assert!((floating - 93_139_314.121_691_67).abs() <= roundoff);
+    assert!((npv - 8_086_685.768_167_322).abs() <= roundoff);
+
+    let par = swap.par_fixed_rate_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::Quarterly,
+        Frequency::Quarterly,
+    );
+    assert_relative_eq!(par, 0.047_934_105_096_648_605, epsilon = 2.0e-16);
+    let par_swap = XccySwap {
+        fixed_rate: par,
+        ..swap
+    };
+    let par_fixed = par_swap.fixed_leg_pv_ccy1_with_frequency(&ccy1_discount, Frequency::Quarterly);
+    let par_floating = par_swap.float_leg_pv_ccy2_with_frequency(
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::Quarterly,
+    ) * par_swap.fx_spot;
+    let par_npv = par_swap.npv_dual_curve_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::Quarterly,
+        Frequency::Quarterly,
+        true,
+    );
+    let cancellation_roundoff =
+        8.0 * f64::EPSILON * par_fixed.abs().max(par_floating.abs()).max(1.0);
+    assert!(
+        par_npv.abs() <= cancellation_roundoff,
+        "quarterly XCCY par residual {par_npv:e} exceeds cancellation budget \
+         {cancellation_roundoff:e}"
+    );
+}
+
+#[test]
+fn xccy_legacy_methods_are_exact_annual_frequency_wrappers() {
+    let ccy1_discount = flat_curve_continuous(0.04, 6);
+    let ccy2_discount = flat_curve_continuous(0.03, 6);
+    let ccy2_projection = flat_curve_continuous(0.035, 6);
+    let swap = XccySwap {
+        notional1: 125_000_000.0,
+        notional2: 100_000_000.0,
+        fixed_rate: 0.042,
+        float_spread: 0.0015,
+        tenor: 4.5,
+        fx_spot: 1.25,
+    };
+
+    assert_eq!(
+        swap.fixed_leg_pv_ccy1(&ccy1_discount),
+        swap.fixed_leg_pv_ccy1_with_frequency(&ccy1_discount, Frequency::Annual)
+    );
+    assert_eq!(
+        swap.float_leg_pv_ccy2(&ccy2_discount, &ccy2_projection),
+        swap.float_leg_pv_ccy2_with_frequency(&ccy2_discount, &ccy2_projection, Frequency::Annual,)
+    );
+    assert_eq!(
+        swap.npv_dual_curve(&ccy1_discount, &ccy2_discount, &ccy2_projection, true,),
+        swap.npv_dual_curve_with_frequencies(
+            &ccy1_discount,
+            &ccy2_discount,
+            &ccy2_projection,
+            Frequency::Annual,
+            Frequency::Annual,
+            true,
+        )
+    );
+    assert_eq!(
+        swap.par_fixed_rate(&ccy1_discount, &ccy2_discount, &ccy2_projection),
+        swap.par_fixed_rate_with_frequencies(
+            &ccy1_discount,
+            &ccy2_discount,
+            &ccy2_projection,
+            Frequency::Annual,
+            Frequency::Annual,
+        )
+    );
+    assert_eq!(
+        swap.mtm_basis_npv(
+            &ccy1_discount,
+            &ccy2_discount,
+            &ccy2_projection,
+            1.31,
+            false,
+        ),
+        swap.mtm_basis_npv_with_frequencies(
+            &ccy1_discount,
+            &ccy2_discount,
+            &ccy2_projection,
+            1.31,
+            Frequency::Annual,
+            Frequency::Annual,
+            false,
+        )
+    );
+}
+
+fn xccy_stub_fixture() -> (XccySwap, YieldCurve, YieldCurve, YieldCurve) {
+    (
+        XccySwap {
+            notional1: 1_000_000.0,
+            notional2: 800_000.0,
+            fixed_rate: 0.027,
+            float_spread: 0.0012,
+            tenor: 1.1,
+            fx_spot: 1.25,
+        },
+        flat_curve_continuous(0.04, 2),
+        flat_curve_continuous(0.03, 2),
+        flat_curve_continuous(0.035, 2),
+    )
+}
+
+#[test]
+fn xccy_non_integral_tenor_final_stubs_match_decimal_reference() {
+    // Independent 80-digit Decimal sum. The semiannual fixed leg has a final
+    // 0.1-year stub after t=1.0; the quarterly floating leg does likewise.
+    let (swap, ccy1_discount, ccy2_discount, ccy2_projection) = xccy_stub_fixture();
+    let fixed = swap.fixed_leg_pv_ccy1_with_frequency(&ccy1_discount, Frequency::SemiAnnual);
+    let floating = swap.float_leg_pv_ccy2_with_frequency(
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::Quarterly,
+    );
+    let npv = swap.npv_dual_curve_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::SemiAnnual,
+        Frequency::Quarterly,
+        true,
+    );
+    let par = swap.par_fixed_rate_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        Frequency::SemiAnnual,
+        Frequency::Quarterly,
+    );
+
+    let price_roundoff = 128.0 * f64::EPSILON * fixed.max(floating);
+    assert!((fixed - 985_741.072_676_421_5).abs() <= price_roundoff);
+    assert!((floating - 805_381.224_181_015_9).abs() <= price_roundoff);
+    assert!((npv - 20_985.457_549_848_36).abs() <= price_roundoff);
+    let rate_roundoff = 128.0 * f64::EPSILON * par.abs();
+    assert!((par - 0.046_682_672_259_548_98).abs() <= rate_roundoff);
+}
+
+#[test]
+fn xccy_explicit_frequency_mtm_matches_decimal_reference() {
+    let (swap, ccy1_discount, ccy2_discount, ccy2_projection) = xccy_stub_fixture();
+    let pay_fixed = swap.mtm_basis_npv_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        1.30,
+        Frequency::SemiAnnual,
+        Frequency::Quarterly,
+        true,
+    );
+    let receive_fixed = swap.mtm_basis_npv_with_frequencies(
+        &ccy1_discount,
+        &ccy2_discount,
+        &ccy2_projection,
+        1.30,
+        Frequency::SemiAnnual,
+        Frequency::Quarterly,
+        false,
+    );
+
+    let roundoff = 128.0 * f64::EPSILON * 1_000_000.0;
+    assert!((pay_fixed - 61_254.518_758_899_15).abs() <= roundoff);
+    assert_eq!(receive_fixed, -pay_fixed);
 }
 
 fn quantlib_usd_discount_curve_annual_nodes() -> YieldCurve {
@@ -87,23 +305,64 @@ fn xccy_swap_usd_eur_par_trade_npv_is_near_zero_at_inception() {
     let fixed_leg = par_swap.fixed_leg_pv_ccy1(&usd_curve);
     let float_leg_ccy1 = par_swap.float_leg_pv_ccy2(&eur_curve, &eur_curve) * par_swap.fx_spot;
 
-    assert_relative_eq!(fixed_leg, float_leg_ccy1, epsilon = 1.0e-5);
-    assert_relative_eq!(
-        par_swap.npv(&usd_curve, &eur_curve, true),
-        0.0,
-        epsilon = 1.0e-5
+    // Each annual leg accumulates five coupons plus principal.  Bound the
+    // at-par cancellation by the leg scale, not a fixed currency tolerance.
+    let cancellation_roundoff =
+        64.0 * f64::EPSILON * fixed_leg.abs().max(float_leg_ccy1.abs()).max(1.0);
+    let par_npv = par_swap.npv(&usd_curve, &eur_curve, true);
+    assert!(
+        (fixed_leg - float_leg_ccy1).abs() <= cancellation_roundoff,
+        "XCCY par-leg residual {:e} exceeds cancellation budget {cancellation_roundoff:e}",
+        fixed_leg - float_leg_ccy1
+    );
+    assert!(
+        par_npv.abs() <= cancellation_roundoff,
+        "XCCY par NPV residual {par_npv:e} exceeds cancellation budget {cancellation_roundoff:e}"
     );
 }
 
 #[test]
-fn quantlib_usd_try_const_notional_xccy_cached_npv_is_close_under_annual_model() {
+fn xccy_mtm_basis_npv_has_exact_fx_revaluation() {
+    let ccy1 = flat_curve_continuous(0.04, 7);
+    let ccy2_discount = flat_curve_continuous(0.03, 7);
+    let ccy2_projection = flat_curve_continuous(0.035, 7);
+    let swap = XccySwap {
+        notional1: 125_000_000.0,
+        notional2: 100_000_000.0,
+        fixed_rate: 0.042,
+        float_spread: 0.0015,
+        tenor: 4.5,
+        fx_spot: 1.25,
+    };
+    let current_fx = 1.31;
+
+    let fixed = swap.fixed_leg_pv_ccy1(&ccy1);
+    let floating = swap.float_leg_pv_ccy2(&ccy2_discount, &ccy2_projection);
+    let expected_pay_fixed = current_fx * floating - fixed;
+    let actual_pay_fixed =
+        swap.mtm_basis_npv(&ccy1, &ccy2_discount, &ccy2_projection, current_fx, true);
+    let roundoff = 32.0 * f64::EPSILON * expected_pay_fixed.abs().max(floating);
+    assert!((actual_pay_fixed - expected_pay_fixed).abs() <= roundoff);
+
+    let actual_receive_fixed =
+        swap.mtm_basis_npv(&ccy1, &ccy2_discount, &ccy2_projection, current_fx, false);
+    assert_eq!(actual_receive_fixed, -actual_pay_fixed);
+
+    // MTM is affine in the externally supplied spot FX; the exact slope is
+    // the currency-2 floating-leg PV expressed per unit of spot FX.
+    let inception = swap.npv_dual_curve(&ccy1, &ccy2_discount, &ccy2_projection, true);
+    let exact_change = (current_fx - swap.fx_spot) * floating;
+    assert!((actual_pay_fixed - inception - exact_change).abs() <= roundoff);
+}
+
+#[test]
+fn quantlib_usd_try_curve_nodes_match_exact_annual_and_mixed_frequency_cashflows() {
     // Source: QuantLib test-suite/constnotionalcrosscurrencyswap.cpp
-    // testFloatFixXCCYSwapPricing. QuantLib uses full date schedules with
-    // quarterly simple USD Libor coupons; OpenFerric's XCCY API aggregates
-    // annually with simple (annually-compounded) forwards, which overstates
-    // a non-compounded quarterly leg by roughly the intra-year compounding
-    // (~f^2/2 per period), so this checks the economics within annual-model
-    // granularity (~10 bp of USD notional) rather than coupon-level BPS.
+    // testFloatFixXCCYSwapPricing. The source supplies the curve nodes and an
+    // annual TRY fixed / quarterly USD floating frequency pairing. Its cached
+    // NPV also includes dated calendars and day counts, so the compatible
+    // year-fraction models below are asserted against independent Decimal
+    // cashflow sums instead of against that different contract.
     let usd_discount = quantlib_usd_discount_curve_annual_nodes();
     let usd_projection = quantlib_usd_projection_curve_annual_nodes();
     let try_discount = quantlib_try_discount_curve_annual_nodes();
@@ -142,21 +401,47 @@ fn quantlib_usd_try_const_notional_xccy_cached_npv_is_close_under_annual_model()
     fixed_pv_try += swap.notional1 * try_discount.discount_factor(5.0);
 
     let expected_npv_usd = (float_pv_usd * fx_spot - fixed_pv_try) / fx_spot;
-    assert_relative_eq!(npv_usd, expected_npv_usd, max_relative = 1.0e-8);
+    // This NPV is the small residual of two roughly 10m notionals. Bound only
+    // binary64 accumulation/cancellation error; a relative price band would
+    // silently permit a materially wrong residual.
+    let cashflow_roundoff = 64.0 * f64::EPSILON * float_pv_usd.max(fixed_pv_try / fx_spot);
+    assert!((npv_usd - expected_npv_usd).abs() <= cashflow_roundoff);
 
-    // QuantLib's 218,961.99 cached value uses quarterly dated coupons and is
-    // intentionally not asserted against this annual model. The exact annual
-    // cashflow oracle above is the compatible pricing reference.
+    // QuantLib's 218,961.99 cached value is intentionally not asserted against
+    // this year-fraction contract. With the source's actual annual-fixed /
+    // quarterly-floating frequencies, an independent 60-digit Decimal sum of
+    // the log-linearly interpolated nodes gives the exact compatible value.
+    let mixed_frequency_npv_usd = swap.npv_dual_curve_with_frequencies(
+        &try_discount,
+        &usd_discount,
+        &usd_projection,
+        Frequency::Annual,
+        Frequency::Quarterly,
+        true,
+    ) / fx_spot;
+    let mixed_reference = 237_563.442_390_497_74;
+    assert!((mixed_frequency_npv_usd - mixed_reference).abs() <= cashflow_roundoff);
 
     let par_fixed = swap.par_fixed_rate(&try_discount, &usd_discount, &usd_projection);
     let par_swap = XccySwap {
         fixed_rate: par_fixed,
         ..swap
     };
-    assert_relative_eq!(
-        par_swap.npv_dual_curve(&try_discount, &usd_discount, &usd_projection, true),
-        0.0,
-        epsilon = 1.0e-7
+    let par_fixed_leg_try = par_swap.fixed_leg_pv_ccy1(&try_discount);
+    let par_float_leg_try = par_swap.float_leg_pv_ccy2(&usd_discount, &usd_projection) * fx_spot;
+    let par_npv = par_swap.npv_dual_curve(&try_discount, &usd_discount, &usd_projection, true);
+    // The rate is solved from these same annual legs, so four rounding units
+    // at leg scale cover the final multiply/add/subtract cancellation while
+    // remaining stricter than the former 1e-7 currency-unit band.
+    let par_cancellation_roundoff = 4.0
+        * f64::EPSILON
+        * par_fixed_leg_try
+            .abs()
+            .max(par_float_leg_try.abs())
+            .max(1.0);
+    assert!(
+        par_npv.abs() <= par_cancellation_roundoff,
+        "TRY/USD par residual {par_npv:e} exceeds cancellation budget {par_cancellation_roundoff:e}"
     );
 }
 
@@ -224,10 +509,16 @@ fn quantlib_uk_rpi_zero_inflation_quote_grid_reprices_zc_swaps() {
             quote,
             epsilon = 1.0e-12
         );
-        assert_relative_eq!(
-            swap.npv_from_curve(&discount_curve, &inflation_curve),
-            0.0,
-            epsilon = 1.0e-6
+        let par_npv = swap.npv_from_curve(&discount_curve, &inflation_curve);
+        let growth = (1.0 + quote).powf(tenor);
+        let discounted_leg_scale = swap.notional * growth * discount_curve.discount_factor(tenor);
+        // Projection and fixed growth are the same quote-derived amount.  The
+        // residual can therefore contain only the terminal-CPI divide and
+        // payoff cancellation roundoff.
+        let cancellation_roundoff = 32.0 * f64::EPSILON * discounted_leg_scale.abs().max(1.0);
+        assert!(
+            par_npv.abs() <= cancellation_roundoff,
+            "{tenor}Y ZC inflation par residual {par_npv:e} exceeds cancellation budget {cancellation_roundoff:e}"
         );
     }
 }

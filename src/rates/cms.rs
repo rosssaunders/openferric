@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn cms_spread_call_is_positive() {
+    fn general_rho_cms_spread_call_matches_scipy_and_quantlib() {
         let option = CmsSpreadOption {
             strike: 0.005,
             option_type: CmsSpreadOptionType::Call,
@@ -289,13 +289,60 @@ mod tests {
             0.85, // correlation
             0.001, 0.0005, // convexity adjustments
             0.03,   // discount rate
-            10000, 42,
+            200_000, 42,
         )
         .unwrap();
-        // Reproducibility regression for rand 0.10/StdRng.  Pricing accuracy is
-        // tested independently against Black-76 below.
-        assert_relative_eq!(result.price, 10_185.721_945_175_526, epsilon = 1.0e-9);
-        assert_relative_eq!(result.std_error, 43.290_370_079_303_69, epsilon = 1.0e-10);
+
+        // Independent SciPy 1.17.1 reference.  Condition on the first normal
+        // factor, evaluate the second lognormal's truncated zeroth/first
+        // moments analytically, then integrate the remaining standard-normal
+        // factor with scipy.integrate.quad (epsabs=1e-14, epsrel=1e-13).
+        const SCIPY_REFERENCE: f64 = 10_195.447_873_475_201;
+        let scipy_error = (result.price - SCIPY_REFERENCE).abs();
+        assert!(
+            scipy_error <= 4.0 * result.std_error,
+            "general-rho CMS spread: MC={} +/- {}, SciPy={}, error={scipy_error}",
+            result.price,
+            result.std_error,
+            SCIPY_REFERENCE
+        );
+
+        // Second-library oracle generated with QuantLib-Python 1.43.  The two
+        // adjusted forwards are modelled as correlated Black-Scholes assets
+        // under a zero external rate and priced with SpreadBasketPayoff plus
+        // MCLDEuropeanBasketEngine (one time step, seed 42).  QuantLib's raw
+        // payoff expectation is then multiplied by exp(-.03)*1,000,000 to
+        // apply this function's discounting and notional conventions.
+        //
+        // Required Sobol samples         discounted PV
+        //             2^22       10,195.442862148004
+        //             2^23       10,195.445455123237
+        //             2^24       10,195.446638787185
+        const QUANTLIB_2_POW_22: f64 = 10_195.442_862_148_004;
+        const QUANTLIB_2_POW_23: f64 = 10_195.445_455_123_237;
+        const QUANTLIB_REFERENCE: f64 = 10_195.446_638_787_185;
+        let previous_increment = (QUANTLIB_2_POW_23 - QUANTLIB_2_POW_22).abs();
+        let final_increment = (QUANTLIB_REFERENCE - QUANTLIB_2_POW_23).abs();
+        assert!(final_increment < previous_increment);
+
+        // Two final QMC increments conservatively cover the unresolved Sobol
+        // discretisation; in particular they contain the independent SciPy
+        // value, so this is an observed convergence budget rather than a wide
+        // economic price band.
+        let quantlib_reference_error = 2.0 * final_increment;
+        assert!(
+            (QUANTLIB_REFERENCE - SCIPY_REFERENCE).abs() <= quantlib_reference_error,
+            "QuantLib reference has not converged to the conditional-quadrature value"
+        );
+        let quantlib_error = (result.price - QUANTLIB_REFERENCE).abs();
+        assert!(
+            quantlib_error <= 4.0 * result.std_error + quantlib_reference_error,
+            "general-rho CMS spread: MC={} +/- {}, QuantLib={} +/- {}, error={quantlib_error}",
+            result.price,
+            result.std_error,
+            QUANTLIB_REFERENCE,
+            quantlib_reference_error
+        );
     }
 
     #[test]

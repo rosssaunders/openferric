@@ -1,10 +1,15 @@
 //! Bermudan option reference and regression tests.
 //!
-//! QuantLib references were generated with QuantLib 1.41 using
-//! `FdBlackScholesVanillaEngine(process, 2000, 400)` and
-//! `BermudanExercise` schedules under ACT/365 year fractions.
+//! Black-Scholes references were generated with QuantLib 1.41 using
+//! `FdBlackScholesVanillaEngine(process, 2000, 400)`.  The Heston reference
+//! below uses QuantLib-Python 1.43 and `FdHestonVanillaEngine`.
+//! `BermudanExercise` schedules use ACT/365 year fractions throughout.
 //! Deterministic grids are locked explicitly; stochastic comparisons use the
 //! estimator's reported standard error.
+//!
+//! The independent local-vol tree follows the weak diffusion-approximation
+//! construction of Nelson and Ramaswamy (1990), *The Review of Financial
+//! Studies* 3(3), 393-430, doi:10.1093/rfs/3.3.393.
 
 use openferric::core::{ExerciseStyle, OptionType, PricingEngine};
 use openferric::engines::lsm::LongstaffSchwartzEngine;
@@ -14,6 +19,108 @@ use openferric::engines::tree::BinomialTreeEngine;
 use openferric::instruments::{BermudanOption, VanillaOption};
 use openferric::market::{Market, VolSurface};
 use openferric::models::Heston;
+
+#[derive(Debug, Clone)]
+struct LocalSmile;
+
+impl VolSurface for LocalSmile {
+    fn vol(&self, strike: f64, expiry: f64) -> f64 {
+        let moneyness = (strike / 100.0 - 1.0).abs();
+        let term = expiry.max(1.0e-6).sqrt();
+        (0.18 + 0.08 * moneyness + 0.03 * term).max(0.05)
+    }
+}
+
+fn local_smile_market() -> Market {
+    Market::builder()
+        .spot(100.0)
+        .rate(0.02)
+        .dividend_yield(0.01)
+        .vol_surface(Box::new(LocalSmile))
+        .build()
+        .unwrap()
+}
+
+fn bermudan_intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
+    match option_type {
+        OptionType::Call => (spot - strike).max(0.0),
+        OptionType::Put => (strike - spot).max(0.0),
+    }
+}
+
+/// Independent recombining Markov-chain reference in log-price space.
+///
+/// At each node the three branch probabilities match the first two raw
+/// moments of
+/// `d log(S) = (r-q-sigma(S,t)^2/2)dt + sigma(S,t)dW`.
+/// This is deliberately different from the production Crank-Nicolson solver
+/// (linear-spot finite differences) and from LSM (non-recombining Monte Carlo
+/// paths plus continuation regression).  Exercise projection reads the exact
+/// per-date strike schedule.
+fn local_vol_trinomial_reference(
+    instrument: &BermudanOption,
+    market: &Market,
+    steps: usize,
+) -> f64 {
+    const VOLATILITY_CAP: f64 = 0.32;
+    let schedule = instrument.effective_schedule().unwrap();
+    let terminal_strike = schedule.last().unwrap().1;
+    let dt = instrument.expiry / steps as f64;
+    let dx = VOLATILITY_CAP * (3.0 * dt).sqrt();
+    let discount = (-market.rate * dt).exp();
+    let mut exercise_strikes = vec![None; steps + 1];
+    for &(time, strike) in &schedule {
+        let index = ((time / instrument.expiry) * steps as f64).round() as usize;
+        exercise_strikes[index.min(steps)] = Some(strike);
+    }
+    exercise_strikes[steps] = Some(terminal_strike);
+
+    let mut next_values = (-(steps as isize)..=steps as isize)
+        .map(|j| {
+            let spot = market.spot * (j as f64 * dx).exp();
+            bermudan_intrinsic(instrument.option_type, spot, terminal_strike)
+        })
+        .collect::<Vec<_>>();
+
+    for n in (0..steps).rev() {
+        let time = (n as f64 * dt).max(1.0e-8);
+        let next_shift = (n + 1) as isize;
+        let mut values = Vec::with_capacity(2 * n + 1);
+        for j in -(n as isize)..=n as isize {
+            let spot = market.spot * (j as f64 * dx).exp();
+            let sigma = market.vol_for(spot.max(1.0e-8), time);
+            assert!(
+                sigma <= VOLATILITY_CAP,
+                "reference volatility cap {VOLATILITY_CAP} is below sigma({spot}, {time})={sigma}"
+            );
+            let log_drift = market.rate - market.dividend_yield - 0.5 * sigma * sigma;
+            let eta = log_drift * dt / dx;
+            let variance_ratio = sigma * sigma * dt / (dx * dx);
+            let up = 0.5 * (variance_ratio + eta * eta + eta);
+            let down = 0.5 * (variance_ratio + eta * eta - eta);
+            let middle = 1.0 - variance_ratio - eta * eta;
+            assert!(
+                up >= 0.0 && middle >= 0.0 && down >= 0.0,
+                "invalid reference probabilities at t={time}, S={spot}: up={up}, middle={middle}, down={down}"
+            );
+
+            let up_index = (j + 1 + next_shift) as usize;
+            let middle_index = (j + next_shift) as usize;
+            let down_index = (j - 1 + next_shift) as usize;
+            let continuation = discount
+                * (up * next_values[up_index]
+                    + middle * next_values[middle_index]
+                    + down * next_values[down_index]);
+            let value = exercise_strikes[n].map_or(continuation, |strike| {
+                continuation.max(bermudan_intrinsic(instrument.option_type, spot, strike))
+            });
+            values.push(value);
+        }
+        next_values = values;
+    }
+
+    next_values[0]
+}
 
 #[derive(Clone, Copy)]
 struct QlBermudanCase {
@@ -256,7 +363,7 @@ fn bermudan_lsm_matches_quantlib_fd_with_reported_stderr() {
 }
 
 #[test]
-fn bermudan_time_varying_strike_step_down_put_prices_lower_than_constant_strike() {
+fn bermudan_time_varying_strike_matches_independent_local_vol_tree() {
     let dates = vec![0.25, 0.5, 0.75, 1.0];
     let step_down = BermudanOption::new(
         OptionType::Put,
@@ -264,56 +371,93 @@ fn bermudan_time_varying_strike_step_down_put_prices_lower_than_constant_strike(
         dates.clone(),
         vec![100.0, 97.5, 95.0, 92.5],
     );
-    let constant = BermudanOption::with_constant_strike(OptionType::Put, 100.0, 1.0, dates);
+    let market = local_smile_market();
 
-    let market = Market::builder()
-        .spot(100.0)
-        .rate(0.03)
-        .dividend_yield(0.0)
-        .flat_vol(0.25)
-        .build()
-        .unwrap();
+    let reference_800 = local_vol_trinomial_reference(&step_down, &market, 800);
+    let reference_1600 = local_vol_trinomial_reference(&step_down, &market, 1_600);
+    let reference_refinement = (reference_1600 - reference_800).abs();
+    // Independent log-tree convergence:
+    //   800 steps -> 5.4260353287717
+    //  1600 steps -> 5.4300309571060
+    // The 4.1e-3 reference budget is the measured final refinement rounded up.
+    assert!(
+        (reference_1600 - 5.430_030_957_105_959).abs() <= 2.0e-12,
+        "time-varying local-vol reference grid changed: {reference_1600:.17}"
+    );
+    assert!(
+        reference_refinement <= 4.1e-3,
+        "local-vol tree failed to converge: steps800={reference_800:.12}, steps1600={reference_1600:.12}, refinement={reference_refinement:.6}"
+    );
 
-    let lsm = LongstaffSchwartzEngine::new(250_000, 100, 42);
-    let pde = CrankNicolsonEngine::new(300, 300).with_s_max_multiplier(5.0);
+    let pde_coarse = CrankNicolsonEngine::new(300, 300)
+        .with_s_max_multiplier(5.0)
+        .price(&step_down, &market)
+        .unwrap()
+        .price;
+    let pde_fine = CrankNicolsonEngine::new(600, 600)
+        .with_s_max_multiplier(5.0)
+        .price(&step_down, &market)
+        .unwrap()
+        .price;
+    let coarse_error = (pde_coarse - reference_1600).abs();
+    let fine_error = (pde_fine - reference_1600).abs();
+    // The 600x600 linear-spot CN value is 5.431160547048: its 1.130e-3
+    // residual to the independently discretized oracle is covered separately
+    // from the oracle's measured grid uncertainty.
+    let pde_discretization_budget = 1.2e-3 + reference_refinement;
+    assert!(
+        fine_error <= pde_discretization_budget,
+        "time-varying local-vol Bermudan CN={pde_fine:.12}, reference={reference_1600:.12}, error={fine_error:.6}, budget={pde_discretization_budget:.6}"
+    );
+    assert!(
+        fine_error < coarse_error,
+        "CN failed to converge: coarse error={coarse_error:.6}, fine error={fine_error:.6}"
+    );
 
-    let px_step_lsm = lsm.price(&step_down, &market).unwrap().price;
-    let px_const_lsm = lsm.price(&constant, &market).unwrap().price;
-    assert!(px_step_lsm < px_const_lsm);
-
-    let px_step_pde = pde.price(&step_down, &market).unwrap().price;
-    let px_const_pde = pde.price(&constant, &market).unwrap().price;
-    assert!(px_step_pde < px_const_pde);
+    let lsm = LongstaffSchwartzEngine::new(300_000, 160, 42).with_local_vol_dynamics();
+    let lsm_result = lsm.price(&step_down, &market).unwrap();
+    let lsm_stderr = lsm_result.stderr.expect("LSM stderr");
+    let lsm_error = (lsm_result.price - reference_1600).abs();
+    assert!(
+        lsm_error <= 4.0 * lsm_stderr + reference_refinement,
+        "time-varying local-vol Bermudan LSM={}, reference={reference_1600:.12}, error={lsm_error:.6}, stderr={lsm_stderr:.6}",
+        lsm_result.price,
+    );
 }
 
 #[test]
-fn bermudan_lsm_supports_local_vol_and_heston_dynamics() {
+fn bermudan_lsm_nonflat_local_vol_and_heston_match_independent_references() {
     let dates = vec![0.2, 0.4, 0.6, 0.8, 1.0];
     let inst = BermudanOption::with_constant_strike(OptionType::Put, 100.0, 1.0, dates);
 
-    #[derive(Debug, Clone)]
-    struct LocalSmile;
-    impl VolSurface for LocalSmile {
-        fn vol(&self, strike: f64, expiry: f64) -> f64 {
-            let m = (strike / 100.0 - 1.0).abs();
-            let term = (expiry.max(1.0e-6)).sqrt();
-            (0.18 + 0.08 * m + 0.03 * term).max(0.05)
-        }
-    }
-
-    let local_vol_market = Market::builder()
-        .spot(100.0)
-        .rate(0.02)
-        .dividend_yield(0.01)
-        .vol_surface(Box::new(LocalSmile))
-        .build()
-        .unwrap();
+    let local_vol_market = local_smile_market();
+    let local_reference_800 = local_vol_trinomial_reference(&inst, &local_vol_market, 800);
+    let local_reference_1600 = local_vol_trinomial_reference(&inst, &local_vol_market, 1_600);
+    let local_reference_refinement = (local_reference_1600 - local_reference_800).abs();
+    // Independent log-tree convergence:
+    //   800 steps -> 7.6060105632857
+    //  1600 steps -> 7.6113513434177
+    // The 5.5e-3 reference budget is the measured final refinement rounded up.
+    assert!(
+        (local_reference_1600 - 7.611_351_343_417_72).abs() <= 2.0e-12,
+        "constant-strike local-vol reference grid changed: {local_reference_1600:.17}"
+    );
+    assert!(
+        local_reference_refinement <= 5.5e-3,
+        "constant-strike local-vol tree failed to converge: steps800={local_reference_800:.12}, steps1600={local_reference_1600:.12}, refinement={local_reference_refinement:.6}"
+    );
 
     let local_engine = LongstaffSchwartzEngine::new(200_000, 90, 123).with_local_vol_dynamics();
     let local_out = local_engine
         .price_bermudan_with_boundary(&inst, &local_vol_market)
         .unwrap();
-    assert!(local_out.result.price.is_finite() && local_out.result.price > 0.0);
+    let local_stderr = local_out.result.stderr.expect("local-vol LSM stderr");
+    let local_error = (local_out.result.price - local_reference_1600).abs();
+    assert!(
+        local_error <= 4.0 * local_stderr + local_reference_refinement,
+        "constant-strike local-vol Bermudan LSM={}, reference={local_reference_1600:.12}, error={local_error:.6}, stderr={local_stderr:.6}",
+        local_out.result.price,
+    );
     assert!(
         local_out
             .exercise_boundary
@@ -337,11 +481,38 @@ fn bermudan_lsm_supports_local_vol_and_heston_dynamics() {
         .build()
         .unwrap();
     let heston_engine =
-        LongstaffSchwartzEngine::new(220_000, 100, 321).with_heston_dynamics(heston);
+        LongstaffSchwartzEngine::new(220_000, 250, 321).with_heston_dynamics(heston);
     let heston_out = heston_engine
         .price_bermudan_with_boundary(&inst, &flat_market)
         .unwrap();
-    assert!(heston_out.result.price.is_finite() && heston_out.result.price > 0.0);
+
+    // Independent reference generated with QuantLib-Python 1.43:
+    //   evaluation date 2025-01-01, Actual365Fixed, S=K=100, r=2%, q=1%,
+    //   expiry dates at day offsets [73, 146, 219, 292, 365] so their exact
+    //   ACT/365 year fractions are [0.2, 0.4, 0.6, 0.8, 1.0];
+    //   Heston(v0=0.04, kappa=2, theta=0.04, sigma=0.6, rho=-0.5);
+    //   FdHestonVanillaEngine with zero damping and Hundsdorfer splitting.
+    // The (tGrid, xGrid, vGrid) convergence sequence was:
+    //   (200, 300, 150) -> 6.657711187245731
+    //   (400, 500, 200) -> 6.657931695330775
+    //   (800, 700, 300) -> 6.658113683960035
+    //   (1000, 850, 350) -> 6.6581636443530705
+    // 2e-4 is four times the final observed grid refinement (4.996e-5),
+    // conservatively isolating the deterministic QuantLib PDE error from the
+    // implementation's independently reported Monte Carlo sampling error.
+    const QUANTLIB_FD_HESTON_PRICE: f64 = 6.658_163_644_353_070_5;
+    const QUANTLIB_FD_GRID_BUDGET: f64 = 2.0e-4;
+    let heston_stderr = heston_out.result.stderr.expect("Heston LSM stderr");
+    let heston_reference_error = (heston_out.result.price - QUANTLIB_FD_HESTON_PRICE).abs();
+    assert!(
+        heston_reference_error <= 4.0 * heston_stderr + QUANTLIB_FD_GRID_BUDGET,
+        "Heston LSM Bermudan price={} QuantLib={} err={} stderr={} QuantLib grid budget={}",
+        heston_out.result.price,
+        QUANTLIB_FD_HESTON_PRICE,
+        heston_reference_error,
+        heston_stderr,
+        QUANTLIB_FD_GRID_BUDGET,
+    );
     assert!(
         heston_out
             .exercise_boundary

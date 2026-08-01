@@ -1,13 +1,16 @@
 use chrono::NaiveDate;
 use openferric_core::credit::cds_option::CdsOption as CoreCdsOption;
 use openferric_core::credit::{
-    BasketDefaultSimulation as CoreBasketDefaultSimulation, CdoTranche as CoreCdoTranche,
-    Cds as CoreCds, CdsDateRule as CoreCdsDateRule, CdsIndex as CoreCdsIndex,
-    CdsPriceResult as CoreCdsPriceResult, DatedCds as CoreDatedCds,
-    GaussianCopula as CoreGaussianCopula, IsdaConventions as CoreIsdaConventions,
-    NthToDefaultBasket as CoreNthToDefaultBasket, ProtectionSide as CoreProtectionSide,
-    SurvivalCurve as CoreSurvivalCurve, SyntheticCdo as CoreSyntheticCdo, price_isda_flat,
-    price_midpoint_flat,
+    BaseCorrelationPair as CoreBaseCorrelationPair,
+    BasketDefaultSimulation as CoreBasketDefaultSimulation,
+    CdoReferenceName as CoreCdoReferenceName, CdoTranche as CoreCdoTranche, Cds as CoreCds,
+    CdsDateRule as CoreCdsDateRule, CdsIndex as CoreCdsIndex, CdsPriceResult as CoreCdsPriceResult,
+    DatedCds as CoreDatedCds, GaussianCopula as CoreGaussianCopula,
+    HeterogeneousSyntheticCdo as CoreHeterogeneousSyntheticCdo,
+    IsdaConventions as CoreIsdaConventions, NthToDefaultBasket as CoreNthToDefaultBasket,
+    ProtectionSide as CoreProtectionSide, SurvivalCurve as CoreSurvivalCurve,
+    SyntheticCdo as CoreSyntheticCdo, price_isda_flat, price_isda_flat_legacy_analytic,
+    price_isda_flat_with_calendar, price_midpoint_flat, price_midpoint_flat_with_calendar,
 };
 use openferric_core::rates::YieldCurve;
 use pyo3::exceptions::PyValueError;
@@ -16,6 +19,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::helpers::tenor_grid;
+use crate::rates::Calendar;
 
 fn parse_naive_date(value: &str) -> PyResult<NaiveDate> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|err| {
@@ -31,6 +35,10 @@ fn format_naive_date(value: NaiveDate) -> String {
 
 fn yield_curve_from_nodes(nodes: &[(f64, f64)]) -> YieldCurve {
     YieldCurve::new(nodes.to_vec())
+}
+
+fn cdo_result(result: Result<f64, openferric_core::core::PricingError>) -> PyResult<f64> {
+    result.map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 #[pyclass(module = "openferric", from_py_object)]
@@ -148,6 +156,12 @@ pub struct SurvivalCurve {
 impl SurvivalCurve {
     pub(crate) fn to_core(&self) -> CoreSurvivalCurve {
         CoreSurvivalCurve::new(self.tenors.clone())
+    }
+
+    fn to_core_preserving_nodes(&self) -> CoreSurvivalCurve {
+        CoreSurvivalCurve {
+            tenors: self.tenors.clone(),
+        }
     }
 
     pub(crate) fn from_core(value: CoreSurvivalCurve) -> Self {
@@ -293,6 +307,258 @@ impl SyntheticCdo {
             maturity: self.maturity,
             payment_freq: self.payment_freq,
         }
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone, PartialEq)]
+pub struct CdoReferenceName {
+    #[pyo3(get, set)]
+    pub notional: f64,
+    #[pyo3(get, set)]
+    pub recovery_rate: f64,
+    #[pyo3(get, set)]
+    pub factor_loading: f64,
+    #[pyo3(get, set)]
+    pub survival_curve: SurvivalCurve,
+}
+
+impl CdoReferenceName {
+    fn to_core(&self) -> CoreCdoReferenceName {
+        CoreCdoReferenceName {
+            notional: self.notional,
+            recovery_rate: self.recovery_rate,
+            factor_loading: self.factor_loading,
+            // Preserve direct Python field mutation so the heterogeneous CDO
+            // engine can validate and reject malformed raw nodes rather than
+            // silently cleaning them during binding conversion.
+            survival_curve: self.survival_curve.to_core_preserving_nodes(),
+        }
+    }
+}
+
+#[pymethods]
+impl CdoReferenceName {
+    #[new]
+    fn new(
+        notional: f64,
+        recovery_rate: f64,
+        factor_loading: f64,
+        survival_curve: SurvivalCurve,
+    ) -> Self {
+        Self {
+            notional,
+            recovery_rate,
+            factor_loading,
+            survival_curve,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CdoReferenceName(notional={}, recovery_rate={}, factor_loading={}, survival_curve={:?})",
+            self.notional, self.recovery_rate, self.factor_loading, self.survival_curve.tenors
+        )
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct BaseCorrelationPair {
+    #[pyo3(get, set)]
+    pub attachment_correlation: f64,
+    #[pyo3(get, set)]
+    pub detachment_correlation: f64,
+}
+
+impl BaseCorrelationPair {
+    fn to_core(self) -> CoreBaseCorrelationPair {
+        CoreBaseCorrelationPair {
+            attachment_correlation: self.attachment_correlation,
+            detachment_correlation: self.detachment_correlation,
+        }
+    }
+}
+
+#[pymethods]
+impl BaseCorrelationPair {
+    #[new]
+    fn new(attachment_correlation: f64, detachment_correlation: f64) -> Self {
+        Self {
+            attachment_correlation,
+            detachment_correlation,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BaseCorrelationPair(attachment_correlation={}, detachment_correlation={})",
+            self.attachment_correlation, self.detachment_correlation
+        )
+    }
+}
+
+#[pyclass(module = "openferric", from_py_object)]
+#[derive(Clone, PartialEq)]
+pub struct HeterogeneousSyntheticCdo {
+    #[pyo3(get, set)]
+    pub names: Vec<CdoReferenceName>,
+    #[pyo3(get, set)]
+    pub risk_free_rate: f64,
+    #[pyo3(get, set)]
+    pub maturity: f64,
+    #[pyo3(get, set)]
+    pub payment_freq: usize,
+    #[pyo3(get, set)]
+    pub loss_unit: f64,
+    #[pyo3(get, set)]
+    pub factor_integration_points: usize,
+}
+
+impl HeterogeneousSyntheticCdo {
+    fn to_core(&self) -> CoreHeterogeneousSyntheticCdo {
+        CoreHeterogeneousSyntheticCdo {
+            names: self.names.iter().map(CdoReferenceName::to_core).collect(),
+            risk_free_rate: self.risk_free_rate,
+            maturity: self.maturity,
+            payment_freq: self.payment_freq,
+            loss_unit: self.loss_unit,
+            factor_integration_points: self.factor_integration_points,
+        }
+    }
+}
+
+#[pymethods]
+impl HeterogeneousSyntheticCdo {
+    #[new]
+    fn new(
+        names: Vec<CdoReferenceName>,
+        risk_free_rate: f64,
+        maturity: f64,
+        payment_freq: usize,
+        loss_unit: f64,
+        factor_integration_points: usize,
+    ) -> Self {
+        Self {
+            names,
+            risk_free_rate,
+            maturity,
+            payment_freq,
+            loss_unit,
+            factor_integration_points,
+        }
+    }
+
+    fn portfolio_expected_loss(&self, t: f64) -> PyResult<f64> {
+        cdo_result(self.to_core().portfolio_expected_loss(t))
+    }
+
+    fn expected_loss_fraction(&self, tranche: &CdoTranche, t: f64) -> PyResult<f64> {
+        cdo_result(self.to_core().expected_loss_fraction(&tranche.to_core(), t))
+    }
+
+    fn expected_loss_fraction_base_correlation(
+        &self,
+        tranche: &CdoTranche,
+        t: f64,
+        correlations: &BaseCorrelationPair,
+    ) -> PyResult<f64> {
+        cdo_result(self.to_core().expected_loss_fraction_base_correlation(
+            &tranche.to_core(),
+            t,
+            correlations.to_core(),
+        ))
+    }
+
+    fn expected_tranche_loss(&self, tranche: &CdoTranche, t: f64) -> PyResult<f64> {
+        cdo_result(self.to_core().expected_tranche_loss(&tranche.to_core(), t))
+    }
+
+    fn expected_tranche_loss_base_correlation(
+        &self,
+        tranche: &CdoTranche,
+        t: f64,
+        correlations: &BaseCorrelationPair,
+    ) -> PyResult<f64> {
+        cdo_result(self.to_core().expected_tranche_loss_base_correlation(
+            &tranche.to_core(),
+            t,
+            correlations.to_core(),
+        ))
+    }
+
+    fn protection_leg_pv(&self, tranche: &CdoTranche) -> PyResult<f64> {
+        cdo_result(self.to_core().protection_leg_pv(&tranche.to_core()))
+    }
+
+    fn premium_leg_pv(&self, tranche: &CdoTranche, spread: f64) -> PyResult<f64> {
+        cdo_result(self.to_core().premium_leg_pv(&tranche.to_core(), spread))
+    }
+
+    fn fair_spread(&self, tranche: &CdoTranche) -> PyResult<f64> {
+        cdo_result(self.to_core().fair_spread(&tranche.to_core()))
+    }
+
+    fn npv(&self, tranche: &CdoTranche) -> PyResult<f64> {
+        cdo_result(self.to_core().npv(&tranche.to_core()))
+    }
+
+    fn protection_leg_pv_base_correlation(
+        &self,
+        tranche: &CdoTranche,
+        correlations: &BaseCorrelationPair,
+    ) -> PyResult<f64> {
+        cdo_result(
+            self.to_core()
+                .protection_leg_pv_base_correlation(&tranche.to_core(), correlations.to_core()),
+        )
+    }
+
+    fn premium_leg_pv_base_correlation(
+        &self,
+        tranche: &CdoTranche,
+        spread: f64,
+        correlations: &BaseCorrelationPair,
+    ) -> PyResult<f64> {
+        cdo_result(self.to_core().premium_leg_pv_base_correlation(
+            &tranche.to_core(),
+            spread,
+            correlations.to_core(),
+        ))
+    }
+
+    fn fair_spread_base_correlation(
+        &self,
+        tranche: &CdoTranche,
+        correlations: &BaseCorrelationPair,
+    ) -> PyResult<f64> {
+        cdo_result(
+            self.to_core()
+                .fair_spread_base_correlation(&tranche.to_core(), correlations.to_core()),
+        )
+    }
+
+    fn npv_base_correlation(
+        &self,
+        tranche: &CdoTranche,
+        correlations: &BaseCorrelationPair,
+    ) -> PyResult<f64> {
+        cdo_result(
+            self.to_core()
+                .npv_base_correlation(&tranche.to_core(), correlations.to_core()),
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "HeterogeneousSyntheticCdo(names={}, risk_free_rate={}, maturity={}, payment_freq={}, loss_unit={}, factor_integration_points={})",
+            self.names.len(),
+            self.risk_free_rate,
+            self.maturity,
+            self.payment_freq,
+            self.loss_unit,
+            self.factor_integration_points
+        )
     }
 }
 
@@ -831,6 +1097,29 @@ impl DatedCds {
         )))
     }
 
+    #[staticmethod]
+    fn standard_imm_with_calendar(
+        side: ProtectionSide,
+        trade_date: String,
+        tenor_years: i32,
+        notional: f64,
+        running_spread: f64,
+        recovery_rate: f64,
+        calendar: &Calendar,
+    ) -> PyResult<Self> {
+        let trade_date = parse_naive_date(&trade_date)?;
+        let calendar = calendar.to_core();
+        Ok(Self::from_core(CoreDatedCds::standard_imm_with_calendar(
+            side.to_core(),
+            trade_date,
+            tenor_years,
+            notional,
+            running_spread,
+            recovery_rate,
+            &calendar,
+        )))
+    }
+
     fn price_midpoint_flat(
         &self,
         valuation_date: String,
@@ -849,6 +1138,29 @@ impl DatedCds {
         )))
     }
 
+    fn price_midpoint_flat_with_calendar(
+        &self,
+        valuation_date: String,
+        hazard_rate: f64,
+        discount_rate: f64,
+        calendar: &Calendar,
+        conventions: Option<&IsdaConventions>,
+    ) -> PyResult<CdsPriceResult> {
+        let valuation_date = parse_naive_date(&valuation_date)?;
+        let conventions = conventions.map(|c| c.to_core()).unwrap_or_default();
+        let calendar = calendar.to_core();
+        Ok(CdsPriceResult::from_core(
+            price_midpoint_flat_with_calendar(
+                &self.to_core()?,
+                valuation_date,
+                hazard_rate,
+                discount_rate,
+                conventions,
+                &calendar,
+            ),
+        ))
+    }
+
     fn price_isda_flat(
         &self,
         valuation_date: String,
@@ -864,6 +1176,47 @@ impl DatedCds {
             hazard_rate,
             discount_rate,
             conventions,
+        )))
+    }
+
+    /// Compatibility valuation using the legacy unadjusted Act/360 analytic
+    /// flat-integral methodology.
+    fn price_isda_flat_legacy_analytic(
+        &self,
+        valuation_date: String,
+        hazard_rate: f64,
+        discount_rate: f64,
+        conventions: Option<&IsdaConventions>,
+    ) -> PyResult<CdsPriceResult> {
+        let valuation_date = parse_naive_date(&valuation_date)?;
+        let conventions = conventions.map(|c| c.to_core()).unwrap_or_default();
+        Ok(CdsPriceResult::from_core(price_isda_flat_legacy_analytic(
+            &self.to_core()?,
+            valuation_date,
+            hazard_rate,
+            discount_rate,
+            conventions,
+        )))
+    }
+
+    fn price_isda_flat_with_calendar(
+        &self,
+        valuation_date: String,
+        hazard_rate: f64,
+        discount_rate: f64,
+        calendar: &Calendar,
+        conventions: Option<&IsdaConventions>,
+    ) -> PyResult<CdsPriceResult> {
+        let valuation_date = parse_naive_date(&valuation_date)?;
+        let conventions = conventions.map(|c| c.to_core()).unwrap_or_default();
+        let calendar = calendar.to_core();
+        Ok(CdsPriceResult::from_core(price_isda_flat_with_calendar(
+            &self.to_core()?,
+            valuation_date,
+            hazard_rate,
+            discount_rate,
+            conventions,
+            &calendar,
         )))
     }
 
@@ -1053,6 +1406,9 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Cds>()?;
     module.add_class::<CdoTranche>()?;
     module.add_class::<SyntheticCdo>()?;
+    module.add_class::<CdoReferenceName>()?;
+    module.add_class::<BaseCorrelationPair>()?;
+    module.add_class::<HeterogeneousSyntheticCdo>()?;
     module.add_class::<CdsIndex>()?;
     module.add_class::<NthToDefaultBasket>()?;
     module.add_class::<CdsOption>()?;

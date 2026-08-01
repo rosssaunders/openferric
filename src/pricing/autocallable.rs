@@ -850,6 +850,50 @@ mod tests {
     }
 
     #[test]
+    fn immediate_call_autocallable_has_exact_zero_vega_and_cega() {
+        // Every simulated state is strictly positive (and floored at 1e-12),
+        // so this tiny barrier guarantees redemption at the first observation
+        // for every volatility and correlation bump. The discounted contractual
+        // cash flow is therefore independent of both parameters.
+        let standard = Autocallable {
+            underlyings: vec![0, 1],
+            notional: 100.0,
+            autocall_dates: vec![0.25, 0.5, 0.75, 1.0],
+            autocall_barrier: 1.0e-15,
+            coupon_rate: 0.08,
+            ki_barrier: 0.5,
+            ki_strike: 1.0,
+            maturity: 1.0,
+        };
+        let phoenix = PhoenixAutocallable {
+            underlyings: standard.underlyings.clone(),
+            notional: standard.notional,
+            autocall_dates: standard.autocall_dates.clone(),
+            autocall_barrier: standard.autocall_barrier,
+            coupon_barrier: 1.0e-15,
+            coupon_rate: standard.coupon_rate,
+            memory: true,
+            ki_barrier: standard.ki_barrier,
+            ki_strike: standard.ki_strike,
+            maturity: standard.maturity,
+        };
+        let spots = [100.0, 95.0];
+        let vols = [0.20, 0.30];
+        let corr = [vec![1.0, 0.35], vec![0.35, 1.0]];
+        let standard_sens =
+            autocallable_sensitivities(&standard, &spots, &vols, &corr, 0.03, 0.01, 512, 16)
+                .unwrap();
+        let phoenix_sens =
+            phoenix_autocallable_sensitivities(&phoenix, &spots, &vols, &corr, 0.03, 0.01, 512, 16)
+                .unwrap();
+
+        for (label, sensitivities) in [("standard", standard_sens), ("phoenix", phoenix_sens)] {
+            assert_eq!(sensitivities.vega, 0.0, "{label} immediate-call vega");
+            assert_eq!(sensitivities.cega, 0.0, "{label} immediate-call cega");
+        }
+    }
+
+    #[test]
     fn autocallable_price_decreases_with_lower_autocall_barrier() {
         let high_barrier = standard_note(0.08, 1.0);
         let low_barrier = standard_note(0.08, 0.8);
@@ -1162,5 +1206,112 @@ mod tests {
             phoenix_price,
             standard_price
         );
+    }
+
+    #[test]
+    fn stochastic_autocall_greeks_match_independent_scipy_sobol_references() {
+        const N_REPLICATES: usize = 12;
+        const PATHS_PER_REPLICATE: usize = 30_000;
+        const N_STEPS: usize = 12;
+
+        let standard = Autocallable {
+            underlyings: vec![0, 1],
+            notional: 100.0,
+            autocall_dates: vec![0.25, 0.5, 0.75, 1.0],
+            autocall_barrier: 1.05,
+            coupon_rate: 0.12,
+            ki_barrier: 0.9,
+            ki_strike: 1.0,
+            maturity: 1.0,
+        };
+        let phoenix = PhoenixAutocallable {
+            underlyings: standard.underlyings.clone(),
+            notional: standard.notional,
+            autocall_dates: standard.autocall_dates.clone(),
+            autocall_barrier: standard.autocall_barrier,
+            coupon_barrier: 0.7,
+            coupon_rate: standard.coupon_rate,
+            memory: true,
+            ki_barrier: standard.ki_barrier,
+            ki_strike: standard.ki_strike,
+            maturity: standard.maturity,
+        };
+        let spots = [100.0, 100.0];
+        let vols = [0.35, 0.30];
+        let corr = [vec![1.0, 0.2], vec![0.2, 1.0]];
+        let standard_prepared = prepare_standard(&standard, &spots, &vols, &corr, N_STEPS).unwrap();
+        let phoenix_prepared = prepare_phoenix(&phoenix, &spots, &vols, &corr, N_STEPS).unwrap();
+
+        let mut standard_samples = [[0.0_f64; 4]; N_REPLICATES];
+        let mut phoenix_samples = [[0.0_f64; 4]; N_REPLICATES];
+        for replicate in 0..N_REPLICATES {
+            let seed = 8_101 + 104_729 * replicate as u64;
+            for (prepared, samples) in [
+                (&standard_prepared, &mut standard_samples),
+                (&phoenix_prepared, &mut phoenix_samples),
+            ] {
+                let result = bump_and_reprice_sensitivities(
+                    prepared,
+                    0.01,
+                    0.0,
+                    PATHS_PER_REPLICATE,
+                    N_STEPS,
+                    seed,
+                )
+                .unwrap();
+                samples[replicate] = [result.delta[0], result.delta[1], result.vega, result.cega];
+            }
+        }
+
+        fn mean_and_se<const N: usize>(samples: &[[f64; 4]; N], index: usize) -> (f64, f64) {
+            let mean = samples.iter().map(|row| row[index]).sum::<f64>() / N as f64;
+            let variance = samples
+                .iter()
+                .map(|row| (row[index] - mean).powi(2))
+                .sum::<f64>()
+                / (N - 1) as f64;
+            (mean, (variance / N as f64).sqrt())
+        }
+
+        // Independent SciPy 1.17.1 inverse-normal Sobol integration of the
+        // exact 12-step contracts: 24 Owen scrambles x 2^16 paths.  Greeks use
+        // the public API's central bumps (1% spot, 1 vol point, 1 correlation
+        // point) with common Sobol paths.  Replicate standard errors below are
+        // combined with the implementation's independently seeded MC error.
+        let references = [
+            (
+                "standard",
+                &standard_samples,
+                [
+                    (0.410_612_541_152_064_9, 1.397_510_588_775_907e-3),
+                    (0.410_986_285_283_688_5, 1.252_746_121_642_196_2e-3),
+                    (-50.262_723_149_640_89, 5.541_320_952_644_099e-2),
+                    (6.475_731_286_827_004, 5.225_070_338_970_829e-2),
+                ],
+            ),
+            (
+                "phoenix",
+                &phoenix_samples,
+                [
+                    (0.349_123_514_024_741_73, 1.001_627_942_994_87e-3),
+                    (0.319_378_694_272_530_8, 9.405_057_986_520_466e-4),
+                    (-61.475_090_367_831_66, 6.074_592_022_665_935e-2),
+                    (4.391_667_654_829_028, 3.792_074_108_317_604e-2),
+                ],
+            ),
+        ];
+        let labels = ["delta[0]", "delta[1]", "vega", "cega"];
+
+        for (contract, samples, targets) in references {
+            for (index, label) in labels.iter().enumerate() {
+                let (actual, implementation_se) = mean_and_se(samples, index);
+                let (target, reference_se) = targets[index];
+                let combined_se = implementation_se.hypot(reference_se);
+                assert!(
+                    (actual - target).abs() <= 4.0 * combined_se,
+                    "{contract} {label}: actual={actual} target={target} implementation_se={implementation_se} reference_se={reference_se}"
+                );
+            }
+        }
     }
 }

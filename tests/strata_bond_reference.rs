@@ -64,6 +64,19 @@ fn analytic_bond_price(face: f64, coupon_rate: f64, freq: u32, maturity: f64, y:
     pv
 }
 
+/// Binary64 budget for regular bond cash-flow generation, discounting, and
+/// accumulation.  Four rounding units per cash flow plus a fixed 64-operation
+/// allowance covers curve interpolation and terminal-principal arithmetic.
+fn bond_price_roundoff(actual: f64, expected: f64, cashflows: usize) -> f64 {
+    let operation_count = 4 * cashflows + 64;
+    operation_count as f64 * f64::EPSILON * actual.abs().max(expected.abs()).max(1.0)
+}
+
+/// The YTM solver is validated to a 32-rounding-unit rate-space budget.
+fn bond_ytm_roundoff(actual: f64, expected: f64) -> f64 {
+    32.0 * f64::EPSILON * actual.abs().max(expected.abs()).max(1.0)
+}
+
 // ===========================================================================
 // 1. Par bond tests -- coupon_rate = yield => price ~ face
 // ===========================================================================
@@ -85,7 +98,13 @@ fn strata_par_bond_semiannual_various_maturities() {
             day_count: DayCountConvention::Act365Fixed,
         };
         let price = bond.dirty_price(&curve);
-        assert_relative_eq!(price, 100.0, epsilon = 1.0e-6);
+        let cashflows = (maturity * bond.frequency as f64).round() as usize;
+        let roundoff = bond_price_roundoff(price, 100.0, cashflows);
+        assert!(
+            (price - 100.0).abs() <= roundoff,
+            "{maturity}Y par-bond error {:e} exceeds binary64 budget {roundoff:e}",
+            price - 100.0
+        );
     }
 }
 
@@ -105,7 +124,13 @@ fn strata_par_bond_various_frequencies() {
             day_count: DayCountConvention::Act365Fixed,
         };
         let price = bond.dirty_price(&curve);
-        assert_relative_eq!(price, 100.0, epsilon = 1.0e-6);
+        let cashflows = (bond.maturity * freq as f64).round() as usize;
+        let roundoff = bond_price_roundoff(price, 100.0, cashflows);
+        assert!(
+            (price - 100.0).abs() <= roundoff,
+            "frequency-{freq} par-bond error {:e} exceeds binary64 budget {roundoff:e}",
+            price - 100.0
+        );
     }
 }
 
@@ -168,7 +193,12 @@ fn strata_discount_bond_below_par() {
     // The curve embeds semiannual compounding at 7%, so curve-based pricing
     // matches the analytic semiannual-yield formula exactly.
     let expected = analytic_bond_price(100.0, coupon, 2, 10.0, yield_rate);
-    assert_relative_eq!(price, expected, epsilon = 1.0e-6);
+    let roundoff = bond_price_roundoff(price, expected, 20);
+    assert!(
+        (price - expected).abs() <= roundoff,
+        "discount-bond price error {:e} exceeds binary64 budget {roundoff:e}",
+        price - expected
+    );
 }
 
 // ===========================================================================
@@ -195,7 +225,12 @@ fn strata_zero_coupon_price_and_duration() {
         // Price check
         let price = bond.dirty_price(&curve);
         let expected_price = 100.0 * (1.0 + rate).powf(-maturity);
-        assert_relative_eq!(price, expected_price, epsilon = 1.0e-6);
+        let roundoff = bond_price_roundoff(price, expected_price, 1);
+        assert!(
+            (price - expected_price).abs() <= roundoff,
+            "{maturity}Y zero-coupon price error {:e} exceeds binary64 budget {roundoff:e}",
+            price - expected_price
+        );
 
         // Duration = maturity for zero-coupon bond
         let dur = bond.duration(&curve);
@@ -240,7 +275,13 @@ fn strata_ytm_round_trip_multiple_bonds() {
 
         // Re-price analytically with the solved ytm
         let reprice = analytic_bond_price(100.0, coupon, freq, maturity, ytm);
-        assert_relative_eq!(reprice, price, epsilon = 1.0e-6);
+        let cashflows = (maturity * freq as f64).round() as usize;
+        let roundoff = bond_price_roundoff(reprice, price, cashflows);
+        assert!(
+            (reprice - price).abs() <= roundoff,
+            "YTM round-trip price error {:e} exceeds binary64 budget {roundoff:e}",
+            reprice - price
+        );
     }
 }
 
@@ -256,7 +297,12 @@ fn strata_ytm_par_bond_equals_coupon() {
             day_count: DayCountConvention::Act365Fixed,
         };
         let ytm = bond.ytm(100.0);
-        assert_relative_eq!(ytm, coupon, epsilon = 1.0e-8);
+        let roundoff = bond_ytm_roundoff(ytm, coupon);
+        assert!(
+            (ytm - coupon).abs() <= roundoff,
+            "par-bond YTM error {:e} exceeds solver budget {roundoff:e}",
+            ytm - coupon
+        );
     }
 }
 

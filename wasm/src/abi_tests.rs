@@ -16,48 +16,25 @@ fn assert_roundoff_close(actual: f64, expected: f64, label: &str) {
     );
 }
 
-// The uniform batch kernel deliberately uses the Abramowitz-Stegun 7.1.26
-// CDF approximation. These are measured worst-case absolute errors against
-// the cached SciPy closed-form values on the grids below, with only a small
-// final-digit allowance. They are not generic price/Greek acceptance ranges.
-const BATCH_ANALYTIC_BUDGETS: [f64; 5] = [1.3e-5, 7.2e-8, 3.0e-15, 5.0e-12, 3.3e-7];
+// SIMD128 has no vector ln/erfc, so those evaluations are lane-scalar and all
+// remaining price/Greek arithmetic is f64x2.  This explicit operation budget
+// covers ordinary expression grouping against the cached SciPy grid; it is not
+// an economic-price tolerance.
+const BATCH_KERNEL_ROUNDOFF_ULPS: f64 = 512.0;
 
-// Cached A&S grid values isolate implementation roundoff from the documented
-// approximation error above. SIMD128 evaluates the same f64 polynomial with
-// separate lane operations; the portable path uses scalar `mul_add`.
-#[cfg(all(feature = "simd", target_feature = "simd128"))]
-const BATCH_KERNEL_ROUNDOFF_ULPS: f64 = 256.0;
-#[cfg(not(all(feature = "simd", target_feature = "simd128")))]
-const BATCH_KERNEL_ROUNDOFF_ULPS: f64 = 64.0;
-
-fn assert_batch_row(
-    actual: [f64; 5],
-    analytic: [f64; 5],
-    approximation_grid: [f64; 5],
-    label: &str,
-) {
+fn assert_batch_row(actual: [f64; 5], analytic: [f64; 5], label: &str) {
     const FIELDS: [&str; 5] = ["price", "delta", "gamma", "vega", "theta"];
     for field in 0..FIELDS.len() {
-        let approximation_error = (actual[field] - analytic[field]).abs();
+        let roundoff_budget =
+            BATCH_KERNEL_ROUNDOFF_ULPS * f64::EPSILON * analytic[field].abs().max(1.0);
+        let roundoff_error = (actual[field] - analytic[field]).abs();
         assert!(
-            approximation_error <= BATCH_ANALYTIC_BUDGETS[field],
-            "{label} {}: actual={:.17e}, analytic={:.17e}, error={:.3e}, budget={:.3e}",
+            roundoff_error <= roundoff_budget,
+            "{label} {}: actual={:.17e}, SciPy={:.17e}, error={:.3e}, \
+             vector-roundoff budget={:.3e}",
             FIELDS[field],
             actual[field],
             analytic[field],
-            approximation_error,
-            BATCH_ANALYTIC_BUDGETS[field]
-        );
-
-        let roundoff_budget =
-            BATCH_KERNEL_ROUNDOFF_ULPS * f64::EPSILON * approximation_grid[field].abs().max(1.0);
-        let roundoff_error = (actual[field] - approximation_grid[field]).abs();
-        assert!(
-            roundoff_error <= roundoff_budget,
-            "{label} {} kernel: actual={:.17e}, A&S grid={:.17e}, error={:.3e}, budget={:.3e}",
-            FIELDS[field],
-            actual[field],
-            approximation_grid[field],
             roundoff_error,
             roundoff_budget
         );
@@ -439,86 +416,6 @@ fn uniform_analytic_batches_match_scalar_exports_and_cover_f64x2_tail() {
             ],
         ],
     ];
-    // Independent evaluation of the production kernel's documented A&S CDF
-    // approximation on the same grid. This separates approximation error
-    // from portable/SIMD implementation roundoff.
-    const APPROXIMATION_GRID: [[[f64; 5]; 5]; 2] = [
-        [
-            [
-                26.902_148_330_504_46,
-                -0.765_711_701_114_659_7,
-                0.012_701_528_416_451_33,
-                24.889_305_411_514_037,
-                -0.190_446_396_068_178_81,
-            ],
-            [
-                11.911_232_945_180_927,
-                -0.442_420_513_688_803_47,
-                0.013_387_646_298_840_053,
-                41.906_251_422_262_51,
-                -2.698_080_670_343_315,
-            ],
-            [
-                10.785_643_001_066_12,
-                -0.390_611_145_588_848,
-                0.011_869_910_877_981_915,
-                44.868_263_118_771_644,
-                -3.050_679_375_132_744_6,
-            ],
-            [
-                7.392_277_530_896_024,
-                -0.269_927_651_851_410_43,
-                0.008_770_427_956_695_85,
-                45.382_070_777_101_19,
-                -3.391_023_228_792_680_5,
-            ],
-            [
-                3.709_598_458_319_249,
-                -0.137_348_351_500_154_06,
-                0.004_783_372_691_996_976,
-                36.974_141_131_528_25,
-                -2.983_788_934_986_473,
-            ],
-        ],
-        [
-            [
-                2.484_539_339_247_485,
-                0.217_628_631_921_361_5,
-                0.012_701_528_416_451_33,
-                24.889_305_411_514_037,
-                -2.673_474_302_269_824,
-            ],
-            [
-                10.937_995_930_100_89,
-                0.540_919_819_347_217_8,
-                0.013_387_646_298_840_053,
-                41.906_251_422_262_51,
-                -4.790_275_282_915_508,
-            ],
-            [
-                13.901_563_334_817_759,
-                0.592_729_187_447_173_2,
-                0.011_869_910_877_981_915,
-                44.868_263_118_771_644,
-                -5.203_304_929_434_286,
-            ],
-            [
-                22.464_077_877_767_473,
-                0.713_412_681_184_610_8,
-                0.008_770_427_956_695_85,
-                45.382_070_777_101_19,
-                -5.509_679_052_852_112,
-            ],
-            [
-                39.587_341_815_634_76,
-                0.845_991_981_535_867_1,
-                0.004_783_372_691_996_976,
-                36.974_141_131_528_25,
-                -4.962_274_272_835_906,
-            ],
-        ],
-    ];
-
     for (option_kind, is_call) in [false, true].into_iter().enumerate() {
         let prices = pricing::bs_price_uniform_batch_wasm(
             &spots, &strikes, rate, dividend, vol, expiry, is_call,
@@ -575,7 +472,6 @@ fn uniform_analytic_batches_match_scalar_exports_and_cover_f64x2_tail() {
                     greeks[index * 4 + 3],
                 ],
                 ANALYTIC[option_kind][index],
-                APPROXIMATION_GRID[option_kind][index],
                 "uniform batch",
             );
         }
@@ -634,8 +530,7 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
 
     assert_eq!(detected_batch_simd_backend(), BatchSimdBackend::WasmSimd128);
 
-    // scipy.stats.norm 1.17.1 analytic prices and independently evaluated A&S
-    // kernel values for the five lanes below.
+    // scipy.stats.norm 1.17.1 analytic prices for the five lanes below.
     const ANALYTIC_PRICES: [f64; 5] = [
         1.413_162_170_741_385_3,
         4.106_357_300_061_326,
@@ -643,14 +538,6 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
         15.453_530_883_296_693,
         23.505_867_004_864_285,
     ];
-    const APPROXIMATION_GRID_PRICES: [f64; 5] = [
-        1.413_155_621_799_212_7,
-        4.106_365_023_040_272,
-        8.827_319_131_370_103,
-        15.453_539_322_661_513,
-        23.505_858_962_472_928,
-    ];
-
     // The named export is important: it keeps the pricing kernel reachable
     // through wasm-bindgen/LTO, so SIMD opcodes come from a real pricing path
     // rather than incidental dependency code.
@@ -666,21 +553,13 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
     .expect("matching uniform batch");
     assert_eq!(prices.len(), 5);
     for index in 0..prices.len() {
-        let approximation_error = (prices[index] - ANALYTIC_PRICES[index]).abs();
+        let roundoff_budget =
+            BATCH_KERNEL_ROUNDOFF_ULPS * f64::EPSILON * ANALYTIC_PRICES[index].abs().max(1.0);
         assert!(
-            approximation_error <= BATCH_ANALYTIC_BUDGETS[0],
-            "SIMD price {index}: actual={}, analytic={}, error={approximation_error}",
+            (prices[index] - ANALYTIC_PRICES[index]).abs() <= roundoff_budget,
+            "SIMD price {index}: actual={}, SciPy={}, vector-roundoff budget={roundoff_budget}",
             prices[index],
             ANALYTIC_PRICES[index]
-        );
-        let roundoff_budget = BATCH_KERNEL_ROUNDOFF_ULPS
-            * f64::EPSILON
-            * APPROXIMATION_GRID_PRICES[index].abs().max(1.0);
-        assert!(
-            (prices[index] - APPROXIMATION_GRID_PRICES[index]).abs() <= roundoff_budget,
-            "SIMD price {index}: actual={}, A&S grid={}, budget={roundoff_budget}",
-            prices[index],
-            APPROXIMATION_GRID_PRICES[index]
         );
     }
 

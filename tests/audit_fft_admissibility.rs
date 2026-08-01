@@ -18,7 +18,7 @@
 //! Reference numbers used below:
 //! - No-arbitrage bounds are the standard European call bounds
 //!   `max(0, S*exp(-q*T) - K*exp(-r*T)) <= C <= S*exp(-q*T)` (model-free).
-//! - The Black-Scholes anchor 8.916037 for S=K=100, r=0.02, q=0, sigma=0.2,
+//! - The Black-Scholes anchor 8.916037278572539 for S=K=100, r=0.02, q=0, sigma=0.2,
 //!   T=1 is the closed-form value: d1=0.2, d2=0.0,
 //!   C = 100*N(0.2) - 100*exp(-0.02)*N(0.0).
 //! - The Heston anchor 16.070154917028834 (K=100) is QuantLib's cached Lewis
@@ -35,10 +35,10 @@ const RATE: f64 = 0.02;
 const DIV: f64 = 0.0;
 const STRIKES: [f64; 3] = [50.0, 100.0, 150.0];
 
-/// Absolute tolerance on the model-free call bounds. The audited failures
-/// violated the lower bound by 17-51 currency units; genuine quadrature noise
-/// (including reduced-alpha fallbacks) stays well inside half a unit.
-const BOUND_TOL: f64 = 0.5;
+/// Binary64/numerical tolerance on the model-free call bounds.  This is a
+/// supplemental invariant, not a pricing oracle; successful fallback prices
+/// must nevertheless respect it to well below a cent.
+const BOUND_TOL: f64 = 1.0e-8;
 
 fn assert_arbitrage_free(prices: &[(f64, f64)], maturity: f64, label: &str) {
     assert_eq!(prices.len(), STRIKES.len(), "{label}: wrong output length");
@@ -221,6 +221,46 @@ fn context_reports_reduced_alpha_when_fallback_engages() {
     assert_arbitrage_free(&prices, maturity, "vg fallback context");
 }
 
+/// Deterministic finite-grid lock for the automatic small-alpha Heston path.
+///
+/// The QuantLib and finer-grid assertions below test provenance and
+/// convergence. This test separately pins the production fallback decision
+/// and its binary64 outputs: default alpha 1.5 is inadmissible, so the context
+/// selects alpha 0.1875 and refines the grid by eight in both resolution and
+/// frequency spacing.
+#[test]
+fn heston_small_alpha_fallback_finite_grid_binary64_lock() {
+    use openferric::engines::fft::HestonCharFn;
+
+    let (v0, kappa, theta, xi, rho, maturity) = (0.04, 2.0, 0.04, 1.5, 0.7, 5.0);
+    let cf = HestonCharFn::new(SPOT, RATE, DIV, maturity, v0, kappa, theta, xi, rho);
+    let context = CarrMadanContext::new(&cf, RATE, maturity, SPOT, CarrMadanParams::default())
+        .expect("small-alpha Heston fallback context builds");
+    let effective = context.params();
+    assert_eq!(effective.alpha, 0.1875);
+    assert_eq!(effective.n, 32_768);
+    assert_eq!(effective.eta, 0.03125);
+
+    let expected: [f64; 3] = [
+        54.860_113_436_677_324,
+        18.623_918_174_295_15,
+        9.818_703_664_151_924,
+    ];
+    let prices = context
+        .price_strikes(&STRIKES)
+        .expect("small-alpha Heston fallback prices");
+    for (((actual_strike, actual_price), expected_strike), expected_price) in
+        prices.iter().zip(STRIKES).zip(expected)
+    {
+        assert_eq!(*actual_strike, expected_strike);
+        let binary64_budget = 256.0 * f64::EPSILON * expected_price.abs().max(1.0);
+        assert!(
+            (actual_price - expected_price).abs() <= binary64_budget,
+            "Heston small-alpha finite-grid lock drifted at K={expected_strike}: actual={actual_price}, expected={expected_price}, budget={binary64_budget}"
+        );
+    }
+}
+
 /// The automatic fallback must refine the frequency grid alongside the
 /// reduced alpha. A small alpha sharpens the damped integrand's peak near
 /// v = 0 (peak width scales with alpha), and the default eta = 0.25 that was
@@ -231,11 +271,10 @@ fn context_reports_reduced_alpha_when_fallback_engages() {
 /// instead of ~0.102).
 ///
 /// Anchors:
-/// - Parity put at K=50 cross-checked against an independent full-truncation
-///   Euler Monte Carlo (400k antithetic paths, 2000 steps, splitmix64 seed
-///   4242): put = 0.1015 +/- 0.0019 (1 s.e.). The converged FFT value is
-///   0.10198, stable to 1e-9 under further eta refinement (eta = 0.0625 and
-///   0.015625 at fixed range n*eta = 1024).
+/// - Parity put at K=50 is 0.10216768794637598 from QuantLib-Python 1.43's
+///   `AnalyticHestonEngine` with order-192 Gauss-Laguerre integration. The
+///   auto-refined FFT is required to be within 3e-4 of that independent
+///   reference; its residual discretization error is deliberately explicit.
 /// - Self-consistency: an explicitly finer admissible grid must agree with
 ///   the auto-refined fallback grid to quadrature accuracy.
 #[test]
@@ -246,9 +285,11 @@ fn fallback_refines_quadrature_grid() {
     let prices = try_heston_price_fft(SPOT, &STRIKES, RATE, DIV, v0, kappa, theta, xi, rho, t)
         .expect("fallback alpha exists for this set");
     let put50 = prices[0].1 - SPOT + STRIKES[0] * (-RATE * t).exp();
+    let quantlib_put50 = 0.102_167_687_946_375_98;
     assert!(
-        (put50 - 0.102).abs() < 0.02,
-        "K=50 parity put {put50} deviates from the MC-anchored value 0.102: \
+        (put50 - quantlib_put50).abs() < 3e-4,
+        "K=50 parity put {put50} deviates from the QuantLib reference \
+         {quantlib_put50}: \
          the fallback frequency grid under-resolves the small-alpha integrand peak"
     );
 
@@ -286,15 +327,15 @@ fn healthy_heston_reference_price_is_unchanged() {
         .expect("healthy Heston set must price without error");
     let expected = 16.070154917028834;
     assert!(
-        (prices[0].1 - expected).abs() < 1e-2,
+        (prices[0].1 - expected).abs() < 5e-12,
         "QuantLib Lewis anchor drifted: got {} expected {expected}",
         prices[0].1
     );
 }
 
 /// Healthy-regime anchor: Carr-Madan under Black-Scholes matches the closed
-/// form C = S*N(d1) - K*exp(-r*T)*N(d2) = 8.916037 for S=K=100, r=0.02, q=0,
-/// sigma=0.2, T=1 (d1=0.2, d2=0).
+/// form C = S*N(d1) - K*exp(-r*T)*N(d2) = 8.916037278572539 for S=K=100,
+/// r=0.02, q=0, sigma=0.2, T=1 (d1=0.2, d2=0).
 #[test]
 fn healthy_black_scholes_anchor_is_unchanged() {
     use openferric::engines::fft::BlackScholesCharFn;
@@ -303,9 +344,9 @@ fn healthy_black_scholes_anchor_is_unchanged() {
     let prices =
         carr_madan_price_at_strikes(&cf, 0.02, 1.0, 100.0, &[100.0], CarrMadanParams::default())
             .expect("BS pricing succeeds");
-    let expected = 8.916037;
+    let expected = 8.916_037_278_572_539;
     assert!(
-        (prices[0].1 - expected).abs() < 5e-3,
+        (prices[0].1 - expected).abs() < 3e-12,
         "BS closed-form anchor drifted: got {} expected {expected}",
         prices[0].1
     );

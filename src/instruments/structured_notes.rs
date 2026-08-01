@@ -1248,6 +1248,18 @@ fn node_forward_swap_rate(
 mod tests {
     use super::*;
 
+    /// Compare independently assembled deterministic cash flows allowing only
+    /// accumulated binary64 roundoff, never an economic-price tolerance.
+    fn assert_binary64_close(label: &str, actual: f64, expected: f64) {
+        let tolerance = 64.0 * f64::EPSILON * expected.abs().max(1.0);
+        let error = (actual - expected).abs();
+        assert!(
+            error <= tolerance,
+            "{label}: expected={expected:.17e}, actual={actual:.17e}, \
+             error={error:.3e}, binary64 budget={tolerance:.3e}"
+        );
+    }
+
     fn flat_curve(rate: f64) -> YieldCurve {
         YieldCurve::new(
             (1..=200)
@@ -1257,6 +1269,131 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    /// Independent, deliberately direct implementation of the finite-grid
+    /// Hull-White note recurrence used as a pricing oracle below.  It builds
+    /// each complete time slice and discovers cash-flow/exercise events from
+    /// their contractual dates; it does not call the production event maps,
+    /// transition helper, coupon helper, or callable-note pricer.
+    ///
+    /// The oracle is intentionally limited to fixed and range-accrual coupons,
+    /// the two callable contracts exercised by these regression tests.
+    fn independent_callable_note_grid_reference(
+        note: &CallableRateNote,
+        hw: &HullWhite,
+        curve: &YieldCurve,
+        steps: usize,
+    ) -> f64 {
+        let dt = note.maturity / steps as f64;
+        let initial_rate = HullWhite::instantaneous_forward(curve, 0.0);
+        let mut calibrated = hw.clone();
+        calibrated.calibrate_theta(
+            curve,
+            &(0..=steps).map(|i| i as f64 * dt).collect::<Vec<_>>(),
+        );
+        let spacing = if calibrated.sigma.abs() <= 1.0e-14 {
+            (3.0 * dt).sqrt() * 1.0e-6
+        } else {
+            calibrated.sigma * (3.0 * dt).sqrt()
+        };
+
+        let nearest_step =
+            |time: f64| -> usize { (time / dt).round().clamp(0.0, steps as f64) as usize };
+        let decision_steps = note
+            .exercise_schedule
+            .decision_times()
+            .into_iter()
+            .map(nearest_step)
+            .collect::<Vec<_>>();
+
+        let coupon_at_node = |level: usize, rate: f64| -> f64 {
+            note.coupon_schedule
+                .iter()
+                .filter_map(|period| {
+                    let observation_time = match period.coupon {
+                        CouponType::Fixed { .. } => period.payment_time,
+                        CouponType::Structured(StructuredCoupon::RangeAccrual { .. }) => {
+                            period.start_time
+                        }
+                        _ => panic!("oracle only supports fixed and range-accrual coupons"),
+                    };
+                    (nearest_step(observation_time) == level).then(|| {
+                        let (coupon_rate, fixing_discount) = match period.coupon {
+                            CouponType::Fixed { rate: fixed_rate } => (fixed_rate, 1.0),
+                            CouponType::Structured(StructuredCoupon::RangeAccrual {
+                                in_range_coupon_rate,
+                                out_of_range_coupon_rate,
+                                lower_bound,
+                                upper_bound,
+                            }) => {
+                                let earned_rate = if (lower_bound..=upper_bound).contains(&rate) {
+                                    in_range_coupon_rate
+                                } else {
+                                    out_of_range_coupon_rate
+                                };
+                                let fixing_time = level as f64 * dt;
+                                (
+                                    earned_rate,
+                                    calibrated.bond_price(
+                                        fixing_time,
+                                        period.payment_time,
+                                        rate,
+                                        curve,
+                                    ),
+                                )
+                            }
+                            _ => unreachable!(),
+                        };
+                        note.notional * period.accrual() * coupon_rate * fixing_discount
+                    })
+                })
+                .sum::<f64>()
+        };
+
+        let mut later = (-(steps as isize)..=steps as isize)
+            .map(|state_index| {
+                let rate = initial_rate + state_index as f64 * spacing;
+                let mut value = note.redemption + coupon_at_node(steps, rate);
+                if decision_steps.contains(&steps) {
+                    value = value.min(note.call_price);
+                }
+                value
+            })
+            .collect::<Vec<_>>();
+
+        for level in (0..steps).rev() {
+            let time = level as f64 * dt;
+            let mut current = Vec::with_capacity(2 * level + 1);
+            for state_index in -(level as isize)..=level as isize {
+                let rate = initial_rate + state_index as f64 * spacing;
+                let drift = (calibrated.theta_at(time) - calibrated.a * rate) * dt;
+                let scaled_second_moment = (calibrated.sigma * calibrated.sigma * dt
+                    + drift * drift)
+                    / (spacing * spacing);
+                let mut probability_up = 0.5 * (scaled_second_moment + drift / spacing).max(0.0);
+                let mut probability_down = 0.5 * (scaled_second_moment - drift / spacing).max(0.0);
+                let mut probability_middle = (1.0 - scaled_second_moment).max(0.0);
+                let probability_sum = probability_up + probability_middle + probability_down;
+                probability_up /= probability_sum;
+                probability_middle /= probability_sum;
+                probability_down /= probability_sum;
+
+                let later_offset = (state_index + level as isize + 1) as usize;
+                let mut value = (-rate * dt).exp()
+                    * (probability_down * later[later_offset - 1]
+                        + probability_middle * later[later_offset]
+                        + probability_up * later[later_offset + 1]);
+                value += coupon_at_node(level, rate);
+                if decision_steps.contains(&level) {
+                    value = value.min(note.call_price);
+                }
+                current.push(value);
+            }
+            later = current;
+        }
+
+        later[0]
     }
 
     #[test]
@@ -1296,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn callable_fixed_note_is_below_non_callable_hold_to_maturity_value() {
+    fn callable_fixed_note_matches_independent_nonzero_volatility_grid() {
         let curve = flat_curve(0.03);
         let hw = HullWhite::new(0.08, 0.01);
 
@@ -1314,19 +1451,31 @@ mod tests {
             exercise_schedule: ExerciseSchedule::new(vec![1.0, 2.0], 0.0).unwrap(),
         };
 
-        let callable = note.price_hull_white_tree(&hw, &curve, 300).unwrap();
-        let projected_float = vec![0.03; note.coupon_schedule.len()];
-        let projected_cms = vec![0.03; note.coupon_schedule.len()];
-        let non_callable = note
-            .hold_to_maturity_value(&curve, &projected_float, &projected_cms)
-            .unwrap();
+        let steps = 320;
+        let actual = note.price_hull_white_tree(&hw, &curve, steps).unwrap();
+        let reference = independent_callable_note_grid_reference(&note, &hw, &curve, steps);
+        let roundoff_budget = 512.0 * f64::EPSILON * reference.abs();
+        assert!(
+            (actual - reference).abs() <= roundoff_budget,
+            "callable fixed-note finite-grid mismatch: actual={actual:.17e}, \
+             independent={reference:.17e}, binary64 budget={roundoff_budget:.3e}"
+        );
 
-        assert!(callable.is_finite());
-        assert!(callable < non_callable);
+        // Grid convergence is a separate assertion from the exact finite-grid
+        // recurrence.  The numerical budget is pinned after comparing 160,
+        // 320 and 640 time slices for this complete contract.
+        // 132.13 currency units on one million notional (1.33 bp).
+        const GRID_320_TO_640_BUDGET: f64 = 1.33e2;
+        let refined = note.price_hull_white_tree(&hw, &curve, 640).unwrap();
+        assert!(
+            (refined - actual).abs() <= GRID_320_TO_640_BUDGET,
+            "callable fixed-note grid change exceeded budget: p320={actual:.12}, \
+             p640={refined:.12}"
+        );
     }
 
     #[test]
-    fn callable_range_accrual_prices_finite() {
+    fn callable_range_accrual_matches_independent_nonzero_volatility_grid() {
         let curve = flat_curve(0.025);
         let hw = HullWhite::new(0.10, 0.015);
 
@@ -1343,9 +1492,28 @@ mod tests {
         )
         .unwrap();
 
-        let px = callable_ra.price_hull_white_tree(&hw, &curve, 240).unwrap();
-        assert!(px.is_finite());
-        assert!(px > 0.0);
+        let steps = 240;
+        let actual = callable_ra
+            .price_hull_white_tree(&hw, &curve, steps)
+            .unwrap();
+        let reference =
+            independent_callable_note_grid_reference(&callable_ra.note, &hw, &curve, steps);
+        let roundoff_budget = 512.0 * f64::EPSILON * reference.abs();
+        assert!(
+            (actual - reference).abs() <= roundoff_budget,
+            "callable range-accrual finite-grid mismatch: actual={actual:.17e}, \
+             independent={reference:.17e}, binary64 budget={roundoff_budget:.3e}"
+        );
+
+        // The coupon indicator is discontinuous at each range boundary; this
+        // refinement moves the one-million-notional value by 806.03 (8.07 bp).
+        const GRID_240_TO_480_BUDGET: f64 = 8.07e2;
+        let refined = callable_ra.price_hull_white_tree(&hw, &curve, 480).unwrap();
+        assert!(
+            (refined - actual).abs() <= GRID_240_TO_480_BUDGET,
+            "callable range-accrual grid change exceeded budget: p240={actual:.12}, \
+             p480={refined:.12}"
+        );
     }
 
     #[test]
@@ -1370,8 +1538,14 @@ mod tests {
         let out = tarn.price(&projected, &curve).unwrap();
 
         assert!(out.knocked_out);
-        assert!(out.knockout_time.is_some());
-        assert!((out.accrued_coupon - 30_000.0).abs() <= 1.0e-8);
+        assert_eq!(out.knockout_time, Some(0.5));
+        assert_binary64_close("TARN accrued coupon", out.accrued_coupon, 30_000.0);
+
+        // The first semi-annual coupon is 1m * 0.5 * (3% + 3%) = 30k,
+        // exactly reaching the target.  Coupon and redemption are therefore
+        // both paid at t=0.5 on the independently specified flat 2% curve.
+        let expected = 1_030_000.0 * (-0.02_f64 * 0.5).exp();
+        assert_binary64_close("TARN discounted cash flows", out.price, expected);
     }
 
     #[test]
@@ -1396,10 +1570,21 @@ mod tests {
         let out = note.price(&floating, &curve).unwrap();
 
         assert_eq!(out.coupon_path.len(), 4);
-        assert!((out.coupon_path[0] - 0.02).abs() <= 1.0e-12);
-        assert!((out.coupon_path[1] - 0.01).abs() <= 1.0e-12);
-        assert!((out.coupon_path[2] - 0.0).abs() <= 1.0e-12);
-        assert!((out.coupon_path[3] - 0.0).abs() <= 1.0e-12);
+        for (i, (&actual, expected)) in out
+            .coupon_path
+            .iter()
+            .zip([0.02, 0.01, 0.0, 0.0])
+            .enumerate()
+        {
+            assert_binary64_close(&format!("snowball coupon {i}"), actual, expected);
+        }
+
+        // Quarterly coupons are 5,000 at t=.25 and 2,500 at t=.5; the last
+        // two recursive coupons are zero.  Redemption is paid at t=1.
+        let expected = 5_000.0 * (-0.02_f64 * 0.25).exp()
+            + 2_500.0 * (-0.02_f64 * 0.5).exp()
+            + 1_000_000.0 * (-0.02_f64).exp();
+        assert_binary64_close("snowball discounted cash flows", out.price, expected);
     }
 
     #[test]
@@ -1422,8 +1607,12 @@ mod tests {
 
         let floating = vec![0.01, 0.04];
         let pv = note.price(&floating, &curve).unwrap();
-        assert!(pv.is_finite());
-        assert!(pv > 0.0);
+
+        // Coupon rates are max(7% - 2*1%, 0) = 5% and
+        // max(7% - 2*4%, 0) = 0%.  Thus 25k is paid at t=.5 and principal at
+        // t=1 on the independently specified flat 2% curve.
+        let expected = 25_000.0 * (-0.02_f64 * 0.5).exp() + 1_000_000.0 * (-0.02_f64).exp();
+        assert_binary64_close("inverse-floater discounted cash flows", pv, expected);
     }
 
     #[test]
@@ -1449,9 +1638,22 @@ mod tests {
         let cms = note.projected_cms_rates_from_curve(&curve).unwrap();
         assert_eq!(cms.len(), note.coupon_schedule.len());
 
+        // On a flat continuously-compounded 3% curve, the annual-pay par
+        // swap rate is (1-P(5))/sum(P(1)..P(5)) = exp(3%)-1 at every start.
+        let expected_cms = 0.03_f64.exp() - 1.0;
+        for (i, &actual) in cms.iter().enumerate() {
+            assert_binary64_close(&format!("CMS projection {i}"), actual, expected_cms);
+        }
+
         let px = note.price_from_curve(&curve).unwrap();
-        assert!(px.is_finite());
-        assert!(px > 0.0);
+        let expected = 1_000_000.0 * (-0.03_f64 * 2.0).exp()
+            + 500_000.0
+                * expected_cms
+                * [0.5_f64, 1.0, 1.5, 2.0]
+                    .iter()
+                    .map(|&t| (-0.03 * t).exp())
+                    .sum::<f64>();
+        assert_binary64_close("CMS-linked discounted cash flows", px, expected);
     }
 
     #[test]

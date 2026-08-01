@@ -9,6 +9,8 @@
 
 use std::arch::wasm32::*;
 
+use crate::math::fast_norm::accurate_norm_cdf;
+
 const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
 
 #[inline]
@@ -22,7 +24,7 @@ pub(crate) fn store_f64x2(values: &mut [f64], index: usize, vector: v128) {
     values[index + 1] = f64x2_extract_lane::<1>(vector);
 }
 
-/// Evaluate the same A&S 7.1.26 approximation as the scalar analytic path.
+/// Evaluate the same A&S 7.1.26 approximation as `normal_cdf_approx`.
 ///
 /// The polynomial, sign selection, and PDF scaling use SIMD128. WebAssembly
 /// has no vector exponential, so the two exponential evaluations remain
@@ -54,6 +56,20 @@ pub(crate) fn normal_cdf_f64x2(x: v128) -> v128 {
     let result = v128_bitselect(cdf_neg, cdf_pos, negative);
     let is_zero = f64x2_eq(x, f64x2_splat(0.0));
     v128_bitselect(f64x2_splat(0.5), result, is_zero)
+}
+
+/// Evaluate the production-accuracy normal CDF independently in each lane.
+///
+/// WebAssembly SIMD has no vector `erfc`, so the Cody evaluations remain
+/// lane-scalar while the surrounding Black-Scholes arithmetic stays `f64x2`.
+/// The explicitly named [`normal_cdf_f64x2`] helper above deliberately keeps
+/// the faster A&S approximation for `normal_cdf_batch_approx` callers.
+#[inline]
+pub(crate) fn accurate_normal_cdf_f64x2(x: v128) -> v128 {
+    f64x2(
+        accurate_norm_cdf(f64x2_extract_lane::<0>(x)),
+        accurate_norm_cdf(f64x2_extract_lane::<1>(x)),
+    )
 }
 
 pub(crate) fn normal_cdf_batch_into(xs: &[f64], out: &mut [f64]) {

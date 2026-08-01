@@ -1,5 +1,7 @@
 """Tests for FFT pricing functions: Heston, VG, CGMY, NIG."""
 
+import math
+
 import pytest
 from openferric import (
     py_cgmy_fft_price,
@@ -44,7 +46,7 @@ class TestHestonFftPrice:
             sigma_v=p["sigma_v"],
             rho=p["rho"],
         )
-        assert fft_price == pytest.approx(semi_price, abs=5e-12)
+        assert fft_price == pytest.approx(semi_price, rel=0.0, abs=5e-12)
 
     def test_alan_lewis_reference(self, heston_params):
         """Check against Alan Lewis K=80 call ≈ 26.775."""
@@ -61,7 +63,7 @@ class TestHestonFftPrice:
             sigma_v=p["sigma_v"],
             rho=p["rho"],
         )
-        assert price == pytest.approx(26.774758743998854, abs=5e-12)
+        assert price == pytest.approx(26.774758743998854, rel=0.0, abs=5e-12)
 
 
 # =========================================================================
@@ -92,7 +94,7 @@ class TestHestonFftPrices:
             12.132211516709845,
             9.024913483457836,
         ]
-        assert prices == pytest.approx(expected, abs=5e-12)
+        assert prices == pytest.approx(expected, rel=0.0, abs=5e-12)
 
     def test_empty_strikes(self, heston_params):
         p = heston_params
@@ -136,7 +138,32 @@ class TestHestonFftPrices:
             sigma_v=p["sigma_v"],
             rho=p["rho"],
         )
-        assert batch[0] == pytest.approx(scalar, rel=1e-10)
+        # Both wrappers route the identical strike through the same finite FFT
+        # grid and interpolation path, so this compatibility check is exact.
+        assert batch[0] == scalar
+
+    def test_small_alpha_fallback_finite_grid_lock(self):
+        """Pin the deterministic auto-refined small-alpha production grid."""
+        prices = py_heston_fft_prices(
+            spot=100.0,
+            strikes=[50.0, 100.0, 150.0],
+            expiry=5.0,
+            rate=0.02,
+            div_yield=0.0,
+            v0=0.04,
+            kappa=2.0,
+            theta=0.04,
+            sigma_v=1.5,
+            rho=0.7,
+        )
+        expected = [
+            54.860113436677324,
+            18.62391817429515,
+            9.818703664151924,
+        ]
+        for actual, locked in zip(prices, expected, strict=True):
+            binary64_budget = 256 * math.ulp(max(abs(locked), 1.0))
+            assert actual == pytest.approx(locked, rel=0.0, abs=binary64_budget)
 
 
 # =========================================================================
@@ -150,7 +177,7 @@ class TestVgFftPrice:
         price = py_vg_fft_price(
             spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.01, sigma=0.20, theta_vg=0.10, nu=0.85
         )
-        assert price == pytest.approx(10.13935062748614, abs=5e-9)
+        assert price == pytest.approx(10.13935062748614, rel=0.0, abs=5e-9)
 
     def test_otm_lower(self):
         atm = py_vg_fft_price(
@@ -173,7 +200,35 @@ class TestCgmyFftPrice:
         price = py_cgmy_fft_price(
             spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.01, c=0.02, g=5.0, m=15.0, y=1.2
         )
-        assert price == pytest.approx(5.80222163947386, abs=5e-6)
+        assert price == pytest.approx(5.80222163947386, rel=0.0, abs=5e-6)
+
+    def test_default_finite_grid_lock(self):
+        """Pin the default finite grid separately from fypy's converged value."""
+        strikes = [80.0, 90.0, 100.0, 110.0, 120.0]
+        expected = [
+            23.005036990350163,
+            13.817853639255867,
+            5.802224526781332,
+            1.2927982063779289,
+            0.18496095469813645,
+        ]
+        prices = [
+            py_cgmy_fft_price(
+                spot=100.0,
+                strike=strike,
+                expiry=1.0,
+                rate=0.05,
+                div_yield=0.01,
+                c=0.02,
+                g=5.0,
+                m=15.0,
+                y=1.2,
+            )
+            for strike in strikes
+        ]
+        for actual, locked in zip(prices, expected, strict=True):
+            binary64_budget = 256 * math.ulp(max(abs(locked), 1.0))
+            assert actual == pytest.approx(locked, rel=0.0, abs=binary64_budget)
 
     def test_otm_lower(self):
         atm = py_cgmy_fft_price(
@@ -196,7 +251,7 @@ class TestNigFftPrice:
         price = py_nig_fft_price(
             spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.01, alpha=15.0, beta=-5.0, delta=0.5
         )
-        assert price == pytest.approx(9.63000693130414, abs=5e-12)
+        assert price == pytest.approx(9.63000693130414, rel=0.0, abs=5e-12)
 
     def test_otm_lower(self):
         atm = py_nig_fft_price(

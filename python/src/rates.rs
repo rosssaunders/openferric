@@ -898,7 +898,7 @@ pub struct Calendar {
 }
 
 impl Calendar {
-    fn to_core(&self) -> CoreCalendar {
+    pub(crate) fn to_core(&self) -> CoreCalendar {
         self.inner.clone()
     }
 
@@ -2603,6 +2603,15 @@ impl XccySwap {
         self.to_core().fixed_leg_pv_ccy1(&ccy1_discount_curve.inner)
     }
 
+    fn fixed_leg_pv_ccy1_with_frequency(
+        &self,
+        ccy1_discount_curve: &YieldCurve,
+        frequency: &Frequency,
+    ) -> f64 {
+        self.to_core()
+            .fixed_leg_pv_ccy1_with_frequency(&ccy1_discount_curve.inner, frequency.to_core())
+    }
+
     fn float_leg_pv_ccy2(
         &self,
         ccy2_discount_curve: &YieldCurve,
@@ -2610,6 +2619,19 @@ impl XccySwap {
     ) -> f64 {
         self.to_core()
             .float_leg_pv_ccy2(&ccy2_discount_curve.inner, &ccy2_projection_curve.inner)
+    }
+
+    fn float_leg_pv_ccy2_with_frequency(
+        &self,
+        ccy2_discount_curve: &YieldCurve,
+        ccy2_projection_curve: &YieldCurve,
+        frequency: &Frequency,
+    ) -> f64 {
+        self.to_core().float_leg_pv_ccy2_with_frequency(
+            &ccy2_discount_curve.inner,
+            &ccy2_projection_curve.inner,
+            frequency.to_core(),
+        )
     }
 
     fn npv(
@@ -2640,6 +2662,25 @@ impl XccySwap {
         )
     }
 
+    fn npv_dual_curve_with_frequencies(
+        &self,
+        ccy1_discount_curve: &YieldCurve,
+        ccy2_discount_curve: &YieldCurve,
+        ccy2_projection_curve: &YieldCurve,
+        fixed_frequency: &Frequency,
+        float_frequency: &Frequency,
+        pay_fixed_ccy1: bool,
+    ) -> f64 {
+        self.to_core().npv_dual_curve_with_frequencies(
+            &ccy1_discount_curve.inner,
+            &ccy2_discount_curve.inner,
+            &ccy2_projection_curve.inner,
+            fixed_frequency.to_core(),
+            float_frequency.to_core(),
+            pay_fixed_ccy1,
+        )
+    }
+
     fn par_fixed_rate(
         &self,
         ccy1_discount_curve: &YieldCurve,
@@ -2650,6 +2691,23 @@ impl XccySwap {
             &ccy1_discount_curve.inner,
             &ccy2_discount_curve.inner,
             &ccy2_projection_curve.inner,
+        )
+    }
+
+    fn par_fixed_rate_with_frequencies(
+        &self,
+        ccy1_discount_curve: &YieldCurve,
+        ccy2_discount_curve: &YieldCurve,
+        ccy2_projection_curve: &YieldCurve,
+        fixed_frequency: &Frequency,
+        float_frequency: &Frequency,
+    ) -> f64 {
+        self.to_core().par_fixed_rate_with_frequencies(
+            &ccy1_discount_curve.inner,
+            &ccy2_discount_curve.inner,
+            &ccy2_projection_curve.inner,
+            fixed_frequency.to_core(),
+            float_frequency.to_core(),
         )
     }
 
@@ -2666,6 +2724,28 @@ impl XccySwap {
             &ccy2_discount_curve.inner,
             &ccy2_projection_curve.inner,
             current_fx_spot,
+            pay_fixed_ccy1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mtm_basis_npv_with_frequencies(
+        &self,
+        ccy1_discount_curve: &YieldCurve,
+        ccy2_discount_curve: &YieldCurve,
+        ccy2_projection_curve: &YieldCurve,
+        current_fx_spot: f64,
+        fixed_frequency: &Frequency,
+        float_frequency: &Frequency,
+        pay_fixed_ccy1: bool,
+    ) -> f64 {
+        self.to_core().mtm_basis_npv_with_frequencies(
+            &ccy1_discount_curve.inner,
+            &ccy2_discount_curve.inner,
+            &ccy2_projection_curve.inner,
+            current_fx_spot,
+            fixed_frequency.to_core(),
+            float_frequency.to_core(),
             pay_fixed_ccy1,
         )
     }

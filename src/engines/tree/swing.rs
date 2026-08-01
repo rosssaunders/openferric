@@ -235,9 +235,59 @@ mod tests {
     use crate::core::PricingEngine;
     use crate::engines::tree::binomial::BinomialTreeEngine;
     use crate::instruments::vanilla::VanillaOption;
+    use statrs::distribution::{ContinuousCDF, Normal};
+
+    fn black_scholes_call(
+        spot: f64,
+        strike: f64,
+        rate: f64,
+        dividend_yield: f64,
+        volatility: f64,
+        maturity: f64,
+    ) -> f64 {
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let sigma_sqrt_t = volatility * maturity.sqrt();
+        let d1 = ((spot / strike).ln()
+            + (rate - dividend_yield + 0.5 * volatility * volatility) * maturity)
+            / sigma_sqrt_t;
+        let d2 = d1 - sigma_sqrt_t;
+        spot * (-dividend_yield * maturity).exp() * normal.cdf(d1)
+            - strike * (-rate * maturity).exp() * normal.cdf(d2)
+    }
 
     #[test]
-    fn swing_with_monthly_dates_is_between_requested_european_bounds() {
+    fn unconstrained_swing_matches_strip_of_black_scholes_calls() {
+        // With one right for every exercise date, exercising never consumes a
+        // scarce right. The swing value is exactly a strip of European calls.
+        const CRR_DISCRETIZATION_BUDGET: f64 = 6.5e-3;
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.20)
+            .build()
+            .unwrap();
+
+        let swing = SwingOption::new(0, 2, vec![0.5, 1.0], 100.0, 1.0);
+        let actual = SwingTreeEngine::new(800)
+            .price(&swing, &market)
+            .unwrap()
+            .price;
+        let reference = black_scholes_call(100.0, 100.0, 0.05, 0.0, 0.20, 0.5)
+            + black_scholes_call(100.0, 100.0, 0.05, 0.0, 0.20, 1.0);
+
+        assert!(
+            (actual - reference).abs() <= CRR_DISCRETIZATION_BUDGET,
+            "swing strip price {actual:.12} differs from BS strip {reference:.12}"
+        );
+    }
+
+    #[test]
+    fn constrained_monthly_swing_matches_quantlib_fd_reference_and_converges() {
+        // Independent oracle generated with QuantLib 1.43
+        // FdSimpleBSSwingEngine(t_grid=960, x_grid=1200) for this contract.
+        const QUANTLIB_REFERENCE: f64 = 54.200_380_350_565_76;
+        const FINE_GRID_DISCRETIZATION_BUDGET: f64 = 7.5e-3;
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -249,27 +299,45 @@ mod tests {
         let exercise_dates: Vec<f64> = (1..=12).map(|m| m as f64 / 12.0).collect();
         let swing = SwingOption::new(0, 6, exercise_dates, 100.0, 1.0);
 
-        let swing_price = SwingTreeEngine::new(240)
+        let coarse_price = SwingTreeEngine::new(960)
             .price(&swing, &market)
             .unwrap()
             .price;
+        let fine_price = SwingTreeEngine::new(1_920)
+            .price(&swing, &market)
+            .unwrap()
+            .price;
+        let coarse_error = (coarse_price - QUANTLIB_REFERENCE).abs();
+        let fine_error = (fine_price - QUANTLIB_REFERENCE).abs();
 
+        assert!(
+            fine_error <= FINE_GRID_DISCRETIZATION_BUDGET,
+            "fine swing price {fine_price:.12} differs from QuantLib reference \
+             {QUANTLIB_REFERENCE:.12} by {fine_error:.12}"
+        );
+        assert!(
+            fine_error <= 0.51 * coarse_error,
+            "expected first-order convergence: coarse error={coarse_error:.12}, \
+             fine error={fine_error:.12}"
+        );
+
+        // Supplemental economic bounds retained from the original smoke test.
         let single_euro = VanillaOption::european_call(100.0, 0.5);
-        let euro_price = BinomialTreeEngine::new(240)
+        let euro_price = BinomialTreeEngine::new(960)
             .price(&single_euro, &market)
             .unwrap()
             .price;
 
         assert!(
-            swing_price > 6.0 * euro_price,
+            fine_price > 6.0 * euro_price,
             "expected swing > 6x single european: swing={} european={}",
-            swing_price,
+            fine_price,
             euro_price
         );
         assert!(
-            swing_price < 12.0 * euro_price,
+            fine_price < 12.0 * euro_price,
             "expected swing < 12x single european: swing={} european={}",
-            swing_price,
+            fine_price,
             euro_price
         );
     }

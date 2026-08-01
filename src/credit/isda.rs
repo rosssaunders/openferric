@@ -12,8 +12,8 @@
 use chrono::{Datelike, Duration, NaiveDate};
 
 use crate::rates::{
-    Calendar, DayCountConvention, add_business_days, next_cds_date, previous_cds_date,
-    year_fraction,
+    BusinessDayConvention, Calendar, DayCountConvention, add_business_days, adjust_business_day,
+    next_cds_date, previous_cds_date, year_fraction,
 };
 
 /// Protection side of a CDS trade.
@@ -75,8 +75,44 @@ impl DatedCds {
         running_spread: f64,
         recovery_rate: f64,
     ) -> Self {
+        Self::standard_imm_with_calendar(
+            side,
+            trade_date,
+            tenor_years,
+            notional,
+            running_spread,
+            recovery_rate,
+            &Calendar::weekends_only(),
+        )
+    }
+
+    /// Builds a standard quarterly IMM CDS alongside an explicit contract
+    /// calendar.
+    ///
+    /// The schedule anchor follows `DateGeneration::CDS`: it starts at the
+    /// previous unadjusted IMM twentieth relative to trade date, except that a
+    /// roll whose Following-adjusted date is after trade date belongs to the
+    /// new coupon period and causes the preceding quarterly roll to be added.
+    /// Step-in remains T+1 calendar day and maturity is selected from it.
+    pub fn standard_imm_with_calendar(
+        side: ProtectionSide,
+        trade_date: NaiveDate,
+        tenor_years: i32,
+        notional: f64,
+        running_spread: f64,
+        recovery_rate: f64,
+        calendar: &Calendar,
+    ) -> Self {
         let step_in = step_in_date(trade_date);
-        let start = previous_imm_twentieth(step_in);
+        let previous_roll = previous_imm_twentieth(trade_date);
+        let start =
+            if adjust_business_day(previous_roll, BusinessDayConvention::Following, calendar)
+                > trade_date
+            {
+                add_months(previous_roll, -3)
+            } else {
+                previous_roll
+            };
         let raw_maturity = add_months(step_in, 12 * tenor_years);
         let maturity = next_imm_twentieth(raw_maturity);
 
@@ -96,9 +132,15 @@ impl DatedCds {
 /// ISDA market conventions used for valuation alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IsdaConventions {
-    /// Step-in date offset in business days from valuation date.
+    /// Requested step-in offset in calendar days from valuation date.
+    ///
+    /// The standard ISDA engine path floors this at T+1, matching QuantLib's
+    /// effective-protection-start rule. Midpoint and legacy paths use the
+    /// requested offset exactly.
     pub step_in_days: usize,
     /// Cash-settlement date offset in business days from valuation date.
+    /// Offsets beyond the representable date range saturate at
+    /// [`NaiveDate::MAX`].
     pub cash_settle_days: usize,
 }
 
@@ -114,9 +156,9 @@ impl Default for IsdaConventions {
 /// Valuation output for dated CDS pricing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CdsPriceResult {
-    /// NPV from the trade side perspective (buyer positive when valuable to buyer).
+    /// NPV after the accrued-premium/rebate adjustment, from the trade side.
     pub clean_npv: f64,
-    /// NPV including accrued premium.
+    /// Protection-minus-premium leg NPV before the accrued-premium adjustment.
     pub dirty_npv: f64,
     pub premium_leg_pv: f64,
     pub protection_leg_pv: f64,
@@ -134,18 +176,99 @@ pub fn price_midpoint_flat(
     discount_rate: f64,
     conventions: IsdaConventions,
 ) -> CdsPriceResult {
+    price_midpoint_flat_with_calendar(
+        cds,
+        valuation_date,
+        hazard_rate,
+        discount_rate,
+        conventions,
+        &Calendar::weekends_only(),
+    )
+}
+
+/// Midpoint-style CDS valuation with an explicit business calendar.
+///
+/// Step-in is a calendar-day lag; `calendar` controls only the cash-settlement
+/// business-day lag. This compatibility method retains unadjusted coupon
+/// boundaries and Act/360 curve times.
+pub fn price_midpoint_flat_with_calendar(
+    cds: &DatedCds,
+    valuation_date: NaiveDate,
+    hazard_rate: f64,
+    discount_rate: f64,
+    conventions: IsdaConventions,
+    calendar: &Calendar,
+) -> CdsPriceResult {
     price_flat_with_model(
         cds,
         valuation_date,
         hazard_rate,
         discount_rate,
         conventions,
+        calendar,
         PricingModel::Midpoint,
     )
 }
 
-/// ISDA-style CDS valuation using exact flat-hazard/flat-discount integrals.
+/// Standard CDS valuation under flat continuously compounded hazard and
+/// discount rates.
+///
+/// This applies the standard dated cashflow conventions used by QuantLib's
+/// ISDA engine: T+1 calendar-day step-in, Following-adjusted regular accrual
+/// boundaries, unadjusted contractual maturity, Following-adjusted payment
+/// dates, Act/365F curve times, final-day-inclusive Act/360 for the last coupon
+/// of a multi-period schedule, half-day default accrual bias, and the
+/// accrued-premium rebate paid at cash settlement.
 pub fn price_isda_flat(
+    cds: &DatedCds,
+    valuation_date: NaiveDate,
+    hazard_rate: f64,
+    discount_rate: f64,
+    conventions: IsdaConventions,
+) -> CdsPriceResult {
+    price_isda_flat_with_calendar(
+        cds,
+        valuation_date,
+        hazard_rate,
+        discount_rate,
+        conventions,
+        &Calendar::weekends_only(),
+    )
+}
+
+/// Standard flat-rate CDS valuation with an explicit contract calendar.
+///
+/// `calendar` controls regular accrual-date adjustment, every coupon payment
+/// date, and the T+cash-settlement-business-day lag. Step-in remains a calendar
+/// day convention and is deliberately not adjusted through holidays. A zero
+/// cash-settlement lag still Following-adjusts a non-business valuation date;
+/// a rebate settling exactly on a business valuation date is treated as
+/// already occurred.
+pub fn price_isda_flat_with_calendar(
+    cds: &DatedCds,
+    valuation_date: NaiveDate,
+    hazard_rate: f64,
+    discount_rate: f64,
+    conventions: IsdaConventions,
+    calendar: &Calendar,
+) -> CdsPriceResult {
+    price_isda_standard_flat_with_calendar(
+        cds,
+        valuation_date,
+        hazard_rate,
+        discount_rate,
+        conventions,
+        calendar,
+    )
+}
+
+/// Legacy year-fraction flat-integral CDS calculation.
+///
+/// This preserves the earlier analytic methodology for callers that require
+/// it: all coupon boundaries are unadjusted, curve times use Act/360, and PVs
+/// are reported at cash settlement. New standard CDS work should use
+/// [`price_isda_flat`] or [`price_isda_flat_with_calendar`].
+pub fn price_isda_flat_legacy_analytic(
     cds: &DatedCds,
     valuation_date: NaiveDate,
     hazard_rate: f64,
@@ -158,7 +281,8 @@ pub fn price_isda_flat(
         hazard_rate,
         discount_rate,
         conventions,
-        PricingModel::IsdaStandard,
+        &Calendar::weekends_only(),
+        PricingModel::LegacyFlatIntegral,
     )
 }
 
@@ -170,14 +294,26 @@ pub fn hazard_from_par_spread(par_spread: f64, recovery_rate: f64) -> f64 {
     (par_spread.max(0.0) / (1.0 - recovery_rate)).max(0.0)
 }
 
-/// Standard CDS step-in date (T+1 business day).
+/// Standard CDS step-in date (T+1 calendar day).
 pub fn step_in_date(valuation_date: NaiveDate) -> NaiveDate {
-    add_business_days(valuation_date, 1, &Calendar::weekends_only())
+    valuation_date + Duration::days(1)
+}
+
+/// Standard CDS step-in date when a contract calendar is also in scope.
+///
+/// Step-in is T+1 calendar day, so `calendar` intentionally has no effect.
+pub fn step_in_date_with_calendar(valuation_date: NaiveDate, _calendar: &Calendar) -> NaiveDate {
+    step_in_date(valuation_date)
 }
 
 /// Standard CDS cash-settlement date (T+3 business days).
 pub fn cash_settle_date(valuation_date: NaiveDate) -> NaiveDate {
-    add_business_days(valuation_date, 3, &Calendar::weekends_only())
+    cash_settle_date_with_calendar(valuation_date, &Calendar::weekends_only())
+}
+
+/// CDS cash-settlement date (T+3 business days) under an explicit calendar.
+pub fn cash_settle_date_with_calendar(valuation_date: NaiveDate, calendar: &Calendar) -> NaiveDate {
+    add_business_days(valuation_date, 3, calendar)
 }
 
 /// Previous quarterly IMM date (20th of Mar/Jun/Sep/Dec) on or before `date`.
@@ -224,9 +360,247 @@ pub fn generate_imm_schedule(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StandardCdsPeriod {
+    accrual_start: NaiveDate,
+    accrual_end: NaiveDate,
+    payment_date: NaiveDate,
+    is_final: bool,
+}
+
+fn standard_cds_periods(cds: &DatedCds, calendar: &Calendar) -> Vec<StandardCdsPeriod> {
+    let unadjusted = generate_imm_schedule(
+        cds.issue_date,
+        cds.maturity_date,
+        cds.coupon_interval_months,
+        cds.date_rule,
+    );
+    let final_index = unadjusted.len().saturating_sub(1);
+    let accrual_dates = unadjusted
+        .iter()
+        .enumerate()
+        .map(|(index, date)| {
+            if index == final_index {
+                *date
+            } else {
+                adjust_business_day(*date, BusinessDayConvention::Following, calendar)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    unadjusted
+        .windows(2)
+        .enumerate()
+        .map(|(index, window)| StandardCdsPeriod {
+            accrual_start: accrual_dates[index],
+            accrual_end: accrual_dates[index + 1],
+            payment_date: adjust_business_day(
+                window[1],
+                BusinessDayConvention::Following,
+                calendar,
+            ),
+            is_final: index + 1 == final_index,
+        })
+        .collect()
+}
+
+fn price_isda_standard_flat_with_calendar(
+    cds: &DatedCds,
+    valuation_date: NaiveDate,
+    hazard_rate: f64,
+    discount_rate: f64,
+    conventions: IsdaConventions,
+    calendar: &Calendar,
+) -> CdsPriceResult {
+    let minimum_step_in = advance_calendar_days(valuation_date, 1);
+    let step_in =
+        advance_calendar_days(valuation_date, conventions.step_in_days).max(minimum_step_in);
+    let cash_settle =
+        standard_cash_settle_date(valuation_date, conventions.cash_settle_days, calendar);
+
+    if !cds.is_valid() {
+        return zero_cds_result(step_in, cash_settle);
+    }
+
+    let hazard = hazard_rate.max(0.0);
+    let periods = standard_cds_periods(cds, calendar);
+    let final_coupon_includes_maturity = periods.len() > 1;
+    let mut scheduled_coupon_annuity = 0.0;
+    let mut default_accrual_annuity = 0.0;
+
+    for period in &periods {
+        if period.payment_date > step_in {
+            let mut accrual_days = (period.accrual_end - period.accrual_start).num_days();
+            if period.is_final && final_coupon_includes_maturity {
+                // QuantLib's standard CDS leg uses Actual/360 including the
+                // contractual maturity day for the final coupon only when the
+                // schedule contains more than one coupon period.
+                accrual_days += 1;
+            }
+            let accrual = accrual_days as f64 / 360.0;
+            let discount_time = act365_time(valuation_date, period.payment_date);
+            let survival_time =
+                act365_time(valuation_date, period.payment_date - Duration::days(1));
+            scheduled_coupon_annuity +=
+                accrual * (-discount_rate * discount_time).exp() * (-hazard * survival_time).exp();
+        }
+
+        if period.accrual_end <= step_in {
+            continue;
+        }
+
+        let default_start = period.accrual_start.max(step_in) - Duration::days(1);
+        let default_end = period.payment_date - Duration::days(1);
+        if default_end <= default_start {
+            continue;
+        }
+
+        let t0 = act365_time(valuation_date, default_start);
+        let t1 = act365_time(valuation_date, default_end);
+        let accrual_origin =
+            act365_time(valuation_date, period.accrual_start - Duration::days(1)) - 1.0 / 730.0;
+        default_accrual_annuity +=
+            quantlib_flat_default_accrual(t0, t1, accrual_origin, discount_rate, hazard) * 365.0
+                / 360.0;
+    }
+
+    let protection_start = step_in - Duration::days(1);
+    let protection_term = flat_default_leg_integral(
+        act365_time(valuation_date, protection_start),
+        act365_time(valuation_date, cds.maturity_date),
+        discount_rate,
+        hazard,
+    );
+
+    // Standard CDS accrued rebate is determined at trade+1, independently of
+    // a later requested protection start. Like QuantLib's default
+    // includeSettlementDateFlows=false setting, a rebate settling on the
+    // valuation date has already occurred and contributes no PV or fair-spread
+    // annuity.
+    let rebate_reference = minimum_step_in;
+    let accrued_fraction = standard_accrued_fraction(&periods, rebate_reference);
+    let accrued_rebate_annuity = if cash_settle > valuation_date {
+        let settlement_discount = (-discount_rate * act365_time(valuation_date, cash_settle)).exp();
+        accrued_fraction * settlement_discount
+    } else {
+        0.0
+    };
+    let risky_annuity = scheduled_coupon_annuity + default_accrual_annuity;
+
+    let premium_leg_pv = cds.notional * cds.running_spread * risky_annuity;
+    let protection_leg_pv = cds.notional * (1.0 - cds.recovery_rate) * protection_term;
+    let accrued_premium_pv = cds.notional * cds.running_spread * accrued_rebate_annuity;
+    let dirty_npv_buyer = protection_leg_pv - premium_leg_pv;
+    let clean_npv_buyer = dirty_npv_buyer + accrued_premium_pv;
+    let fair_annuity = risky_annuity - accrued_rebate_annuity;
+    let fair_spread = if fair_annuity.abs() <= 1.0e-14 {
+        0.0
+    } else {
+        ((1.0 - cds.recovery_rate) * protection_term / fair_annuity).max(0.0)
+    };
+
+    let sign = cds.side.sign();
+    CdsPriceResult {
+        clean_npv: sign * clean_npv_buyer,
+        dirty_npv: sign * dirty_npv_buyer,
+        premium_leg_pv,
+        protection_leg_pv,
+        accrued_premium_pv,
+        fair_spread,
+        step_in_date: step_in,
+        cash_settle_date: cash_settle,
+    }
+}
+
+fn zero_cds_result(step_in_date: NaiveDate, cash_settle_date: NaiveDate) -> CdsPriceResult {
+    CdsPriceResult {
+        clean_npv: 0.0,
+        dirty_npv: 0.0,
+        premium_leg_pv: 0.0,
+        protection_leg_pv: 0.0,
+        accrued_premium_pv: 0.0,
+        fair_spread: 0.0,
+        step_in_date,
+        cash_settle_date,
+    }
+}
+
+fn standard_accrued_fraction(periods: &[StandardCdsPeriod], step_in: NaiveDate) -> f64 {
+    let final_coupon_includes_maturity = periods.len() > 1;
+    for period in periods {
+        if step_in > period.payment_date {
+            continue;
+        }
+        if step_in == period.payment_date {
+            return if period.is_final && final_coupon_includes_maturity {
+                ((period.accrual_end - period.accrual_start).num_days() + 1) as f64 / 360.0
+            } else {
+                0.0
+            };
+        }
+        if step_in <= period.accrual_start {
+            return 0.0;
+        }
+        let accrued_end = step_in.min(period.accrual_end);
+        return (accrued_end - period.accrual_start).num_days() as f64 / 360.0;
+    }
+    0.0
+}
+
+fn act365_time(reference: NaiveDate, date: NaiveDate) -> f64 {
+    (date - reference).num_days() as f64 / 365.0
+}
+
+fn flat_default_leg_integral(t0: f64, t1: f64, rate: f64, hazard: f64) -> f64 {
+    if t1 <= t0 || hazard <= 0.0 {
+        return 0.0;
+    }
+    let combined = rate + hazard;
+    let dt = t1 - t0;
+    if combined.abs() <= 1.0e-12 {
+        hazard * dt
+    } else {
+        hazard / combined * (-combined * t0).exp() * -(-combined * dt).exp_m1()
+    }
+}
+
+fn quantlib_flat_default_accrual(
+    t0: f64,
+    t1: f64,
+    accrual_origin: f64,
+    rate: f64,
+    hazard: f64,
+) -> f64 {
+    if t1 <= t0 || hazard <= 0.0 {
+        return 0.0;
+    }
+
+    let dt = t1 - t0;
+    let fhat = rate * dt;
+    let hhat = hazard * dt;
+    let combined_hat = fhat + hhat;
+    let p0q0 = (-(rate + hazard) * t0).exp();
+
+    // Match QuantLib's `IsdaCdsEngine::Taylor` branch. It avoids cancellation
+    // for very short intervals and is also the documented standard-engine
+    // numerical fix used by the external fixture.
+    if combined_hat < 1.0e-4 {
+        let combined2 = combined_hat * combined_hat;
+        hhat * p0q0
+            * ((t0 - accrual_origin)
+                * (1.0 - 0.5 * combined_hat + combined2 / 6.0 - combined2 * combined_hat / 24.0)
+                + dt * (0.5 - combined_hat / 3.0 + combined2 / 8.0
+                    - combined2 * combined_hat / 30.0))
+    } else {
+        let p1q1 = (-(rate + hazard) * t1).exp();
+        (hhat / combined_hat)
+            * (dt * ((p0q0 - p1q1) / combined_hat - p1q1) + (t0 - accrual_origin) * (p0q0 - p1q1))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PricingModel {
     Midpoint,
-    IsdaStandard,
+    LegacyFlatIntegral,
 }
 
 fn price_flat_with_model(
@@ -235,10 +609,11 @@ fn price_flat_with_model(
     hazard_rate: f64,
     discount_rate: f64,
     conventions: IsdaConventions,
+    calendar: &Calendar,
     model: PricingModel,
 ) -> CdsPriceResult {
-    let step_in = advance_business_days(valuation_date, conventions.step_in_days);
-    let cash_settle = advance_business_days(valuation_date, conventions.cash_settle_days);
+    let step_in = advance_calendar_days(valuation_date, conventions.step_in_days);
+    let cash_settle = advance_business_days(valuation_date, conventions.cash_settle_days, calendar);
 
     if !cds.is_valid() {
         return CdsPriceResult {
@@ -316,7 +691,7 @@ fn price_flat_with_model(
                 accrual_on_default +=
                     (accrual_offset + 0.5 * accrual_default) * df_mid * default_prob;
             }
-            PricingModel::IsdaStandard => {
+            PricingModel::LegacyFlatIntegral => {
                 let (accrual_term, protection_piece) =
                     exact_flat_interval_terms(t1, t2, r, h, accrual_offset);
                 protection_term += protection_piece;
@@ -381,8 +756,44 @@ fn exact_flat_interval_terms(t1: f64, t2: f64, r: f64, h: f64, accrual_offset: f
     (accrual.max(0.0), protection.max(0.0))
 }
 
-fn advance_business_days(date: NaiveDate, days: usize) -> NaiveDate {
-    add_business_days(date, days as i32, &Calendar::weekends_only())
+fn advance_business_days(date: NaiveDate, days: usize, calendar: &Calendar) -> NaiveDate {
+    let remaining_calendar_days = (NaiveDate::MAX - date).num_days();
+    let Ok(remaining_calendar_days) = usize::try_from(remaining_calendar_days) else {
+        return NaiveDate::MAX;
+    };
+    if days > remaining_calendar_days {
+        return NaiveDate::MAX;
+    }
+
+    let mut current = date;
+    let mut left = days;
+    while left > 0 {
+        let Some(next) = current.succ_opt() else {
+            return NaiveDate::MAX;
+        };
+        current = next;
+        if calendar.is_business_day(current) {
+            left -= 1;
+        }
+    }
+    current
+}
+
+fn standard_cash_settle_date(date: NaiveDate, days: usize, calendar: &Calendar) -> NaiveDate {
+    if days == 0 {
+        // QuantLib Calendar::advance(0 Days, Following) still adjusts a
+        // non-business trade date.
+        adjust_business_day(date, BusinessDayConvention::Following, calendar)
+    } else {
+        advance_business_days(date, days, calendar)
+    }
+}
+
+fn advance_calendar_days(date: NaiveDate, days: usize) -> NaiveDate {
+    let days = i64::try_from(days).unwrap_or(i64::MAX);
+    Duration::try_days(days)
+        .and_then(|offset| date.checked_add_signed(offset))
+        .unwrap_or(NaiveDate::MAX)
 }
 
 fn add_months(date: NaiveDate, months: i32) -> NaiveDate {
@@ -437,6 +848,114 @@ mod tests {
         let cash_settle = cash_settle_date(d);
         assert!(step_in > d);
         assert!(cash_settle > step_in);
+    }
+
+    #[test]
+    fn oversized_convention_offsets_saturate_without_wrapping() {
+        let valuation_date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let calendar = Calendar::weekends_only();
+
+        assert_eq!(
+            advance_calendar_days(valuation_date, usize::MAX),
+            NaiveDate::MAX
+        );
+        assert_eq!(
+            advance_business_days(valuation_date, usize::MAX, &calendar),
+            NaiveDate::MAX
+        );
+    }
+
+    #[test]
+    fn standard_schedule_separates_accrual_maturity_and_payment_dates() {
+        let trade_date = NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let calendar = Calendar::target();
+        let cds = DatedCds::standard_imm_with_calendar(
+            ProtectionSide::Buyer,
+            trade_date,
+            5,
+            1.0,
+            0.01,
+            0.4,
+            &calendar,
+        );
+        let periods = standard_cds_periods(&cds, &calendar);
+
+        // The raw 20-Sep-2026 and 20-Dec-2026 roll dates are Sundays, so the
+        // first regular accrual period is Following-adjusted on both ends.
+        assert_eq!(
+            periods[0].accrual_start,
+            NaiveDate::from_ymd_opt(2026, 9, 21).unwrap()
+        );
+        assert_eq!(
+            periods[0].accrual_end,
+            NaiveDate::from_ymd_opt(2026, 12, 21).unwrap()
+        );
+        assert_eq!(periods[0].payment_date, periods[0].accrual_end);
+
+        // Contractual maturity 20-Dec-2031 is a Saturday and remains the final
+        // accrual boundary, while its cash payment follows on Monday 22-Dec.
+        let final_period = periods.last().unwrap();
+        assert!(final_period.is_final);
+        assert_eq!(
+            final_period.accrual_end,
+            NaiveDate::from_ymd_opt(2031, 12, 20).unwrap()
+        );
+        assert_eq!(
+            final_period.payment_date,
+            NaiveDate::from_ymd_opt(2031, 12, 22).unwrap()
+        );
+    }
+
+    #[test]
+    fn standard_constructor_anchors_schedule_on_trade_date_roll_period() {
+        let target = Calendar::target();
+
+        // A trade immediately before the June roll is still in the coupon
+        // period that began on 20 March, even though T+1 lands on 20 June.
+        let pre_roll_trade = NaiveDate::from_ymd_opt(2026, 6, 19).unwrap();
+        let pre_roll = DatedCds::standard_imm_with_calendar(
+            ProtectionSide::Buyer,
+            pre_roll_trade,
+            5,
+            1.0,
+            0.01,
+            0.4,
+            &target,
+        );
+        assert_eq!(
+            pre_roll.issue_date,
+            NaiveDate::from_ymd_opt(2026, 3, 20).unwrap()
+        );
+
+        // 20 September is a Sunday. DateGeneration::CDS compares its
+        // Following-adjusted date (Monday 21st) with trade date, so the
+        // unadjusted June roll must be prepended.
+        let weekend_roll_trade = NaiveDate::from_ymd_opt(2026, 9, 20).unwrap();
+        let weekend_roll = DatedCds::standard_imm_with_calendar(
+            ProtectionSide::Buyer,
+            weekend_roll_trade,
+            5,
+            1.0,
+            0.01,
+            0.4,
+            &target,
+        );
+        assert_eq!(
+            weekend_roll.issue_date,
+            NaiveDate::from_ymd_opt(2026, 6, 20).unwrap()
+        );
+
+        let business_roll_trade = NaiveDate::from_ymd_opt(2026, 3, 20).unwrap();
+        let business_roll = DatedCds::standard_imm_with_calendar(
+            ProtectionSide::Buyer,
+            business_roll_trade,
+            5,
+            1.0,
+            0.01,
+            0.4,
+            &target,
+        );
+        assert_eq!(business_roll.issue_date, business_roll_trade);
     }
 
     #[test]
@@ -507,15 +1026,15 @@ mod tests {
     fn isda_stub_period_accrues_from_period_start() {
         // Rebuild the premium and protection legs by numerical quadrature with the
         // accrual-on-default measured from each period's start date and compare
-        // against price_isda_flat. Valuation falls mid-period so the stub period
-        // has period_start < step_in.
+        // against the retained legacy flat-integral methodology. Valuation
+        // falls mid-period so the stub period has period_start < step_in.
         let eval = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
         let hazard = 0.02;
         let rate = 0.03;
         let conventions = IsdaConventions::default();
         let cds = DatedCds::standard_imm(ProtectionSide::Buyer, eval, 5, 10_000_000.0, 0.01, 0.4);
 
-        let result = price_isda_flat(&cds, eval, hazard, rate, conventions);
+        let result = price_isda_flat_legacy_analytic(&cds, eval, hazard, rate, conventions);
 
         let step_in = step_in_date(eval);
         assert!(

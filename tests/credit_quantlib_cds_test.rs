@@ -9,22 +9,22 @@ use openferric::credit::{
 use openferric::rates::YieldCurve;
 
 #[test]
-fn quantlib_cached_value_midpoint_regression() {
-    // QuantLib creditdefaultswap.cpp testCachedValue() reference setup.
-    // Historical QuantLib test versions use issueDate = evaluationDate - 1Y.
-    let evaluation_date = NaiveDate::from_ymd_opt(2006, 6, 9).unwrap();
-    let issue_date = NaiveDate::from_ymd_opt(2005, 6, 9).unwrap();
-    let maturity_date = NaiveDate::from_ymd_opt(2015, 6, 9).unwrap();
-
+fn quantlib_midpoint_one_coupon_regression() {
+    // QuantLib-Python 1.43 MidPointCdsEngine fixture with a NullCalendar,
+    // explicit 20-Dec-2025/20-Mar-2026 schedule, continuously compounded
+    // Act/360 flat curves (h=1.234%, r=6%), and same-day protection start and
+    // settlement. The original QuantLib cached test uses a TARGET-generated
+    // Forward schedule that this compatibility API does not claim to model.
+    let evaluation_date = NaiveDate::from_ymd_opt(2025, 12, 20).unwrap();
     let cds = DatedCds {
         side: ProtectionSide::Seller,
         notional: 10_000.0,
         running_spread: 0.0120,
         recovery_rate: 0.40,
-        issue_date,
-        maturity_date,
-        coupon_interval_months: 6,
-        date_rule: CdsDateRule::TwentiethImm,
+        issue_date: evaluation_date,
+        maturity_date: NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+        coupon_interval_months: 3,
+        date_rule: CdsDateRule::QuarterlyImm,
     };
 
     let result = price_midpoint_flat(
@@ -33,19 +33,21 @@ fn quantlib_cached_value_midpoint_regression() {
         0.01234,
         0.06,
         IsdaConventions {
-            step_in_days: 1,
-            cash_settle_days: 1,
+            step_in_days: 0,
+            cash_settle_days: 0,
         },
     );
 
-    // QuantLib's full TARGET-calendar values are 295.0153398 and
-    // 0.007517539081. These exact values are for OpenFerric's documented
-    // weekends-only schedule convention.
-    let expected_npv = 295.440_979_236_107_86;
-    let expected_fair_spread = 0.007_517_859_639_424_599;
-
-    assert_relative_eq!(result.clean_npv, expected_npv, epsilon = 1.0e-10);
-    assert_relative_eq!(result.fair_spread, expected_fair_spread, epsilon = 1.0e-14);
+    let leg_roundoff = 512.0 * f64::EPSILON * 30.0;
+    assert!((result.clean_npv - 11.164_799_954_192_627).abs() <= leg_roundoff);
+    assert!((result.dirty_npv - 11.164_799_954_192_627).abs() <= leg_roundoff);
+    assert!((result.premium_leg_pv - 29.508_185_029_241_762).abs() <= leg_roundoff);
+    assert!((result.protection_leg_pv - 18.343_385_075_049_135).abs() <= leg_roundoff);
+    assert_eq!(result.accrued_premium_pv, 0.0);
+    assert!(
+        (result.fair_spread - 0.007_459_646_219_598_271).abs()
+            <= 256.0 * f64::EPSILON * result.fair_spread
+    );
 }
 
 #[test]

@@ -407,6 +407,11 @@ fn cached_gauss_legendre(n: usize) -> Option<&'static (Vec<f64>, Vec<f64>)> {
         64 => gl_cache!(GL64, 64),
         96 => gl_cache!(GL96_CACHE, 96),
         128 => gl_cache!(GL128, 128),
+        256 => gl_cache!(GL256, 256),
+        512 => gl_cache!(GL512, 512),
+        1024 => gl_cache!(GL1024, 1024),
+        2048 => gl_cache!(GL2048, 2048),
+        4096 => gl_cache!(GL4096, 4096),
         _ => None,
     }
 }

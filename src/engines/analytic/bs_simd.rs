@@ -14,10 +14,9 @@ use std::sync::OnceLock;
 
 use crate::math::fast_norm::accurate_norm_cdf;
 
-/// Below this total volatility the absolute error of the fast A&S CDF can be
-/// larger than the option's time value.  Use the Cody/erfc implementation for
-/// this numerically sensitive region.
-const ACCURATE_CDF_TOTAL_VOL: f64 = 1.0e-3;
+/// Below this total volatility, use the scalar stability path to avoid losing
+/// a small time value to cancellation in vectorized payoff arithmetic.
+const SCALAR_STABILITY_TOTAL_VOL: f64 = 1.0e-3;
 
 /// SIMD implementation selected for batch analytic pricing on this process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +131,7 @@ fn selected_price_backend_for(
     t: f64,
     is_call: bool,
 ) -> BatchSimdBackend {
-    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= ACCURATE_CDF_TOTAL_VOL;
+    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= SCALAR_STABILITY_TOTAL_VOL;
     if t <= 0.0
         || vol <= 0.0
         || sensitive_total_vol
@@ -365,7 +364,7 @@ pub fn bs_greeks_batch_into(
     }
 
     let backend = detected_batch_simd_backend();
-    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= ACCURATE_CDF_TOTAL_VOL;
+    let sensitive_total_vol = t > 0.0 && vol > 0.0 && vol * t.sqrt() <= SCALAR_STABILITY_TOTAL_VOL;
     if t <= 0.0
         || vol <= 0.0
         || sensitive_total_vol
@@ -436,10 +435,14 @@ pub fn bs_greeks_batch_into(
     }
 }
 
-// Shared by every batch backend's scalar route and tail loop (including the
-// NEON path in `math::simd_neon`): tails must use the same `normal_cdf_approx`
-// family as the vector bodies, or odd-length batches price their last element
-// with a different CDF than the lanes.
+// Shared by every SIMD backend's exceptional-lane and tail loop (including
+// the NEON path in `math::simd_neon`). Both scalar tails and vector bodies use
+// the same tail-accurate Cody CDF.
+#[cfg(any(
+    all(feature = "simd", target_arch = "x86_64"),
+    all(feature = "simd", target_arch = "aarch64"),
+    all(feature = "simd", target_arch = "wasm32", target_feature = "simd128")
+))]
 #[inline]
 pub(crate) fn bs_price_scalar(
     spot: f64,
@@ -510,10 +513,14 @@ fn bs_price_scalar_with(
 
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
-    // Only 2 CDF evaluations; put uses put-call parity.
-    let call = s_df_q * normal_cdf_approx(d1) - k_df_r * normal_cdf_approx(d2);
-    let (call, put) = (call, call - s_df_q + k_df_r);
-    if is_call { call } else { put }
+    // Evaluate the requested tail directly.  Recovering a far-OTM put from
+    // put-call parity can subtract two spot-sized values even before the
+    // stable-path cutoff, erasing a representable price.
+    if is_call {
+        s_df_q * accurate_norm_cdf(d1) - k_df_r * accurate_norm_cdf(d2)
+    } else {
+        k_df_r * accurate_norm_cdf(-d2) - s_df_q * accurate_norm_cdf(-d1)
+    }
 }
 
 #[inline]
@@ -523,6 +530,11 @@ fn normal_pdf_scalar(x: f64) -> f64 {
 }
 
 #[inline]
+#[cfg(any(
+    all(feature = "simd", target_arch = "x86_64"),
+    all(feature = "simd", target_arch = "aarch64"),
+    all(feature = "simd", target_arch = "wasm32", target_feature = "simd128")
+))]
 fn bs_greeks_scalar(
     spot: f64,
     strike: f64,
@@ -602,19 +614,16 @@ fn bs_greeks_scalar_with(
     }
 
     let sqrt_t = t.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
     let ordinary = invariants.ordinary_d1_d2(spot, strike, is_call);
     let (d1, d2) =
         ordinary.unwrap_or_else(|| super::bs_inline::stable_d1_d2(spot, strike, r, q, vol, t));
 
     let pdf = normal_pdf_scalar(d1);
 
-    // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
-    let cdf = if sig_sqrt_t <= ACCURATE_CDF_TOTAL_VOL || ordinary.is_none() {
-        accurate_norm_cdf
-    } else {
-        normal_cdf_approx
-    };
+    // Use the tail-accurate Cody CDF throughout. Puts evaluate the reflected
+    // arguments directly so deep-tail Greeks do not lose relative accuracy to
+    // subtraction from one.
+    let cdf = accurate_norm_cdf;
     let nd1 = cdf(d1);
     let nd2 = cdf(d2);
 
@@ -640,7 +649,7 @@ fn bs_greeks_scalar_with(
 mod wasm_simd_impl {
     use std::arch::wasm32::*;
 
-    use crate::math::simd_wasm::{load_f64x2, normal_cdf_f64x2, store_f64x2};
+    use crate::math::simd_wasm::{accurate_normal_cdf_f64x2, load_f64x2, store_f64x2};
 
     use super::{bs_greeks_scalar, bs_price_scalar};
 
@@ -678,6 +687,7 @@ mod wasm_simd_impl {
         let drift = f64x2_splat((0.5 * vol).mul_add(vol, r - q) * t);
         let df_r = f64x2_splat((-r * t).exp());
         let df_q = f64x2_splat((-q * t).exp());
+        let zero = f64x2_splat(0.0);
 
         let mut index = 0;
         while index + 2 <= spots.len() {
@@ -704,8 +714,9 @@ mod wasm_simd_impl {
             let strikes_v = load_f64x2(strikes, index);
 
             // WebAssembly SIMD has no vector logarithm. Division and all
-            // downstream d1/d2, CDF-polynomial, discount, and payoff
-            // arithmetic remain explicit f64x2 operations.
+            // downstream d1/d2, discount, and payoff arithmetic remain
+            // explicit f64x2 operations.  CDF is evaluated accurately per
+            // lane because WebAssembly has no vector erfc instruction.
             let ratios = f64x2_div(spots_v, strikes_v);
             let ln_ratio = f64x2(
                 f64x2_extract_lane::<0>(ratios).ln(),
@@ -713,18 +724,22 @@ mod wasm_simd_impl {
             );
             let d1 = f64x2_mul(f64x2_add(ln_ratio, drift), inv_sig_sqrt_t);
             let d2 = f64x2_sub(d1, sig_sqrt_t_v);
-            let nd1 = normal_cdf_f64x2(d1);
-            let nd2 = normal_cdf_f64x2(d2);
             let discounted_spot = f64x2_mul(spots_v, df_q);
             let discounted_strike = f64x2_mul(strikes_v, df_r);
-            let call = f64x2_sub(
-                f64x2_mul(discounted_spot, nd1),
-                f64x2_mul(discounted_strike, nd2),
-            );
             let result = if is_call {
-                call
+                let nd1 = accurate_normal_cdf_f64x2(d1);
+                let nd2 = accurate_normal_cdf_f64x2(d2);
+                f64x2_sub(
+                    f64x2_mul(discounted_spot, nd1),
+                    f64x2_mul(discounted_strike, nd2),
+                )
             } else {
-                f64x2_add(f64x2_sub(call, discounted_spot), discounted_strike)
+                let nmd1 = accurate_normal_cdf_f64x2(f64x2_sub(zero, d1));
+                let nmd2 = accurate_normal_cdf_f64x2(f64x2_sub(zero, d2));
+                f64x2_sub(
+                    f64x2_mul(discounted_strike, nmd2),
+                    f64x2_mul(discounted_spot, nmd1),
+                )
             };
             store_f64x2(out, index, result);
             index += 2;
@@ -767,7 +782,6 @@ mod wasm_simd_impl {
         }
 
         const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
-        let one = f64x2_splat(1.0);
         let sqrt_t = t.sqrt();
         let sig_sqrt_t = vol * sqrt_t;
         let inv_sig_sqrt_t = f64x2_splat(1.0 / sig_sqrt_t);
@@ -780,6 +794,7 @@ mod wasm_simd_impl {
         let theta_scale = f64x2_splat(-0.5 * vol / sqrt_t);
         let q_v = f64x2_splat(q);
         let r_v = f64x2_splat(r);
+        let zero = f64x2_splat(0.0);
 
         let mut index = 0;
         while index + 2 <= spots.len() {
@@ -817,8 +832,14 @@ mod wasm_simd_impl {
             );
             let d1 = f64x2_mul(f64x2_add(ln_ratio, drift), inv_sig_sqrt_t);
             let d2 = f64x2_sub(d1, sig_sqrt_t_v);
-            let nd1 = normal_cdf_f64x2(d1);
-            let nd2 = normal_cdf_f64x2(d2);
+            let (prob1, prob2) = if is_call {
+                (accurate_normal_cdf_f64x2(d1), accurate_normal_cdf_f64x2(d2))
+            } else {
+                (
+                    accurate_normal_cdf_f64x2(f64x2_sub(zero, d1)),
+                    accurate_normal_cdf_f64x2(f64x2_sub(zero, d2)),
+                )
+            };
 
             // As with CDF, WebAssembly has no vector exponential. Only the two
             // exponentials are scalar; PDF scaling and all Greek formulas are
@@ -831,9 +852,9 @@ mod wasm_simd_impl {
 
             let discounted_pdf = f64x2_mul(df_q, pdf);
             let delta_v = if is_call {
-                f64x2_mul(df_q, nd1)
+                f64x2_mul(df_q, prob1)
             } else {
-                f64x2_mul(df_q, f64x2_sub(nd1, one))
+                f64x2_mul(df_q, f64x2_sub(zero, prob1))
             };
             let gamma_v = f64x2_div(discounted_pdf, f64x2_mul(spots_v, gamma_denom));
             let vega_v = f64x2_mul(f64x2_mul(spots_v, discounted_pdf), sqrt_t_v);
@@ -842,23 +863,17 @@ mod wasm_simd_impl {
                 f64x2_sub(
                     f64x2_add(
                         theta_common,
-                        f64x2_mul(f64x2_mul(q_v, spots_v), f64x2_mul(df_q, nd1)),
+                        f64x2_mul(f64x2_mul(q_v, spots_v), f64x2_mul(df_q, prob1)),
                     ),
-                    f64x2_mul(f64x2_mul(r_v, strikes_v), f64x2_mul(df_r, nd2)),
+                    f64x2_mul(f64x2_mul(r_v, strikes_v), f64x2_mul(df_r, prob2)),
                 )
             } else {
                 f64x2_add(
                     f64x2_sub(
                         theta_common,
-                        f64x2_mul(
-                            f64x2_mul(q_v, spots_v),
-                            f64x2_mul(df_q, f64x2_sub(one, nd1)),
-                        ),
+                        f64x2_mul(f64x2_mul(q_v, spots_v), f64x2_mul(df_q, prob1)),
                     ),
-                    f64x2_mul(
-                        f64x2_mul(r_v, strikes_v),
-                        f64x2_mul(df_r, f64x2_sub(one, nd2)),
-                    ),
+                    f64x2_mul(f64x2_mul(r_v, strikes_v), f64x2_mul(df_r, prob2)),
                 )
             };
 
@@ -885,7 +900,8 @@ mod neon_impl {
     use std::arch::aarch64::*;
 
     use crate::math::simd_neon::{
-        load_f64x2, norm_cdf_f64x2, norm_pdf_f64x2, simd_ln_f64x2, splat_f64x2, store_f64x2,
+        accurate_norm_cdf_f64x2, load_f64x2, norm_cdf_f64x2, norm_pdf_f64x2, simd_ln_f64x2,
+        splat_f64x2, store_f64x2,
     };
 
     use super::bs_greeks_scalar;
@@ -950,7 +966,7 @@ mod neon_impl {
         let vol_v = unsafe { splat_f64x2(vol) };
         let q_v = unsafe { splat_f64x2(q) };
         let r_v = unsafe { splat_f64x2(r) };
-        let one = unsafe { splat_f64x2(1.0) };
+        let zero = unsafe { splat_f64x2(0.0) };
         let denom_gamma_v = unsafe { splat_f64x2(denom_gamma) };
         // Pre-compute theta time denominator to avoid per-iteration divide.
         let neg_inv_2sqrt_t = unsafe { splat_f64x2(-0.5 / sqrt_t) };
@@ -967,13 +983,22 @@ mod neon_impl {
             let d1 = vmulq_f64(vaddq_f64(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = vsubq_f64(d1, sig_sqrt_t_v);
 
-            // Only 2 CDF evaluations; derive N(-d) = 1 - N(d) for puts.
-            let nd1 = unsafe { norm_cdf_f64x2(d1) };
-            let nd2 = unsafe { norm_cdf_f64x2(d2) };
+            // Evaluate the requested tails directly.  For puts this preserves
+            // probabilities below half an ulp of one.
+            let (prob1, prob2) = if is_call {
+                (unsafe { accurate_norm_cdf_f64x2(d1) }, unsafe {
+                    accurate_norm_cdf_f64x2(d2)
+                })
+            } else {
+                (
+                    unsafe { accurate_norm_cdf_f64x2(vsubq_f64(zero, d1)) },
+                    unsafe { accurate_norm_cdf_f64x2(vsubq_f64(zero, d2)) },
+                )
+            };
             let pdf_d1 = unsafe { norm_pdf_f64x2(d1) };
 
-            let delta_call = vmulq_f64(df_q_v, nd1);
-            let delta_put = vmulq_f64(df_q_v, vsubq_f64(nd1, one));
+            let delta_call = vmulq_f64(df_q_v, prob1);
+            let delta_put = vmulq_f64(df_q_v, vsubq_f64(zero, prob1));
             let delta_v = if is_call { delta_call } else { delta_put };
 
             let gamma_v = vdivq_f64(vmulq_f64(df_q_v, pdf_d1), vmulq_f64(s, denom_gamma_v));
@@ -989,19 +1014,17 @@ mod neon_impl {
                 vsubq_f64(
                     vaddq_f64(
                         theta_common,
-                        vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, nd1)),
+                        vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, prob1)),
                     ),
-                    vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, nd2)),
+                    vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, prob2)),
                 )
             } else {
-                let nmd1 = vsubq_f64(one, nd1);
-                let nmd2 = vsubq_f64(one, nd2);
                 vaddq_f64(
                     vsubq_f64(
                         theta_common,
-                        vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, nmd1)),
+                        vmulq_f64(vmulq_f64(q_v, s), vmulq_f64(df_q_v, prob1)),
                     ),
-                    vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, nmd2)),
+                    vmulq_f64(vmulq_f64(r_v, k), vmulq_f64(df_r_v, prob2)),
                 )
             };
 
@@ -1032,7 +1055,8 @@ mod avx2_impl {
     use std::arch::x86_64::*;
 
     use crate::math::simd_math::{
-        ln_f64x4, load_f64x4, norm_cdf_f64x4, norm_pdf_f64x4, splat_f64x4, store_f64x4,
+        accurate_norm_cdf_f64x4, ln_f64x4, load_f64x4, norm_cdf_f64x4, norm_pdf_f64x4, splat_f64x4,
+        store_f64x4,
     };
 
     use super::{bs_greeks_scalar, bs_price_scalar};
@@ -1087,6 +1111,7 @@ mod avx2_impl {
         let sig_sqrt_t_v = unsafe { splat_f64x4(sig_sqrt_t) };
         let df_r_v = unsafe { splat_f64x4(df_r) };
         let df_q_v = unsafe { splat_f64x4(df_q) };
+        let zero = _mm256_setzero_pd();
 
         let n = spots.len();
         let mut i = 0usize;
@@ -1100,21 +1125,16 @@ mod avx2_impl {
             let d1 = _mm256_mul_pd(_mm256_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm256_sub_pd(d1, sig_sqrt_t_v);
 
-            // Only 2 CDF evaluations regardless of call/put.
-            // Put uses put-call parity: P = C - S*df_q + K*df_r.
-            let nd1 = unsafe { norm_cdf_f64x4(d1) };
-            let nd2 = unsafe { norm_cdf_f64x4(d2) };
-
             let s_df_q = _mm256_mul_pd(s, df_q_v);
             let k_df_r = _mm256_mul_pd(k, df_r_v);
-
-            let call = _mm256_sub_pd(_mm256_mul_pd(s_df_q, nd1), _mm256_mul_pd(k_df_r, nd2));
-
             let result = if is_call {
-                call
+                let nd1 = unsafe { accurate_norm_cdf_f64x4(d1) };
+                let nd2 = unsafe { accurate_norm_cdf_f64x4(d2) };
+                _mm256_sub_pd(_mm256_mul_pd(s_df_q, nd1), _mm256_mul_pd(k_df_r, nd2))
             } else {
-                // Put-call parity: P = C - S*df_q + K*df_r
-                _mm256_add_pd(_mm256_sub_pd(call, s_df_q), k_df_r)
+                let nmd1 = unsafe { accurate_norm_cdf_f64x4(_mm256_sub_pd(zero, d1)) };
+                let nmd2 = unsafe { accurate_norm_cdf_f64x4(_mm256_sub_pd(zero, d2)) };
+                _mm256_sub_pd(_mm256_mul_pd(k_df_r, nmd2), _mm256_mul_pd(s_df_q, nmd1))
             };
 
             // SAFETY: bounds are checked in loop condition.
@@ -1171,7 +1191,7 @@ mod avx2_impl {
         let vol_v = unsafe { splat_f64x4(vol) };
         let q_v = unsafe { splat_f64x4(q) };
         let r_v = unsafe { splat_f64x4(r) };
-        let one = unsafe { splat_f64x4(1.0) };
+        let zero = _mm256_setzero_pd();
         let denom_gamma_v = unsafe { splat_f64x4(denom_gamma) };
         // Pre-compute the theta time denominator: -1/(2*sqrt_t).
         // This replaces a negate + divide per iteration with a single multiply.
@@ -1189,13 +1209,22 @@ mod avx2_impl {
             let d1 = _mm256_mul_pd(_mm256_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm256_sub_pd(d1, sig_sqrt_t_v);
 
-            // Only 2 CDF evaluations + derive negations via 1-CDF (no extra CDF calls).
-            let nd1 = unsafe { norm_cdf_f64x4(d1) };
-            let nd2 = unsafe { norm_cdf_f64x4(d2) };
+            // Evaluate the requested tails directly.  For puts this preserves
+            // probabilities below half an ulp of one.
+            let (prob1, prob2) = if is_call {
+                (unsafe { accurate_norm_cdf_f64x4(d1) }, unsafe {
+                    accurate_norm_cdf_f64x4(d2)
+                })
+            } else {
+                (
+                    unsafe { accurate_norm_cdf_f64x4(_mm256_sub_pd(zero, d1)) },
+                    unsafe { accurate_norm_cdf_f64x4(_mm256_sub_pd(zero, d2)) },
+                )
+            };
             let pdf_d1 = unsafe { norm_pdf_f64x4(d1) };
 
-            let delta_call = _mm256_mul_pd(df_q_v, nd1);
-            let delta_put = _mm256_mul_pd(df_q_v, _mm256_sub_pd(nd1, one));
+            let delta_call = _mm256_mul_pd(df_q_v, prob1);
+            let delta_put = _mm256_mul_pd(df_q_v, _mm256_sub_pd(zero, prob1));
             let delta_v = if is_call { delta_call } else { delta_put };
 
             let gamma_v = _mm256_div_pd(
@@ -1217,21 +1246,18 @@ mod avx2_impl {
                 _mm256_sub_pd(
                     _mm256_add_pd(
                         theta_common,
-                        _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, nd1)),
+                        _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, prob1)),
                     ),
-                    _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, nd2)),
+                    _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, prob2)),
                 )
             } else {
-                // For put, use N(-d) = 1 - N(d) without extra CDF calls.
-                let nmd1 = _mm256_sub_pd(one, nd1);
-                let nmd2 = _mm256_sub_pd(one, nd2);
                 // theta_put = common - q*S*df_q*N(-d1) + r*K*df_r*N(-d2)
                 _mm256_add_pd(
                     _mm256_sub_pd(
                         theta_common,
-                        _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, nmd1)),
+                        _mm256_mul_pd(_mm256_mul_pd(q_v, s), _mm256_mul_pd(df_q_v, prob1)),
                     ),
-                    _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, nmd2)),
+                    _mm256_mul_pd(_mm256_mul_pd(r_v, k), _mm256_mul_pd(df_r_v, prob2)),
                 )
             };
 
@@ -1263,7 +1289,8 @@ mod avx512_impl {
     use std::arch::x86_64::*;
 
     use crate::math::simd_avx512::{
-        ln_f64x8, load_f64x8, norm_cdf_f64x8, norm_pdf_f64x8, splat_f64x8, store_f64x8,
+        accurate_norm_cdf_f64x8, ln_f64x8, load_f64x8, norm_cdf_f64x8, norm_pdf_f64x8, splat_f64x8,
+        store_f64x8,
     };
 
     use super::{bs_greeks_scalar, bs_price_scalar};
@@ -1318,6 +1345,7 @@ mod avx512_impl {
         let sig_sqrt_t_v = splat_f64x8(sig_sqrt_t);
         let df_r_v = splat_f64x8(df_r);
         let df_q_v = splat_f64x8(df_q);
+        let zero = _mm512_setzero_pd();
 
         let n = spots.len();
         let mut i = 0usize;
@@ -1331,21 +1359,16 @@ mod avx512_impl {
             let d1 = _mm512_mul_pd(_mm512_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm512_sub_pd(d1, sig_sqrt_t_v);
 
-            // Only 2 CDF evaluations regardless of call/put.
-            // Put uses put-call parity: P = C - S*df_q + K*df_r.
-            let nd1 = norm_cdf_f64x8(d1);
-            let nd2 = norm_cdf_f64x8(d2);
-
             let s_df_q = _mm512_mul_pd(s, df_q_v);
             let k_df_r = _mm512_mul_pd(k, df_r_v);
-
-            let call = _mm512_sub_pd(_mm512_mul_pd(s_df_q, nd1), _mm512_mul_pd(k_df_r, nd2));
-
             let result = if is_call {
-                call
+                let nd1 = accurate_norm_cdf_f64x8(d1);
+                let nd2 = accurate_norm_cdf_f64x8(d2);
+                _mm512_sub_pd(_mm512_mul_pd(s_df_q, nd1), _mm512_mul_pd(k_df_r, nd2))
             } else {
-                // Put-call parity: P = C - S*df_q + K*df_r
-                _mm512_add_pd(_mm512_sub_pd(call, s_df_q), k_df_r)
+                let nmd1 = accurate_norm_cdf_f64x8(_mm512_sub_pd(zero, d1));
+                let nmd2 = accurate_norm_cdf_f64x8(_mm512_sub_pd(zero, d2));
+                _mm512_sub_pd(_mm512_mul_pd(k_df_r, nmd2), _mm512_mul_pd(s_df_q, nmd1))
             };
 
             // SAFETY: bounds are checked in loop condition.
@@ -1402,7 +1425,7 @@ mod avx512_impl {
         let vol_v = splat_f64x8(vol);
         let q_v = splat_f64x8(q);
         let r_v = splat_f64x8(r);
-        let one = splat_f64x8(1.0);
+        let zero = _mm512_setzero_pd();
         let denom_gamma_v = splat_f64x8(denom_gamma);
         // Pre-compute the theta time denominator: -1/(2*sqrt_t).
         // This replaces a negate + divide per iteration with a single multiply.
@@ -1420,13 +1443,20 @@ mod avx512_impl {
             let d1 = _mm512_mul_pd(_mm512_add_pd(ln_sk, drift_v), inv_sig_sqrt_t_v);
             let d2 = _mm512_sub_pd(d1, sig_sqrt_t_v);
 
-            // Only 2 CDF evaluations + derive negations via 1-CDF (no extra CDF calls).
-            let nd1 = norm_cdf_f64x8(d1);
-            let nd2 = norm_cdf_f64x8(d2);
+            // Evaluate the requested tails directly.  For puts this preserves
+            // probabilities below half an ulp of one.
+            let (prob1, prob2) = if is_call {
+                (accurate_norm_cdf_f64x8(d1), accurate_norm_cdf_f64x8(d2))
+            } else {
+                (
+                    accurate_norm_cdf_f64x8(_mm512_sub_pd(zero, d1)),
+                    accurate_norm_cdf_f64x8(_mm512_sub_pd(zero, d2)),
+                )
+            };
             let pdf_d1 = norm_pdf_f64x8(d1);
 
-            let delta_call = _mm512_mul_pd(df_q_v, nd1);
-            let delta_put = _mm512_mul_pd(df_q_v, _mm512_sub_pd(nd1, one));
+            let delta_call = _mm512_mul_pd(df_q_v, prob1);
+            let delta_put = _mm512_mul_pd(df_q_v, _mm512_sub_pd(zero, prob1));
             let delta_v = if is_call { delta_call } else { delta_put };
 
             let gamma_v = _mm512_div_pd(
@@ -1448,21 +1478,18 @@ mod avx512_impl {
                 _mm512_sub_pd(
                     _mm512_add_pd(
                         theta_common,
-                        _mm512_mul_pd(_mm512_mul_pd(q_v, s), _mm512_mul_pd(df_q_v, nd1)),
+                        _mm512_mul_pd(_mm512_mul_pd(q_v, s), _mm512_mul_pd(df_q_v, prob1)),
                     ),
-                    _mm512_mul_pd(_mm512_mul_pd(r_v, k), _mm512_mul_pd(df_r_v, nd2)),
+                    _mm512_mul_pd(_mm512_mul_pd(r_v, k), _mm512_mul_pd(df_r_v, prob2)),
                 )
             } else {
-                // For put, use N(-d) = 1 - N(d) without extra CDF calls.
-                let nmd1 = _mm512_sub_pd(one, nd1);
-                let nmd2 = _mm512_sub_pd(one, nd2);
                 // theta_put = common - q*S*df_q*N(-d1) + r*K*df_r*N(-d2)
                 _mm512_add_pd(
                     _mm512_sub_pd(
                         theta_common,
-                        _mm512_mul_pd(_mm512_mul_pd(q_v, s), _mm512_mul_pd(df_q_v, nmd1)),
+                        _mm512_mul_pd(_mm512_mul_pd(q_v, s), _mm512_mul_pd(df_q_v, prob1)),
                     ),
-                    _mm512_mul_pd(_mm512_mul_pd(r_v, k), _mm512_mul_pd(df_r_v, nmd2)),
+                    _mm512_mul_pd(_mm512_mul_pd(r_v, k), _mm512_mul_pd(df_r_v, prob2)),
                 )
             };
 

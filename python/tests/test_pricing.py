@@ -26,6 +26,17 @@ from openferric import (
 )
 
 
+def assert_batch_vector_roundoff(actual, expected, spots, strikes, rate, expiry):
+    """Apply the measured SIMD log/expression binary64 budget elementwise."""
+    operation_scale = np.maximum(
+        1.0,
+        np.abs(spots) + np.abs(strikes * math.exp(-rate * expiry)),
+    )
+    budget = 1_024.0 * np.finfo(np.float64).eps * operation_scale
+    error = np.abs(actual - expected)
+    assert np.all(error <= budget), f"batch error {error.max():.3e} exceeds vector-roundoff budget {budget.max():.3e}"
+
+
 def test_free_monte_carlo_pricer_releases_gil():
     result = assert_releases_gil(
         lambda: py_arithmetic_asian_price_mc(
@@ -52,11 +63,11 @@ class TestBsPrice:
     def test_atm_call(self, std_market):
         price = py_bs_price(**std_market, option_type="call")
         # Independent SciPy 1.17.1 norm.cdf evaluation of Black--Scholes.
-        assert price == pytest.approx(10.450583572185565, abs=2e-12)
+        assert price == pytest.approx(10.450583572185565, rel=0.0, abs=2e-12)
 
     def test_atm_put(self, std_market):
         price = py_bs_price(**std_market, option_type="put")
-        assert price == pytest.approx(5.573526022256971, abs=2e-12)
+        assert price == pytest.approx(5.573526022256971, rel=0.0, abs=2e-12)
 
     def test_put_call_parity(self, std_market):
         """C - P = S - K * exp(-rT)."""
@@ -64,15 +75,15 @@ class TestBsPrice:
         put = py_bs_price(**std_market, option_type="put")
         s, k, r, t = std_market["spot"], std_market["strike"], std_market["rate"], std_market["expiry"]
         parity = call - put - (s - k * math.exp(-r * t))
-        assert parity == pytest.approx(0.0, abs=ABS_TOL)
+        assert parity == pytest.approx(0.0, rel=0.0, abs=ABS_TOL)
 
     def test_deep_itm_call(self):
         price = py_bs_price(spot=100.0, strike=50.0, expiry=1.0, vol=0.20, rate=0.05, option_type="call")
-        assert price == pytest.approx(52.438862117161854, abs=2e-12)
+        assert price == pytest.approx(52.438862117161854, rel=0.0, abs=2e-12)
 
     def test_deep_otm_put(self):
         price = py_bs_price(spot=100.0, strike=50.0, expiry=1.0, vol=0.20, rate=0.05, option_type="put")
-        assert price == pytest.approx(0.000333342197556874, abs=2e-12)
+        assert price == pytest.approx(0.000333342197556874, rel=0.0, abs=2e-12)
 
     def test_invalid_option_type(self, std_market):
         assert is_nan(py_bs_price(**std_market, option_type="straddle"))
@@ -81,11 +92,12 @@ class TestBsPrice:
         spots = np.array([80.0, 100.0, 120.0], dtype=np.float64)
         strikes = np.array([100.0, 100.0, 100.0], dtype=np.float64)
         actual = bs_price_batch(spots, strikes, 0.05, 0.0, 0.2, 1.0, True)
-        expected = np.array([py_bs_price(float(spot), 100.0, 1.0, 0.2, 0.05, "call") for spot in spots])
-        # The vector path uses the fast A&S CDF approximation. Its documented
-        # CDF error propagates to a price-level absolute bound below 5e-5 for
-        # this grid, while the scalar binding uses the high-accuracy CDF.
-        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=5e-5)
+        # Independent SciPy 1.17.1 `scipy.special.ndtr` Black--Scholes grid.
+        expected = np.array(
+            [1.8594195728121825, 10.450583572185565, 26.169043946847296],
+            dtype=np.float64,
+        )
+        assert_batch_vector_roundoff(actual, expected, spots, strikes, 0.05, 1.0)
 
     def test_numpy_batch_rejects_mismatched_lengths(self):
         with pytest.raises(ValueError, match="same length"):
@@ -127,7 +139,7 @@ class TestBsPrice:
         expected = np.array(
             [py_bs_price(float(spot), float(strike), 1.0, 0.2, 0.05, "call") for spot, strike in zip(spots, strikes)]
         )
-        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=5e-5)
+        assert_batch_vector_roundoff(actual, expected, spots, strikes, 0.05, 1.0)
 
     @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])
     @pytest.mark.parametrize("input_name", ["spots", "strikes"])
@@ -260,36 +272,36 @@ class TestBsGreeks:
 
     def test_call_delta(self, greeks_params):
         delta = py_bs_greeks(**greeks_params, option_type="call", greek="delta")
-        assert delta == pytest.approx(0.6368306511756191, abs=2e-14)
+        assert delta == pytest.approx(0.6368306511756191, rel=0.0, abs=2e-14)
 
     def test_put_delta(self, greeks_params):
         delta = py_bs_greeks(**greeks_params, option_type="put", greek="delta")
-        assert delta == pytest.approx(-0.3631693488243809, abs=2e-14)
+        assert delta == pytest.approx(-0.3631693488243809, rel=0.0, abs=2e-14)
 
     def test_gamma_positive(self, greeks_params):
         gamma = py_bs_greeks(**greeks_params, option_type="call", greek="gamma")
-        assert gamma == pytest.approx(0.018762017345846895, abs=2e-15)
+        assert gamma == pytest.approx(0.018762017345846895, rel=0.0, abs=2e-15)
 
     def test_vega_positive(self, greeks_params):
         vega = py_bs_greeks(**greeks_params, option_type="call", greek="vega")
-        assert vega == pytest.approx(37.52403469169379, abs=2e-12)
+        assert vega == pytest.approx(37.52403469169379, rel=0.0, abs=2e-12)
 
     def test_call_theta_negative(self, greeks_params):
         theta = py_bs_greeks(**greeks_params, option_type="call", greek="theta")
-        assert theta == pytest.approx(-6.414027546438197, abs=2e-12)
+        assert theta == pytest.approx(-6.414027546438197, rel=0.0, abs=2e-12)
 
     def test_vanna(self, greeks_params):
         vanna = py_bs_greeks(**greeks_params, option_type="call", greek="vanna")
-        assert vanna == pytest.approx(-0.28143026018770345, abs=2e-14)
+        assert vanna == pytest.approx(-0.28143026018770345, rel=0.0, abs=2e-14)
 
     def test_volga(self, greeks_params):
         volga = py_bs_greeks(**greeks_params, option_type="call", greek="volga")
-        assert volga == pytest.approx(9.850059106569622, abs=2e-12)
+        assert volga == pytest.approx(9.850059106569622, rel=0.0, abs=2e-12)
 
     def test_vomma_alias(self, greeks_params):
         volga = py_bs_greeks(**greeks_params, option_type="call", greek="volga")
         vomma = py_bs_greeks(**greeks_params, option_type="call", greek="vomma")
-        assert volga == pytest.approx(vomma, abs=ABS_TOL)
+        assert volga == pytest.approx(vomma, rel=0.0, abs=ABS_TOL)
 
     def test_invalid_greek_name(self, greeks_params):
         assert is_nan(py_bs_greeks(**greeks_params, option_type="call", greek="charm"))
@@ -313,13 +325,13 @@ class TestBarrierPrice:
             **barrier_params, barrier=120.0, option_type="call", barrier_type="out", barrier_dir="up"
         )
         # QuantLib 1.43 AnalyticBarrierEngine, Actual/360 over 360 days.
-        assert price == pytest.approx(1.1760653996503727, abs=2e-11)
+        assert price == pytest.approx(1.1760653996503727, rel=0.0, abs=2e-11)
 
     def test_down_in_put(self, barrier_params):
         price = py_barrier_price(
             **barrier_params, barrier=80.0, option_type="put", barrier_type="in", barrier_dir="down"
         )
-        assert price == pytest.approx(3.9525105131751994, abs=2e-11)
+        assert price == pytest.approx(3.9525105131751994, rel=0.0, abs=2e-11)
 
     def test_in_plus_out_approx_vanilla(self, barrier_params):
         """In + Out ≈ Vanilla (with zero rebate)."""
@@ -330,9 +342,9 @@ class TestBarrierPrice:
             **barrier_params, barrier=120.0, option_type="call", barrier_type="out", barrier_dir="up"
         )
         vanilla = py_bs_price(spot=100.0, strike=100.0, expiry=1.0, vol=0.20, rate=0.05, option_type="call")
-        assert in_price == pytest.approx(9.274518172535206, abs=2e-11)
-        assert out_price == pytest.approx(1.1760653996503727, abs=2e-11)
-        assert (in_price + out_price) == pytest.approx(vanilla, abs=2e-12)
+        assert in_price == pytest.approx(9.274518172535206, rel=0.0, abs=2e-11)
+        assert out_price == pytest.approx(1.1760653996503727, rel=0.0, abs=2e-11)
+        assert (in_price + out_price) == pytest.approx(vanilla, rel=0.0, abs=2e-12)
 
     def test_invalid_barrier_type(self, barrier_params):
         assert is_nan(
@@ -358,18 +370,18 @@ class TestAmericanPrice:
     def test_american_put_ge_european(self):
         """OpenFerric's 500-step CRR value matches an independent recurrence."""
         am = py_american_price(spot=100.0, strike=100.0, expiry=1.0, vol=0.20, rate=0.05, option_type="put", steps=500)
-        assert am == pytest.approx(6.088810110703037, abs=2e-11)
+        assert am == pytest.approx(6.088810110703037, rel=0.0, abs=2e-11)
 
     def test_american_call_no_div_approx_european(self):
         """The finite 500-step CRR price is asserted, not a percent band."""
         am = py_american_price(spot=100.0, strike=100.0, expiry=1.0, vol=0.20, rate=0.05, option_type="call", steps=500)
-        assert am == pytest.approx(10.44658513644654, abs=2e-11)
+        assert am == pytest.approx(10.44658513644654, rel=0.0, abs=2e-11)
 
     def test_deep_itm_put(self):
         price = py_american_price(
             spot=50.0, strike=100.0, expiry=1.0, vol=0.20, rate=0.05, option_type="put", steps=300
         )
-        assert price == pytest.approx(50.0, abs=2e-12)
+        assert price == pytest.approx(50.0, rel=0.0, abs=2e-12)
 
     def test_invalid_option_type(self):
         assert is_nan(
@@ -400,7 +412,7 @@ class TestHestonPrice:
             sigma_v=heston_params["sigma_v"],
             rho=heston_params["rho"],
         )
-        assert price == pytest.approx(16.070154917028834, abs=5e-12)
+        assert price == pytest.approx(16.070154917028834, rel=0.0, abs=5e-12)
 
     def test_put_reference(self, heston_params):
         """Alan Lewis reference: put K=100, expected ≈ 17.055."""
@@ -417,7 +429,7 @@ class TestHestonPrice:
             sigma_v=heston_params["sigma_v"],
             rho=heston_params["rho"],
         )
-        assert price == pytest.approx(17.055270961270109, abs=5e-12)
+        assert price == pytest.approx(17.055270961270109, rel=0.0, abs=5e-12)
 
     def test_invalid_option_type(self, heston_params):
         assert is_nan(
@@ -454,7 +466,7 @@ class TestFxPrice:
             option_type="call",
         )
         # Independent SciPy evaluation of Garman--Kohlhagen.
-        assert price == pytest.approx(0.04266908230609778, abs=2e-14)
+        assert price == pytest.approx(0.04266908230609778, rel=0.0, abs=2e-14)
 
     def test_garman_kohlhagen_put(self):
         price = py_fx_price(
@@ -466,7 +478,7 @@ class TestFxPrice:
             foreign_rate=0.03,
             option_type="put",
         )
-        assert price == pytest.approx(0.029926446458948597, abs=2e-14)
+        assert price == pytest.approx(0.029926446458948597, rel=0.0, abs=2e-14)
 
     def test_fx_put_call_parity(self):
         """C - P = S*exp(-rf*T) - K*exp(-rd*T)."""
@@ -474,7 +486,7 @@ class TestFxPrice:
         call = py_fx_price(s, k, t, vol, rd, rf, "call")
         put = py_fx_price(s, k, t, vol, rd, rf, "put")
         parity = call - put - (s * math.exp(-rf * t) - k * math.exp(-rd * t))
-        assert parity == pytest.approx(0.0, abs=2e-15)
+        assert parity == pytest.approx(0.0, rel=0.0, abs=2e-15)
 
     def test_invalid_option_type(self):
         assert is_nan(py_fx_price(1.30, 1.30, 0.5, 0.10, 0.05, 0.03, "straddle"))
@@ -492,22 +504,22 @@ class TestDigitalPrice:
 
     def test_cash_or_nothing_call(self, digital_params):
         price = py_digital_price(**digital_params, option_type="call", digital_type="cash", cash=1.0)
-        assert price == pytest.approx(0.5323248154537634, abs=2e-14)
+        assert price == pytest.approx(0.5323248154537634, rel=0.0, abs=2e-14)
 
     def test_cash_or_nothing_put(self, digital_params):
         price = py_digital_price(**digital_params, option_type="put", digital_type="cash", cash=1.0)
-        assert price == pytest.approx(0.41890460904695065, abs=2e-14)
+        assert price == pytest.approx(0.41890460904695065, rel=0.0, abs=2e-14)
 
     def test_asset_or_nothing_call(self, digital_params):
         price = py_digital_price(**digital_params, option_type="call", digital_type="asset", cash=0.0)
-        assert price == pytest.approx(63.68306511756191, abs=2e-12)
+        assert price == pytest.approx(63.68306511756191, rel=0.0, abs=2e-12)
 
     def test_cash_call_plus_put_equals_pv(self, digital_params):
         """Cash-or-nothing call + put equals PV(cash)."""
         call = py_digital_price(**digital_params, option_type="call", digital_type="cash", cash=1.0)
         put = py_digital_price(**digital_params, option_type="put", digital_type="cash", cash=1.0)
         pv = math.exp(-digital_params["rate"] * digital_params["expiry"])
-        assert (call + put) == pytest.approx(pv, abs=2e-15)
+        assert (call + put) == pytest.approx(pv, rel=0.0, abs=2e-15)
 
     def test_invalid_digital_type(self, digital_params):
         assert is_nan(py_digital_price(**digital_params, option_type="call", digital_type="binary", cash=1.0))
@@ -524,7 +536,7 @@ class TestSpreadPrice:
             s1=100.0, s2=96.0, k=3.0, vol1=0.20, vol2=0.15, rho=0.5, q1=0.0, q2=0.0, r=0.05, t=0.5, method="kirk"
         )
         # Independent SciPy 1.17.1 evaluation of the Kirk approximation.
-        assert price == pytest.approx(5.577024131239917, abs=2e-12)
+        assert price == pytest.approx(5.577024131239917, rel=0.0, abs=2e-12)
 
     def test_margrabe_exchange(self):
         """Margrabe: exchange option (K=0) on two assets."""
@@ -532,14 +544,16 @@ class TestSpreadPrice:
             s1=100.0, s2=105.0, k=0.0, vol1=0.20, vol2=0.15, rho=0.5, q1=0.04, q2=0.06, r=0.05, t=1.0, method="margrabe"
         )
         # Independent SciPy 1.17.1 evaluation of Margrabe's formula.
-        assert price == pytest.approx(5.687142248583889, abs=2e-12)
+        assert price == pytest.approx(5.687142248583889, rel=0.0, abs=2e-12)
 
     def test_margrabe_equal_assets(self):
-        """Margrabe with identical assets → positive but small."""
+        """Margrabe with identical assets matches the closed form."""
         price = py_spread_price(
             s1=100.0, s2=100.0, k=0.0, vol1=0.20, vol2=0.20, rho=0.99, q1=0.0, q2=0.0, r=0.05, t=1.0, method="margrabe"
         )
-        assert price >= 0.0
+        # Independent SciPy 1.17.1 evaluation with effective volatility
+        # sqrt(0.2^2 + 0.2^2 - 2*0.99*0.2*0.2).
+        assert price == pytest.approx(1.1283415555849672, rel=0.0, abs=2e-12)
 
     def test_invalid_method(self):
         assert is_nan(py_spread_price(100.0, 90.0, 5.0, 0.20, 0.25, 0.5, 0.0, 0.0, 0.05, 1.0, "monte_carlo"))
@@ -556,13 +570,13 @@ class TestLookbackFloating:
             spot=100.0, expiry=1.0, vol=0.20, rate=0.05, div_yield=0.0, option_type="call", observed_extreme=0.0
         )
         # QuantLib 1.43 AnalyticContinuousFloatingLookbackEngine.
-        assert price == pytest.approx(17.216802237360877, abs=3e-11)
+        assert price == pytest.approx(17.216802237360877, rel=0.0, abs=3e-11)
 
     def test_floating_put(self):
         price = py_lookback_floating(
             spot=100.0, expiry=1.0, vol=0.20, rate=0.05, div_yield=0.0, option_type="put", observed_extreme=0.0
         )
-        assert price == pytest.approx(14.29056770740371, abs=3e-11)
+        assert price == pytest.approx(14.29056770740371, rel=0.0, abs=3e-11)
 
     def test_floating_call_ge_vanilla(self):
         """Lookback floating call >= vanilla ATM call."""
@@ -594,7 +608,7 @@ class TestLookbackFixed:
             observed_extreme=0.0,
         )
         # QuantLib 1.43 AnalyticContinuousFixedLookbackEngine.
-        assert price == pytest.approx(19.16762525733232, abs=3e-11)
+        assert price == pytest.approx(19.16762525733232, rel=0.0, abs=3e-11)
 
     def test_fixed_put(self):
         price = py_lookback_fixed(
@@ -607,7 +621,7 @@ class TestLookbackFixed:
             option_type="put",
             observed_extreme=0.0,
         )
-        assert price == pytest.approx(12.339744687432269, abs=3e-11)
+        assert price == pytest.approx(12.339744687432269, rel=0.0, abs=3e-11)
 
     def test_fixed_call_ge_vanilla(self):
         """Lookback fixed call >= vanilla call (same strike)."""
@@ -652,14 +666,14 @@ class TestDigitalGreeksRawUnits:
         greeks = AnalyticEngine.digital_cash_price(**params).greeks
         assert greeks is not None
 
-        assert greeks.vega == pytest.approx(-4.737644688752179, abs=3e-12)
+        assert greeks.vega == pytest.approx(-4.737644688752179, rel=0.0, abs=3e-12)
 
     def test_rho_matches_scipy_analytic_reference(self, params):
         """Rho is raw per-unit-rate, independently evaluated with SciPy."""
         greeks = AnalyticEngine.digital_cash_price(**params).greeks
         assert greeks is not None
 
-        assert greeks.rho == pytest.approx(14.004767844476481, abs=3e-12)
+        assert greeks.rho == pytest.approx(14.004767844476481, rel=0.0, abs=3e-12)
 
 
 # =========================================================================
@@ -698,7 +712,7 @@ class TestPriceAutocallable:
     def test_price_is_finite(self, autocall, market_args):
         result = py_price_autocallable(autocall, **market_args)
         expected = 1.0 * (1.0 + 0.05 * 0.5) * math.exp(-0.03 * 0.5)
-        assert result.price == pytest.approx(expected, abs=2e-14)
+        assert result.price == pytest.approx(expected, rel=0.0, abs=2e-14)
         assert result.stderr == 0.0
         # Default does not compute greeks.
         assert result.greeks is None
@@ -720,6 +734,6 @@ class TestPriceAutocallable:
         result = py_price_autocallable(linear_note, **market_args, with_greeks=True)
         expected_price = 0.5 * math.exp(-0.03)
         expected_delta = math.exp(-0.03) / 200.0
-        assert result.price == pytest.approx(expected_price, abs=2e-14)
+        assert result.price == pytest.approx(expected_price, rel=0.0, abs=2e-14)
         assert result.greeks is not None
-        assert result.greeks.delta == pytest.approx(expected_delta, abs=2e-14)
+        assert result.greeks.delta == pytest.approx(expected_delta, rel=0.0, abs=2e-14)

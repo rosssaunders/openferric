@@ -54,7 +54,9 @@
 //! let market = MultiAssetMarket::single(100.0, 0.20, 0.05, 0.0);
 //! let engine = DslMonteCarloEngine::new(10_000, 100, 42);
 //! let result = engine.price_multi_asset(&product, &market).unwrap();
-//! assert!(result.price > 0.0);
+//! let expected = 100.0 * (-0.05_f64).exp();
+//! assert!((result.price - expected).abs() < 2.0e-12);
+//! assert_eq!(result.stderr, Some(0.0));
 //! ```
 
 pub mod analysis;

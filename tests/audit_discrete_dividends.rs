@@ -48,19 +48,66 @@ fn probe_market() -> Market {
 
 /// Escrowed-model analytic European put for the probe scenario.
 ///
-/// Hand-checkable: S* = 100 - 5 e^{-0.03*0.5} = 95.074441, then
-/// Black-Scholes(S*, K=100, r=3%, q=0, vol=25%, T=1) = 10.5727. This value
-/// was independently reproduced during audit verification (escrowed BS by
-/// hand: 10.572688; library analytic engine: 10.572685).
-const PROBE_ESCROWED_EUROPEAN_PUT: f64 = 10.5727;
+/// Hand-checkable: S* = 100 - 5 e^{-0.03*0.5} = 95.07444030198468, then
+/// Black-Scholes(S*, K=100, r=3%, q=0, vol=25%, T=1). These full-precision
+/// values were independently evaluated with SciPy 1.17.1's normal CDF.
+const PROBE_ESCROWED_EUROPEAN_PUT: f64 = 10.572_685_288_309_124;
+const PROBE_ESCROWED_EUROPEAN_CALL: f64 = 8.602_572_235_442_985;
 
-/// Escrowed-model American put for the probe scenario.
+/// Independent NumPy CRR finite-grid references for the probe scenario.
 ///
-/// Reference: independent escrowed-spot CRR implementation from the audit
-/// verification (S* diffused GBM(r, vol), exercise payoff K - (S* + PV_t of
-/// remaining dividends)), 8000 steps: American put = 10.9246, early-exercise
-/// premium ~0.352 over the escrowed European 10.5727.
-const PROBE_ESCROWED_AMERICAN_PUT: f64 = 10.9246;
+/// The reference implementation diffuses S* under GBM and reconstructs the
+/// observed spot before each exercise decision. Full finite-grid values avoid
+/// confusing discretization error with a rounded economic-price tolerance.
+const PROBE_CRR_4000_AMERICAN_PUT: f64 = 10.925_211_258_957_25;
+const PROBE_CRR_8000_AMERICAN_PUT: f64 = 10.924_567_770_136_91;
+const PROBE_CRR_4000_AMERICAN_CALL: f64 = 9.029_090_473_504_283;
+const PROBE_CRR_4000_BERMUDAN_PUT: f64 = 10.842_664_903_548_698;
+const PROBE_CRR_8000_BERMUDAN_PUT: f64 = 10.842_010_214_812_372;
+
+/// Compare independent closed forms allowing accumulated binary64 roundoff.
+fn assert_binary64_close(label: &str, actual: f64, expected: f64) {
+    let tolerance = 64.0 * f64::EPSILON * expected.abs().max(1.0);
+    let error = (actual - expected).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: expected={expected:.17e}, actual={actual:.17e}, \
+         error={error:.3e}, binary64 budget={tolerance:.3e}"
+    );
+}
+
+/// Exact deterministic finite-grid regression. The 2e-10 budget matches the
+/// cross-platform operation-order budget in the primary QuantLib escrowed-
+/// dividend suite (`dividend_modelling_issue58`); it is not a price cushion.
+fn assert_grid_lock(label: &str, actual: f64, expected: f64) {
+    let tolerance = 2.0e-10;
+    let error = (actual - expected).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: expected finite-grid value={expected:.17e}, actual={actual:.17e}, \
+         error={error:.3e}, numerical budget={tolerance:.3e}"
+    );
+}
+
+fn assert_mc_close(
+    label: &str,
+    price: f64,
+    stderr: Option<f64>,
+    reference: f64,
+    reference_grid_uncertainty: f64,
+) {
+    let stderr = stderr.expect("Monte Carlo result must report standard error");
+    let roundoff = 64.0 * f64::EPSILON * reference.abs().max(1.0);
+    let tolerance = 4.0 * stderr + reference_grid_uncertainty + roundoff;
+    let error = (price - reference).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: reference={reference:.17e}, price={price:.17e}, error={error:.3e}, \
+         4SE={:.3e}, reference-grid uncertainty={reference_grid_uncertainty:.3e}, \
+         roundoff={roundoff:.3e}, total budget={tolerance:.3e}",
+        4.0 * stderr
+    );
+}
 
 #[test]
 fn european_engines_match_escrowed_analytic_with_cash_dividend() {
@@ -70,22 +117,28 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
 
     let analytic_put = BlackScholesEngine.price(&put, &market).unwrap().price;
     let analytic_call = BlackScholesEngine.price(&call, &market).unwrap().price;
-    assert!(
-        (analytic_put - PROBE_ESCROWED_EUROPEAN_PUT).abs() <= 1.0e-3,
-        "analytic escrowed European put drifted: {analytic_put}"
+    assert_binary64_close(
+        "analytic escrowed European put / SciPy",
+        analytic_put,
+        PROBE_ESCROWED_EUROPEAN_PUT,
+    );
+    assert_binary64_close(
+        "analytic escrowed European call / SciPy",
+        analytic_call,
+        PROBE_ESCROWED_EUROPEAN_CALL,
     );
 
-    // Requirement (1): European prices through the early-exercise engines
-    // must stay forward-matching, i.e. converge to the escrowed analytic.
-    let checks: Vec<(&str, f64, f64, f64)> = vec![
+    // Supplemental exact finite-grid locks for the numerical engines. The
+    // independent SciPy assertions above are the economic-price oracle; these
+    // values pin each stated discretization without a broad price band.
+    let checks: Vec<(&str, f64, f64)> = vec![
         (
             "binomial put",
             BinomialTreeEngine::new(2000)
                 .price(&put, &market)
                 .unwrap()
                 .price,
-            analytic_put,
-            0.01,
+            10.573_808_204_976_473,
         ),
         (
             "binomial call",
@@ -93,8 +146,7 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
                 .price(&call, &market)
                 .unwrap()
                 .price,
-            analytic_call,
-            0.01,
+            8.603_695_152_104_963,
         ),
         (
             "trinomial put",
@@ -102,8 +154,7 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
                 .price(&put, &market)
                 .unwrap()
                 .price,
-            analytic_put,
-            0.01,
+            10.573_808_204_969_186,
         ),
         (
             "crank-nicolson put",
@@ -111,8 +162,7 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
                 .price(&put, &market)
                 .unwrap()
                 .price,
-            analytic_put,
-            0.02,
+            10.572_467_527_253_25,
         ),
         (
             "implicit fd put",
@@ -120,8 +170,7 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
                 .price(&put, &market)
                 .unwrap()
                 .price,
-            analytic_put,
-            0.02,
+            10.569_802_134_799_64,
         ),
         (
             "explicit fd put",
@@ -129,8 +178,7 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
                 .price(&put, &market)
                 .unwrap()
                 .price,
-            analytic_put,
-            0.02,
+            10.573_879_596_785_945,
         ),
         (
             "hopscotch put",
@@ -138,28 +186,24 @@ fn european_engines_match_escrowed_analytic_with_cash_dividend() {
                 .price(&put, &market)
                 .unwrap()
                 .price,
-            analytic_put,
-            0.02,
+            10.573_954_064_595_572,
         ),
     ];
-    for (label, price, reference, tol) in checks {
-        assert!(
-            (price - reference).abs() <= tol,
-            "{label}: engine={price}, escrowed analytic={reference}"
-        );
+    for (label, price, finite_grid_reference) in checks {
+        assert_grid_lock(label, price, finite_grid_reference);
     }
 
-    // LSM European (exercise only at expiry) is unbiased for the escrowed
-    // European; allow Monte Carlo noise.
+    // LSM European (exercise only at expiry) has only its reported sampling
+    // error and binary64 roundoff in the comparison budget.
     let lsm = LongstaffSchwartzEngine::new(60_000, 50, 42)
         .price(&put, &market)
         .unwrap();
-    let tol = 4.0 * lsm.stderr.unwrap_or(0.0) + 1.0e-6;
-    assert!(
-        (lsm.price - analytic_put).abs() <= tol,
-        "lsm european put: {} vs analytic {} (tol {tol})",
+    assert_mc_close(
+        "LSM European put / exact escrowed BSM",
         lsm.price,
-        analytic_put
+        lsm.stderr,
+        PROBE_ESCROWED_EUROPEAN_PUT,
+        0.0,
     );
 }
 
@@ -169,7 +213,9 @@ fn hull_dividend_european_call_reference() {
     // (5th ed.), Exercise 12.8 — also cached as 3.67 in QuantLib's
     // test-suite/dividendoption.cpp (testEuropeanKnownValue, Actual/360):
     // S=40, K=40, r=9%, vol=30%, T=180/360, cash dividends 0.50 at 60/360
-    // and 0.50 at 150/360. Escrowed European call = 3.67.
+    // and 0.50 at 150/360. Hull publishes 3.67 after rounding; the primary
+    // assertion below uses the full-precision escrowed BSM value independently
+    // evaluated with SciPy 1.17.1.
     let market = Market::builder()
         .spot(40.0)
         .rate(0.09)
@@ -195,13 +241,14 @@ fn hull_dividend_european_call_reference() {
         .price(&call, &market)
         .unwrap()
         .price;
-
-    for (label, price) in [("analytic", analytic), ("binomial", tree), ("cn", pde)] {
-        assert!(
-            (price - 3.67).abs() <= 0.02,
-            "{label}: {price} vs Hull reference 3.67"
-        );
-    }
+    assert_binary64_close(
+        "Hull escrowed European call / SciPy",
+        analytic,
+        3.671_233_209_047_678,
+    );
+    // Supplemental deterministic locks for the stated numerical grids.
+    assert_grid_lock("Hull binomial(2000)", tree, 3.671_577_671_984_805_2);
+    assert_grid_lock("Hull CN(800x800)", pde, 3.671_105_883_184_173_6);
 }
 
 #[test]
@@ -214,15 +261,18 @@ fn american_put_cash_dividend_has_material_early_exercise_premium() {
 
     // Requirement (2): a materially positive early-exercise premium. The
     // pre-fix engines produced ~0.001 here (q_eff > r suppressed exercise).
-    let binomial = BinomialTreeEngine::new(2000)
+    let binomial = BinomialTreeEngine::new(4000)
         .price(&am_put, &market)
         .unwrap()
         .price;
-    assert!(
-        (binomial - PROBE_ESCROWED_AMERICAN_PUT).abs() <= 0.02,
-        "binomial American put {binomial} vs escrowed CRR reference {PROBE_ESCROWED_AMERICAN_PUT}"
+    assert_grid_lock(
+        "American put / independent NumPy CRR(4000)",
+        binomial,
+        PROBE_CRR_4000_AMERICAN_PUT,
     );
     let premium = binomial - analytic_eu;
+    // Supplemental bug-signature check: the pre-fix smeared model produced a
+    // premium of only ~0.001. Exact pricing is enforced by the CRR lock above.
     assert!(
         premium >= 0.30,
         "early-exercise premium {premium} should be ~0.35, got binomial={binomial}, european={analytic_eu}"
@@ -232,11 +282,17 @@ fn american_put_cash_dividend_has_material_early_exercise_premium() {
     // mechanism: calls on cash-dividend stocks exercise just before ex-dates.
     let am_call = VanillaOption::american_call(100.0, 1.0);
     let eu_call = VanillaOption::european_call(100.0, 1.0);
-    let am_call_px = BinomialTreeEngine::new(2000)
+    let am_call_px = BinomialTreeEngine::new(4000)
         .price(&am_call, &market)
         .unwrap()
         .price;
     let eu_call_px = BlackScholesEngine.price(&eu_call, &market).unwrap().price;
+    assert_grid_lock(
+        "American call / independent NumPy CRR(4000)",
+        am_call_px,
+        PROBE_CRR_4000_AMERICAN_CALL,
+    );
+    // Supplemental exercise-premium invariant.
     assert!(
         am_call_px > eu_call_px + 0.05,
         "American call {am_call_px} should carry a dividend-driven premium over European {eu_call_px}"
@@ -253,16 +309,24 @@ fn cross_engine_agreement_american_put_with_cash_dividend() {
         .price(&am_put, &market)
         .unwrap()
         .price;
+    assert_grid_lock(
+        "binomial / independent NumPy CRR(4000)",
+        reference,
+        PROBE_CRR_4000_AMERICAN_PUT,
+    );
 
     let american_binomial = AmericanBinomialEngine::new(4000)
         .price(&am_put, &market)
         .unwrap()
         .price;
-    assert!(
-        (american_binomial - reference).abs() <= 1.0e-9,
-        "american_binomial {american_binomial} vs binomial {reference}"
+    assert_grid_lock(
+        "AmericanBinomial / independent NumPy CRR(4000)",
+        american_binomial,
+        PROBE_CRR_4000_AMERICAN_PUT,
     );
 
+    // Supplemental exact locks for each engine's stated finite grid. The
+    // independent NumPy CRR assertion above is the primary model reference.
     let checks: Vec<(&str, f64, f64)> = vec![
         (
             "trinomial",
@@ -270,7 +334,7 @@ fn cross_engine_agreement_american_put_with_cash_dividend() {
                 .price(&am_put, &market)
                 .unwrap()
                 .price,
-            0.02,
+            10.925_290_691_903_852,
         ),
         (
             "crank-nicolson",
@@ -278,7 +342,7 @@ fn cross_engine_agreement_american_put_with_cash_dividend() {
                 .price(&am_put, &market)
                 .unwrap()
                 .price,
-            0.05,
+            10.923_887_968_704_91,
         ),
         (
             "implicit fd",
@@ -286,7 +350,7 @@ fn cross_engine_agreement_american_put_with_cash_dividend() {
                 .price(&am_put, &market)
                 .unwrap()
                 .price,
-            0.05,
+            10.916_540_866_201_066,
         ),
         (
             "explicit fd",
@@ -294,7 +358,7 @@ fn cross_engine_agreement_american_put_with_cash_dividend() {
                 .price(&am_put, &market)
                 .unwrap()
                 .price,
-            0.05,
+            10.925_154_766_982_441,
         ),
         (
             "hopscotch",
@@ -302,28 +366,25 @@ fn cross_engine_agreement_american_put_with_cash_dividend() {
                 .price(&am_put, &market)
                 .unwrap()
                 .price,
-            0.05,
+            10.929_113_074_114_246,
         ),
     ];
-    for (label, price, tol) in checks {
-        assert!(
-            (price - reference).abs() <= tol,
-            "{label}: {price} vs binomial reference {reference}"
-        );
+    for (label, price, finite_grid_reference) in checks {
+        assert_grid_lock(label, price, finite_grid_reference);
     }
 
-    // LSM is a lower-bound estimator with regression bias; allow a wider
-    // band but require it to sit near the escrowed American value, far above
-    // the pre-fix smeared value (~10.57).
+    // LSM is statistical. Its budget is four reported standard errors plus
+    // the independently measured NumPy CRR 4k->8k grid change; there is no
+    // fixed economic-price cushion.
     let lsm = LongstaffSchwartzEngine::new(60_000, 100, 42)
         .price(&am_put, &market)
         .unwrap();
-    let tol = 0.10 + 4.0 * lsm.stderr.unwrap_or(0.0);
-    assert!(
-        (lsm.price - reference).abs() <= tol,
-        "lsm american put {} vs binomial reference {} (tol {tol})",
+    assert_mc_close(
+        "LSM American put / independent NumPy CRR",
         lsm.price,
-        reference
+        lsm.stderr,
+        PROBE_CRR_4000_AMERICAN_PUT,
+        (PROBE_CRR_4000_AMERICAN_PUT - PROBE_CRR_8000_AMERICAN_PUT).abs(),
     );
 }
 
@@ -350,20 +411,31 @@ fn proportional_dividend_escrowed_consistency() {
 
     // Europeans stay forward-matching against the escrowed analytic engine.
     let analytic_eu = BlackScholesEngine.price(&eu_put, &market).unwrap().price;
+    assert_binary64_close(
+        "proportional-dividend European put / SciPy",
+        analytic_eu,
+        10.608_676_509_801_22,
+    );
     let tree_eu = BinomialTreeEngine::new(2000)
         .price(&eu_put, &market)
         .unwrap()
         .price;
-    assert!(
-        (tree_eu - analytic_eu).abs() <= 0.01,
-        "european binomial {tree_eu} vs analytic {analytic_eu}"
+    assert_grid_lock(
+        "proportional-dividend European put / NumPy CRR(2000)",
+        tree_eu,
+        10.609_728_274_611_916,
     );
 
-    // American engines agree with each other and carry a real premium.
-    let tree_am = BinomialTreeEngine::new(2000)
+    // American primary reference: independent NumPy CRR finite grid.
+    let tree_am = BinomialTreeEngine::new(4000)
         .price(&am_put, &market)
         .unwrap()
         .price;
+    assert_grid_lock(
+        "proportional-dividend American put / NumPy CRR(4000)",
+        tree_am,
+        10.962_788_815_441_384,
+    );
     let tri_am = TrinomialTreeEngine::new(1000)
         .price(&am_put, &market)
         .unwrap()
@@ -372,15 +444,19 @@ fn proportional_dividend_escrowed_consistency() {
         .price(&am_put, &market)
         .unwrap()
         .price;
-    assert!(
-        (tree_am - tri_am).abs() <= 0.02,
-        "binomial {tree_am} vs trinomial {tri_am}"
+    // Supplemental deterministic locks for the other finite grids.
+    assert_grid_lock(
+        "proportional-dividend trinomial(1000)",
+        tri_am,
+        10.963_087_560_257_108,
     );
-    assert!(
-        (tree_am - cn_am).abs() <= 0.05,
-        "binomial {tree_am} vs crank-nicolson {cn_am}"
+    assert_grid_lock(
+        "proportional-dividend CN(800x800)",
+        cn_am,
+        10.961_148_649_739_456,
     );
     let premium = tree_am - analytic_eu;
+    // Supplemental rejection of the historical smeared-dividend behavior.
     assert!(
         premium >= 0.10,
         "proportional-dividend American put premium too small: {premium}"
@@ -399,13 +475,24 @@ fn bermudan_engines_respect_escrowed_dividends() {
     let european = VanillaOption::european_put(100.0, 1.0);
     let american = VanillaOption::american_put(100.0, 1.0);
 
-    let tree_engine = BinomialTreeEngine::new(2000);
+    let tree_engine = BinomialTreeEngine::new(4000);
     let eu = BlackScholesEngine.price(&european, &market).unwrap().price;
     let berm_tree = tree_engine.price(&bermudan_vanilla, &market).unwrap().price;
     let am = tree_engine.price(&american, &market).unwrap().price;
+    assert_grid_lock(
+        "Bermudan put / independent NumPy CRR(4000)",
+        berm_tree,
+        PROBE_CRR_4000_BERMUDAN_PUT,
+    );
+    assert_grid_lock(
+        "American bound / independent NumPy CRR(4000)",
+        am,
+        PROBE_CRR_4000_AMERICAN_PUT,
+    );
 
+    // Supplemental ordering and historical-premium invariants.
     assert!(
-        eu - 1.0e-9 <= berm_tree && berm_tree <= am + 1.0e-9,
+        eu <= berm_tree && berm_tree <= am,
         "bermudan {berm_tree} must sit between european {eu} and american {am}"
     );
     // The 0.5 exercise date sits right at the ex-date, so the Bermudan must
@@ -427,19 +514,17 @@ fn bermudan_engines_respect_escrowed_dividends() {
         .price(&bermudan, &market)
         .unwrap()
         .price;
-    assert!(
-        (cn - berm_tree).abs() <= 0.05,
-        "cn bermudan {cn} vs tree bermudan {berm_tree}"
-    );
+    assert_grid_lock("Bermudan CN(800x800)", cn, 10.841_974_677_707_809);
 
     let lsm = LongstaffSchwartzEngine::new(60_000, 100, 42)
         .price(&bermudan, &market)
         .unwrap();
-    let tol = 0.10 + 4.0 * lsm.stderr.unwrap_or(0.0);
-    assert!(
-        (lsm.price - berm_tree).abs() <= tol,
-        "lsm bermudan {} vs tree bermudan {berm_tree} (tol {tol})",
-        lsm.price
+    assert_mc_close(
+        "LSM Bermudan put / independent NumPy CRR",
+        lsm.price,
+        lsm.stderr,
+        PROBE_CRR_4000_BERMUDAN_PUT,
+        (PROBE_CRR_4000_BERMUDAN_PUT - PROBE_CRR_8000_BERMUDAN_PUT).abs(),
     );
 }
 
@@ -473,10 +558,13 @@ fn lsm_barrier_applies_true_ex_dividend_drops_on_path() {
         .expect("valid market");
 
     let engine = LongstaffSchwartzEngine::new(4_000, 252, 42);
-    let price = engine.price(&barrier, &market).unwrap().price;
-    assert!(
-        (price - 10.0).abs() <= 1.0e-3,
-        "expected ~10 from the knocked-in put after the ex-div drop, got {price}"
+    let result = engine.price(&barrier, &market).unwrap();
+    assert_mc_close(
+        "near-deterministic knocked-in put",
+        result.price,
+        result.stderr,
+        10.0,
+        0.0,
     );
 }
 
@@ -498,13 +586,19 @@ fn continuous_yield_only_behavior_is_preserved() {
 
     let eu_put = VanillaOption::european_put(100.0, 1.0);
     let analytic = BlackScholesEngine.price(&eu_put, &market).unwrap().price;
+    assert_binary64_close(
+        "continuous-yield European put / SciPy",
+        analytic,
+        9.222_221_299_637_46,
+    );
     let tree = BinomialTreeEngine::new(2000)
         .price(&eu_put, &market)
         .unwrap()
         .price;
-    assert!(
-        (tree - analytic).abs() <= 0.01,
-        "continuous-yield European drifted: tree={tree}, analytic={analytic}"
+    assert_grid_lock(
+        "continuous-yield European NumPy CRR(2000)",
+        tree,
+        9.221_007_681_647_961,
     );
 
     let am_put = VanillaOption::american_put(100.0, 1.0);
@@ -520,12 +614,20 @@ fn continuous_yield_only_behavior_is_preserved() {
         .price(&am_put, &market)
         .unwrap()
         .price;
-    assert!(
-        (bin - ambin).abs() <= 1.0e-12,
-        "binomial engines diverged without dividends: {bin} vs {ambin}"
+    assert_grid_lock(
+        "continuous-yield American NumPy CRR(2000)",
+        bin,
+        9.345_697_025_914_843,
     );
-    assert!(
-        (bin - cn).abs() <= 0.05,
-        "binomial vs CN diverged without dividends: {bin} vs {cn}"
+    assert_grid_lock(
+        "continuous-yield AmericanBinomial CRR(2000)",
+        ambin,
+        9.345_697_025_914_843,
+    );
+    // Supplemental exact finite-grid lock for the CN implementation.
+    assert_grid_lock(
+        "continuous-yield American CN(400x400)",
+        cn,
+        9.343_972_384_255_485,
     );
 }
