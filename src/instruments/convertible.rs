@@ -23,8 +23,16 @@ pub struct ConvertibleBond {
     /// Shares received per bond when converted.
     pub conversion_ratio: f64,
     /// Optional issuer call price cap.
+    ///
+    /// Engines model this as a flat call level exercisable at every time step
+    /// before maturity (no call-protection schedule). A value below
+    /// `face_value` therefore lets the issuer redeem below par at any time;
+    /// it never caps the redemption of an already-matured bond.
     pub call_price: Option<f64>,
     /// Optional holder put floor.
+    ///
+    /// Modeled as a flat put level exercisable at every time step (no put
+    /// schedule).
     pub put_price: Option<f64>,
 }
 
