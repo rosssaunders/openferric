@@ -179,17 +179,13 @@ mod tests {
         let ee = XvaCalculator::expected_exposure_profile(&paths);
         let nee = XvaCalculator::negative_expected_exposure_profile(&paths);
 
-        assert_relative_eq!(ee[0], 5.0, epsilon = 1.0e-12);
-        assert_relative_eq!(ee[1], 2.5, epsilon = 1.0e-12);
-        assert_relative_eq!(ee[2], 30.0, epsilon = 1.0e-12);
+        assert_eq!(ee, [5.0, 2.5, 30.0]);
 
-        assert_relative_eq!(nee[0], 5.0, epsilon = 1.0e-12);
-        assert_relative_eq!(nee[1], 2.5, epsilon = 1.0e-12);
-        assert_relative_eq!(nee[2], 0.0, epsilon = 1.0e-12);
+        assert_eq!(nee, [5.0, 2.5, 0.0]);
     }
 
     #[test]
-    fn simple_irs_cva_matches_flat_hazard_reference() {
+    fn flat_hazard_cva_matches_closed_form_to_roundoff() {
         let notional = 1_000_000.0;
         let times = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
@@ -216,6 +212,58 @@ mod tests {
         let cva = calc.cva_from_expected_exposure(&times, &ee_profile);
 
         let expected = -lgd * 0.05 * (1.0 - (-hazard * 5.0).exp()) * notional;
-        assert_relative_eq!(cva, expected, max_relative = 0.03);
+        // With unit discount factors and constant exposure, the discrete default
+        // increments telescope exactly to 1-S(T); only floating-point summation remains.
+        assert_relative_eq!(cva, expected, epsilon = 2.0e-12);
+    }
+
+    #[test]
+    fn cva_and_dva_match_explicit_discounted_default_grid() {
+        let times = [1.0, 2.0, 3.0];
+        let discount_factors = [0.98, 0.95, 0.91];
+        let counterparty_survival_probabilities = [0.97, 0.92, 0.85];
+        let own_survival_probabilities = [0.99, 0.965, 0.93];
+        let ee = [100.0, 80.0, 50.0];
+        let nee = [30.0, 60.0, 90.0];
+        let lgd = 0.6;
+        let lgd_own = 0.4;
+
+        let discount_curve = YieldCurve::new(times.iter().copied().zip(discount_factors).collect());
+        let counterparty_survival = SurvivalCurve::new(
+            times
+                .iter()
+                .copied()
+                .zip(counterparty_survival_probabilities)
+                .collect(),
+        );
+        let own_survival = SurvivalCurve::new(
+            times
+                .iter()
+                .copied()
+                .zip(own_survival_probabilities)
+                .collect(),
+        );
+        let calc = XvaCalculator::new(
+            discount_curve,
+            counterparty_survival,
+            own_survival,
+            lgd,
+            lgd_own,
+        );
+
+        // Independent expansion of sum_i DF_i * exposure_i * (S_{i-1} - S_i).
+        let expected_cva = -lgd
+            * (0.98 * 100.0 * (1.0 - 0.97)
+                + 0.95 * 80.0 * (0.97 - 0.92)
+                + 0.91 * 50.0 * (0.92 - 0.85));
+        let expected_dva = lgd_own
+            * (0.98 * 30.0 * (1.0 - 0.99)
+                + 0.95 * 60.0 * (0.99 - 0.965)
+                + 0.91 * 90.0 * (0.965 - 0.93));
+
+        let cva = calc.cva_from_expected_exposure(&times, &ee);
+        let dva = calc.dva_from_negative_expected_exposure(&times, &nee);
+        assert_relative_eq!(cva, expected_cva, epsilon = 2.0e-14);
+        assert_relative_eq!(dva, expected_dva, epsilon = 2.0e-14);
     }
 }

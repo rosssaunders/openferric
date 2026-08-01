@@ -784,18 +784,69 @@ mod tests {
             maturity: 1.0,
         };
         let spots = [100.0, 100.0];
-        let vols = [0.20, 0.20];
+        // Zero volatility and r=q=0 make every path deterministic.  The KI is
+        // breached, worst/strike=2, and the contractual cap therefore pays
+        // exactly par at maturity.
+        let vols = [0.0, 0.0];
         let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
 
         let (price, stderr) =
             price_standard_for_inputs(&note, &spots, &vols, &corr, 0.0, 0.0, 16_000, 64, MC_SEED)
                 .unwrap();
 
+        let roundoff = 32.0 * f64::EPSILON * note.notional;
         assert!(
-            price <= note.notional + 3.0 * stderr,
-            "KI redemption must be capped at par: price={price} stderr={stderr}"
+            (price - note.notional).abs() <= 4.0 * stderr + roundoff,
+            "deterministic capped KI redemption mismatch: price={price} exact={} stderr={stderr}",
+            note.notional
         );
-        assert!(price > 0.5 * note.notional, "sanity: price={price}");
+    }
+
+    #[test]
+    fn zero_vol_standard_and_phoenix_autocall_at_first_observation_exactly() {
+        let standard = standard_note(0.08, 1.0);
+        let phoenix = PhoenixAutocallable {
+            underlyings: standard.underlyings.clone(),
+            notional: standard.notional,
+            autocall_dates: standard.autocall_dates.clone(),
+            autocall_barrier: 1.0,
+            coupon_barrier: 0.5,
+            coupon_rate: standard.coupon_rate,
+            memory: true,
+            ki_barrier: standard.ki_barrier,
+            ki_strike: standard.ki_strike,
+            maturity: standard.maturity,
+        };
+        let spots = [100.0, 100.0];
+        let vols = [0.0, 0.0];
+        let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
+        let rate = 0.03;
+        let first_observation = standard.autocall_dates[0];
+
+        let (standard_price, standard_se) = price_standard_for_inputs(
+            &standard, &spots, &vols, &corr, rate, rate, 256, 64, MC_SEED,
+        )
+        .unwrap();
+        let standard_exact = (-rate * first_observation).exp()
+            * standard.notional
+            * (1.0 + standard.coupon_rate * first_observation);
+        let (phoenix_price, phoenix_se) =
+            price_phoenix_for_inputs(&phoenix, &spots, &vols, &corr, rate, rate, 256, 64, MC_SEED)
+                .unwrap();
+        let phoenix_exact = (-rate * first_observation).exp()
+            * phoenix.notional
+            * (1.0 + phoenix.coupon_rate * first_observation);
+
+        for (label, value, exact, stderr) in [
+            ("standard", standard_price, standard_exact, standard_se),
+            ("phoenix", phoenix_price, phoenix_exact, phoenix_se),
+        ] {
+            let roundoff = 64.0 * f64::EPSILON * exact.abs().max(1.0);
+            assert!(
+                (value - exact).abs() <= 4.0 * stderr + roundoff,
+                "zero-vol {label} first-call mismatch: value={value} exact={exact} stderr={stderr}"
+            );
+        }
     }
 
     #[test]
@@ -943,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_ki_worst_of_delta_is_significantly_positive() {
+    fn deep_ki_worst_of_delta_matches_deterministic_reduction() {
         // KI barrier far above any path (breach is certain), autocall barrier
         // unreachable, zero coupon, zero rates: the payoff is effectively
         // notional * min(worst_T / ki_strike, 1). Bumping the pricing spots up
@@ -962,18 +1013,28 @@ mod tests {
             maturity: 1.0,
         };
         let spots = [100.0, 100.0];
-        let vols = [0.20, 0.20];
+        let vols = [0.0, 0.0];
         let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
+        let dividend_yield = 0.20;
 
         let sens =
-            autocallable_sensitivities(&note, &spots, &vols, &corr, 0.0, 0.0, 16_000, 64).unwrap();
+            autocallable_sensitivities(&note, &spots, &vols, &corr, 0.0, dividend_yield, 1_024, 64)
+                .unwrap();
 
         let delta_sum: f64 = sens.delta.iter().sum();
-        // 0.1 * notional / spot scale = 0.1 * 100 / 100. Common random
-        // numbers make the bump estimator far more accurate than this bound.
+        // With deterministic S_T/S_0 = exp(-qT), the min-of-two central bump
+        // gives half the redemption slope to each identical underlying.
+        let steps = 64_usize;
+        let step_growth = (-dividend_yield * note.maturity / steps as f64).exp();
+        let terminal = (0..steps).fold(spots[0], |state, _| state * step_growth);
+        let simulated_growth = terminal / spots[0];
+        let expected_sum = simulated_growth * note.notional / spots[0] / note.ki_strike;
+        // The deterministic path value is summed over 1,024 identical paths
+        // before the central difference; account for that accumulation only.
+        let roundoff = 32.0 * 1_024.0 * f64::EPSILON * expected_sum.abs().max(1.0);
         assert!(
-            delta_sum > 0.1,
-            "deep-KI worst-of delta must be strongly positive: deltas={:?}",
+            (delta_sum - expected_sum).abs() <= roundoff,
+            "deterministic deep-KI delta mismatch: deltas={:?} sum={delta_sum} exact={expected_sum}",
             sens.delta
         );
         for (k, d) in sens.delta.iter().enumerate() {
@@ -982,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_ki_phoenix_delta_is_significantly_positive() {
+    fn deep_ki_phoenix_delta_matches_deterministic_reduction() {
         // Same construction as the standard deep-KI note, phoenix variant:
         // coupon barrier unreachable so the payoff reduces to the knock-in
         // redemption leg, which is monotone in the pricing spots.
@@ -999,18 +1060,32 @@ mod tests {
             maturity: 1.0,
         };
         let spots = [100.0, 100.0];
-        let vols = [0.20, 0.20];
+        let vols = [0.0, 0.0];
         let corr = [vec![1.0, 0.3], vec![0.3, 1.0]];
+        let dividend_yield = 0.20;
 
         let sens = phoenix_autocallable_sensitivities(
-            &phoenix, &spots, &vols, &corr, 0.0, 0.0, 16_000, 64,
+            &phoenix,
+            &spots,
+            &vols,
+            &corr,
+            0.0,
+            dividend_yield,
+            1_024,
+            64,
         )
         .unwrap();
 
         let delta_sum: f64 = sens.delta.iter().sum();
+        let steps = 64_usize;
+        let step_growth = (-dividend_yield * phoenix.maturity / steps as f64).exp();
+        let terminal = (0..steps).fold(spots[0], |state, _| state * step_growth);
+        let simulated_growth = terminal / spots[0];
+        let expected_sum = simulated_growth * phoenix.notional / spots[0] / phoenix.ki_strike;
+        let roundoff = 32.0 * 1_024.0 * f64::EPSILON * expected_sum.abs().max(1.0);
         assert!(
-            delta_sum > 0.1,
-            "deep-KI phoenix delta must be strongly positive: deltas={:?}",
+            (delta_sum - expected_sum).abs() <= roundoff,
+            "deterministic deep-KI phoenix delta mismatch: deltas={:?} sum={delta_sum} exact={expected_sum}",
             sens.delta
         );
     }
@@ -1043,17 +1118,44 @@ mod tests {
         let vols = [0.35, 0.35];
         let corr = [vec![1.0, 0.2], vec![0.2, 1.0]];
 
-        let standard_price = price_standard_for_inputs(
+        let (standard_price, standard_stderr) = price_standard_for_inputs(
             &standard, &spots, &vols, &corr, 0.01, 0.0, 20_000, 80, MC_SEED,
         )
-        .unwrap()
-        .0;
-        let phoenix_price = price_phoenix_for_inputs(
+        .unwrap();
+        let (phoenix_price, phoenix_stderr) = price_phoenix_for_inputs(
             &phoenix, &spots, &vols, &corr, 0.01, 0.0, 20_000, 80, MC_SEED,
         )
-        .unwrap()
-        .0;
+        .unwrap();
 
+        // Independent SciPy Brownian-bridge Sobol references for these exact
+        // 80-step, two-asset contracts (64 Owen scrambles x 2^15 paths).
+        // The replicate uncertainty is combined with each MC-reported SE.
+        for (label, value, stderr, reference, reference_stderr) in [
+            (
+                "standard",
+                standard_price,
+                standard_stderr,
+                82.666_147_186_488_99,
+                2.953_048_739_249_488_2e-3,
+            ),
+            (
+                "phoenix",
+                phoenix_price,
+                phoenix_stderr,
+                88.513_296_306_547_33,
+                2.102_584_152_148_88e-3,
+            ),
+        ] {
+            let combined_stderr = stderr.hypot(reference_stderr);
+            let roundoff = 32.0 * f64::EPSILON * reference;
+            assert!(
+                (value - reference).abs() <= 4.0 * combined_stderr + roundoff,
+                "{label} autocall mismatch: mc={value} reference={reference} mc_stderr={stderr} reference_stderr={reference_stderr}"
+            );
+        }
+
+        // Supplemental contractual invariant: conditional phoenix coupons
+        // add value relative to the otherwise matched standard note.
         assert!(
             phoenix_price > standard_price,
             "phoenix={} standard={}",

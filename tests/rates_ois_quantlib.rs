@@ -45,17 +45,11 @@ fn ois_cached_value_flat_curve_at_par() {
         tenor: 1.0,
     };
 
-    // Fixed and floating legs should approximately match on a flat curve
-    // where fixed_rate equals the curve rate
     let fixed_pv = ois.fixed_leg_pv(&curve);
     let floating_pv = ois.floating_leg_pv(&curve, &curve);
-
-    // Both PVs should be positive
-    assert!(fixed_pv > 0.0, "Fixed leg PV must be positive: {fixed_pv}");
-    assert!(
-        floating_pv > 0.0,
-        "Floating leg PV must be positive: {floating_pv}"
-    );
+    let expected_leg = 100.0 * (rate.exp() - 1.0) * (-rate).exp();
+    assert_relative_eq!(fixed_pv, expected_leg, epsilon = 1.0e-12);
+    assert_relative_eq!(floating_pv, expected_leg, epsilon = 1.0e-12);
 
     // NPV (pay fixed) is exactly zero at the simple annual par rate
     let npv = ois.npv(&curve, &curve, true);
@@ -64,8 +58,8 @@ fn ois_cached_value_flat_curve_at_par() {
 
 /// Reference: QuantLib overnightindexedswap.cpp testCachedValue.
 /// 1Y OIS, notional 100, 5% flat, NPV = 0.001730450147 (QuantLib cached).
-/// Our simplified annual model won't match exactly, but the sign and
-/// magnitude should be consistent.
+/// OpenFerric's annual-period model has the exact closed-form value below;
+/// the dated QuantLib cached value is not used as a loose substitute oracle.
 #[test]
 fn ois_off_market_npv() {
     let rate = 0.05;
@@ -79,16 +73,12 @@ fn ois_off_market_npv() {
         tenor: 1.0,
     };
 
-    // Pay-fixed NPV should be positive when fixed_rate < forward rate
     let npv = ois.npv(&curve, &curve, true);
-    assert!(
-        npv > 0.0,
-        "Pay-fixed NPV should be positive when fixed < floating: {npv}"
-    );
+    let expected = 100.0 * ((rate.exp() - 1.0) - 0.049) * (-rate).exp();
+    assert_relative_eq!(npv, expected, epsilon = 1.0e-12);
+    assert_relative_eq!(npv, 0.216_033_369_875_107_6, epsilon = 1.0e-12);
 
-    // And conversely, receive-fixed NPV should be negative
     let npv_recv = ois.npv(&curve, &curve, false);
-    assert!(npv_recv < 0.0);
     assert_relative_eq!(npv, -npv_recv, epsilon = 1.0e-10);
 }
 
@@ -138,9 +128,8 @@ fn ois_par_rate_with_spread() {
     let par_no_spread = ois_no_spread.par_fixed_rate(&curve, &curve);
     let par_with_spread = ois_with_spread.par_fixed_rate(&curve, &curve);
 
-    // Spread on float leg should increase par fixed rate by approximately
-    // the same amount
-    assert_relative_eq!(par_with_spread - par_no_spread, spread, epsilon = 1.0e-6,);
+    // Both legs share the same annual discounted accruals, so the shift is exact.
+    assert_relative_eq!(par_with_spread - par_no_spread, spread, epsilon = 1.0e-12);
 }
 
 // ── Notional and tenor dependence ───────────────────────────────────────────
@@ -216,12 +205,16 @@ fn ois_dual_curve_projection_above_discount() {
         tenor: 5.0,
     };
 
-    // Pay-fixed at discount rate, floating projects higher → NPV > 0
     let npv = ois.npv(&disc_curve, &proj_curve, true);
-    assert!(
-        npv > 0.0,
-        "Pay-fixed NPV should be positive when projection > discount: {npv}"
-    );
+    let expected: f64 = (1..=5)
+        .map(|year| {
+            ois.notional
+                * (proj_rate.exp() - 1.0 - ois.fixed_rate)
+                * (-disc_rate * year as f64).exp()
+        })
+        .sum();
+    assert_relative_eq!(npv, expected, epsilon = 1.0e-9);
+    assert_relative_eq!(npv, 50_062.837_387_888_765, epsilon = 1.0e-8);
 }
 
 // ── Edge cases ──────────────────────────────────────────────────────────────
@@ -278,7 +271,18 @@ fn basis_swap_par_spread_reprices_to_zero() {
         ..swap
     };
 
-    assert!(par_spread > 0.0);
+    let short_leg: f64 = (1..=12)
+        .map(|i| 10_000_000.0 * (0.04_f64 * 0.25).exp_m1() * (-0.03 * i as f64 * 0.25).exp())
+        .sum();
+    let long_leg: f64 = (1..=6)
+        .map(|i| 10_000_000.0 * (0.05_f64 * 0.5).exp_m1() * (-0.03 * i as f64 * 0.5).exp())
+        .sum();
+    let spread_pv01: f64 = (1..=12)
+        .map(|i| 10_000_000.0 * 0.25 * (-0.03 * i as f64 * 0.25).exp())
+        .sum();
+    let expected_par_spread = (long_leg - short_leg) / spread_pv01;
+    assert_relative_eq!(par_spread, expected_par_spread, epsilon = 1.0e-12);
+    assert_relative_eq!(par_spread, 0.010_239_710_198_232_398, epsilon = 1.0e-12);
     assert_relative_eq!(
         par_swap.npv(&discount_curve, &short_curve, &long_curve, true),
         0.0,
@@ -302,7 +306,25 @@ fn basis_swap_pay_receive_orientation_reverses_sign() {
     let pay_short = swap.npv(&discount_curve, &short_curve, &long_curve, true);
     let receive_short = swap.npv(&discount_curve, &short_curve, &long_curve, false);
 
-    assert!(pay_short.is_finite());
+    let short_leg: f64 = (1..=10)
+        .map(|i| {
+            let accrual = 0.25;
+            let forward = (0.04_f64 * accrual).exp_m1() / accrual;
+            swap.notional
+                * (forward + swap.spread_on_short_leg)
+                * accrual
+                * (-0.03 * i as f64 * accrual).exp()
+        })
+        .sum();
+    let long_leg: f64 = (1..=5)
+        .map(|i| {
+            let accrual = 0.5;
+            let forward = (0.05_f64 * accrual).exp_m1() / accrual;
+            swap.notional * forward * accrual * (-0.03 * i as f64 * accrual).exp()
+        })
+        .sum();
+    assert_relative_eq!(pay_short, long_leg - short_leg, epsilon = 1.0e-9);
+    assert_relative_eq!(pay_short, 22_170.958_869_815_862, epsilon = 1.0e-8);
     assert_relative_eq!(pay_short, -receive_short, epsilon = 1.0e-9);
 }
 

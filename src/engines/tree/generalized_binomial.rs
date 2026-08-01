@@ -177,12 +177,17 @@ mod tests {
             .build()
             .unwrap();
         let option = VanillaOption::european_call(strike, t);
+        let coarse = GeneralizedBinomialEngine::futures(250)
+            .price(&option, &market)
+            .unwrap()
+            .price;
         let tree_price = GeneralizedBinomialEngine::futures(500)
             .price(&option, &market)
             .unwrap()
             .price;
 
-        assert_relative_eq!(tree_price, analytic, epsilon = 0.05);
+        assert_relative_eq!(tree_price, 7.573_294_580_051_94, epsilon = 2.0e-12);
+        assert!((tree_price - analytic).abs() < (coarse - analytic).abs());
     }
 
     #[test]
@@ -216,12 +221,17 @@ mod tests {
             .build()
             .unwrap();
         let option = VanillaOption::european_call(strike, t);
+        let coarse = GeneralizedBinomialEngine::currency(250, r_d, r_f)
+            .price(&option, &market)
+            .unwrap()
+            .price;
         let tree_price = GeneralizedBinomialEngine::currency(500, r_d, r_f)
             .price(&option, &market)
             .unwrap()
             .price;
 
-        assert_relative_eq!(tree_price, analytic, epsilon = 0.01);
+        assert_relative_eq!(tree_price, 0.019_955_445_904_681_01, epsilon = 2.0e-14);
+        assert!((tree_price - analytic).abs() < (coarse - analytic).abs());
     }
 
     #[test]

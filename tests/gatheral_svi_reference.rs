@@ -210,7 +210,7 @@ fn svi_asymptotic_slope() {
     let expected_right = p.b * (p.rho + 1.0);
     let err = (right_slope - expected_right).abs();
     assert!(
-        err < 0.01,
+        err < 3.0e-6,
         "SVI right asymptote: slope={right_slope}, expected={expected_right}"
     );
 
@@ -219,7 +219,7 @@ fn svi_asymptotic_slope() {
     let expected_left = p.b * (p.rho - 1.0);
     let err = (left_slope - expected_left).abs();
     assert!(
-        err < 0.01,
+        err < 3.0e-6,
         "SVI left asymptote: slope={left_slope}, expected={expected_left}"
     );
 }

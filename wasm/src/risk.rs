@@ -18,28 +18,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn var_historical_positive_for_losses() {
+    fn var_historical_matches_exact_interpolated_order_statistic() {
         let returns = [
             -0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05,
         ];
         let var = var_historical(&returns, 0.95).unwrap();
-        assert!(var > 0.0);
+        // Sorted losses have 0.05 and 0.10 at ranks 8 and 9. The 95th
+        // percentile is rank 8.55, hence 0.05 + 0.55 * (0.10 - 0.05).
+        // Binary representation of 0.95 makes the interpolation miss the
+        // decimal result by 4.17e-17 (three ulps at this scale).
+        assert!((var - 0.0775).abs() <= 5.0e-17);
     }
 
     #[test]
-    fn var_historical_higher_confidence_higher_var() {
+    fn var_historical_confidence_levels_match_exact_order_statistics() {
         let returns = [
             -0.10, -0.05, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.05,
         ];
         let var_90 = var_historical(&returns, 0.90).unwrap();
         let var_99 = var_historical(&returns, 0.99).unwrap();
-        assert!(var_99 >= var_90);
+        assert!((var_90 - 0.055).abs() <= 2.0e-17);
+        assert!((var_99 - 0.0955).abs() <= 2.0e-17);
     }
 
     #[test]
     fn var_historical_all_positive() {
         let returns = [0.01, 0.02, 0.03, 0.04, 0.05];
         let var = var_historical(&returns, 0.95).unwrap();
-        assert!(var <= 0.01);
+        assert_eq!(var, 0.0);
     }
 }

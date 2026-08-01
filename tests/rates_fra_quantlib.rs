@@ -54,11 +54,9 @@ fn fra_forward_rate_from_deposit_curve() {
         day_count: DayCountConvention::Act365Fixed,
     };
 
-    let fwd = fra.forward_rate(&curve);
-    // The forward rate from 0 to ~0.497 years should be close to the
-    // interpolated zero rate at that tenor
-    assert!(fwd > 0.0, "Forward rate must be positive");
-    assert!(fwd < 0.05, "Forward rate should be reasonable");
+    let tau = openferric::rates::year_fraction(start, end, fra.day_count);
+    let expected = (curve.discount_factor(0.0) / curve.discount_factor(tau) - 1.0) / tau;
+    assert_relative_eq!(fra.forward_rate(&curve), expected, epsilon = 1.0e-12);
 }
 
 // ── NPV at par ──────────────────────────────────────────────────────────────

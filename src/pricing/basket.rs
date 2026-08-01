@@ -1129,7 +1129,7 @@ mod tests {
             basket.maturity,
         );
 
-        let tol = 3.0 * result.stderr.unwrap_or(0.0) + 0.15;
+        let tol = 4.0 * result.stderr.expect("basket MC reports standard error") + 1.0e-12;
         assert!(
             (result.price - bs).abs() <= tol,
             "basket={} bs={} tol={}",
@@ -1194,26 +1194,22 @@ mod tests {
     }
 
     #[test]
-    fn five_asset_mc_matches_moment_matching_within_two_percent() {
+    fn five_identical_perfectly_correlated_assets_reduce_to_vanilla() {
         let basket = BasketOption {
-            weights: vec![0.25, 0.2, 0.2, 0.2, 0.15],
+            weights: vec![0.1, 0.15, 0.2, 0.25, 0.3],
             strike: 100.0,
             maturity: 1.0,
             is_call: true,
             basket_type: BasketType::Average,
         };
-        let spots = vec![100.0, 98.0, 102.0, 95.0, 105.0];
-        let vols = vec![0.2, 0.21, 0.19, 0.23, 0.18];
-        let dividends = vec![0.01; 5];
-        let corr = vec![
-            vec![1.0, 0.35, 0.30, 0.20, 0.15],
-            vec![0.35, 1.0, 0.25, 0.30, 0.10],
-            vec![0.30, 0.25, 1.0, 0.28, 0.22],
-            vec![0.20, 0.30, 0.28, 1.0, 0.26],
-            vec![0.15, 0.10, 0.22, 0.26, 1.0],
-        ];
+        let spots = vec![100.0; 5];
+        let vols = vec![0.2; 5];
+        let dividends = vec![0.0; 5];
+        let corr = vec![vec![1.0; 5]; 5];
 
-        let mc = price_basket_mc(&basket, &spots, &vols, &corr, 0.02, &dividends, 250_000).price;
+        // Every component is the same random variable, so the weighted basket
+        // (weights sum to one) is exactly a single Black--Scholes asset.
+        let mc = price_basket_mc(&basket, &spots, &vols, &corr, 0.02, &dividends, 250_000);
         let mm = price_basket_moment_matching(
             &basket,
             &spots,
@@ -1224,15 +1220,23 @@ mod tests {
             BasketMomentMatchingMethod::Gentle,
         )
         .unwrap();
-
-        let rel = ((mc - mm) / mm.max(1.0e-12)).abs();
-        assert!(
-            rel <= 0.02,
-            "mc={} mm={} rel_err={} exceeds 2%",
-            mc,
-            mm,
-            rel
+        let exact = black_scholes_price(
+            OptionType::Call,
+            100.0,
+            basket.strike,
+            0.02,
+            0.2,
+            basket.maturity,
         );
+        let mc_tolerance = 4.0 * mc.stderr.expect("basket MC reports standard error") + 1.0e-12;
+        assert!(
+            (mc.price - exact).abs() <= mc_tolerance,
+            "mc={} exact={} tolerance={}",
+            mc.price,
+            exact,
+            mc_tolerance
+        );
+        assert!((mm - exact).abs() <= 2.0e-12, "mm={mm} exact={exact}");
     }
 
     #[test]

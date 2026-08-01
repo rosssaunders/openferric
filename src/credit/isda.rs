@@ -587,13 +587,13 @@ mod tests {
     }
 
     #[test]
-    fn isda_par_cds_is_near_zero_when_hazard_is_calibrated_from_spread() {
+    fn isda_fair_spread_reprices_exactly_to_par() {
         let eval = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
         let spread = 0.01;
         let recovery = 0.4;
         let hazard = hazard_from_par_spread(spread, recovery);
 
-        let cds = DatedCds::standard_imm(
+        let mut cds = DatedCds::standard_imm(
             ProtectionSide::Buyer,
             eval,
             5,
@@ -602,7 +602,13 @@ mod tests {
             recovery,
         );
 
-        let result = price_isda_flat(&cds, eval, hazard, 0.05, IsdaConventions::default());
-        assert_relative_eq!(result.clean_npv, 0.0, epsilon = 3.0e4);
+        let conventions = IsdaConventions::default();
+        let initial = price_isda_flat(&cds, eval, hazard, 0.05, conventions);
+        cds.running_spread = initial.fair_spread;
+        let par = price_isda_flat(&cds, eval, hazard, 0.05, conventions);
+
+        // A quoted fair spread must reprice the same dated cashflows to par;
+        // the previous $30,000 tolerance could hide a material convention bug.
+        assert_relative_eq!(par.clean_npv, 0.0, epsilon = 1.0e-8);
     }
 }

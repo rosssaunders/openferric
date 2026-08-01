@@ -1,5 +1,6 @@
 // Reference values from QuantLib variance swap tests (BSD 3-Clause),
-// Demeterfi/Derman/Kamal/Zou (1999), and Heston model closed-form.
+// Demeterfi/Derman/Kamal/Zou (1999), Heston model closed-form, and independent
+// SciPy 1.17.1 Black--Scholes strips for the exact discrete-replication values.
 
 use openferric::core::{OptionType, PricingEngine, PricingError};
 use openferric::engines::analytic::black_scholes::bs_price;
@@ -102,10 +103,12 @@ fn flat_vol_020_fair_variance() {
     let fair_var =
         fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
 
-    // Under flat BS vol, fair variance should equal sigma^2 = 0.04
+    // Independent SciPy value for this finite strike strip.  It converges to
+    // sigma^2 = 0.04 as the strike mesh and tails are refined.
+    let expected = 0.040_005_088_421_048_78;
     assert!(
-        (fair_var - 0.04).abs() < 1e-4,
-        "flat vol 0.20: expected fair_var ~ 0.04, got {fair_var}"
+        (fair_var - expected).abs() < 3e-12,
+        "flat vol 0.20: expected fair_var={expected}, got {fair_var}"
     );
 }
 
@@ -121,9 +124,10 @@ fn flat_vol_030_fair_variance() {
     let fair_var =
         fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
 
+    let expected = 0.090_005_088_172_964_33;
     assert!(
-        (fair_var - 0.09).abs() < 1e-4,
-        "flat vol 0.30: expected fair_var ~ 0.09, got {fair_var}"
+        (fair_var - expected).abs() < 3e-12,
+        "flat vol 0.30: expected fair_var={expected}, got {fair_var}"
     );
 }
 
@@ -139,9 +143,10 @@ fn flat_vol_015_fair_variance() {
     let fair_var =
         fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
 
+    let expected = 0.022_505_088_421_048_827;
     assert!(
-        (fair_var - 0.0225).abs() < 1e-4,
-        "flat vol 0.15: expected fair_var ~ 0.0225, got {fair_var}"
+        (fair_var - expected).abs() < 3e-12,
+        "flat vol 0.15: expected fair_var={expected}, got {fair_var}"
     );
 }
 
@@ -153,14 +158,11 @@ fn flat_vol_015_fair_variance() {
 fn fair_volatility_zero_var_of_var() {
     // With zero var-of-var the convexity adjustment vanishes:
     // K_vol = sqrt(K_var)
-    let cases = [(0.04, 0.20), (0.09, 0.30), (0.0225, 0.15)];
+    let cases: [(f64, f64); 3] = [(0.04, 0.20), (0.09, 0.30), (0.0225, 0.15)];
 
     for (k_var, expected_k_vol) in cases {
         let k_vol = fair_volatility_strike_from_variance(k_var, 0.0).unwrap();
-        assert!(
-            (k_vol - expected_k_vol).abs() < 1e-10,
-            "K_var={k_var}: expected K_vol={expected_k_vol}, got {k_vol}"
-        );
+        assert_eq!(k_vol.to_bits(), expected_k_vol.to_bits(), "K_var={k_var}");
     }
 }
 
@@ -172,7 +174,7 @@ fn fair_volatility_with_convexity_adjustment() {
     let expected = 0.04_f64.sqrt() - 0.001 / (8.0 * 0.04_f64.powf(1.5));
     let k_vol = fair_volatility_strike_from_variance(k_var, var_of_var).unwrap();
     assert!(
-        (k_vol - expected).abs() < 1e-10,
+        (k_vol - expected).abs() <= 8.0 * f64::EPSILON,
         "convexity adjustment: expected {expected}, got {k_vol}"
     );
 }
@@ -199,14 +201,11 @@ fn heston_fair_variance_case_1() {
     // kappa=2.0, theta=0.04, v0=0.09, T=1.0
     let k_var = heston_fair_variance(2.0, 0.04, 0.09, 1.0);
     let expected = 0.04 + (0.09 - 0.04) * (1.0 - (-2.0_f64).exp()) / 2.0;
+    assert_eq!(k_var.to_bits(), expected.to_bits());
+    // Independent double-precision numerical evaluation.
     assert!(
-        (k_var - expected).abs() < 1e-12,
-        "Heston case 1: got {k_var}, expected {expected}"
-    );
-    // Numerical reference: ~0.06162
-    assert!(
-        (k_var - 0.06162).abs() < 1e-4,
-        "Heston case 1: expected ~0.06162, got {k_var}"
+        (k_var - 0.061_616_617_919_084_68).abs() < 2e-16,
+        "Heston case 1: unexpected numerical value {k_var}"
     );
 }
 
@@ -215,10 +214,7 @@ fn heston_fair_variance_case_2() {
     // kappa=0.5, theta=0.04, v0=0.04, T=1.0
     // When v0 == theta, fair variance = theta regardless of kappa/T
     let k_var = heston_fair_variance(0.5, 0.04, 0.04, 1.0);
-    assert!(
-        (k_var - 0.04).abs() < 1e-12,
-        "Heston case 2: expected 0.04, got {k_var}"
-    );
+    assert_eq!(k_var.to_bits(), 0.04_f64.to_bits());
 }
 
 #[test]
@@ -226,14 +222,11 @@ fn heston_fair_variance_case_3() {
     // kappa=1.0, theta=0.0225, v0=0.0625, T=0.5
     let k_var = heston_fair_variance(1.0, 0.0225, 0.0625, 0.5);
     let expected = 0.0225 + (0.0625 - 0.0225) * (1.0 - (-0.5_f64).exp()) / 0.5;
+    assert_eq!(k_var.to_bits(), expected.to_bits());
+    // Independent double-precision numerical evaluation.
     assert!(
-        (k_var - expected).abs() < 1e-12,
-        "Heston case 3: got {k_var}, expected {expected}"
-    );
-    // Numerical reference: ~0.05398
-    assert!(
-        (k_var - 0.05398).abs() < 1e-4,
-        "Heston case 3: expected ~0.05398, got {k_var}"
+        (k_var - 0.053_977_547_222_989_33).abs() < 2e-16,
+        "Heston case 3: unexpected numerical value {k_var}"
     );
 }
 
@@ -277,10 +270,13 @@ fn replicating_skewed_surface_fair_variance() {
     let fair_var =
         fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
 
-    // Expected: ~0.04189. Tolerance is wider due to coarse strike spacing.
+    // Independent SciPy value for this exact 19-option strip.  The previous
+    // 0.04189 target did not correspond to these inputs and only passed under
+    // an absolute tolerance of 0.01.
+    let expected = 0.040_021_089_040_997_535;
     assert!(
-        (fair_var - 0.04189).abs() < 1e-2,
-        "skewed surface: expected fair_var ~ 0.04189, got {fair_var}"
+        (fair_var - expected).abs() < 3e-12,
+        "skewed surface: expected fair_var={expected}, got {fair_var}"
     );
 }
 
@@ -313,11 +309,12 @@ fn engine_variance_swap_flat_vol() {
     let engine = VarianceSwapEngine::new();
     let result = engine.price(&instrument, &market).unwrap();
 
-    // When fair variance matches strike variance, the MtM should be ~0
-    // (modulo small discretization error in the replication).
+    // SciPy reference includes the finite-grid replication error rather than
+    // hiding it inside a $500 near-zero band.
+    let expected_price = 3.923_095_034_961_192;
     assert!(
-        result.price.abs() < 500.0,
-        "at-the-money variance swap price should be near zero, got {}",
+        (result.price - expected_price).abs() < 5e-11,
+        "variance swap: expected={expected_price}, got={}",
         result.price
     );
 
@@ -328,9 +325,10 @@ fn engine_variance_swap_flat_vol() {
         "diagnostics should contain fair_variance"
     );
     let fair_var = diag_var.unwrap();
+    let expected_variance = 0.040_015_850_091_182_206;
     assert!(
-        (fair_var - 0.04).abs() < 1e-3,
-        "fair_variance diagnostic should be ~0.04, got {fair_var}"
+        (fair_var - expected_variance).abs() < 3e-12,
+        "fair_variance diagnostic: expected={expected_variance}, got={fair_var}"
     );
 }
 
@@ -360,10 +358,10 @@ fn engine_volatility_swap_flat_vol() {
     let engine = VarianceSwapEngine::new();
     let result = engine.price(&instrument, &market).unwrap();
 
-    // At-the-money vol swap: price should be near zero.
+    let expected_price = 3.922_706_478_104_697;
     assert!(
-        result.price.abs() < 500.0,
-        "at-the-money volatility swap price should be near zero, got {}",
+        (result.price - expected_price).abs() < 5e-11,
+        "volatility swap: expected={expected_price}, got={}",
         result.price
     );
 }
@@ -391,11 +389,10 @@ fn mtm_at_inception_zero() {
     let mtm = variance_swap_mtm(&instrument, fair_var, rate).unwrap();
 
     // N_var = 50000 / (2*0.20) = 125000
-    // payoff = 125000 * (0.04 - 0.04) = 0
-    assert!(
-        mtm.abs() < 1e-10,
-        "MtM at inception with matching fair var should be zero, got {mtm}"
-    );
+    // payoff = 125000 * (0.04 - 0.20^2), including the exact f64 rounding.
+    let expected = (-rate * expiry).exp()
+        * ((notional_vega / (2.0 * strike_vol)) * (fair_var - strike_vol * strike_vol));
+    assert_eq!(mtm.to_bits(), expected.to_bits());
 }
 
 #[test]
@@ -433,7 +430,7 @@ fn mtm_long_variance_swap_losing() {
     let n_var = notional_vega / (2.0 * strike_vol);
     let k_var = strike_vol * strike_vol;
     let df = (-rate * original_expiry).exp();
-    let expected_mtm = df * n_var * (expected_var - k_var);
+    let expected_mtm = df * (n_var * (expected_var - k_var));
 
     // Now compute via the API. We set observed_realized_var to the blended
     // expected variance, since the API uses it as the single expected realized
@@ -448,10 +445,7 @@ fn mtm_long_variance_swap_losing() {
 
     let mtm = variance_swap_mtm(&instrument, new_fair_var, rate).unwrap();
 
-    assert!(
-        (mtm - expected_mtm).abs() < 1.0,
-        "MtM mismatch: expected {expected_mtm:.2}, got {mtm:.2}"
-    );
+    assert_eq!(mtm.to_bits(), expected_mtm.to_bits());
 
     // The position should be losing (negative MtM for a long variance position
     // when realized + implied are below the strike).
@@ -470,9 +464,9 @@ fn mtm_vega_notional_to_variance_notional_conversion() {
     let strike_vol = 0.22;
     let expected_n_var: f64 = notional_vega / (2.0 * strike_vol);
 
-    assert!(
-        (expected_n_var - 113636.36363636_f64).abs() < 0.01,
-        "N_var conversion: expected ~113636.36, got {expected_n_var}"
+    assert_eq!(
+        expected_n_var.to_bits(),
+        113_636.363_636_363_63_f64.to_bits()
     );
 
     // Verify via MtM: if expected_realized_var - K_var = 1 unit,
@@ -490,10 +484,7 @@ fn mtm_vega_notional_to_variance_notional_conversion() {
     let mtm = variance_swap_mtm(&instrument, 0.0, rate).unwrap();
 
     // mtm = exp(0) * N_var * 1.0 = N_var
-    assert!(
-        (mtm - expected_n_var).abs() < 0.01,
-        "MtM unit test: expected {expected_n_var:.2}, got {mtm:.2}"
-    );
+    assert_eq!(mtm.to_bits(), expected_n_var.to_bits());
 }
 
 // ===========================================================================
@@ -520,10 +511,8 @@ fn vol_swap_mtm_at_the_money() {
 
     let mtm = volatility_swap_mtm(&instrument, fair_var, fair_vol, rate).unwrap();
 
-    assert!(
-        mtm.abs() < 1e-10,
-        "At-the-money vol swap MtM should be zero, got {mtm}"
-    );
+    let expected = (-rate * expiry).exp() * (notional_vega * (0.04_f64.sqrt() - strike_vol));
+    assert_eq!(mtm.to_bits(), expected.to_bits());
 }
 
 #[test]
@@ -551,12 +540,9 @@ fn vol_swap_mtm_in_the_money() {
     // payoff = N_vega * (realized_vol - strike_vol) = 100000 * (0.25 - 0.20) = 5000
     // mtm = exp(-0.05) * 5000
     let df = (-0.05_f64).exp();
-    let expected = df * 100_000.0 * (0.25 - 0.20);
+    let expected = df * (100_000.0 * (0.25 - 0.20));
 
-    assert!(
-        (mtm - expected).abs() < 1e-6,
-        "In-the-money vol swap: expected {expected:.2}, got {mtm:.2}"
-    );
+    assert_eq!(mtm.to_bits(), expected.to_bits());
     assert!(
         mtm > 0.0,
         "Long vol swap should profit when realized > strike"
@@ -585,16 +571,9 @@ fn realized_variance_log_returns() {
 
     let realized_var = (af / n as f64) * sum_sq;
 
-    // Just verify the formula is self-consistent (positive, finite).
-    assert!(realized_var > 0.0);
-    assert!(realized_var.is_finite());
-
-    // Realized vol should be reasonable for these small moves
+    assert!((realized_var - 0.134_649_100_123_480_9).abs() < 2e-15);
     let realized_vol = realized_var.sqrt();
-    assert!(
-        realized_vol > 0.05 && realized_vol < 1.0,
-        "realized vol should be reasonable, got {realized_vol}"
-    );
+    assert!((realized_vol - 0.366_945_636_468_783_9).abs() < 2e-15);
 }
 
 // ===========================================================================
@@ -678,9 +657,10 @@ fn flat_vol_short_expiry() {
     let fair_var =
         fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
 
+    let expected = 0.062_466_999_030_406_61;
     assert!(
-        (fair_var - 0.0625).abs() < 1e-3,
-        "short expiry flat vol 0.25: expected ~0.0625, got {fair_var}"
+        (fair_var - expected).abs() < 3e-12,
+        "short expiry: expected fair_var={expected}, got {fair_var}"
     );
 }
 
@@ -697,9 +677,10 @@ fn flat_vol_long_expiry() {
     let fair_var =
         fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
 
+    let expected = 0.039_998_508_391_514_54;
     assert!(
-        (fair_var - 0.04).abs() < 1e-3,
-        "long expiry flat vol 0.20: expected ~0.04, got {fair_var}"
+        (fair_var - expected).abs() < 3e-12,
+        "long expiry: expected fair_var={expected}, got {fair_var}"
     );
 }
 
@@ -720,9 +701,12 @@ fn settlement_payoff_long_variance() {
     let k_var = k_vol * k_vol;
 
     let settlement: f64 = n_var * (realized_var - k_var);
+    let exact_decimal_settlement = 2_500.0;
+    let roundoff_budget = 4.0 * f64::EPSILON * exact_decimal_settlement;
     assert!(
-        (settlement - 2500.0).abs() < 1e-6,
-        "settlement: expected 2500, got {settlement}"
+        (settlement - exact_decimal_settlement).abs() <= roundoff_budget,
+        "settlement={settlement:.17e}, exact={exact_decimal_settlement:.17e}, \
+         roundoff budget={roundoff_budget:.3e}"
     );
 
     // Verify via API (at expiry, rate=0 so DF=1):
@@ -734,10 +718,7 @@ fn settlement_payoff_long_variance() {
         VarianceSwap::new(n_vega, k_vol, 1.0, quotes).with_observed_realized_var(realized_var);
 
     let mtm = variance_swap_mtm(&instrument, 0.0, 0.0).unwrap();
-    assert!(
-        (mtm - 2500.0).abs() < 1e-6,
-        "API settlement: expected 2500, got {mtm}"
-    );
+    assert_eq!(mtm.to_bits(), settlement.to_bits());
 }
 
 // ===========================================================================
@@ -770,8 +751,14 @@ fn dense_strikes_improve_replication_accuracy() {
         fine_err < coarse_err,
         "finer strike grid should be more accurate: coarse_err={coarse_err}, fine_err={fine_err}"
     );
+    // The coarse strip nearly cancels.  Its stable BSM tail evaluation differs
+    // from SciPy's operation ordering by 38 absolute binary64 epsilons.
+    let coarse_reference = 2.688_106_931_844_172_4e-7;
+    let coarse_roundoff_budget = 64.0 * f64::EPSILON;
     assert!(
-        fine_err < 1e-3,
-        "fine grid should be within 1e-3 of sigma^2: err={fine_err}"
+        (coarse_var - coarse_reference).abs() <= coarse_roundoff_budget,
+        "coarse_var={coarse_var:.17e}, SciPy={coarse_reference:.17e}, \
+         roundoff budget={coarse_roundoff_budget:.3e}"
     );
+    assert!((fine_var - 0.062_484_316_459_074_55).abs() < 3e-12);
 }

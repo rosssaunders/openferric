@@ -648,6 +648,19 @@ unsafe fn simulate_gbm_paths_soa_neon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::OptionType;
+    use crate::pricing::european::black_scholes_price;
+
+    fn mean_and_stderr(values: &[f64]) -> (f64, f64) {
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        let variance = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        (mean, (variance / n).sqrt())
+    }
 
     #[test]
     fn terminal_only_scalar_matches_full_path_terminal() {
@@ -666,13 +679,30 @@ mod tests {
 
     #[test]
     fn mc_european_call_soa_agrees_between_scalar_and_dispatched() {
-        let scalar = mc_european_call_soa_scalar(100.0, 100.0, 0.05, 0.0, 0.2, 1.0, 20_000, 8, 11);
-        let dispatched = mc_european_call_soa(100.0, 100.0, 0.05, 0.0, 0.2, 1.0, 20_000, 8, 11);
-        // Different RNG/exp code paths (SIMD vs scalar), so only require
-        // statistical agreement.
+        let mut scalar_batches = Vec::new();
+        let mut dispatched_batches = Vec::new();
+        for batch in 0..16_u64 {
+            let seed = 0x51AD_0000 + batch;
+            scalar_batches.push(mc_european_call_soa_scalar(
+                100.0, 100.0, 0.05, 0.0, 0.2, 1.0, 5_000, 8, seed,
+            ));
+            dispatched_batches.push(mc_european_call_soa(
+                100.0, 100.0, 0.05, 0.0, 0.2, 1.0, 5_000, 8, seed,
+            ));
+        }
+        let (scalar, scalar_stderr) = mean_and_stderr(&scalar_batches);
+        let (dispatched, dispatched_stderr) = mean_and_stderr(&dispatched_batches);
+        let exact = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
+        let scalar_tolerance = 4.0 * scalar_stderr + 1.0e-12;
+        let dispatched_tolerance = 4.0 * dispatched_stderr + 1.0e-12;
+        let combined_tolerance = 4.0
+            * (scalar_stderr * scalar_stderr + dispatched_stderr * dispatched_stderr).sqrt()
+            + 1.0e-12;
+        assert!((scalar - exact).abs() <= scalar_tolerance);
+        assert!((dispatched - exact).abs() <= dispatched_tolerance);
         assert!(
-            (scalar - dispatched).abs() / scalar < 0.05,
-            "scalar={scalar} dispatched={dispatched}"
+            (scalar - dispatched).abs() <= combined_tolerance,
+            "scalar={scalar} dispatched={dispatched} scalar_stderr={scalar_stderr} dispatched_stderr={dispatched_stderr} tolerance={combined_tolerance}"
         );
     }
 

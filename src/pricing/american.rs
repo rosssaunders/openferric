@@ -170,17 +170,35 @@ mod tests {
     }
 
     #[test]
-    fn longstaff_schwartz_reasonable_against_binomial() {
+    fn longstaff_schwartz_matches_quantlib_crr_with_batch_stderr() {
         let s0 = 100.0;
         let k = 100.0;
         let r = 0.05;
         let sigma = 0.2;
         let t = 1.0;
 
-        let lsm = longstaff_schwartz_american_put(s0, k, r, sigma, t, 50, 40_000, 7);
-        let tree = crr_binomial_american(OptionType::Put, s0, k, r, sigma, t, 800);
-
-        assert!((lsm - tree).abs() < 0.5);
+        let batch_prices = (0..16_u64)
+            .map(|batch| {
+                longstaff_schwartz_american_put(s0, k, r, sigma, t, 50, 10_000, 0xA4E1_0000 + batch)
+            })
+            .collect::<Vec<_>>();
+        let n = batch_prices.len() as f64;
+        let mean = batch_prices.iter().sum::<f64>() / n;
+        let batch_stderr = (batch_prices
+            .iter()
+            .map(|price| (price - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0)
+            / n)
+            .sqrt();
+        // QuantLib 1.43 CRR, 10,000 steps.  The extra 4e-5 covers the observed
+        // 10k-to-20k lattice refinement (3.65e-5).
+        let reference = 6.090_298_054_322_291;
+        let tolerance = 4.0 * batch_stderr + 4.0e-5;
+        assert!(
+            (mean - reference).abs() <= tolerance,
+            "mean={mean} reference={reference} batch_stderr={batch_stderr} tolerance={tolerance}"
+        );
     }
 
     #[test]

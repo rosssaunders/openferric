@@ -490,7 +490,67 @@ fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f6
     let drift = (-0.5 * vol).mul_add(vol, market.rate - q_t1) * t1;
     let vol_t1 = vol * t1.sqrt();
 
-    // Numerical quadrature approximation to the Geske expectation.
+    let inner_minus_compound_strike = |z: f64| {
+        let s_t1 = market.spot * (drift + vol_t1 * z).exp();
+        bs_price_with_dividend(
+            spec.underlying_option_type,
+            s_t1,
+            spec.underlying_strike,
+            market.rate,
+            q_tau,
+            vol,
+            tau,
+        ) - spec.compound_strike
+    };
+
+    // A compound payoff has a kink at the critical T1 spot for which the
+    // daughter option is worth the mother strike.  Integrating across that
+    // kink with one fixed Gauss-Legendre panel converges slowly (and missed
+    // QuantLib's Haug references by more than a cent).  Locate the critical
+    // normal variate and integrate only the active payoff interval.  The
+    // integrand is smooth on that interval and the same 96 nodes then recover
+    // the reference values to their quoted precision.
+    const Z_MIN: f64 = -8.0;
+    const Z_MAX: f64 = 8.0;
+    let mut z_lo = Z_MIN;
+    let mut z_hi = Z_MAX;
+    let mut f_lo = inner_minus_compound_strike(z_lo);
+    let f_hi = inner_minus_compound_strike(z_hi);
+    let want_positive = matches!(spec.option_type, OptionType::Call);
+
+    let (integral_lo, integral_hi) = if f_lo.signum() == f_hi.signum() {
+        let active = (f_lo > 0.0) == want_positive;
+        if !active {
+            return Ok(0.0);
+        }
+        (Z_MIN, Z_MAX)
+    } else {
+        for _ in 0..80 {
+            let z_mid = 0.5 * (z_lo + z_hi);
+            let f_mid = inner_minus_compound_strike(z_mid);
+            if f_mid == 0.0 {
+                z_lo = z_mid;
+                z_hi = z_mid;
+                break;
+            }
+            if f_mid.signum() == f_lo.signum() {
+                z_lo = z_mid;
+                f_lo = f_mid;
+            } else {
+                z_hi = z_mid;
+            }
+        }
+        let critical_z = 0.5 * (z_lo + z_hi);
+        let positive_on_right = matches!(spec.underlying_option_type, OptionType::Call);
+        if want_positive == positive_on_right {
+            (critical_z, Z_MAX)
+        } else {
+            (Z_MIN, critical_z)
+        }
+    };
+
+    // Numerical quadrature approximation to the Geske expectation, split at
+    // the critical spot as described above.
     let integral = gauss_legendre_integrate(
         |z| {
             let s_t1 = market.spot * (drift + vol_t1 * z).exp();
@@ -511,8 +571,8 @@ fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f6
 
             payoff * normal_pdf(z)
         },
-        -8.0,
-        8.0,
+        integral_lo,
+        integral_hi,
         96,
     )
     .map_err(|e| PricingError::NumericalError(format!("compound quadrature failed: {e:?}")))?;
@@ -549,19 +609,24 @@ mod tests {
         let engine = ExoticAnalyticEngine::new();
         let price = engine.price(&option, &market).unwrap().price;
 
-        assert_relative_eq!(price, 25.353_355_27, epsilon = 2e-5);
+        // QuantLib's Haug fixture is published as 25.3533.  QuantLib 1.43's
+        // AnalyticContinuousFloatingLookbackEngine gives this full-precision
+        // value for the exact half-year input used here.
+        assert_relative_eq!(price, 25.353_355_271_810_2, epsilon = 5e-12);
     }
 
     #[test]
     fn fixed_lookback_call_matches_haug_reference_values() {
-        // Source: Haug (1998), pp. 63-64.
+        // Haug (1998), pp. 63-64 publishes these to four decimals.  These are
+        // full-precision QuantLib 1.43
+        // AnalyticContinuousFixedLookbackEngine values for the exact inputs.
         let references = [
-            (95.0, 0.10, 13.2687),
-            (95.0, 0.20, 18.9263),
-            (95.0, 0.30, 24.9857),
-            (100.0, 0.10, 8.5126),
-            (100.0, 0.20, 14.1702),
-            (100.0, 0.30, 20.2296),
+            (95.0, 0.10, 13.268_722_361_148_942),
+            (95.0, 0.20, 18.926_336_989_228_3),
+            (95.0, 0.30, 24.985_760_140_325_393),
+            (100.0, 0.10, 8.512_575_238_645_372),
+            (100.0, 0.20, 14.170_189_866_724_73),
+            (100.0, 0.30, 20.229_613_017_821_823),
         ];
 
         let engine = ExoticAnalyticEngine::new();
@@ -585,12 +650,12 @@ mod tests {
                 .price(&option, &market)
                 .expect("pricing succeeds")
                 .price;
-            assert_relative_eq!(price, expected, epsilon = 1e-4);
+            assert_relative_eq!(price, expected, epsilon = 5e-12);
         }
     }
 
     #[test]
-    fn mc_floating_lookback_converges_to_analytic_within_two_percent() {
+    fn mc_floating_lookback_matches_independent_scipy_sobol_reference() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -605,11 +670,6 @@ mod tests {
             observed_extreme: Some(90.0),
         };
 
-        let analytic = ExoticAnalyticEngine::new()
-            .price(&ExoticOption::LookbackFloating(option.clone()), &market)
-            .expect("analytic pricing succeeds")
-            .price;
-
         let vol = market.vol_for(market.spot, option.expiry);
         let generator = GbmPathGenerator {
             model: Gbm {
@@ -623,7 +683,7 @@ mod tests {
         let discount_factor = (-market.rate * option.expiry).exp();
         let observed_min = option.observed_extreme.unwrap_or(market.spot);
 
-        let (mc, _stderr) = MonteCarloEngine::new(50_000, 42).with_antithetic(true).run(
+        let (mc, stderr) = MonteCarloEngine::new(50_000, 42).with_antithetic(true).run(
             &generator,
             |path| {
                 let path_min = path.iter().fold(observed_min, |acc, &s| acc.min(s));
@@ -632,13 +692,20 @@ mod tests {
             discount_factor,
         );
 
-        let rel_err = ((mc - analytic) / analytic).abs();
+        // Independent discrete-monitoring reference: SciPy 1.17.1 Sobol,
+        // 16 Owen-scrambled replicates of 2^14 paths in 756 dimensions.
+        let reference = 14.816_567_593_152_019;
+        let reference_stderr = 0.003_684_381_732_446_104_7;
+        let combined_stderr = (stderr * stderr + reference_stderr * reference_stderr).sqrt();
+        let tolerance = 4.0 * combined_stderr + 1.0e-12;
         assert!(
-            rel_err <= 0.02,
-            "MC floating-lookback mismatch: mc={} analytic={} rel_err={}",
+            (mc - reference).abs() <= tolerance,
+            "MC/SciPy floating-lookback error exceeds combined sampling budget: mc={} reference={} implementation_stderr={} reference_stderr={} tolerance={}",
             mc,
-            analytic,
-            rel_err
+            reference,
+            stderr,
+            reference_stderr,
+            tolerance
         );
     }
 
@@ -673,11 +740,15 @@ mod tests {
         );
 
         let price = quanto_price(&spec, &market, 0.2);
-        assert_relative_eq!(price, vanilla, epsilon = 1e-10);
+        let ulp_error = price.to_bits().abs_diff(vanilla.to_bits());
+        assert!(
+            ulp_error <= 4,
+            "zero-FX quanto reduction differs from vanilla by {ulp_error} ulps"
+        );
     }
 
     #[test]
-    fn compound_option_price_is_non_negative() {
+    fn compound_option_matches_independent_scipy_quadrature() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.04)
@@ -696,6 +767,13 @@ mod tests {
         };
 
         let price = compound_price(&spec, &market, 0.25).unwrap();
-        assert!(price >= 0.0);
+
+        // Independent SciPy 1.17.1 adaptive quadrature of the discounted T1
+        // payoff over the terminal-normal density (epsabs=epsrel=1e-14).
+        // This replaces the former non-negativity-only assertion.  QuantLib
+        // 1.43's bivariate-normal implementation gives 6.818216699922273 for
+        // the same fixture; the direct one-dimensional expectation is the
+        // more accurate oracle here.
+        assert_relative_eq!(price, 6.818_232_078_481_023, epsilon = 5e-12);
     }
 }

@@ -449,7 +449,10 @@ mod tests {
             .unwrap()
             .price;
 
-        assert_relative_eq!(price, 6.9358, epsilon = 5e-2);
+        // Independently evaluated from cash*exp(-rT)*N(d2) with SciPy
+        // 1.17.1's normal CDF.  The old 6.9358 target used a different
+        // convention and only passed because the tolerance was five cents.
+        assert_relative_eq!(price, 6.888_929_133_869_653, epsilon = 2e-12);
     }
 
     #[test]
@@ -467,7 +470,7 @@ mod tests {
             .unwrap()
             .price;
 
-        assert_relative_eq!(price, 20.2069, epsilon = 2e-4);
+        assert_relative_eq!(price, 20.206_947_298_368_55, epsilon = 2e-12);
     }
 
     #[test]
@@ -485,7 +488,7 @@ mod tests {
             .unwrap()
             .price;
 
-        assert_relative_eq!(price, -0.0053, epsilon = 2e-4);
+        assert_relative_eq!(price, -0.005_252_489_258_786_852, epsilon = 2e-12);
     }
 
     #[test]
@@ -536,38 +539,6 @@ mod tests {
         );
     }
 
-    // --- Finite-difference verification helpers ---
-
-    fn bump_spot(market: &Market, ds: f64) -> Market {
-        Market::builder()
-            .spot(market.spot + ds)
-            .rate(market.rate)
-            .dividend_yield(market.dividend_yield)
-            .flat_vol(market.vol_for(100.0, 1.0)) // flat vol
-            .build()
-            .unwrap()
-    }
-
-    fn bump_rate(market: &Market, dr: f64) -> Market {
-        Market::builder()
-            .spot(market.spot)
-            .rate(market.rate + dr)
-            .dividend_yield(market.dividend_yield)
-            .flat_vol(market.vol_for(100.0, 1.0))
-            .build()
-            .unwrap()
-    }
-
-    fn bump_vol(market: &Market, dv: f64) -> Market {
-        Market::builder()
-            .spot(market.spot)
-            .rate(market.rate)
-            .dividend_yield(market.dividend_yield)
-            .flat_vol(market.vol_for(100.0, 1.0) + dv)
-            .build()
-            .unwrap()
-    }
-
     fn test_market() -> Market {
         Market::builder()
             .spot(100.0)
@@ -578,197 +549,149 @@ mod tests {
             .unwrap()
     }
 
-    // --- Cash-or-nothing Greeks tests ---
+    fn assert_scipy_greeks(actual: Greeks, expected: [f64; 5]) {
+        let actual = [
+            actual.delta,
+            actual.gamma,
+            actual.vega,
+            actual.theta,
+            actual.rho,
+        ];
+        for (name, (got, want)) in ["delta", "gamma", "vega", "theta", "rho"]
+            .into_iter()
+            .zip(actual.into_iter().zip(expected))
+        {
+            let error = (got - want).abs();
+            let tolerance = 3.0e-12 * want.abs().max(1.0);
+            assert!(
+                error <= tolerance,
+                "{name}: got={got} reference={want} error={error} tolerance={tolerance}"
+            );
+        }
+    }
+
+    // Prices and analytic derivatives below were independently evaluated with
+    // SciPy 1.17.1's norm.cdf/PDF formulas. Unlike the former finite-difference
+    // checks, these targets do not carry arbitrary bump-size error.
 
     #[test]
-    fn cash_or_nothing_call_greeks_vs_finite_diff() {
+    fn cash_or_nothing_call_matches_scipy_price_and_greeks() {
         let engine = DigitalAnalyticEngine::new();
         let market = test_market();
         let inst = CashOrNothingOption::new(OptionType::Call, 105.0, 10.0, 0.50);
 
         let result = engine.price(&inst, &market).unwrap();
-        let g = result.greeks.unwrap();
-
-        let ds = 0.01;
-        let p_up = engine.price(&inst, &bump_spot(&market, ds)).unwrap().price;
-        let p_dn = engine.price(&inst, &bump_spot(&market, -ds)).unwrap().price;
-        let fd_delta = (p_up - p_dn) / (2.0 * ds);
-        let fd_gamma = (p_up - 2.0 * result.price + p_dn) / (ds * ds);
-
-        assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
-        assert_relative_eq!(g.gamma, fd_gamma, epsilon = 1e-2);
-
-        // Vega (raw, per unit vol)
-        let dv = 1e-5;
-        let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
-        let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
-
-        // Rho (raw, per unit rate)
-        let dr = 1e-5;
-        let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
-        let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
-        let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
-
-        // Theta: bump expiry
-        let dt = 1e-5;
-        let inst_up =
-            CashOrNothingOption::new(inst.option_type, inst.strike, inst.cash, inst.expiry + dt);
-        let inst_dn =
-            CashOrNothingOption::new(inst.option_type, inst.strike, inst.cash, inst.expiry - dt);
-        let p_tup = engine.price(&inst_up, &market).unwrap().price;
-        let p_tdn = engine.price(&inst_dn, &market).unwrap().price;
-        let fd_theta = -(p_tup - p_tdn) / (2.0 * dt);
-        assert_relative_eq!(g.theta, fd_theta, epsilon = 1e-3);
+        assert_relative_eq!(result.price, 3.802_902_839_262_12, epsilon = 3.0e-12);
+        assert_scipy_greeks(
+            result.greeks.unwrap(),
+            [
+                0.211_670_298_635_450_84,
+                0.001_230_408_231_841_815_8,
+                1.538_010_289_802_269_8,
+                -0.829_368_326_393_814_1,
+                8.682_063_512_141_482,
+            ],
+        );
     }
 
     #[test]
-    fn cash_or_nothing_put_greeks_vs_finite_diff() {
+    fn cash_or_nothing_put_matches_scipy_price_and_greeks() {
         let engine = DigitalAnalyticEngine::new();
         let market = test_market();
         let inst = CashOrNothingOption::new(OptionType::Put, 95.0, 5.0, 1.0);
 
         let result = engine.price(&inst, &market).unwrap();
-        let g = result.greeks.unwrap();
-
-        let ds = 0.01;
-        let p_up = engine.price(&inst, &bump_spot(&market, ds)).unwrap().price;
-        let p_dn = engine.price(&inst, &bump_spot(&market, -ds)).unwrap().price;
-        let fd_delta = (p_up - p_dn) / (2.0 * ds);
-        assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
-        assert!(g.delta < 0.0, "put delta should be negative");
+        assert_relative_eq!(result.price, 2.000_780_642_444_971_2, epsilon = 3.0e-12);
+        assert_scipy_greeks(
+            result.greeks.unwrap(),
+            [
+                -0.074_391_685_594_942_44,
+                0.001_339_565_659_503_633,
+                3.348_914_148_759_082,
+                -0.095_400_179_687_809_38,
+                -9.439_949_201_939_216,
+            ],
+        );
     }
 
-    // --- Asset-or-nothing Greeks tests ---
-
     #[test]
-    fn asset_or_nothing_call_greeks_vs_finite_diff() {
+    fn asset_or_nothing_call_matches_scipy_price_and_greeks() {
         let engine = DigitalAnalyticEngine::new();
         let market = test_market();
         let inst = AssetOrNothingOption::new(OptionType::Call, 105.0, 0.50);
 
         let result = engine.price(&inst, &market).unwrap();
-        let g = result.greeks.unwrap();
-
-        let ds = 0.01;
-        let p_up = engine.price(&inst, &bump_spot(&market, ds)).unwrap().price;
-        let p_dn = engine.price(&inst, &bump_spot(&market, -ds)).unwrap().price;
-        let fd_delta = (p_up - p_dn) / (2.0 * ds);
-        let fd_gamma = (p_up - 2.0 * result.price + p_dn) / (ds * ds);
-
-        assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
-        assert_relative_eq!(g.gamma, fd_gamma, epsilon = 1e-2);
-
-        let dv = 1e-5;
-        let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
-        let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
-
-        let dr = 1e-5;
-        let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
-        let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
-        let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
-
-        let dt = 1e-5;
-        let inst_up = AssetOrNothingOption::new(inst.option_type, inst.strike, inst.expiry + dt);
-        let inst_dn = AssetOrNothingOption::new(inst.option_type, inst.strike, inst.expiry - dt);
-        let p_tup = engine.price(&inst_up, &market).unwrap().price;
-        let p_tdn = engine.price(&inst_dn, &market).unwrap().price;
-        let fd_theta = -(p_tup - p_tdn) / (2.0 * dt);
-        assert_relative_eq!(g.theta, fd_theta, epsilon = 1e-3);
+        assert_relative_eq!(result.price, 45.450_974_561_703_276, epsilon = 3.0e-12);
+        assert_scipy_greeks(
+            result.greeks.unwrap(),
+            [
+                2.677_047_881_289_266_4,
+                0.035_144_667_791_061_4,
+                43.930_834_738_826_75,
+                -16.741_303_600_489_32,
+                111.126_906_783_611_69,
+            ],
+        );
     }
 
     #[test]
-    fn asset_or_nothing_put_greeks_vs_finite_diff() {
+    fn asset_or_nothing_put_matches_scipy_price_and_greeks() {
         let engine = DigitalAnalyticEngine::new();
         let market = test_market();
         let inst = AssetOrNothingOption::new(OptionType::Put, 95.0, 1.0);
 
         let result = engine.price(&inst, &market).unwrap();
-        let g = result.greeks.unwrap();
-
-        let ds = 0.01;
-        let p_up = engine.price(&inst, &bump_spot(&market, ds)).unwrap().price;
-        let p_dn = engine.price(&inst, &bump_spot(&market, -ds)).unwrap().price;
-        let fd_delta = (p_up - p_dn) / (2.0 * ds);
-        assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
+        assert_relative_eq!(result.price, 31.983_175_746_098_72, epsilon = 3.0e-12);
+        assert_scipy_greeks(
+            result.greeks.unwrap(),
+            [
+                -1.093_610_268_842_919_2,
+                0.011_317_327_267_529_96,
+                28.293_318_168_824_904,
+                1.343_324_822_730_580_5,
+                -141.344_202_630_390_64,
+            ],
+        );
     }
 
-    // --- Gap option Greeks tests ---
-
     #[test]
-    fn gap_call_greeks_vs_finite_diff() {
+    fn gap_call_matches_scipy_price_and_greeks() {
         let engine = DigitalAnalyticEngine::new();
         let market = test_market();
         let inst = GapOption::new(OptionType::Call, 102.0, 105.0, 0.50);
 
         let result = engine.price(&inst, &market).unwrap();
-        let g = result.greeks.unwrap();
-
-        let ds = 0.01;
-        let p_up = engine.price(&inst, &bump_spot(&market, ds)).unwrap().price;
-        let p_dn = engine.price(&inst, &bump_spot(&market, -ds)).unwrap().price;
-        let fd_delta = (p_up - p_dn) / (2.0 * ds);
-        let fd_gamma = (p_up - 2.0 * result.price + p_dn) / (ds * ds);
-
-        assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
-        assert_relative_eq!(g.gamma, fd_gamma, epsilon = 1e-2);
-
-        let dv = 1e-5;
-        let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
-        let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
-
-        let dr = 1e-5;
-        let p_rup = engine.price(&inst, &bump_rate(&market, dr)).unwrap().price;
-        let p_rdn = engine.price(&inst, &bump_rate(&market, -dr)).unwrap().price;
-        let fd_rho = (p_rup - p_rdn) / (2.0 * dr);
-        assert_relative_eq!(g.rho, fd_rho, epsilon = 1e-9, max_relative = 1e-4);
-
-        let dt = 1e-5;
-        let inst_up = GapOption::new(
-            inst.option_type,
-            inst.payoff_strike,
-            inst.trigger_strike,
-            inst.expiry + dt,
+        assert_relative_eq!(result.price, 6.661_365_601_229_662, epsilon = 3.0e-12);
+        assert_scipy_greeks(
+            result.greeks.unwrap(),
+            [
+                0.518_010_835_207_668_2,
+                0.022_594_503_826_274_884,
+                28.243_129_782_843_603,
+                -8.281_746_671_272_419,
+                22.569_858_959_768_58,
+            ],
         );
-        let inst_dn = GapOption::new(
-            inst.option_type,
-            inst.payoff_strike,
-            inst.trigger_strike,
-            inst.expiry - dt,
-        );
-        let p_tup = engine.price(&inst_up, &market).unwrap().price;
-        let p_tdn = engine.price(&inst_dn, &market).unwrap().price;
-        let fd_theta = -(p_tup - p_tdn) / (2.0 * dt);
-        assert_relative_eq!(g.theta, fd_theta, epsilon = 1e-3);
     }
 
     #[test]
-    fn gap_put_greeks_vs_finite_diff() {
+    fn gap_put_matches_scipy_price_and_greeks() {
         let engine = DigitalAnalyticEngine::new();
         let market = test_market();
         let inst = GapOption::new(OptionType::Put, 98.0, 95.0, 1.0);
 
         let result = engine.price(&inst, &market).unwrap();
-        let g = result.greeks.unwrap();
-
-        let ds = 0.01;
-        let p_up = engine.price(&inst, &bump_spot(&market, ds)).unwrap().price;
-        let p_dn = engine.price(&inst, &bump_spot(&market, -ds)).unwrap().price;
-        let fd_delta = (p_up - p_dn) / (2.0 * ds);
-        assert_relative_eq!(g.delta, fd_delta, epsilon = 1e-4);
-
-        let dv = 1e-5;
-        let p_vup = engine.price(&inst, &bump_vol(&market, dv)).unwrap().price;
-        let p_vdn = engine.price(&inst, &bump_vol(&market, -dv)).unwrap().price;
-        let fd_vega = (p_vup - p_vdn) / (2.0 * dv);
-        assert_relative_eq!(g.vega, fd_vega, epsilon = 1e-9, max_relative = 1e-4);
+        assert_relative_eq!(result.price, 7.232_124_845_822_707, epsilon = 3.0e-12);
+        assert_scipy_greeks(
+            result.greeks.unwrap(),
+            [
+                -0.364_466_768_817_952_8,
+                0.014_938_159_658_741_247,
+                37.345_399_146_853_104,
+                -3.213_168_344_611_644,
+                -43.678_801_727_617_98,
+            ],
+        );
     }
 
     // --- Expiry edge case ---

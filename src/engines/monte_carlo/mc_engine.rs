@@ -1836,7 +1836,7 @@ mod tests {
     }
 
     #[test]
-    fn mc_european_call_matches_black_scholes_within_one_percent() {
+    fn mc_european_call_matches_black_scholes_within_four_stderr() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -1851,13 +1851,15 @@ mod tests {
             .expect("mc pricing succeeds");
 
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
-        let rel_err = ((result.price - bs) / bs).abs();
+        let stderr = result.stderr.expect("MC reports standard error");
+        let tolerance = 4.0 * stderr + 1.0e-12;
         assert!(
-            rel_err <= 0.01,
-            "MC/BS relative error too high: mc={} bs={} rel_err={}",
+            (result.price - bs).abs() <= tolerance,
+            "MC/BS error exceeds sampling budget: mc={} bs={} stderr={} tolerance={}",
             result.price,
             bs,
-            rel_err
+            stderr,
+            tolerance
         );
     }
 
@@ -1967,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn mc_european_control_variate_is_within_half_percent_of_bs() {
+    fn mc_european_control_variate_matches_bs_within_four_stderr() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -1983,18 +1985,20 @@ mod tests {
             .expect("control-variate MC succeeds");
 
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
-        let rel_err = ((result.price - bs) / bs).abs();
+        let stderr = result.stderr.expect("MC reports standard error");
+        let tolerance = 4.0 * stderr + 1.0e-12;
         assert!(
-            rel_err <= 0.005,
-            "MC/BS relative error too high with control variate: mc={} bs={} rel_err={}",
+            (result.price - bs).abs() <= tolerance,
+            "control-variate MC/BS error exceeds sampling budget: mc={} bs={} stderr={} tolerance={}",
             result.price,
             bs,
-            rel_err
+            stderr,
+            tolerance
         );
     }
 
     #[test]
-    fn geometric_asian_kemna_vorst_reference_is_approximately_5_31() {
+    fn geometric_asian_matches_exact_scipy_discrete_reference() {
         // 12 equally-spaced averaging dates on [0, 1].
         let observation_times: Vec<f64> = (0..12).map(|m| m as f64 / 11.0).collect();
         let price = geometric_asian_discrete_fixed_closed_form(
@@ -2007,15 +2011,16 @@ mod tests {
             &observation_times,
         );
 
+        // Independently evaluated from the exact discrete lognormal moments
+        // with SciPy 1.17.1's normal CDF.
         assert!(
-            (price - 5.31).abs() <= 0.15,
-            "geometric Asian reference mismatch: got={} expected≈5.31",
-            price
+            (price - 5.439_231_718_855_941).abs() <= 3.0e-12,
+            "geometric Asian reference mismatch: got={price}"
         );
     }
 
     #[test]
-    fn arithmetic_asian_mc_kemna_turnbull_reference_within_two_percent() {
+    fn arithmetic_asian_mc_matches_scipy_qmc_reference_within_sampling_error() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -2041,14 +2046,22 @@ mod tests {
             .price(&option, &market)
             .expect("arithmetic Asian MC succeeds");
 
-        let expected = 5.73;
-        let rel_err = ((result.price - expected) / expected).abs();
+        // Independent SciPy scrambled-Sobol reference for the same twelve
+        // discrete observations (32 independent scrambles x 2^20 paths).
+        // Its replicate standard error is combined with the implementation's
+        // reported MC standard error; there is no fixed price cushion.
+        let expected: f64 = 5.675_787_099_986_969;
+        let reference_stderr: f64 = 5.739_423_093_943_816_6e-5;
+        let implementation_stderr = result.stderr.expect("MC stderr");
+        let combined_stderr = implementation_stderr.hypot(reference_stderr);
+        let roundoff = 32.0 * f64::EPSILON * expected.abs().max(1.0);
+        let tolerance = 4.0 * combined_stderr + roundoff;
         assert!(
-            rel_err <= 0.02,
-            "arithmetic Asian MC mismatch: mc={} expected={} rel_err={}",
+            (result.price - expected).abs() <= tolerance,
+            "arithmetic Asian MC mismatch: mc={} expected={} implementation_stderr={implementation_stderr} reference_stderr={reference_stderr} tolerance={}",
             result.price,
             expected,
-            rel_err
+            tolerance
         );
     }
 
@@ -2100,20 +2113,20 @@ mod tests {
             rebate
         );
 
-        // Hand-computed reference: for GBM with drift mu = r - sigma^2/2 = 0.08,
-        // sigma = 0.2, log-barrier b = ln(1.05), the first-passage Laplace
-        // transform gives E[exp(-r*tau)] = exp(b/sigma^2 * (mu - sqrt(mu^2 + 2*r*sigma^2)))
-        // ≈ 0.9524, so price ≈ 9.52 (slightly less under discrete monitoring).
-        let mu = rate - 0.5 * 0.2_f64 * 0.2;
-        let b = (105.0_f64 / 100.0).ln();
-        let reference = rebate * ((b / 0.04) * (mu - (mu * mu + 2.0 * rate * 0.04).sqrt())).exp();
-        let rel_err = ((result.price - reference) / reference).abs();
+        // Independent SciPy Brownian-bridge Sobol reference for the *same*
+        // 250-date discrete-monitoring contract, including the surviving
+        // K=200 terminal call (64 scrambles x 2^15 paths).  The former
+        // continuous first-passage transform valued a different contract.
+        let reference = 9.227_409_760_796_569;
+        let reference_stderr = 6.234_678_252_332_711e-4;
+        let implementation_stderr = result.stderr.expect("MC stderr");
+        let combined_stderr = implementation_stderr.hypot(reference_stderr);
+        let roundoff = 32.0 * f64::EPSILON * reference;
         assert!(
-            rel_err < 0.05,
-            "rebate-at-hit price {} deviates from continuous-monitoring reference {} (rel err {})",
+            (result.price - reference).abs() <= 4.0 * combined_stderr + roundoff,
+            "discrete rebate-at-hit mismatch: mc={} reference={} implementation_stderr={implementation_stderr} reference_stderr={reference_stderr}",
             result.price,
             reference,
-            rel_err
         );
     }
 
@@ -2715,13 +2728,13 @@ mod tests {
         let arena_result = mc_european_with_arena(&option, &market, n_paths, n_steps, &mut arena);
 
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.2, 1.0);
-        let rel_err = ((arena_result.price - bs) / bs).abs();
+        let stderr = arena_result.stderr.expect("arena MC reports stderr");
+        let roundoff = 16.0 * f64::EPSILON * bs.abs().max(1.0);
         assert!(
-            rel_err <= 0.01,
-            "arena MC/BS relative error too high: mc={} bs={} rel_err={}",
+            (arena_result.price - bs).abs() <= 4.0 * stderr + roundoff,
+            "arena MC/BS error exceeds sampling budget: mc={} bs={} stderr={stderr}",
             arena_result.price,
             bs,
-            rel_err
         );
     }
 

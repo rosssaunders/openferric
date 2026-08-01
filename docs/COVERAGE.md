@@ -2,6 +2,99 @@
 
 Detailed module-by-module coverage of OpenFerric's pricing and analytics library.
 
+## Pricing Validation Standard
+
+Pricing tests use an economic oracle, not a broad plausibility range:
+
+- Analytic and deterministic prices are checked against independently evaluated
+  formulas or published package values at floating-point or source precision.
+- Numerical quadrature is checked against independent adaptive quadrature and
+  integrals are partitioned at payoff discontinuities and kinks.
+- Tree, PDE, LSM, FFT, and interpolation tests either lock a stated grid or
+  demonstrate convergence to an analytic or external reference. Their tolerance
+  represents measured discretization error, not a percentage price band.
+- MC and randomized QMC prices are checked against an analytic or independently
+  generated target using the estimator's reported standard error (normally four
+  standard errors, combining reference and implementation errors where needed).
+- Seeded snapshots, sign checks, parity, monotonicity, and no-arbitrage bounds are
+  supplemental regression/property tests; none substitutes for a price oracle.
+
+Here, "exact" means the target price is exact for the stated contract and model.
+Stochastic and discretized methods necessarily compare to that target with an
+explicit statistical or numerical error budget rather than bitwise equality.
+
+Reference values in this audit were regenerated with
+[QuantLib-Python 1.43](https://pypi.org/project/QuantLib/) and
+[SciPy 1.17.1](https://docs.scipy.org/doc/scipy/reference/). Each cached value is
+accompanied by its contract/model parameters;
+SciPy Sobol references additionally record replicate counts and reference
+standard errors. Lévy-process FFT values use the open-source
+[fypy Carr-Madan implementation](https://github.com/jkirkby3/fypy), and product
+grids are cross-checked against the upstream
+[QuantLib test suite](https://github.com/lballabio/QuantLib/tree/master/test-suite).
+Four-decimal Haug book values are retained only as provenance checks within half
+of their last printed digit; every such product also has a full-precision formula,
+package value, or stated finite-grid regression target.
+
+## Pricing Validation Map
+
+| Product or methodology | Primary validation suites | Independent oracle |
+|---|---|---|
+| Vanilla equity, Greeks, FX, Black-76, Bachelier | `strata_black_scholes`, `european_quantlib`, `quantlib_reference`, Python/WASM pricing tests | Strata/QuantLib grids and closed forms |
+| Barriers, digitals, lookbacks, compound, chooser, quanto, rainbow, spreads | `barrier_quantlib`, `strata_barrier`, `digital_reference`, `exotic_reference`, `equity_exotics_exact_reference`, `haug_rainbow_spread` | QuantLib/Haug grids and independent SciPy formulas |
+| Asian, basket, autocall, range accrual, TARF, swing, convertible, real options, structured notes | `asian_quantlib`, `equity_exotics_exact_reference`, DSL tests and focused module tests | QuantLib/SciPy Sobol values, analytic reductions, deterministic cashflows |
+| American/Bermudan, binomial/trinomial, PDE, LSM | `american_approx_reference`, `bermudan_quantlib`, `pde_solvers_issue35`, `lsm_reference`, `cross_engine_consistency`, tree module tests | QuantLib, Black-Scholes/CRR, published approximations, deterministic Hull-White reduction |
+| FFT/FRFT, Heston, VG, CGMY, NIG | `fang_oosterlee_heston`, `fft_levy_reference`, `heston_quantlib`, `variance_gamma_model_quantlib`, Python/WASM FFT tests | QuantLib, fypy, Lewis and Fang-Oosterlee values |
+| SABR, SVI, Heston, Hull-White and mixture calibration | focused calibration/model tests and Python/WASM vol tests | Exact synthetic quote repricing, identifiable parameter recovery, and solver-conditioned error budgets |
+| MC, QMC, SIMD/parallel MC, AAD, rough volatility and SLV | `cross_engine_consistency` and focused engine/model tests | Closed-form BSM/Margrabe/moment targets with reported sampling error |
+| Bonds, curves, FRA, swaps, OIS/basis, caps/floors, swaptions, XCCY, inflation, CMS | `rates_*`, `strata_bond_reference` and focused rates module tests | QuantLib/Strata values, exact discounted cashflows, Black-76 reductions |
+| CDS, CDS options/index, ISDA, copulas, first/nth default, CDO | `credit_isda_quantlib`, `credit_quantlib_cds_test` and focused credit module tests | QuantLib values, exact survival cashflows, SciPy quadrature and distribution formulas |
+| Commodity, weather, catastrophe bonds, MBS/PSA and funding swaps | `commodity_reference`, `commodity_weather_test` and focused instrument tests | Black-76/Kirk, exact Poisson/cashflow calculations, SIFMA PSA formulas |
+| VaR/ES, XVA, KVA/FVA/MVA and portfolio sensitivities | `var_es_reference` and focused risk module tests | Exact empirical order statistics, Gaussian formulas, discounted exposure/capital cashflows, and reported sampling error |
+| Rust, Python and WebAssembly surfaces | workspace tests, `python/tests`, and `wasm-pack test --node` | The same full-precision references exercised through each binding |
+
+## Known Model Scope
+
+The following are implementation boundaries, not tolerance concessions. Tests pin
+the stated model exactly and use reductions or invariants where no like-for-like
+external engine exists:
+
+- Discrete cash and proportional dividends use escrowed spot/strike adjustments
+  in analytic, tree, and PDE engines and explicit ex-dividend path jumps in
+  Monte Carlo engines. References align the dividend dates and cashflows with
+  QuantLib's escrowed model before comparing prices.
+- CDO pricing is the large-homogeneous-portfolio Gaussian-copula model. General
+  heterogeneous base-correlation tranches are outside the current engine.
+- MBS cashflows use the stated
+  [SIFMA PSA/CPR prepayment path](https://www.sifma.org/wp-content/uploads/2017/08/chsf.pdf)
+  and a flat discount yield; the model does not make prepayments interest-rate
+  dependent.
+- Cross-currency swap reference cases use the engine's annual coupon periods,
+  rather than silently comparing them with QuantLib's common quarterly setup.
+- Dated CDS schedules use the library's weekends-only calendar unless an explicit
+  business calendar is supplied; QuantLib TARGET-calendar references are adjusted
+  to the same dates before comparison.
+- The funding-rate swap has no volatility state, so its reported volatility
+  sensitivity is exactly zero by construction.
+- General correlated CMS-spread, first-to-default, and non-zero-volatility
+  Bermudan-swaption cases have no identical external contract/model fixture in
+  the current reference set. They are covered by exact one-factor or deterministic
+  reductions, independently evaluated cashflows, and convergence/statistical
+  checks; broader model equivalence is not claimed.
+- Non-flat stochastic-local-volatility and non-zero-eta rough-Bergomi prices do
+  not yet have like-for-like external package grids. Coverage uses exact
+  Black-Scholes/constant-leverage reductions, analytic covariance identities,
+  and reported Monte Carlo errors. Andreasen-Huge similarly has exact quote-node
+  repricing and off-grid interpolation budgets, but no external non-flat grid.
+- Structured-note, swing, convertible, and real-option tests use exact limiting
+  cases plus exercise/order/no-arbitrage properties where the non-trivial model
+  has no matching independent package implementation.
+- The WebAssembly SIMD batch pricer uses `f64x2`, but deliberately retains its
+  Abramowitz-Stegun normal-CDF approximation.  Tests separate binary64 SIMD
+  roundoff from that approximation and pin its SciPy-grid maxima (about
+  `1.3e-5` in price, `7.2e-8` in delta, and `3.3e-7` in theta); scalar binding
+  prices use the higher-accuracy analytic path.
+
 ## Equity Derivatives
 
 | Model/Product | Module |

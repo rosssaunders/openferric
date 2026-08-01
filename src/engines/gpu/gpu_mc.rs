@@ -853,6 +853,14 @@ mod tests {
 
     const VALID_ARGS: (f64, f64, f64, f64, f64, usize, usize, u64, bool) =
         (100.0, 105.0, 0.03, 0.20, 1.5, 10_001, 252, 42, true);
+    // Measured against the exact deterministic zero-volatility price below:
+    // the f32 shader path differs by 1.4654e-6 on the available WebGPU
+    // implementation.  Keep this separate from Monte Carlo sampling error.
+    const GPU_F32_PRICE_ABS_BUDGET: f64 = 2.0e-6;
+    // The fixed-seed near-deterministic stderr differs from its analytic
+    // target by 0.171%; this explicit budget supplements the sampling
+    // uncertainty of a sample standard deviation.
+    const GPU_F32_STDERR_RELATIVE_BUDGET: f64 = 2.0e-3;
 
     fn valid_request() -> ValidatedGpuRequest {
         let (spot, strike, rate, vol, expiry, paths, steps, seed, is_call) = VALID_ARGS;
@@ -898,9 +906,10 @@ mod tests {
         assert_eq!(one_step.params, many_steps.params);
         assert_eq!(one_step.num_workgroups, 20);
         assert_eq!(one_step.output_size, 240);
-        assert!((one_step.params.terminal_drift - 0.015).abs() < 1.0e-7);
-        assert!((one_step.params.terminal_vol - 0.20 * 1.5_f32.sqrt()).abs() < 1.0e-7);
-        assert!((one_step.discount - (-0.045_f64).exp()).abs() < 1.0e-14);
+        // Exact IEEE-754 roundings of the f64 terminal GBM parameters.
+        assert_eq!(one_step.params.terminal_drift.to_bits(), 0x3c75_c28f);
+        assert_eq!(one_step.params.terminal_vol.to_bits(), 0x3e7a_d3e7);
+        assert_eq!(one_step.discount.to_bits(), 0x3fee_9788_07f1_0233);
     }
 
     #[test]
@@ -1080,11 +1089,10 @@ mod tests {
             }
             Err(error) => panic!("GPU adapter was found but pricing failed: {error}"),
         };
-
-        // Black--Scholes is an independent analytic reference. Five standard
-        // errors plus a small explicit f32 budget is a statistically motivated
-        // bound; do not derive the expected price from another MC backend.
-        let tolerance = 5.0 * result.stderr + 1.0e-3;
+        // Black--Scholes is an independent analytic reference. Four reported
+        // standard errors cover sampling; the separately measured constant
+        // above covers only the shader's f32 numerical path.
+        let tolerance = 4.0 * result.stderr + GPU_F32_PRICE_ABS_BUDGET;
         assert!(
             (result.price - 10.450_583_572_185_565).abs() <= tolerance,
             "GPU price {} differed from Black-Scholes by more than {} (stderr {})",
@@ -1112,8 +1120,13 @@ mod tests {
         let odd = super::mc_european_gpu(100.0, 100.0, 0.05, 0.0, 1.0, 513, 7, 9, true)
             .expect("odd GPU path count should price successfully");
         let expected = 100.0 - 100.0 * (-0.05_f64).exp();
-        assert!((odd.price - expected).abs() < 1.0e-4);
-        assert!(odd.stderr < 1.0e-3);
+        assert!(
+            (odd.price - expected).abs() <= GPU_F32_PRICE_ABS_BUDGET,
+            "zero-volatility GPU price {} differs from exact target {}",
+            odd.price,
+            expected
+        );
+        assert_eq!(odd.stderr, 0.0);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -1185,9 +1198,11 @@ mod tests {
         // Independent replications should disperse on the scale of one
         // reported standard error. The old `global_id + seed` construction
         // reused all but one Box--Muller pair for adjacent seeds, making this
-        // ratio roughly three orders of magnitude too small.
+        // ratio roughly three orders of magnitude too small. These bounds are
+        // the exact 0.01% and 99.99% chi-square quantiles for 15 degrees of
+        // freedom, independently evaluated with SciPy 1.17.1.
         assert!(
-            (0.25..=2.5).contains(&ratio),
+            (0.400_681_749_917_726_5..=1.717_813_046_563_862_4).contains(&ratio),
             "adjacent-seed replication SD {replicate_sd} is inconsistent with \
              mean reported stderr {mean_reported_stderr} (ratio {ratio})"
         );
@@ -1195,7 +1210,7 @@ mod tests {
         let aggregate_stderr = stderr_sq_sum.sqrt() / prices.len() as f64;
         let black_scholes = 10.450_583_572_185_565;
         assert!(
-            (mean - black_scholes).abs() <= 5.0 * aggregate_stderr + 1.0e-3,
+            (mean - black_scholes).abs() <= 4.0 * aggregate_stderr + GPU_F32_PRICE_ABS_BUDGET,
             "mean GPU price {mean} differs from independent Black-Scholes \
              reference {black_scholes} (aggregate stderr {aggregate_stderr})"
         );
@@ -1229,17 +1244,23 @@ mod tests {
         // precision. Its discounted analytic standard error is
         // S * sqrt(expm1(vol^2*T) / N).
         let reference = 100.0 * ((vol * vol).exp_m1() / paths as f64).sqrt();
+        let sample_sd_relative_budget = 4.0 / (2.0 * (paths - 1) as f64).sqrt();
+        let relative_error = (result.stderr / reference - 1.0).abs();
         assert!(
-            result.stderr.is_finite() && result.stderr > 0.25 * reference,
-            "centered GPU stderr {} lost near-deterministic variance (reference {})",
+            result.stderr.is_finite()
+                && relative_error <= sample_sd_relative_budget + GPU_F32_STDERR_RELATIVE_BUDGET,
+            "centered GPU stderr {} differs from analytic reference {} by {:.3}%",
             result.stderr,
-            reference
+            reference,
+            100.0 * relative_error
         );
+
+        let exact_price = 100.0 - 90.0 * (-0.05_f64).exp();
         assert!(
-            result.stderr < 4.0 * reference,
-            "centered GPU stderr {} is implausible (reference {})",
-            result.stderr,
-            reference
+            (result.price - exact_price).abs() <= 4.0 * result.stderr + GPU_F32_PRICE_ABS_BUDGET,
+            "near-deterministic GPU price {} differs from exact target {}",
+            result.price,
+            exact_price
         );
     }
 

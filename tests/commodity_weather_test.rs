@@ -60,7 +60,7 @@ fn hdd_and_cdd_accumulate_from_temperature_series() {
 }
 
 #[test]
-fn weather_option_burn_price_is_non_negative_and_bounded() {
+fn weather_option_burn_price_matches_discounted_historical_average() {
     let option = WeatherOption {
         index_type: DegreeDayType::HDD,
         option_type: OptionType::Call,
@@ -76,18 +76,14 @@ fn weather_option_burn_price_is_non_negative_and_bounded() {
         .price_burn_analysis(&historical_indices)
         .expect("burn analysis should price");
 
-    let df = (-option.discount_rate * option.maturity).exp();
-    let max_payoff = historical_indices
-        .iter()
-        .map(|&x| (x - option.strike).max(0.0))
-        .fold(0.0_f64, f64::max);
-
-    assert!(price >= 0.0);
-    assert!(price <= df * max_payoff + 1e-12);
+    // Historical payoffs are [0, 0, 0, 20, 40], so the undiscounted
+    // arithmetic mean is exactly 12 and PV = 12 * exp(-0.02 * 0.5).
+    let expected = 11.880_598_004_990_016;
+    assert!((price - expected).abs() <= 2.0e-12);
 }
 
 #[test]
-fn cat_bond_price_decreases_with_higher_loss_intensity() {
+fn cat_bond_matches_exact_poisson_expected_loss_cashflows() {
     let low_intensity = CatastropheBond {
         principal: 100.0,
         coupon_rate: 0.08,
@@ -112,5 +108,9 @@ fn cat_bond_price_decreases_with_higher_loss_intensity() {
     .price()
     .unwrap();
 
+    // Independent direct summation of the twelve quarterly expected coupons
+    // and surviving principal under exp(-lambda * loss_fraction * t).
+    assert!((low_intensity - 82.729_206_664_943_52).abs() <= 2.0e-12);
+    assert!((high_intensity - 25.060_568_372_450_263).abs() <= 2.0e-12);
     assert!(high_intensity < low_intensity);
 }

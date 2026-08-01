@@ -35,10 +35,10 @@ fn cash_or_nothing_call_analytical() {
     let market = make_market(100.0, 0.05, 0.0, 0.25);
     let engine = DigitalAnalyticEngine::new();
     let result = engine.price(&instrument, &market).expect("pricing failed");
-    let expected = 0.5041;
+    let expected = 0.504_049_474_849_596_8;
     let err = (result.price - expected).abs();
     assert!(
-        err < 0.01,
+        err < 2e-12,
         "CoN call analytical: got {}, expected {expected}, err={err}",
         result.price
     );
@@ -59,9 +59,10 @@ fn haug_cash_or_nothing_call() {
     // d2 = (0.22314 - 0.045938) / 0.30311 = 0.5848
     // N(0.5848) = 0.7206
     // Price = 10 * exp(-0.06*0.75) * N(d2) = 10 * 0.9560 * 0.7206 = 6.889
+    let expected = 6.888_929_133_869_653;
     assert!(
-        result.price > 6.0 && result.price < 8.0,
-        "Haug CoN call: got {}, expected ~6.9",
+        (result.price - expected).abs() < 2e-12,
+        "Haug CoN call: expected={expected}, got={}",
         result.price
     );
 }
@@ -78,9 +79,10 @@ fn haug_cash_or_nothing_put() {
     let result = engine.price(&instrument, &market).expect("pricing failed");
     // N(-d2) = 1 - N(d2) ≈ 0.2794
     // Price = 10 * 0.9560 * 0.2794 ≈ 2.671
+    let expected = 2.671_045_684_461_347;
     assert!(
-        result.price > 2.0 && result.price < 4.0,
-        "Haug CoN put: got {}, expected ~2.7",
+        (result.price - expected).abs() < 2e-12,
+        "Haug CoN put: expected={expected}, got={}",
         result.price
     );
 }
@@ -108,7 +110,7 @@ fn asset_or_nothing_call_put_parity() {
     let expected_sum = spot * (-q * t).exp();
     let err = (call_price + put_price - expected_sum).abs();
     assert!(
-        err < 0.001,
+        err < 2e-12,
         "AoN parity: call={call_price} + put={put_price} = {}, expected {expected_sum}, err={err}",
         call_price + put_price
     );
@@ -134,7 +136,7 @@ fn cash_or_nothing_call_put_parity() {
     let expected_sum = cash * (-rate * t).exp();
     let err = (call_price + put_price - expected_sum).abs();
     assert!(
-        err < 0.001,
+        err < 2e-12,
         "CoN parity: call={call_price} + put={put_price} = {}, expected {expected_sum}, err={err}",
         call_price + put_price
     );
@@ -169,7 +171,7 @@ fn gap_option_equals_vanilla_when_strikes_equal() {
     );
     let err = (gap_price - bs).abs();
     assert!(
-        err < 0.01,
+        err < 2e-12,
         "Gap=vanilla: gap={gap_price}, bs={bs}, err={err}"
     );
 }
@@ -209,7 +211,7 @@ fn bs_decomposition_into_digitals() {
 
     let err = (digital_decomp - bs).abs();
     assert!(
-        err < 0.05,
+        err < 2e-12,
         "BS decomp: AoN-K*CoN={digital_decomp}, BS={bs}, err={err}"
     );
 }

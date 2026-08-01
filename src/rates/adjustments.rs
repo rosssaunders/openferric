@@ -169,6 +169,26 @@ mod tests {
     }
 
     #[test]
+    fn cms_and_timing_adjustments_match_their_closed_forms() {
+        let cms_adjustment = cms_convexity_adjustment(0.03, 0.25, 3.0);
+        let cms_rate = cms_rate_in_arrears(0.03, 0.25, 3.0);
+        assert_relative_eq!(cms_adjustment, 0.002_812_5, epsilon = 2.0e-18);
+        assert_relative_eq!(cms_rate, 0.032_812_5, epsilon = 8.0e-18);
+
+        let timing = timing_adjustment_amount(0.20, 1.5, 2.0);
+        let adjusted = timing_adjusted_rate(0.0275, 0.20, 1.5, 2.0);
+        assert_relative_eq!(timing, 0.015, epsilon = 4.0e-18);
+        assert_relative_eq!(adjusted, 0.0425, epsilon = 8.0e-18);
+
+        // Paying before the natural date changes only the correction's sign.
+        assert_relative_eq!(
+            timing_adjustment_amount(0.20, 1.5, 1.0),
+            -0.015,
+            epsilon = 4.0e-18
+        );
+    }
+
+    #[test]
     fn quanto_adjustment_formula_sign_matches_convention() {
         let adj = quanto_drift_adjustment(0.4, 0.01, 0.12);
         assert_relative_eq!(adj, -0.00048, epsilon = 1.0e-12);

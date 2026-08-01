@@ -365,7 +365,7 @@ pub fn calibrate_lognormal_mixture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vol::implied::implied_vol_newton;
+    use crate::math::normal_pdf;
 
     #[test]
     fn mixture_weights_are_normalized() {
@@ -400,40 +400,46 @@ mod tests {
 
         for (k, market_price) in strikes.iter().zip(market_prices.iter()) {
             let fit_price = fit.price(OptionType::Call, spot, *k, rate, expiry);
-            let vol_market = implied_vol_newton(
-                OptionType::Call,
-                spot,
-                *k,
-                rate,
-                expiry,
-                *market_price,
-                1e-10,
-                100,
-            )
-            .unwrap();
-            let vol_fit = implied_vol_newton(
-                OptionType::Call,
-                spot,
-                *k,
-                rate,
-                expiry,
-                fit_price,
-                1e-10,
-                100,
-            )
-            .unwrap();
-
-            assert!((vol_market - vol_fit).abs() < 0.1);
+            assert!(
+                (fit_price - market_price).abs() <= 1.0e-9,
+                "strike={k} fitted={fit_price} target={market_price} weights={:?} vols={:?}",
+                fit.weights,
+                fit.vols
+            );
         }
     }
 
     #[test]
-    fn implied_density_is_non_negative() {
+    fn implied_density_matches_exact_lognormal_mixture_density() {
         let mix = LognormalMixture::new(vec![0.7, 0.3], vec![0.16, 0.32]).unwrap();
+        let spot: f64 = 100.0;
+        let rate: f64 = 0.01;
+        let expiry: f64 = 1.0;
 
         for k in (60..=140).step_by(5) {
-            let dens = mix.implied_density(100.0, k as f64, 0.01, 1.0, 0.5);
-            assert!(dens >= 0.0);
+            let strike = k as f64;
+            let exact: f64 = mix
+                .weights
+                .iter()
+                .zip(&mix.vols)
+                .map(|(&weight, &sigma)| {
+                    let d2 = ((spot / strike).ln() + (rate - 0.5 * sigma * sigma) * expiry)
+                        / (sigma * expiry.sqrt());
+                    weight * normal_pdf(d2) / (strike * sigma * expiry.sqrt())
+                })
+                .sum();
+            let coarse = mix.implied_density(spot, strike, rate, expiry, 0.5);
+            let fine = mix.implied_density(spot, strike, rate, expiry, 0.25);
+            let richardson_error = (coarse - fine).abs() / 3.0;
+
+            assert!(
+                (fine - exact).abs() <= 1.05 * richardson_error + 2.0e-12,
+                "K={strike} fine={fine} exact={exact} coarse={coarse} Richardson error={richardson_error}"
+            );
+            assert!(
+                (fine - exact).abs() <= 0.30 * (coarse - exact).abs() + 2.0e-12,
+                "central difference did not converge quadratically at K={strike}: coarse={coarse} fine={fine} exact={exact}"
+            );
         }
     }
 }

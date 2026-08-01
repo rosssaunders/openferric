@@ -215,21 +215,20 @@ fn terminal_spread_payoff(
 mod tests {
     use super::*;
     use crate::core::PricingEngine;
-    use crate::engines::analytic::kirk_spread_price;
 
     #[test]
-    fn spread_mc_matches_kirk_within_one_percent_for_near_zero_strike_case() {
+    fn spread_mc_matches_exact_margrabe_value_within_four_stderr() {
         let option = SpreadOption {
             s1: 100.0,
-            s2: 96.0,
-            k: 3.0,
+            s2: 105.0,
+            k: 0.0,
             vol1: 0.20,
             vol2: 0.15,
             rho: 0.5,
-            q1: 0.0,
-            q2: 0.0,
+            q1: 0.04,
+            q2: 0.06,
             r: 0.05,
-            t: 0.5,
+            t: 1.0,
         };
         let market = Market::builder()
             .spot(100.0)
@@ -239,19 +238,20 @@ mod tests {
             .build()
             .unwrap();
 
-        let mc = SpreadMonteCarloEngine::new(300_000, 13)
+        let result = SpreadMonteCarloEngine::new(300_000, 13)
             .price(&option, &market)
-            .unwrap()
-            .price;
-        let kirk = kirk_spread_price(&option).unwrap();
-        let rel_err = ((mc - kirk) / kirk).abs();
+            .unwrap();
+        // Independently evaluated with SciPy 1.17.1's normal CDF using the
+        // exact Margrabe formula for this parameter set.
+        let margrabe = 5.687_142_248_583_889;
+        let stderr = result.stderr.expect("spread MC reports stderr");
 
         assert!(
-            rel_err <= 0.01,
-            "spread MC/Kirk mismatch exceeds 1%: mc={} kirk={} rel_err={}",
-            mc,
-            kirk,
-            rel_err
+            (result.price - margrabe).abs() <= 4.0 * stderr,
+            "spread MC/Margrabe mismatch: mc={} margrabe={} stderr={}",
+            result.price,
+            margrabe,
+            stderr
         );
     }
 

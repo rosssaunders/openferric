@@ -328,59 +328,61 @@ impl<'a> PoStrip<'a> {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
 
     #[test]
     fn test_psa_cpr_month1() {
         let psa = PsaModel { psa_speed: 1.0 };
         let cpr = psa.cpr(1);
-        assert!((cpr - 0.002).abs() < 1e-6, "CPR month 1: {}", cpr);
+        assert_relative_eq!(cpr, 0.002, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_psa_smm_month1() {
         let psa = PsaModel { psa_speed: 1.0 };
         let smm = psa.smm(1);
-        assert!((smm - 0.000167).abs() < 1e-4, "SMM month 1: {}", smm);
+        assert_relative_eq!(smm, 0.000_166_819_639_945_581_24, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_psa_cpr_month15() {
         let psa = PsaModel { psa_speed: 1.0 };
-        assert!((psa.cpr(15) - 0.03).abs() < 1e-6);
+        assert_relative_eq!(psa.cpr(15), 0.03, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_psa_smm_month15() {
         let psa = PsaModel { psa_speed: 1.0 };
         let smm = psa.smm(15);
-        assert!((smm - 0.002535).abs() < 1e-4, "SMM month 15: {}", smm);
+        assert_relative_eq!(smm, 0.002_535_048_613_836_688, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_psa_cpr_month30_plus() {
         let psa = PsaModel { psa_speed: 1.0 };
-        assert!((psa.cpr(30) - 0.06).abs() < 1e-6);
-        assert!((psa.cpr(100) - 0.06).abs() < 1e-6);
+        assert_relative_eq!(psa.cpr(30), 0.06, epsilon = 1.0e-15);
+        assert_relative_eq!(psa.cpr(100), 0.06, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_psa_smm_month30() {
         let psa = PsaModel { psa_speed: 1.0 };
         let smm = psa.smm(30);
-        assert!((smm - 0.005143).abs() < 1e-4, "SMM month 30: {}", smm);
+        assert_relative_eq!(smm, 0.005_143_012_831_822_946, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_200psa_month15() {
         let psa = PsaModel { psa_speed: 2.0 };
-        assert!((psa.cpr(15) - 0.06).abs() < 1e-6);
+        assert_relative_eq!(psa.cpr(15), 0.06, epsilon = 1.0e-15);
     }
 
     #[test]
     fn test_300psa_month30() {
         let psa = PsaModel { psa_speed: 3.0 };
-        assert!((psa.cpr(30) - 0.18).abs() < 1e-6);
+        assert_relative_eq!(psa.cpr(30), 0.18, epsilon = 1.0e-15);
     }
 
     fn make_mbs(prepayment: PrepaymentModel) -> MbsPassThrough {
@@ -400,23 +402,36 @@ mod tests {
             annual_cpr: 0.0,
         }));
         let wal = mbs.wal();
-        // 30yr amortizing bond at 6% coupon: WAL ≈ 19.3 years
-        // (principal repayment is back-loaded; 15.3yr figure applies at 0% coupon)
-        assert!((wal - 19.3).abs() < 0.5, "WAL no prepay: {}", wal);
+        // Independent monthly-amortization spreadsheet reference: level 6%
+        // mortgage payment, principal-weighted payment month / 12.
+        assert_relative_eq!(wal, 19.306_364_842_498_26, epsilon = 1.0e-10);
     }
 
     #[test]
     fn test_wal_100psa() {
         let mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 1.0 }));
         let wal = mbs.wal();
-        assert!((wal - 11.6).abs() < 1.0, "WAL 100% PSA: {}", wal);
+        assert_relative_eq!(wal, 11.363_476_874_606_265, epsilon = 1.0e-10);
     }
 
     #[test]
     fn test_wal_300psa() {
         let mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 3.0 }));
         let wal = mbs.wal();
-        assert!((wal - 5.4).abs() < 1.0, "WAL 300% PSA: {}", wal);
+        assert_relative_eq!(wal, 5.736_289_578_189_329_5, epsilon = 1.0e-10);
+    }
+
+    #[test]
+    fn test_no_prepayment_price_matches_amortizing_mortgage_reference() {
+        let mbs = make_mbs(PrepaymentModel::ConstantCpr(ConstantCpr {
+            annual_cpr: 0.0,
+        }));
+
+        // At the 6% mortgage rate, level-payment principal plus interest
+        // discounts exactly to par. The 5% value is an independently generated
+        // monthly cashflow reference.
+        assert_relative_eq!(mbs.price(0.06), 100.0, epsilon = 3.0e-12);
+        assert_relative_eq!(mbs.price(0.05), 111.685_241_326_278_59, epsilon = 1.0e-10);
     }
 
     #[test]
@@ -426,20 +441,14 @@ mod tests {
         let whole = mbs.price(yield_rate);
         let io = IoStrip { mbs: &mbs }.price(yield_rate);
         let po = PoStrip { mbs: &mbs }.price(yield_rate);
-        assert!(
-            (io + po - whole).abs() < 1e-6,
-            "IO({}) + PO({}) != whole({})",
-            io,
-            po,
-            whole
-        );
+        assert_relative_eq!(io + po, whole, epsilon = 1.0e-12);
     }
 
     #[test]
     fn test_effective_duration_positive() {
         let mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 1.0 }));
         let dur = mbs.effective_duration(0.06);
-        assert!(dur > 0.0, "Duration should be positive: {}", dur);
+        assert_relative_eq!(dur, 7.364_726_342_852_562, epsilon = 1.0e-10);
     }
 
     #[test]
@@ -517,10 +526,6 @@ mod tests {
         let true_spread = 0.01;
         let market_price = mbs.price(base_rate + true_spread);
         let computed_oas = mbs.oas(market_price, &[base_rate]);
-        assert!(
-            (computed_oas - true_spread).abs() < 1e-6,
-            "OAS: {}",
-            computed_oas
-        );
+        assert_relative_eq!(computed_oas, true_spread, epsilon = 2.0e-9);
     }
 }

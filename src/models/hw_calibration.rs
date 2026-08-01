@@ -118,7 +118,7 @@ pub fn calibrate_hull_white_params(quotes: &[(f64, f64, f64)]) -> Option<(f64, f
     let fine_sigma_lo = (sigma0 * 0.4).max(1.0e-4);
     let fine_sigma_hi = (sigma0 * 1.6).max(fine_sigma_lo + 1.0e-4);
 
-    let fine = grid_search(
+    let mut best = grid_search(
         quotes,
         fine_a_lo,
         fine_a_hi,
@@ -128,7 +128,24 @@ pub fn calibrate_hull_white_params(quotes: &[(f64, f64, f64)]) -> Option<(f64, f
         81,
     )?;
 
-    Some((fine.0, fine.1))
+    // Resolve the minimum rather than returning the nearest point on the
+    // relatively coarse 81x81 grid above.  Each nested grid spans two prior
+    // grid spacings on either side of the incumbent and reduces both spacings
+    // by a factor of five.  Six rounds make the final parameter resolution
+    // about 6.4e-5 of the first fine-grid spacing.
+    let mut a_step = (fine_a_hi - fine_a_lo) / 80.0;
+    let mut sigma_step = (fine_sigma_hi - fine_sigma_lo) / 80.0;
+    for _ in 0..6 {
+        let a_lo = (best.0 - 2.0 * a_step).max(1.0e-8);
+        let a_hi = best.0 + 2.0 * a_step;
+        let sigma_lo = (best.1 - 2.0 * sigma_step).max(1.0e-8);
+        let sigma_hi = best.1 + 2.0 * sigma_step;
+        best = grid_search(quotes, a_lo, a_hi, sigma_lo, sigma_hi, 21, 21)?;
+        a_step = (a_hi - a_lo) / 20.0;
+        sigma_step = (sigma_hi - sigma_lo) / 20.0;
+    }
+
+    Some((best.0, best.1))
 }
 
 fn grid_search(
@@ -212,15 +229,24 @@ mod tests {
         }
 
         let (cal_a, cal_sigma) = calibrate_hull_white_params(&market_quotes).unwrap();
-        let rel_a = (cal_a - true_a).abs() / true_a;
-        let rel_sigma = (cal_sigma - true_sigma).abs() / true_sigma;
-
-        assert!(rel_a <= 0.10, "a calibration error too high: {}", rel_a);
         assert!(
-            rel_sigma <= 0.10,
-            "sigma calibration error too high: {}",
-            rel_sigma
+            (cal_a - true_a).abs() <= 5.0e-8,
+            "a: calibrated={cal_a}, target={true_a}"
         );
+        assert!(
+            (cal_sigma - true_sigma).abs() <= 1.0e-8,
+            "sigma: calibrated={cal_sigma}, target={true_sigma}"
+        );
+
+        for &(expiry, tenor, market_vol) in &market_quotes {
+            let model_vol = hw_atm_swaption_vol_approx(cal_a, cal_sigma, expiry, tenor);
+            let model_price = normalized_atm_bachelier_price(model_vol, expiry);
+            let market_price = normalized_atm_bachelier_price(market_vol, expiry);
+            assert!(
+                (model_price - market_price).abs() <= 3.0e-9,
+                "expiry={expiry} tenor={tenor}: model_price={model_price} market_price={market_price} model_vol={model_vol} market_vol={market_vol}"
+            );
+        }
     }
 
     #[test]

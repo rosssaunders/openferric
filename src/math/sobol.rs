@@ -556,7 +556,11 @@ fn splitmix64(mut x: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::fast_rng::Xoshiro256Rng;
+
+    #[inline]
+    fn open_dyadic(cell: u64) -> f64 {
+        (cell as f64 + 0.5) * SOBOL_POINT_SCALE
+    }
 
     #[test]
     fn sobol_points_are_in_unit_interval() {
@@ -586,8 +590,8 @@ mod tests {
         // the all-ones input (worst case under digital-shift scrambling) must
         // stay strictly below 1.0, and the zero input strictly above 0.0.
         let map = |x: u64| ((x >> 12) as f64 + 0.5) * SOBOL_POINT_SCALE;
-        assert!(map(u64::MAX) < 1.0, "max input maps to {}", map(u64::MAX));
-        assert!(map(0) > 0.0);
+        assert_eq!(map(u64::MAX), 1.0 - f64::EPSILON / 2.0);
+        assert_eq!(map(0), f64::EPSILON / 2.0);
         assert_eq!(map(1_u64 << 63), 0.5 + 0.5 * SOBOL_POINT_SCALE);
     }
 
@@ -607,20 +611,44 @@ mod tests {
         // Gray-code order, skipping the all-zeros point at index 0. These match
         // the standard new-joe-kuo-6 sequence (e.g. scipy.stats.qmc.Sobol with
         // scramble=False generates the same first 2^k point sets).
-        let expected: [[f64; 8]; 5] = [
-            [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
-            [0.75, 0.25, 0.25, 0.25, 0.75, 0.75, 0.25, 0.75],
-            [0.25, 0.75, 0.75, 0.75, 0.25, 0.25, 0.75, 0.25],
-            [0.375, 0.375, 0.625, 0.875, 0.375, 0.125, 0.375, 0.875],
-            [0.875, 0.875, 0.125, 0.375, 0.875, 0.625, 0.875, 0.375],
+        // The table stores the exact top-52-bit cells, not rounded decimal
+        // approximations. `open_dyadic` then applies the documented half-cell
+        // offset used by this generator.
+        const Q: u64 = 1_u64 << 50;
+        let expected_cells: [[u64; 8]; 5] = [
+            [2 * Q, 2 * Q, 2 * Q, 2 * Q, 2 * Q, 2 * Q, 2 * Q, 2 * Q],
+            [3 * Q, Q, Q, Q, 3 * Q, 3 * Q, Q, 3 * Q],
+            [Q, 3 * Q, 3 * Q, 3 * Q, Q, Q, 3 * Q, Q],
+            [
+                3 * Q / 2,
+                3 * Q / 2,
+                5 * Q / 2,
+                7 * Q / 2,
+                3 * Q / 2,
+                Q / 2,
+                3 * Q / 2,
+                7 * Q / 2,
+            ],
+            [
+                7 * Q / 2,
+                7 * Q / 2,
+                Q / 2,
+                3 * Q / 2,
+                7 * Q / 2,
+                5 * Q / 2,
+                7 * Q / 2,
+                3 * Q / 2,
+            ],
         ];
 
         let mut seq = SobolSequence::new(8, 0);
-        for (i, row) in expected.iter().enumerate() {
+        for (i, row) in expected_cells.iter().enumerate() {
             let p = seq.next().expect("sequence should continue");
-            for (d, (&got, &want)) in p.iter().zip(row.iter()).enumerate() {
-                assert!(
-                    (got - want).abs() < 1e-12,
+            for (d, (&got, &cell)) in p.iter().zip(row.iter()).enumerate() {
+                let want = open_dyadic(cell);
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
                     "point {i} dim {d}: got {got}, want {want}"
                 );
             }
@@ -628,47 +656,76 @@ mod tests {
     }
 
     #[test]
-    fn two_dimensional_integration_beats_statistical_mc_bound() {
-        // E[x * y] over the unit square is 1/4. With 1024 Sobol points the QMC
-        // error should be far below the plain-MC standard error
-        // sigma / sqrt(n) ~ 0.28 / 32 ~ 8.7e-3.
-        let n = 1_024;
-        let mut seq = SobolSequence::new(2, 0);
-        let mut buf = [0.0_f64; 2];
-        let mut sum = 0.0;
-        for _ in 0..n {
-            assert!(seq.next_into(&mut buf));
-            sum += buf[0] * buf[1];
+    fn two_dimensional_integration_matches_scipy_grid_and_converges() {
+        // Independent scipy.stats.qmc.Sobol 1.17.1 values for the canonical
+        // Joe-Kuo sequence, after applying this module's exact half-cell map.
+        // The point at index zero is skipped, matching `next_into`.
+        const REFERENCES: [(usize, f64); 4] = [
+            (256, 0.248_065_903_782_844_57),
+            (1_024, 0.249_516_548_821_702_63),
+            (4_096, 0.249_881_816_260_312_94),
+            (16_384, 0.249_973_316_118_087_07),
+        ];
+
+        let mut errors = Vec::with_capacity(REFERENCES.len());
+        for (n, reference) in REFERENCES {
+            let mut seq = SobolSequence::new(2, 0);
+            let mut point = [0.0_f64; 2];
+            let mut sum = 0.0;
+            for _ in 0..n {
+                assert!(seq.next_into(&mut point));
+                sum += point[0] * point[1];
+            }
+            let estimate = sum / n as f64;
+            assert_eq!(estimate.to_bits(), reference.to_bits(), "n={n}");
+            errors.push((estimate - 0.25).abs());
         }
-        let estimate = sum / n as f64;
-        let err = (estimate - 0.25).abs();
-        assert!(err < 1e-3, "estimate={estimate} err={err}");
+
+        // This smooth integral exhibits the expected near-O(1/N) QMC error
+        // on the locked dyadic grids; each 4x refinement reduces error by >3x.
+        for pair in errors.windows(2) {
+            assert!(pair[1] * 3.0 < pair[0], "errors={errors:?}");
+        }
     }
 
     #[test]
-    fn pairwise_projections_integrate_accurately() {
-        // Every 2-D projection of a proper Sobol sequence should integrate
-        // x_i * x_j to ~1/4 much more tightly than the MC bound. The old
-        // hash-based direction numbers fail this badly for higher dimensions.
+    fn pairwise_projection_error_matches_scipy_and_converges() {
+        // Max |mean(x_i*x_j)-1/4| across all 120 projections, independently
+        // generated with scipy.stats.qmc.Sobol 1.17.1. Locking the three grids
+        // catches degraded higher-dimensional direction numbers while the
+        // monotone reduction verifies convergence instead of accepting an
+        // arbitrary absolute range.
         let dims = 16;
-        let n = 4_096;
-        let mut seq = SobolSequence::new(dims, 0);
-        let mut sums = vec![0.0_f64; dims * dims];
-        let mut p = vec![0.0_f64; dims];
-        for _ in 0..n {
-            assert!(seq.next_into(&mut p));
-            for i in 0..dims {
-                for j in (i + 1)..dims {
-                    sums[i * dims + j] += p[i] * p[j];
+        const REFERENCES: [(usize, f64); 3] = [
+            (256, 0.003_572_687_506_675_775_7),
+            (1_024, 0.000_487_458_659_335_943_1),
+            (4_096, 0.000_122_025_765_449_479_4),
+        ];
+
+        let mut errors = Vec::with_capacity(REFERENCES.len());
+        for (n, reference) in REFERENCES {
+            let mut seq = SobolSequence::new(dims, 0);
+            let mut sums = vec![0.0_f64; dims * dims];
+            let mut point = vec![0.0_f64; dims];
+            for _ in 0..n {
+                assert!(seq.next_into(&mut point));
+                for i in 0..dims {
+                    for j in (i + 1)..dims {
+                        sums[i * dims + j] += point[i] * point[j];
+                    }
                 }
             }
-        }
-        for i in 0..dims {
-            for j in (i + 1)..dims {
-                let estimate = sums[i * dims + j] / n as f64;
-                let err = (estimate - 0.25).abs();
-                assert!(err < 2e-3, "dims ({i},{j}): estimate={estimate} err={err}");
+            let mut max_error = 0.0_f64;
+            for i in 0..dims {
+                for j in (i + 1)..dims {
+                    max_error = max_error.max((sums[i * dims + j] / n as f64 - 0.25).abs());
+                }
             }
+            assert_eq!(max_error.to_bits(), reference.to_bits(), "n={n}");
+            errors.push(max_error);
+        }
+        for pair in errors.windows(2) {
+            assert!(pair[1] * 3.0 < pair[0], "errors={errors:?}");
         }
     }
 
@@ -679,45 +736,52 @@ mod tests {
         // sub-intervals exactly once.
         let dims = SOBOL_MAX_DIMENSIONS;
         let n = 256;
-        let mut seq = SobolSequence::new(dims, 0);
-        let mut counts = vec![0_u32; dims * n];
-        let mut p = vec![0.0_f64; dims];
-        // The generator skips the all-zeros point, which occupies cell 0 in
-        // every dimension; account for it directly.
-        for d in 0..dims {
-            counts[d * n] += 1;
-        }
-        for _ in 0..(n - 1) {
-            assert!(seq.next_into(&mut p));
-            for (d, &u) in p.iter().enumerate() {
-                let cell = (u * n as f64) as usize;
+        for seed in [0, 7, u64::MAX] {
+            let mut seq = SobolSequence::new(dims, seed);
+            let mut counts = vec![0_u32; dims * n];
+            let mut point = vec![0.0_f64; dims];
+            // The generator skips the digitally shifted point at index zero;
+            // account for its exact cell before consuming the other N-1 points.
+            for d in 0..dims {
+                let shifted_zero = open_dyadic(seq.scramblers[d] >> 12);
+                let cell = (shifted_zero * n as f64) as usize;
                 counts[d * n + cell.min(n - 1)] += 1;
             }
-        }
-        for d in 0..dims {
-            for cell in 0..n {
-                assert_eq!(
-                    counts[d * n + cell],
-                    1,
-                    "dimension {d} cell {cell} not hit exactly once"
-                );
+            for _ in 0..(n - 1) {
+                assert!(seq.next_into(&mut point));
+                for (d, &u) in point.iter().enumerate() {
+                    let cell = (u * n as f64) as usize;
+                    counts[d * n + cell.min(n - 1)] += 1;
+                }
+            }
+            for d in 0..dims {
+                for cell in 0..n {
+                    assert_eq!(
+                        counts[d * n + cell],
+                        1,
+                        "seed {seed}, dimension {d}, cell {cell} not hit exactly once"
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn sobol_first_dimension_mean_is_closer_to_half_than_prng() {
-        let n = 1_000;
-
-        let sobol_mean = SobolSequence::new(1, 7).take(n).map(|v| v[0]).sum::<f64>() / n as f64;
-
-        let mut rng = Xoshiro256Rng::seed_from_u64(7);
-        let prng_mean = (0..n).map(|_| rng.next_f64()).sum::<f64>() / n as f64;
-
-        assert!(
-            (sobol_mean - 0.5).abs() <= (prng_mean - 0.5).abs(),
-            "sobol_mean={sobol_mean} prng_mean={prng_mean}"
-        );
+    fn high_dimensional_prefix_matches_scipy_reference_digest() {
+        // FNV-1a over the f64 bit patterns of points 1..=1024 in all 360
+        // dimensions. The digest was independently generated from SciPy
+        // 1.17.1's unscrambled Joe-Kuo sequence after the half-cell mapping.
+        let mut seq = SobolSequence::new(SOBOL_MAX_DIMENSIONS, 0);
+        let mut point = vec![0.0_f64; SOBOL_MAX_DIMENSIONS];
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        for _ in 0..1_024 {
+            assert!(seq.next_into(&mut point));
+            for &coordinate in &point {
+                digest ^= coordinate.to_bits();
+                digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(digest, 0x6ab8_808b_a7cd_2adb);
     }
 
     #[test]

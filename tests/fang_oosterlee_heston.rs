@@ -38,7 +38,7 @@ fn fang_oosterlee_heston_t1_k100() {
     let reference = 5.785155450;
     let err = (price - reference).abs();
     assert!(
-        err < 0.01,
+        err < 2.0e-8,
         "Fang-Oosterlee T=1 K=100: got {price}, expected {reference}, err={err}"
     );
 }
@@ -52,7 +52,7 @@ fn fang_oosterlee_heston_t10_k100() {
     let reference = 22.318945791;
     let err = (price - reference).abs();
     assert!(
-        err < 0.05,
+        err < 3.0e-10,
         "Fang-Oosterlee T=10 K=100: got {price}, expected {reference}, err={err}"
     );
 }
@@ -77,7 +77,7 @@ fn fang_oosterlee_gbm_k80() {
     let reference = 20.799226309;
     let err = (price - reference).abs();
     assert!(
-        err < 0.001,
+        err < 2.5e-5,
         "Fang-Oosterlee GBM K=80: got {price}, expected {reference}, err={err}"
     );
 }
@@ -88,7 +88,7 @@ fn fang_oosterlee_gbm_k100() {
     let reference = 3.659968453;
     let err = (price - reference).abs();
     assert!(
-        err < 0.001,
+        err < 5.0e-10,
         "Fang-Oosterlee GBM K=100: got {price}, expected {reference}, err={err}"
     );
 }
@@ -99,7 +99,7 @@ fn fang_oosterlee_gbm_k120() {
     let reference = 0.044577814;
     let err = (price - reference).abs();
     assert!(
-        err < 0.001,
+        err < 8.0e-6,
         "Fang-Oosterlee GBM K=120: got {price}, expected {reference}, err={err}"
     );
 }
@@ -125,7 +125,7 @@ fn fang_oosterlee_vg_t01_k90() {
     let reference = 10.993703187;
     let err = (price - reference).abs();
     assert!(
-        err < 0.01,
+        err < 1.2e-5,
         "Fang-Oosterlee VG T=0.1 K=90: got {price}, expected {reference}, err={err}"
     );
 }
@@ -136,7 +136,7 @@ fn fang_oosterlee_vg_t1_k90() {
     let reference = 19.099354724;
     let err = (price - reference).abs();
     assert!(
-        err < 0.01,
+        err < 1.5e-6,
         "Fang-Oosterlee VG T=1 K=90: got {price}, expected {reference}, err={err}"
     );
 }
@@ -164,7 +164,7 @@ fn fang_oosterlee_cgmy_y05() {
     let reference = 19.812948843;
     let err = (price - reference).abs();
     assert!(
-        err < 0.05,
+        err < 2.0e-10,
         "Fang-Oosterlee CGMY Y=0.5: got {price}, expected {reference}, err={err}"
     );
 }
@@ -175,7 +175,7 @@ fn fang_oosterlee_cgmy_y15() {
     let reference = 49.790905469;
     let err = (price - reference).abs();
     assert!(
-        err < 0.1,
+        err < 6.0e-10,
         "Fang-Oosterlee CGMY Y=1.5: got {price}, expected {reference}, err={err}"
     );
 }

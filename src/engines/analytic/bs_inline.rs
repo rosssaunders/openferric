@@ -794,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn asm_wrapper_matches_reference_price_within_1e14() {
+    fn asm_wrapper_matches_reference_price_at_roundoff() {
         let cases = [
             (100.0, 100.0, 0.03, 0.00, 0.20, 1.00, true),
             (120.0, 100.0, 0.01, 0.02, 0.15, 0.50, true),

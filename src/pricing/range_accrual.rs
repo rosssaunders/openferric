@@ -226,6 +226,7 @@ pub fn range_accrual_rate_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::normal_cdf;
 
     fn make_range_accrual() -> RangeAccrual {
         // Daily fixings for 1 year (252 business days)
@@ -240,12 +241,108 @@ mod tests {
         }
     }
 
+    fn interval_probability(mean: f64, variance: f64, lower: f64, upper: f64) -> f64 {
+        if variance <= 0.0 {
+            return if mean >= lower && mean <= upper {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let std_dev = variance.sqrt();
+        normal_cdf((upper - mean) / std_dev) - normal_cdf((lower - mean) / std_dev)
+    }
+
+    /// Exact expectation of the Euler-discretised OU contract implemented by
+    /// `range_accrual_mc_price`.  Each fixing is Gaussian; correlations
+    /// between fixing indicators affect variance, but not the expected coupon.
+    fn exact_single_euler_price(
+        ra: &RangeAccrual,
+        r0: f64,
+        kappa: f64,
+        theta: f64,
+        sigma: f64,
+        discount_rate: f64,
+    ) -> f64 {
+        let mut mean = r0;
+        let mut variance = 0.0;
+        let mut previous = 0.0;
+        let mut expected_fixings = 0.0;
+        for &time in &ra.fixing_times {
+            let dt = time - previous;
+            let persistence = 1.0 - kappa * dt;
+            mean = persistence * mean + kappa * theta * dt;
+            variance = persistence * persistence * variance + sigma * sigma * dt;
+            expected_fixings +=
+                interval_probability(mean, variance, ra.lower_bound, ra.upper_bound);
+            previous = time;
+        }
+        let expected_fraction = expected_fixings / ra.fixing_times.len() as f64;
+        ra.notional * ra.coupon_rate * expected_fraction * (-discount_rate * ra.payment_time).exp()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exact_dual_euler_price(
+        dra: &DualRangeAccrual,
+        r1_0: f64,
+        r2_0: f64,
+        kappa1: f64,
+        theta1: f64,
+        sigma1: f64,
+        kappa2: f64,
+        theta2: f64,
+        sigma2: f64,
+        rho: f64,
+        discount_rate: f64,
+    ) -> f64 {
+        let (mut mean1, mut mean2) = (r1_0, r2_0);
+        let (mut variance1, mut variance2, mut covariance) = (0.0, 0.0, 0.0);
+        let mut previous = 0.0;
+        let mut expected_fixings = 0.0;
+
+        for &time in &dra.fixing_times {
+            let dt = time - previous;
+            let persistence1 = 1.0 - kappa1 * dt;
+            let persistence2 = 1.0 - kappa2 * dt;
+            mean1 = persistence1 * mean1 + kappa1 * theta1 * dt;
+            mean2 = persistence2 * mean2 + kappa2 * theta2 * dt;
+            variance1 = persistence1 * persistence1 * variance1 + sigma1 * sigma1 * dt;
+            variance2 = persistence2 * persistence2 * variance2 + sigma2 * sigma2 * dt;
+            covariance = persistence1 * persistence2 * covariance + rho * sigma1 * sigma2 * dt;
+
+            let spread_variance = (variance1 + variance2 - 2.0 * covariance).max(0.0);
+            expected_fixings += interval_probability(
+                mean1 - mean2,
+                spread_variance,
+                dra.lower_bound,
+                dra.upper_bound,
+            );
+            previous = time;
+        }
+
+        let expected_fraction = expected_fixings / dra.fixing_times.len() as f64;
+        dra.notional
+            * dra.coupon_rate
+            * expected_fraction
+            * (-discount_rate * dra.payment_time).exp()
+    }
+
     #[test]
-    fn range_accrual_price_is_positive() {
+    fn range_accrual_mc_matches_exact_euler_gaussian_expectation() {
         let ra = make_range_accrual();
-        let result = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 5000, 42).unwrap();
-        assert!(result.price > 0.0);
-        assert!(result.price.is_finite());
+        let result = range_accrual_mc_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03, 40_000, 42).unwrap();
+        let analytic = exact_single_euler_price(&ra, 0.04, 1.0, 0.04, 0.01, 0.03);
+        // Independently evaluated from the Euler Gaussian marginals with
+        // SciPy 1.17.1's `norm.cdf`.
+        let exact = 48_487.410_315_461_3;
+        assert!((analytic - exact).abs() <= 64.0 * f64::EPSILON * exact);
+        let roundoff = 32.0 * f64::EPSILON * exact.abs().max(1.0);
+        assert!(
+            (result.price - exact).abs() <= 4.0 * result.std_error + roundoff,
+            "single range accrual mismatch: mc={} exact={exact} stderr={}",
+            result.price,
+            result.std_error
+        );
     }
 
     #[test]
@@ -269,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn dual_range_accrual_price_is_positive() {
+    fn dual_range_accrual_mc_matches_exact_euler_gaussian_expectation() {
         let fixing_times: Vec<f64> = (1..=252).map(|d| d as f64 / 252.0).collect();
         let dra = DualRangeAccrual {
             notional: 1_000_000.0,
@@ -285,11 +382,23 @@ mod tests {
             1.0, 0.03, 0.01, // kappa2, theta2, sigma2
             0.5,  // rho
             0.03, // discount rate
-            5000, 42,
+            40_000, 42,
         )
         .unwrap();
-        assert!(result.price > 0.0);
-        assert!(result.price.is_finite());
+        let analytic = exact_dual_euler_price(
+            &dra, 0.05, 0.03, 1.0, 0.05, 0.01, 1.0, 0.03, 0.01, 0.5, 0.03,
+        );
+        // Independent SciPy 1.17.1 reference for the correlated Euler spread
+        // marginals.  Symmetry puts exactly half the mass in [0, 0.02].
+        let exact = 24_243.705_157_730_634;
+        assert!((analytic - exact).abs() <= 64.0 * f64::EPSILON * exact);
+        let roundoff = 32.0 * f64::EPSILON * exact.abs().max(1.0);
+        assert!(
+            (result.price - exact).abs() <= 4.0 * result.std_error + roundoff,
+            "dual range accrual mismatch: mc={} exact={exact} stderr={}",
+            result.price,
+            result.std_error
+        );
     }
 
     #[test]
@@ -311,7 +420,26 @@ mod tests {
             &dra, 0.05, 0.03, 1.0, 0.05, 0.01, 1.0, 0.03, 0.01, 0.1, 0.03, 5000, 42,
         )
         .unwrap();
-        // Correlation affects spread volatility and hence accrual
-        assert!((high_rho.price - low_rho.price).abs() > 0.01);
+        let high_exact = exact_dual_euler_price(
+            &dra, 0.05, 0.03, 1.0, 0.05, 0.01, 1.0, 0.03, 0.01, 0.9, 0.03,
+        );
+        let low_exact = exact_dual_euler_price(
+            &dra, 0.05, 0.03, 1.0, 0.05, 0.01, 1.0, 0.03, 0.01, 0.1, 0.03,
+        );
+        for (label, result, exact) in [
+            ("rho=0.9", high_rho, high_exact),
+            ("rho=0.1", low_rho, low_exact),
+        ] {
+            let roundoff = 32.0 * f64::EPSILON * exact.abs().max(1.0);
+            assert!(
+                (result.price - exact).abs() <= 4.0 * result.std_error + roundoff,
+                "dual range accrual {label} mismatch: mc={} exact={exact} stderr={}",
+                result.price,
+                result.std_error
+            );
+        }
+        // Higher rate correlation lowers spread variance; with the interval
+        // centred around the expected spread, that raises the exact accrual.
+        assert!(high_exact > low_exact);
     }
 }

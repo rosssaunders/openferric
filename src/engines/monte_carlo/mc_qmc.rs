@@ -265,29 +265,30 @@ mod tests {
         let stderr = qmc.stderr.expect("stderr present");
         assert!(stderr > 0.0, "RQMC stderr should be strictly positive");
 
-        // The randomized-QMC stderr is an honest error estimate: the true
-        // error should be within a few standard errors (8 randomizations make
-        // the estimate noisy, so allow a generous multiple).
+        // The analytic Black-Scholes price is the exact economic target. The
+        // tolerance is statistical and comes only from the reported RQMC SE.
         let err = (qmc.price - bs).abs();
         assert!(
-            err <= 8.0 * stderr,
+            err <= 4.0 * stderr,
             "true error {err} should be consistent with RQMC stderr {stderr}"
         );
     }
 
     #[test]
-    fn qmc_price_matches_black_scholes_with_tight_error_at_10k_paths() {
+    fn qmc_price_matches_black_scholes_with_reported_error_at_10k_paths() {
         let (option, market) = setup_case();
         let qmc = mc_european_qmc_with_seed(&option, &market, 10_000, 1, 11);
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
-        let rel_err = ((qmc.price - bs) / bs).abs();
+        let stderr = qmc.stderr.expect("RQMC stderr");
+        let err = (qmc.price - bs).abs();
 
         assert!(
-            rel_err <= 0.001,
-            "QMC/BS relative error too high: qmc={} bs={} rel_err={}",
+            err <= 4.0 * stderr,
+            "QMC/BS error exceeds reported uncertainty: qmc={} bs={} err={} stderr={}",
             qmc.price,
             bs,
-            rel_err
+            err,
+            stderr
         );
     }
 }

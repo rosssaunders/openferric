@@ -411,8 +411,6 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
 
 #[cfg(test)]
 mod tests {
-    use approx::assert_relative_eq;
-
     use super::*;
     use crate::core::OptionType;
     use crate::core::PricingEngine;
@@ -426,6 +424,25 @@ mod tests {
             .flat_vol(0.25)
             .build()
             .unwrap()
+    }
+
+    fn assert_haug_four_decimal_fixture(
+        price: f64,
+        exact_five_term_price: f64,
+        published: f64,
+        label: &str,
+    ) {
+        assert_eq!(
+            price, exact_five_term_price,
+            "{label}: five-term Ikeda-Kunitomo grid changed"
+        );
+        // Haug reports four decimal places, so half a unit in the last printed
+        // digit is the complete source-precision interval.
+        let source_rounding = 0.5e-4;
+        assert!(
+            (price - published).abs() <= source_rounding,
+            "{label}: exact={price:.15}, published={published:.4}, source rounding={source_rounding}"
+        );
     }
 
     #[test]
@@ -443,7 +460,13 @@ mod tests {
         let engine = DoubleBarrierAnalyticEngine::new().with_series_terms(5);
 
         let price = engine.price(&option, &market).unwrap().price;
-        assert_relative_eq!(price, 2.6387, epsilon = 2e-4);
+        let price_20 = DoubleBarrierAnalyticEngine::new()
+            .with_series_terms(20)
+            .price(&option, &market)
+            .unwrap()
+            .price;
+        assert_haug_four_decimal_fixture(price, 2.638712882539764, 2.6387, "Haug case 1");
+        assert_eq!(price_20, price, "series must be converged by five terms");
     }
 
     #[test]
@@ -461,7 +484,13 @@ mod tests {
         let engine = DoubleBarrierAnalyticEngine::new().with_series_terms(5);
 
         let price = engine.price(&option, &market).unwrap().price;
-        assert_relative_eq!(price, 1.3401, epsilon = 2e-4);
+        let price_20 = DoubleBarrierAnalyticEngine::new()
+            .with_series_terms(20)
+            .price(&option, &market)
+            .unwrap()
+            .price;
+        assert_haug_four_decimal_fixture(price, 1.3401109441526664, 1.3401, "Haug case 2");
+        assert_eq!(price_20, price, "series must be converged by five terms");
     }
 
     #[test]
@@ -503,13 +532,19 @@ mod tests {
         let p1 = engine.price(&with_rebate, &market).unwrap().price;
         let rebate_component = p1 - p0;
 
+        assert_eq!(p1, 9.842665096069378, "20-term rebate price changed");
+        assert_eq!(
+            rebate_component, 9.842665096068536,
+            "20-term rebate component changed"
+        );
+
         let pay_at_expiry_cap = rebate * (-0.10_f64 * 5.0).exp();
         assert!(
             rebate_component > pay_at_expiry_cap,
             "rebate-at-hit component {rebate_component} should exceed pay-at-expiry cap {pay_at_expiry_cap}"
         );
         assert!(
-            rebate_component <= rebate + 1.0e-9,
+            rebate_component <= rebate + 64.0 * f64::EPSILON * rebate,
             "discounted rebate component {rebate_component} cannot exceed undiscounted rebate {rebate}"
         );
     }
@@ -526,16 +561,15 @@ mod tests {
         // Undiscounted touch probability from the r = 0 series.
         let touch_prob_r0 =
             1.0 - double_no_touch_digital_price(100.0, 90.0, 110.0, 0.0, q - rate, vol, expiry, 20);
+        assert_eq!(factor, 1.003223656988966, "20-term hit factor changed");
+        assert_eq!(touch_prob_r0, 1.0, "20-term touch probability changed");
         assert!(factor.is_finite());
+        let roundoff = 64.0 * f64::EPSILON * df_r * touch_prob_r0;
         assert!(
-            factor >= touch_prob_r0 - 1.0e-9 && factor <= df_r * touch_prob_r0 + 1.0e-9,
+            factor >= touch_prob_r0 - roundoff && factor <= df_r * touch_prob_r0 + roundoff,
             "factor {factor} outside [{touch_prob_r0}, {}]",
             df_r * touch_prob_r0
         );
-
-        // Tight corridor over 5y: the barrier is hit almost surely, so the
-        // factor should be close to E[e^{-r tau}] >= 1 for r < 0.
-        assert!(factor > 0.99, "factor {factor} should be near or above 1");
     }
 
     #[test]
@@ -559,6 +593,7 @@ mod tests {
         );
 
         let price = engine.price(&option, &market).unwrap().price;
+        assert_eq!(price, 10.032236569889662, "negative-rate price changed");
         assert!(price.is_finite() && price >= 0.0);
         // With r < 0 the rebate component may exceed the undiscounted rebate
         // (paid-at-hit cash is reinvested at a negative rate relative to par),
@@ -573,7 +608,11 @@ mod tests {
         let factor = double_touch_pay_at_hit_factor(100.0, 85.0, 115.0, 0.0, q, vol, expiry, 20);
         let touch_prob =
             1.0 - double_no_touch_digital_price(100.0, 85.0, 115.0, 0.0, q, vol, expiry, 20);
-        assert_relative_eq!(factor, touch_prob, epsilon = 1.0e-12);
+        assert_eq!(
+            factor, 0.998534690215092,
+            "20-term zero-rate factor changed"
+        );
+        assert_eq!(factor, touch_prob, "r=0 reduction must be exact");
     }
 
     #[test]
@@ -591,6 +630,12 @@ mod tests {
         let engine = DoubleBarrierAnalyticEngine::new().with_series_terms(5);
 
         let price = engine.price(&option, &market).unwrap().price;
-        assert_relative_eq!(price, 0.3098, epsilon = 2e-4);
+        let price_20 = DoubleBarrierAnalyticEngine::new()
+            .with_series_terms(20)
+            .price(&option, &market)
+            .unwrap()
+            .price;
+        assert_haug_four_decimal_fixture(price, 0.3098238680345293, 0.3098, "Haug case 3");
+        assert_eq!(price_20, price, "series must be converged by five terms");
     }
 }

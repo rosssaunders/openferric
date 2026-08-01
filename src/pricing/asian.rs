@@ -212,7 +212,22 @@ mod tests {
         let sigma = 0.2;
         let t = 1.0;
 
-        let closed = geometric_asian_fixed_closed_form(OptionType::Call, s0, k, r, sigma, t);
+        let steps = 252;
+        // `geometric_asian_price_mc` averages every simulated path point,
+        // including S_0.  Match that discrete contract exactly rather than
+        // comparing it with the continuous-average approximation.
+        let observation_times = (0..=steps)
+            .map(|i| t * i as f64 / steps as f64)
+            .collect::<Vec<_>>();
+        let closed = geometric_asian_discrete_fixed_closed_form(
+            OptionType::Call,
+            s0,
+            k,
+            r,
+            0.0,
+            sigma,
+            &observation_times,
+        );
         let (mc, stderr) = geometric_asian_price_mc(
             OptionType::Call,
             AsianStrike::Fixed(k),
@@ -220,12 +235,16 @@ mod tests {
             r,
             sigma,
             t,
-            252,
+            steps,
             80_000,
             44,
         );
 
-        assert!((mc - closed).abs() <= 2.0 * stderr + 2e-2);
+        let roundoff = 16.0 * f64::EPSILON * closed.abs().max(1.0);
+        assert!(
+            (mc - closed).abs() <= 4.0 * stderr + roundoff,
+            "discrete geometric Asian mismatch: mc={mc} exact={closed} stderr={stderr}"
+        );
     }
 
     #[test]
@@ -242,7 +261,11 @@ mod tests {
         let expected_g = s0 * ((r * 0.5 - sigma * sigma / 12.0) * t).exp();
         let rhs = (-r * t).exp() * (expected_g - k);
 
-        assert_relative_eq!(c - p, rhs, epsilon = 2e-6);
+        assert_relative_eq!(
+            c - p,
+            rhs,
+            epsilon = 64.0 * f64::EPSILON * rhs.abs().max(1.0)
+        );
     }
 
     #[test]
@@ -276,6 +299,13 @@ mod tests {
             11,
         );
 
-        assert!(arith >= geo - 0.05);
+        // The two calls use identical seeded antithetic paths.  AM >= GM on
+        // every positive path and the fixed-strike call payoff is monotone,
+        // so this is a pathwise identity, not a statistical comparison.
+        let roundoff = 16.0 * f64::EPSILON * arith.abs().max(geo.abs()).max(1.0);
+        assert!(
+            arith + roundoff >= geo,
+            "pathwise AM-GM ordering failed: arithmetic={arith} geometric={geo}"
+        );
     }
 }

@@ -34,7 +34,7 @@ fn fypy_bs_atm_call() {
     let reference = 7.94871378854164;
     let err = (price - reference).abs();
     assert!(
-        err < 0.01,
+        err < 2.0e-12,
         "fypy BS: got {price}, expected {reference}, err={err}"
     );
 }
@@ -50,7 +50,7 @@ fn fypy_vg_atm_call() {
     let reference = 10.13935062748614;
     let err = (price - reference).abs();
     assert!(
-        err < 0.02,
+        err < 5.0e-9,
         "fypy VG: got {price}, expected {reference}, err={err}"
     );
 }
@@ -66,7 +66,7 @@ fn fypy_nig_atm_call() {
     let reference = 9.63000693130414;
     let err = (price - reference).abs();
     assert!(
-        err < 0.02,
+        err < 5.0e-12,
         "fypy NIG: got {price}, expected {reference}, err={err}"
     );
 }
@@ -82,7 +82,7 @@ fn fypy_cgmy_atm_call() {
     let reference = 5.80222163947386;
     let err = (price - reference).abs();
     assert!(
-        err < 0.02,
+        err < 5.0e-6,
         "fypy CGMY: got {price}, expected {reference}, err={err}"
     );
 }
@@ -110,11 +110,19 @@ fn quantlib_vg_set1_selected_strikes() {
 
     let prices = carr_madan_fft_strikes(&cf, rate, maturity, spot, &strikes, params)
         .expect("FFT pricing failed");
+    let locked_grid = [
+        955.164_400_054_570_8,
+        799.630_853_973_125_5,
+        687.203_178_347_213_5,
+        585.639_908_950_341_9,
+        453.471_440_785_217_1,
+    ];
 
     for (i, ((_, call), &exp)) in prices.iter().zip(expected.iter()).enumerate() {
         let err = (call - exp).abs();
+        assert!((call - locked_grid[i]).abs() < 1.0e-8);
         assert!(
-            err < 0.5,
+            err < 2.1e-3,
             "QuantLib VG set1 strike {}: got {call}, expected {exp}, err={err}",
             strikes[i]
         );
@@ -144,11 +152,19 @@ fn quantlib_vg_set2_selected_strikes() {
 
     let prices = carr_madan_fft_strikes(&cf, rate, maturity, spot, &strikes, params)
         .expect("FFT pricing failed");
+    let locked_grid = [
+        732.872_346_557_732_6,
+        570.508_278_425_467_6,
+        457.906_653_569_325,
+        361.113_791_859_400_5,
+        244.657_526_431_685_48,
+    ];
 
     for (i, ((_, call), &exp)) in prices.iter().zip(expected.iter()).enumerate() {
         let err = (call - exp).abs();
+        assert!((call - locked_grid[i]).abs() < 1.0e-8);
         assert!(
-            err < 0.5,
+            err < 3.7e-3,
             "QuantLib VG set2 strike {}: got {call}, expected {exp}, err={err}",
             strikes[i]
         );

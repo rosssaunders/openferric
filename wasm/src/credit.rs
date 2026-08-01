@@ -58,13 +58,14 @@ mod tests {
     }
 
     #[test]
-    fn cds_fair_spread_approx_lgd_times_hazard() {
-        // Fair spread ≈ (1-R)*λ for flat curves
+    fn cds_fair_spread_matches_exact_quarterly_midpoint_cashflows() {
         let hazard = 0.02;
         let recovery = 0.40;
         let spread = cds_fair_spread(1_000_000.0, 5.0, recovery, hazard, 0.03).unwrap();
-        let approx = (1.0 - recovery) * hazard;
-        assert!((spread - approx).abs() < 0.005);
+        // Independently summed quarterly premium, accrued-premium and midpoint
+        // protection cashflows under flat continuous discount/survival curves.
+        let expected = 0.012_044_946_253_576_534;
+        assert!((spread - expected).abs() < 2.0e-15);
     }
 
     #[test]

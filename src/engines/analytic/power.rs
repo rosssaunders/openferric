@@ -167,19 +167,17 @@ mod tests {
 
     #[test]
     fn power_option_reference_case() {
-        let price = power_option_price(
-            OptionType::Call,
-            100.0,
-            10_000.0,
-            0.05,
-            0.0,
-            0.20,
-            2.0,
-            0.50,
-        )
-        .unwrap();
-
-        assert_relative_eq!(price, 1_524.602_264_220_163_7, epsilon = 2e-8);
+        // Independently evaluated with SciPy 1.17.1's normal CDF. Both sides
+        // also lock power-option parity for the transformed forward.
+        for (option_type, reference) in [
+            (OptionType::Call, 1_524.602_264_220_163_3),
+            (OptionType::Put, 817.422_785_416_32),
+        ] {
+            let price =
+                power_option_price(option_type, 100.0, 10_000.0, 0.05, 0.0, 0.20, 2.0, 0.50)
+                    .unwrap();
+            assert_relative_eq!(price, reference, epsilon = 2e-12);
+        }
     }
 
     #[test]
@@ -209,6 +207,7 @@ mod tests {
             .unwrap()
             .price;
 
-        assert_relative_eq!(engine, formula, epsilon = 1e-12);
+        assert_eq!(engine.to_bits(), formula.to_bits());
+        assert_relative_eq!(engine, 1_524.602_264_220_163_3, epsilon = 2e-12);
     }
 }

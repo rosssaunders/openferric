@@ -44,7 +44,7 @@ class TestHestonFftPrice:
             sigma_v=p["sigma_v"],
             rho=p["rho"],
         )
-        assert fft_price == pytest.approx(semi_price, rel=1e-3)
+        assert fft_price == pytest.approx(semi_price, abs=5e-12)
 
     def test_alan_lewis_reference(self, heston_params):
         """Check against Alan Lewis K=80 call ≈ 26.775."""
@@ -61,7 +61,7 @@ class TestHestonFftPrice:
             sigma_v=p["sigma_v"],
             rho=p["rho"],
         )
-        assert price == pytest.approx(26.774758743998854, rel=1e-3)
+        assert price == pytest.approx(26.774758743998854, abs=5e-12)
 
 
 # =========================================================================
@@ -84,12 +84,15 @@ class TestHestonFftPrices:
             sigma_v=p["sigma_v"],
             rho=p["rho"],
         )
-        assert len(prices) == 5
-        # All prices should be positive and decreasing for calls
-        for price in prices:
-            assert price > 0.0
-        for i in range(len(prices) - 1):
-            assert prices[i] > prices[i + 1]
+        # Alan Lewis' five-strike table, as cached by QuantLib's Heston tests.
+        expected = [
+            26.774758743998854,
+            20.93334900059671,
+            16.070154917028834,
+            12.132211516709845,
+            9.024913483457836,
+        ]
+        assert prices == pytest.approx(expected, abs=5e-12)
 
     def test_empty_strikes(self, heston_params):
         p = heston_params
@@ -143,10 +146,11 @@ class TestHestonFftPrices:
 
 class TestVgFftPrice:
     def test_positive_price(self):
+        """Match fypy's high-resolution Carr--Madan reference."""
         price = py_vg_fft_price(
-            spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.0, sigma=0.20, theta_vg=-0.14, nu=0.20
+            spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.01, sigma=0.20, theta_vg=0.10, nu=0.85
         )
-        assert price > 0.0
+        assert price == pytest.approx(10.13935062748614, abs=5e-9)
 
     def test_otm_lower(self):
         atm = py_vg_fft_price(
@@ -165,10 +169,11 @@ class TestVgFftPrice:
 
 class TestCgmyFftPrice:
     def test_positive_price(self):
+        """Match fypy's high-resolution Carr--Madan reference."""
         price = py_cgmy_fft_price(
-            spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.0, c=1.0, g=5.0, m=5.0, y=0.5
+            spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.01, c=0.02, g=5.0, m=15.0, y=1.2
         )
-        assert price > 0.0
+        assert price == pytest.approx(5.80222163947386, abs=5e-6)
 
     def test_otm_lower(self):
         atm = py_cgmy_fft_price(
@@ -187,10 +192,11 @@ class TestCgmyFftPrice:
 
 class TestNigFftPrice:
     def test_positive_price(self):
+        """Match fypy's high-resolution Carr--Madan reference."""
         price = py_nig_fft_price(
-            spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.0, alpha=15.0, beta=-5.0, delta=0.5
+            spot=100.0, strike=100.0, expiry=1.0, rate=0.05, div_yield=0.01, alpha=15.0, beta=-5.0, delta=0.5
         )
-        assert price > 0.0
+        assert price == pytest.approx(9.63000693130414, abs=5e-12)
 
     def test_otm_lower(self):
         atm = py_nig_fft_price(

@@ -797,11 +797,10 @@ unsafe fn pde_rhs_avx2(
 mod tests {
     use super::*;
     use crate::core::PricingEngine;
-    use crate::engines::tree::binomial::BinomialTreeEngine;
     use crate::pricing::european::black_scholes_price;
 
     #[test]
-    fn european_call_matches_black_scholes_to_cent() {
+    fn european_call_converges_to_exact_black_scholes() {
         let option = VanillaOption::european_call(100.0, 1.0);
         let market = Market::builder()
             .spot(100.0)
@@ -811,22 +810,45 @@ mod tests {
             .build()
             .unwrap();
 
-        let pde = CrankNicolsonEngine::new(200, 200)
+        let coarse = CrankNicolsonEngine::new(100, 100)
+            .with_s_max_multiplier(4.0)
+            .price(&option, &market)
+            .unwrap();
+        let mid = CrankNicolsonEngine::new(200, 200)
+            .with_s_max_multiplier(4.0)
+            .price(&option, &market)
+            .unwrap();
+        let fine = CrankNicolsonEngine::new(400, 400)
             .with_s_max_multiplier(4.0)
             .price(&option, &market)
             .unwrap();
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
 
+        let mid_grid_reference = 10.440_691_508_529_95;
+        let mid_roundoff = 8.0 * f64::EPSILON * mid_grid_reference;
         assert!(
-            (pde.price - bs).abs() <= 0.01,
-            "PDE/BS mismatch: pde={} bs={}",
-            pde.price,
-            bs
+            (mid.price - mid_grid_reference).abs() <= mid_roundoff,
+            "200x200 Crank-Nicolson finite-grid value changed: price={} reference={} budget={}",
+            mid.price,
+            mid_grid_reference,
+            mid_roundoff,
+        );
+
+        // Crank-Nicolson is second order on this smooth, aligned grid.
+        let coarse_extrapolated = (4.0 * mid.price - coarse.price) / 3.0;
+        let fine_extrapolated = (4.0 * fine.price - mid.price) / 3.0;
+        let measured_refinement = (fine_extrapolated - coarse_extrapolated).abs();
+        let error = (fine_extrapolated - bs).abs();
+        let roundoff = 64.0 * f64::EPSILON * bs;
+        assert!(
+            error <= measured_refinement + roundoff,
+            "Crank-Nicolson Richardson={fine_extrapolated:.15}, exact BSM={bs:.15}, \
+             error={error:.3e}, measured refinement={measured_refinement:.3e}"
         );
     }
 
     #[test]
-    fn american_put_matches_binomial_within_ten_cents() {
+    fn american_put_converges_to_quantlib_crr_reference() {
         let option = VanillaOption::american_put(100.0, 1.0);
         let market = Market::builder()
             .spot(100.0)
@@ -836,19 +858,43 @@ mod tests {
             .build()
             .unwrap();
 
-        let pde = CrankNicolsonEngine::new(200, 200)
+        let coarse = CrankNicolsonEngine::new(100, 100)
             .with_s_max_multiplier(4.0)
             .price(&option, &market)
             .unwrap();
-        let bin = BinomialTreeEngine::new(600)
+        let mid = CrankNicolsonEngine::new(200, 200)
+            .with_s_max_multiplier(4.0)
+            .price(&option, &market)
+            .unwrap();
+        let fine = CrankNicolsonEngine::new(400, 400)
+            .with_s_max_multiplier(4.0)
             .price(&option, &market)
             .unwrap();
 
+        let mid_grid_reference = 10.461_951_016_351_836;
+        let mid_roundoff = 8.0 * f64::EPSILON * mid_grid_reference;
         assert!(
-            (pde.price - bin.price).abs() <= 0.10,
-            "PDE/binomial mismatch: pde={} bin={}",
-            pde.price,
-            bin.price
+            (mid.price - mid_grid_reference).abs() <= mid_roundoff,
+            "200x200 American Crank-Nicolson finite-grid value changed: price={} reference={} budget={}",
+            mid.price,
+            mid_grid_reference,
+            mid_roundoff,
+        );
+
+        // QuantLib 1.43 BinomialVanillaEngine("crr"), 20,000 steps.  The
+        // 10k->20k change is 7.9720731037e-5.
+        let reference = 10.471_179_159_642_21;
+        let ql_refinement = 7.9720731037e-5;
+        let coarse_extrapolated = (4.0 * mid.price - coarse.price) / 3.0;
+        let fine_extrapolated = (4.0 * fine.price - mid.price) / 3.0;
+        let measured_refinement = (fine_extrapolated - coarse_extrapolated).abs();
+        let error = (fine_extrapolated - reference).abs();
+        let roundoff = 64.0 * f64::EPSILON * reference;
+        assert!(
+            error <= measured_refinement + ql_refinement + roundoff,
+            "Crank-Nicolson Richardson={fine_extrapolated:.15}, QuantLib={reference:.15}, \
+             error={error:.3e}, measured refinement={measured_refinement:.3e}, \
+             QuantLib refinement={ql_refinement:.3e}"
         );
     }
 }

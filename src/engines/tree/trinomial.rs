@@ -204,11 +204,10 @@ impl PricingEngine<VanillaOption> for TrinomialTreeEngine {
 mod tests {
     use super::*;
     use crate::core::PricingEngine;
-    use crate::engines::tree::binomial::BinomialTreeEngine;
     use crate::pricing::european::black_scholes_price;
 
     #[test]
-    fn american_put_matches_binomial_within_tolerance() {
+    fn american_put_converges_to_quantlib_crr_reference() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -218,23 +217,40 @@ mod tests {
             .unwrap();
         let option = VanillaOption::american_put(100.0, 1.0);
 
-        let tri = TrinomialTreeEngine::new(200)
+        let coarse = TrinomialTreeEngine::new(200)
             .price(&option, &market)
             .unwrap();
-        let bin = BinomialTreeEngine::new(200)
+        let mid = TrinomialTreeEngine::new(400)
+            .price(&option, &market)
+            .unwrap();
+        let fine = TrinomialTreeEngine::new(800)
             .price(&option, &market)
             .unwrap();
 
+        assert_eq!(
+            coarse.price, 10.465673125049921,
+            "200-step trinomial finite-grid value changed"
+        );
+
+        // QuantLib 1.43 BinomialVanillaEngine("crr"), 20,000 steps.  The
+        // 10k->20k change is 7.9720731037e-5.
+        let reference = 10.471_179_159_642_21;
+        let ql_refinement = 7.9720731037e-5;
+        let coarse_extrapolated = 2.0 * mid.price - coarse.price;
+        let fine_extrapolated = 2.0 * fine.price - mid.price;
+        let measured_refinement = (fine_extrapolated - coarse_extrapolated).abs();
+        let error = (fine_extrapolated - reference).abs();
+        let roundoff = 64.0 * f64::EPSILON * reference;
         assert!(
-            (tri.price - bin.price).abs() <= 0.05,
-            "trinomial/binomial mismatch: tri={} bin={}",
-            tri.price,
-            bin.price
+            error <= measured_refinement + ql_refinement + roundoff,
+            "trinomial Richardson={fine_extrapolated:.15}, QuantLib={reference:.15}, \
+             error={error:.3e}, measured refinement={measured_refinement:.3e}, \
+             QuantLib refinement={ql_refinement:.3e}"
         );
     }
 
     #[test]
-    fn european_call_converges_faster_than_binomial_at_same_steps() {
+    fn european_call_converges_to_exact_black_scholes() {
         let market = Market::builder()
             .spot(100.0)
             .rate(0.05)
@@ -245,21 +261,30 @@ mod tests {
         let option = VanillaOption::european_call(100.0, 1.0);
         let bs = black_scholes_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0);
 
-        let steps = 50;
-        let tri = TrinomialTreeEngine::new(steps)
+        let coarse = TrinomialTreeEngine::new(50)
             .price(&option, &market)
             .unwrap();
-        let bin = BinomialTreeEngine::new(steps)
+        let mid = TrinomialTreeEngine::new(100)
+            .price(&option, &market)
+            .unwrap();
+        let fine = TrinomialTreeEngine::new(200)
             .price(&option, &market)
             .unwrap();
 
-        let tri_err = (tri.price - bs).abs();
-        let bin_err = (bin.price - bs).abs();
+        assert_eq!(
+            coarse.price, 10.430611662248863,
+            "50-step trinomial finite-grid value changed"
+        );
+
+        let coarse_extrapolated = 2.0 * mid.price - coarse.price;
+        let fine_extrapolated = 2.0 * fine.price - mid.price;
+        let measured_refinement = (fine_extrapolated - coarse_extrapolated).abs();
+        let error = (fine_extrapolated - bs).abs();
+        let roundoff = 64.0 * f64::EPSILON * bs;
         assert!(
-            tri_err <= bin_err,
-            "expected trinomial error <= binomial error, tri_err={} bin_err={}",
-            tri_err,
-            bin_err
+            error <= measured_refinement + roundoff,
+            "trinomial Richardson={fine_extrapolated:.15}, exact BSM={bs:.15}, \
+             error={error:.3e}, measured refinement={measured_refinement:.3e}"
         );
     }
 }

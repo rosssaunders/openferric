@@ -78,14 +78,14 @@ const PRICE_UO: [f64; 6] = [
 ];
 
 // ── Tolerance ─────────────────────────────────────────────────────────────
-// Both implementations use the same Reiner-Rubinstein closed-form, but
-// the normal CDF implementations differ slightly between Java (Strata)
-// and Rust (openferric), producing differences up to ~2e-5.
-// We use 5e-5 as a tight but robust tolerance.
-const TOL: f64 = 5e-5;
+// Both implementations evaluate the same Reiner-Rubinstein closed form. With
+// openferric's double-precision Cody CDF, the maximum absolute difference over
+// all 24 full-precision Strata cases is 3.553e-14 (the old 5e-5 budget masked
+// roughly nine decimal digits).
+const TOL: f64 = 4.0e-14;
 
-// Slightly looser tolerance for in/out parity (accumulates two pricing errors).
-const PARITY_TOL: f64 = 1e-8;
+// The largest measured zero-rebate in/out-parity residual is 7.106e-15.
+const PARITY_TOL: f64 = 8.0e-15;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 

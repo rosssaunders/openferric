@@ -208,7 +208,7 @@ mod tests {
             .unwrap()
             .price;
 
-        assert_relative_eq!(price, 0.0199538, epsilon = 2e-6);
+        assert_relative_eq!(price, 0.019_953_800_723_103_543, epsilon = 2e-14);
     }
 
     #[test]

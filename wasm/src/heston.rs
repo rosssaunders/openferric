@@ -164,13 +164,13 @@ mod tests {
     #[test]
     fn heston_fft_price_reference_k100() {
         let price = heston_fft_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T).unwrap();
-        assert!((price - 16.070154917028834).abs() < 0.05);
+        assert!((price - 16.070_154_917_028_834).abs() < 5.0e-12);
     }
 
     #[test]
     fn heston_fft_price_reference_k80() {
         let price = heston_fft_price(SPOT, 80.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T).unwrap();
-        assert!((price - 26.774758743998854).abs() < 0.05);
+        assert!((price - 26.774_758_743_998_854).abs() < 5.0e-12);
     }
 
     #[test]
@@ -188,10 +188,14 @@ mod tests {
             T,
         )
         .unwrap();
-        assert_eq!(prices.len(), 3);
-        // Call prices decrease with strike
-        assert!(prices[0] > prices[1]);
-        assert!(prices[1] > prices[2]);
+        let expected = [
+            26.774_758_743_998_854,
+            16.070_154_917_028_834,
+            9.024_913_483_457_836,
+        ];
+        for (actual, reference) in prices.iter().zip(expected) {
+            assert!((actual - reference).abs() < 5.0e-12);
+        }
     }
 
     #[test]
@@ -213,14 +217,14 @@ mod tests {
     fn heston_price_call_reference() {
         let price =
             heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, true).unwrap();
-        assert!((price - 16.070154917028834).abs() < 0.05);
+        assert!((price - 16.070_154_917_028_834).abs() < 5.0e-12);
     }
 
     #[test]
     fn heston_price_put_reference() {
         let price =
             heston_price(SPOT, 100.0, R, Q, V0, KAPPA, THETA, SIGMA_V, RHO, T, false).unwrap();
-        assert!((price - 17.055_270_961_270_11).abs() < 0.05);
+        assert!((price - 17.055_270_961_270_11).abs() < 5.0e-12);
     }
 
     #[test]
@@ -232,7 +236,7 @@ mod tests {
         let fwd = SPOT * (-Q * T).exp();
         let pv_k = 100.0 * (-R * T).exp();
         let parity = call - put - (fwd - pv_k);
-        assert!(parity.abs() < 1e-4);
+        assert!(parity.abs() < 2.0e-12);
     }
 
     #[test]

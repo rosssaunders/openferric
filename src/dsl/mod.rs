@@ -117,11 +117,8 @@ product \"Forward\"
 
         // Redeem notional at T=1.0, discounted: 100 * exp(-0.05) ~ 95.12
         let expected = 100.0 * (-0.05f64).exp();
-        assert!(
-            (result.price - expected).abs() < 1.0,
-            "expected ~{expected}, got {}",
-            result.price
-        );
+        assert!((result.price - expected).abs() < 2.0e-12);
+        assert_eq!(result.stderr, Some(0.0));
     }
 
     #[test]
@@ -192,12 +189,18 @@ product \"WoF Autocall 18m\"
         let engine = DslMonteCarloEngine::new(50_000, 252, 42);
         let result = engine.price_multi_asset(&product, &market).unwrap();
 
+        // Independent randomized Sobol reference generated with SciPy 1.17.1
+        // (8 scrambles x 2^18 paths): 1,005,083.3866333935, replicate standard
+        // error 48.1392. Combine that uncertainty with this pseudo-MC run's
+        // reported standard error instead of accepting a broad price band.
+        let expected = 1_005_083.386_633_393_5;
+        let reference_stderr = 48.1392;
+        let combined_stderr = result.stderr.unwrap().hypot(reference_stderr);
         assert!(
-            result.price > 500_000.0 && result.price < 1_200_000.0,
-            "autocallable price {} out of expected range",
+            (result.price - expected).abs() <= 4.0 * combined_stderr,
+            "autocallable expected {expected}, got {}, combined stderr {combined_stderr}",
             result.price
         );
-        assert!(result.stderr.is_some());
     }
 
     #[test]
@@ -244,9 +247,15 @@ product \"Phoenix Memory\"
         let engine = DslMonteCarloEngine::new(50_000, 252, 42);
         let result = engine.price_multi_asset(&product, &market).unwrap();
 
+        // Independent randomized Sobol reference generated with SciPy 1.17.1
+        // (8 scrambles x 2^18 paths): 1,023,553.836864057, replicate standard
+        // error 4.5505.
+        let expected = 1_023_553.836_864_057;
+        let reference_stderr = 4.5505;
+        let combined_stderr = result.stderr.unwrap().hypot(reference_stderr);
         assert!(
-            result.price > 800_000.0 && result.price < 1_100_000.0,
-            "phoenix price {} out of expected range",
+            (result.price - expected).abs() <= 4.0 * combined_stderr,
+            "phoenix expected {expected}, got {}, combined stderr {combined_stderr}",
             result.price
         );
     }
@@ -274,10 +283,10 @@ product \"UnderlyingRef\"
 
         // redeem S(T): discounted forward = S0 = 100 (q=0); coupon = 8 discounted.
         let expected = 100.0 + 8.0 * (-0.05f64).exp();
-        let rel_err = ((result.price - expected) / expected).abs();
+        let stderr = result.stderr.unwrap();
         assert!(
-            rel_err < 0.02,
-            "expected ~{expected}, got {} (rel_err {rel_err})",
+            (result.price - expected).abs() <= 4.0 * stderr,
+            "expected {expected}, got {} (stderr {stderr})",
             result.price
         );
     }

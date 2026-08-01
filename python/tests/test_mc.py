@@ -33,7 +33,7 @@ def vanilla_price(**overrides):
 def test_vanilla_price_uses_exact_terminal_native_engine():
     result = vanilla_price()
 
-    assert result.price == pytest.approx(10.4506, abs=max(4.0 * result.stderr, 0.15))
+    assert result.price == pytest.approx(10.450583572185565, abs=4.0 * result.stderr + 2e-12)
     assert result.stderr > 0.0
     assert result.diagnostics.get("num_steps") == 1.0
 
@@ -64,8 +64,9 @@ def test_heston_custom_payoff_remains_supported():
 
     price, stderr = engine.run_heston(generator, lambda path: path[-1], 1.0)
 
-    assert math.isfinite(price)
-    assert price > 0.0
+    # Each log-Euler spot step has conditional mean exp(mu*dt), so the exact
+    # terminal-spot expectation is independent of the stochastic variance path.
+    assert price == pytest.approx(100.0 * math.exp(0.07 * 0.25), abs=4.0 * stderr)
     assert stderr > 0.0
 
 
@@ -328,9 +329,10 @@ def test_spread_price_rejects_out_of_domain_inputs(override):
 
 def test_spread_price_accepts_zero_volatility_and_expiry():
     deterministic = spread_price(vol1=0.0, vol2=0.0)
-    assert math.isfinite(deterministic.price)
+    expected = math.exp(-0.05) * (100.0 * math.exp(0.05) - 90.0 * math.exp(0.05) - 5.0)
+    assert deterministic.price == pytest.approx(expected, abs=16 * math.ulp(expected))
     assert deterministic.stderr == 0.0
 
     expired = spread_price(expiry=0.0)
-    assert expired.price == pytest.approx(5.0)
+    assert expired.price == 5.0
     assert expired.stderr == 0.0

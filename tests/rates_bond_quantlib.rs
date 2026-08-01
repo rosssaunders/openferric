@@ -3,9 +3,10 @@
 //! QuantLib — C++ finance library (BSD 3-Clause).
 //! Source: vendor/QuantLib/test-suite/bonds.cpp — testCachedFixed, testCachedZero
 //!
-//! Our API uses year-fraction maturity and continuous compounding rather than
-//! calendar-based schedules, so tolerances are relaxed to 1e-4 where
-//! calendar effects matter.
+//! Our API uses exact year-fraction schedules rather than QuantLib calendar
+//! dates, so the primary oracles below evaluate those cash flows directly at
+//! full `f64` precision. QuantLib's calendar-based cases are provenance, not a
+//! reason to admit source-rounding tolerances.
 //!
 //! Curve-based bond pricing discounts every cashflow with the curve's own
 //! discount factors (`curve.discount_factor(t)`); discrete compounding only
@@ -14,6 +15,76 @@
 use approx::assert_relative_eq;
 
 use openferric::rates::{DayCountConvention, FixedRateBond, YieldCurve};
+
+#[derive(Debug, Clone, Copy)]
+struct FlatBondReference {
+    price: f64,
+    duration: f64,
+    convexity: f64,
+}
+
+/// Independently evaluate the bond's regular cash flows under
+/// `DF(t) = exp(-r t)`, including the principal in the last payment.
+fn flat_continuous_reference(
+    face: f64,
+    coupon_rate: f64,
+    frequency: u32,
+    maturity: f64,
+    rate: f64,
+) -> FlatBondReference {
+    let m = frequency as f64;
+    let exact_periods = maturity * m;
+    let periods = exact_periods.round() as usize;
+    assert_eq!(exact_periods, periods as f64, "regular coupon schedule");
+
+    let coupon = face * coupon_rate / m;
+    let mut price = 0.0;
+    let mut first_moment = 0.0;
+    let mut second_moment = 0.0;
+    for period in 1..=periods {
+        let t = period as f64 / m;
+        let cashflow = coupon + if period == periods { face } else { 0.0 };
+        let pv = cashflow * (-rate * t).exp();
+        price += pv;
+        first_moment += t * pv;
+        second_moment += t * t * pv;
+    }
+
+    FlatBondReference {
+        price,
+        duration: first_moment / price,
+        convexity: second_moment / price,
+    }
+}
+
+/// Independently evaluate regular cash flows using an m-times compounded
+/// quoted yield, `DF(t) = (1 + y/m)^(-m t)`.
+fn quoted_yield_reference(
+    face: f64,
+    coupon_rate: f64,
+    frequency: u32,
+    maturity: f64,
+    yield_rate: f64,
+) -> f64 {
+    let m = frequency as f64;
+    let periods = (maturity * m).round() as usize;
+    let coupon = face * coupon_rate / m;
+    let base = 1.0 + yield_rate / m;
+    (1..=periods)
+        .map(|period| {
+            let cashflow = coupon + if period == periods { face } else { 0.0 };
+            cashflow * base.powf(-(period as f64))
+        })
+        .sum()
+}
+
+// Measured after comparing the independently evaluated cash-flow formulas
+// above with curve interpolation: price/reprice differences peak at 1.85e-13,
+// cash-flow moments are bit-exact on this grid, and YTM errors peak at 2.64e-16.
+// These are roundoff/solver budgets, not rounded-source-price tolerances.
+const PRICE_ROUNDOFF_BUDGET: f64 = 2.0e-13;
+const MOMENT_ROUNDOFF_BUDGET: f64 = 0.0;
+const YTM_SOLVER_BUDGET: f64 = 8.0e-16;
 
 /// Build a flat continuous yield curve: DF(t) = exp(-r t).
 fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
@@ -69,7 +140,13 @@ fn fixed_coupon_bond_par_pricing() {
             day_count: DayCountConvention::Act365Fixed,
         };
 
-        assert_relative_eq!(bond.dirty_price(&curve), 100.0, epsilon = 1.0e-6,);
+        let expected = quoted_yield_reference(100.0, coupon, freq, maturity, rate);
+        assert_relative_eq!(expected, 100.0, epsilon = PRICE_ROUNDOFF_BUDGET);
+        assert_relative_eq!(
+            bond.dirty_price(&curve),
+            expected,
+            epsilon = PRICE_ROUNDOFF_BUDGET,
+        );
     }
 }
 
@@ -89,9 +166,15 @@ fn fixed_coupon_bond_premium_and_discount() {
         maturity: 5.0,
         day_count: DayCountConvention::Act365Fixed,
     };
+    let premium_expected = flat_continuous_reference(100.0, 0.08, 2, 5.0, yield_rate).price;
+    assert_relative_eq!(
+        premium.dirty_price(&curve),
+        premium_expected,
+        epsilon = PRICE_ROUNDOFF_BUDGET,
+    );
     assert!(
-        premium.dirty_price(&curve) > 100.0,
-        "Premium bond must price above par"
+        premium_expected > 100.0,
+        "premium reference must exceed par"
     );
 
     // Discount bond: 2% coupon on 5% curve
@@ -102,9 +185,15 @@ fn fixed_coupon_bond_premium_and_discount() {
         maturity: 5.0,
         day_count: DayCountConvention::Act365Fixed,
     };
+    let discount_expected = flat_continuous_reference(100.0, 0.02, 2, 5.0, yield_rate).price;
+    assert_relative_eq!(
+        discount.dirty_price(&curve),
+        discount_expected,
+        epsilon = PRICE_ROUNDOFF_BUDGET,
+    );
     assert!(
-        discount.dirty_price(&curve) < 100.0,
-        "Discount bond must price below par"
+        discount_expected < 100.0,
+        "discount reference must be below par"
     );
 }
 
@@ -115,10 +204,6 @@ fn fixed_coupon_bond_premium_and_discount() {
 /// PV = C/m * sum_{k=1..n*m} exp(-r * k/m) + 100 * exp(-r * n)
 ///
 /// With q = exp(-r/m), the coupon annuity is q (1 - q^{n m}) / (1 - q).
-/// For r = 0.05:
-///   8% semi 10Y: 4 * 15.5428625 + 100 e^{-0.5}  = 122.8245006
-///   2% semi 10Y: 1 * 15.5428625 + 100 e^{-0.5}  =  76.1959246
-///   5% annual 30Y: 5 * 15.1522902 + 100 e^{-1.5} = 98.0740095
 /// (a 5% annual bond is below par on a 5% continuous curve, since the
 /// annually-compounded equivalent yield e^{0.05} - 1 = 5.127% exceeds 5%).
 #[test]
@@ -130,9 +215,6 @@ fn fixed_coupon_bond_cached_values() {
         coupon_rate: f64,
         frequency: u32,
         maturity: f64,
-        // Expected dirty price (closed-form continuous discounting, above)
-        expected_dirty_price: f64,
-        tolerance: f64,
     }
 
     let cases = vec![
@@ -141,24 +223,18 @@ fn fixed_coupon_bond_cached_values() {
             coupon_rate: 0.08,
             frequency: 2,
             maturity: 10.0,
-            expected_dirty_price: 122.8245006, // PV of premium bond
-            tolerance: 1.0e-6,
         },
         // 2% semiannual 10Y on 5% flat continuous curve
         BondCase {
             coupon_rate: 0.02,
             frequency: 2,
             maturity: 10.0,
-            expected_dirty_price: 76.1959246, // PV of discount bond
-            tolerance: 1.0e-6,
         },
         // 5% annual 30Y on 5% flat continuous curve
         BondCase {
             coupon_rate: 0.05,
             frequency: 1,
             maturity: 30.0,
-            expected_dirty_price: 98.0740095,
-            tolerance: 1.0e-6,
         },
     ];
 
@@ -170,8 +246,14 @@ fn fixed_coupon_bond_cached_values() {
             maturity: case.maturity,
             day_count: DayCountConvention::Act365Fixed,
         };
-        let price = bond.dirty_price(&curve);
-        assert_relative_eq!(price, case.expected_dirty_price, epsilon = case.tolerance,);
+        let expected =
+            flat_continuous_reference(100.0, case.coupon_rate, case.frequency, case.maturity, rate)
+                .price;
+        assert_relative_eq!(
+            bond.dirty_price(&curve),
+            expected,
+            epsilon = PRICE_ROUNDOFF_BUDGET,
+        );
     }
 }
 
@@ -197,7 +279,7 @@ fn zero_coupon_bond_cached_values() {
         // so on a flat continuous curve price = 100 * exp(-r * t).
         let price = bond.dirty_price(&curve);
         let expected = 100.0 * (-rate * maturity).exp();
-        assert_relative_eq!(price, expected, epsilon = 1.0e-6,);
+        assert_relative_eq!(price, expected, epsilon = PRICE_ROUNDOFF_BUDGET,);
         // Must be below par for positive rates
         assert!(
             price < 100.0,
@@ -221,7 +303,7 @@ fn ytm_par_bond_equals_coupon_rate() {
             day_count: DayCountConvention::Act365Fixed,
         };
         let ytm = bond.ytm(100.0);
-        assert_relative_eq!(ytm, coupon, epsilon = 1.0e-8,);
+        assert_relative_eq!(ytm, coupon, epsilon = YTM_SOLVER_BUDGET,);
     }
 }
 
@@ -242,12 +324,19 @@ fn ytm_round_trip() {
     let price = bond.dirty_price(&curve);
     let ytm = bond.ytm(price);
 
+    let expected_price = flat_continuous_reference(100.0, 0.04, 2, 10.0, rate).price;
+    let expected_ytm = 2.0 * ((rate / 2.0).exp() - 1.0);
+    assert_relative_eq!(price, expected_price, epsilon = PRICE_ROUNDOFF_BUDGET);
+    assert_relative_eq!(ytm, expected_ytm, epsilon = YTM_SOLVER_BUDGET);
+
     // Re-price on a curve embedding the YTM's own compounding convention,
     // DF(t) = (1 + y/m)^(-m t): the round-trip must recover the price exactly.
     let ytm_curve = flat_compounded_curve(ytm, 2, 12.0);
     let reprice = bond.dirty_price(&ytm_curve);
 
-    assert_relative_eq!(reprice, price, epsilon = 1.0e-8);
+    let direct_reprice = quoted_yield_reference(100.0, 0.04, 2, 10.0, ytm);
+    assert_relative_eq!(direct_reprice, price, epsilon = PRICE_ROUNDOFF_BUDGET);
+    assert_relative_eq!(reprice, price, epsilon = PRICE_ROUNDOFF_BUDGET);
 }
 
 // ── Duration and Convexity ──────────────────────────────────────────────────
@@ -266,14 +355,17 @@ fn duration_zero_coupon_bond_equals_maturity() {
             maturity,
             day_count: DayCountConvention::Act365Fixed,
         };
-        assert_relative_eq!(bond.duration(&curve), maturity, epsilon = 1.0e-10,);
+        assert_relative_eq!(
+            bond.duration(&curve),
+            maturity,
+            epsilon = MOMENT_ROUNDOFF_BUDGET,
+        );
     }
 }
 
-/// Duration must be positive for coupon bonds with positive maturity.
-/// Convexity must be positive.
+/// Duration and convexity equal the first two discounted cash-flow moments.
 #[test]
-fn duration_and_convexity_are_positive() {
+fn duration_and_convexity_match_discounted_cashflow_moments() {
     let rate = 0.05;
     let curve = flat_curve(rate, 12.0);
 
@@ -285,10 +377,21 @@ fn duration_and_convexity_are_positive() {
         day_count: DayCountConvention::Act365Fixed,
     };
 
-    assert!(bond.duration(&curve) > 0.0);
-    assert!(bond.convexity(&curve) > 0.0);
-    // Duration must be less than maturity for coupon bonds
-    assert!(bond.duration(&curve) < 10.0);
+    let expected = flat_continuous_reference(100.0, 0.06, 2, 10.0, rate);
+    let duration = bond.duration(&curve);
+    let convexity = bond.convexity(&curve);
+    assert_relative_eq!(
+        duration,
+        expected.duration,
+        epsilon = MOMENT_ROUNDOFF_BUDGET,
+    );
+    assert_relative_eq!(
+        convexity,
+        expected.convexity,
+        epsilon = MOMENT_ROUNDOFF_BUDGET,
+    );
+    assert!(duration > 0.0 && duration < 10.0);
+    assert!(convexity > 0.0);
 }
 
 /// Accrued interest at settlement = 0 is zero.
@@ -304,12 +407,12 @@ fn accrued_interest_basic_cases() {
     };
 
     // Settlement at a coupon date → zero accrued
-    assert_relative_eq!(bond.accrued_interest(0.5), 0.0, epsilon = 1.0e-12);
-    assert_relative_eq!(bond.accrued_interest(1.0), 0.0, epsilon = 1.0e-12);
+    assert_eq!(bond.accrued_interest(0.5), 0.0);
+    assert_eq!(bond.accrued_interest(1.0), 0.0);
 
     // Settlement at mid-period → half a coupon
     let half_coupon = 100.0 * 0.06 / 2.0 * 0.5; // = 1.5
-    assert_relative_eq!(bond.accrued_interest(0.25), half_coupon, epsilon = 1.0e-12);
+    assert_eq!(bond.accrued_interest(0.25), half_coupon);
 }
 
 /// Clean price = dirty price at settlement - accrued interest, with the
@@ -353,15 +456,19 @@ fn clean_price_equals_settlement_dirty_minus_accrued() {
     let accrued = bond.accrued_interest(settlement);
     let clean = bond.clean_price(&curve, settlement);
 
-    assert_relative_eq!(dirty, 105.402903895, epsilon = 1.0e-9);
-    assert_relative_eq!(accrued, 1.5, epsilon = 1.0e-12);
-    assert_relative_eq!(clean, dirty - accrued, epsilon = 1.0e-12);
-    assert_relative_eq!(clean, 103.902903895, epsilon = 1.0e-9);
+    let expected_dirty =
+        flat_continuous_reference(100.0, 0.06, 2, 5.0, rate).price / (-rate * settlement).exp();
+    let expected_accrued = 1.5;
+    let expected_clean = expected_dirty - expected_accrued;
+
+    assert_relative_eq!(dirty, expected_dirty, epsilon = PRICE_ROUNDOFF_BUDGET);
+    assert_eq!(accrued, expected_accrued);
+    assert_relative_eq!(clean, expected_clean, epsilon = PRICE_ROUNDOFF_BUDGET);
 
     // Settlement 0 degenerates to today's dirty price (accrued(0) = 0).
     assert_relative_eq!(
         bond.clean_price(&curve, 0.0),
         bond.dirty_price(&curve),
-        epsilon = 1.0e-12
+        epsilon = PRICE_ROUNDOFF_BUDGET,
     );
 }

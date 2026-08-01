@@ -122,7 +122,7 @@ mod tests {
 
     use super::{
         FUNDING_RATE_BUMP_BP, funding_rate_swap_discount_dv01, funding_rate_swap_dv01,
-        funding_rate_swap_mtm,
+        funding_rate_swap_mtm, funding_rate_swap_risks,
     };
     use crate::instruments::FundingRateSwap;
     use crate::rates::{FundingRateCurve, YieldCurve};
@@ -204,5 +204,35 @@ mod tests {
             0.0,
             epsilon = 1.0e-12
         );
+    }
+
+    #[test]
+    fn aggregate_risks_match_discrete_cashflow_references() {
+        let swap = FundingRateSwap {
+            notional: 5_000.0,
+            fixed_rate: 0.04,
+            entry_time: dt(2026, 1, 1, 0),
+            maturity: dt(2026, 1, 2, 0),
+            settlement_interval_hours: 8,
+            venue: "OKX".to_string(),
+            asset: "ETHUSDT".to_string(),
+        };
+        let curve = FundingRateCurve::flat(0.05);
+        let as_of = swap.entry_time;
+        let interval_pnl = (0.05 - swap.fixed_rate) * swap.notional * swap.interval_year_fraction();
+        let risks = funding_rate_swap_risks(&swap, &curve, None, as_of);
+
+        assert_relative_eq!(risks.mtm, 3.0 * interval_pnl, epsilon = 1.0e-12);
+        assert_relative_eq!(
+            risks.dv01,
+            3.0 * swap.notional * swap.interval_year_fraction() * FUNDING_RATE_BUMP_BP,
+            epsilon = 1.0e-12
+        );
+        // FundingRateCurve currently has no volatility state, so its documented
+        // volatility shift is a no-op and vega is exactly zero.
+        assert_relative_eq!(risks.vega, 0.0, epsilon = 1.0e-15);
+        // Advancing to the first settlement removes exactly one undiscounted
+        // interval from the remaining MTM.
+        assert_relative_eq!(risks.theta, -interval_pnl, epsilon = 1.0e-12);
     }
 }

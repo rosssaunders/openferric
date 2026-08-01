@@ -14,7 +14,6 @@
 // Mapping: Strata uses cost_of_carry = b where b = r - q.
 // With b = 0.05, dividend_yield = rate - 0.05.
 
-use approx::assert_relative_eq;
 use openferric::core::OptionType;
 use openferric::engines::analytic::black_scholes::{
     bs_delta, bs_gamma, bs_price, bs_rho, bs_theta, bs_vega,
@@ -127,6 +126,20 @@ const PRECOMPUTED_CALL_PRICE: [[[f64; 7]; 7]; 9] = [
 /// Strata convention: b = r - q, so q = r - b.
 fn div_yield(rate: f64) -> f64 {
     rate - COST_OF_CARRY
+}
+
+/// Strata and openferric both evaluate the same binary64 closed form.  Allow
+/// only accumulated floating-point roundoff between the independently
+/// implemented Java and Rust paths; this is not an economic price tolerance.
+fn assert_strata_price(label: &str, actual: f64, expected: f64) {
+    // The stable log-domain path differs from Strata's operation ordering by
+    // at most 18 scaled epsilons across this grid; keep one power-of-two guard.
+    let tolerance = 32.0 * f64::EPSILON * expected.abs().max(1.0);
+    let error = (actual - expected).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: expected={expected:.17e}, actual={actual:.17e}, error={error:.3e}, binary64 budget={tolerance:.3e}"
+    );
 }
 
 // ============================================================================
@@ -309,16 +322,11 @@ fn strata_call_prices_representative_subset() {
 
         let price = bs_price(OptionType::Call, SPOT, strike, rate, q, vol, EXPIRY);
 
-        // Tolerance 1e-4: our FMA-optimized BS kernel produces minor floating-point
-        // differences from the scalar formula Strata uses.
-        let err = (price - expected).abs();
-        assert!(
-            err < 1e-4,
-            "case {idx}: K={strike} vol={vol} r={rate} q={q} expected={expected} got={price} err={err:.2e}"
+        assert_strata_price(
+            &format!("representative case {idx}: K={strike} vol={vol} r={rate} q={q}"),
+            price,
+            expected,
         );
-
-        // Also check relative error is extremely small
-        assert_relative_eq!(price, expected, epsilon = 1e-4,);
     }
 }
 
@@ -336,11 +344,10 @@ fn strata_call_prices_full_grid() {
                 let expected = PRECOMPUTED_CALL_PRICE[i][j][k];
                 let price = bs_price(OptionType::Call, SPOT, strike, rate, q, vol, EXPIRY);
 
-                let err = (price - expected).abs();
-                assert!(
-                    err < 1e-4,
-                    "grid [{i}][{j}][{k}]: K={strike} vol={vol} r={rate} q={q} \
-                     expected={expected} got={price} err={err:.2e}"
+                assert_strata_price(
+                    &format!("grid [{i}][{j}][{k}]: K={strike} vol={vol} r={rate} q={q}"),
+                    price,
+                    expected,
                 );
                 count += 1;
             }
@@ -379,13 +386,16 @@ fn strata_put_call_parity() {
         let put = bs_price(OptionType::Put, SPOT, strike, rate, q, vol, EXPIRY);
 
         let forward_diff = SPOT * (-q * EXPIRY).exp() - strike * (-rate * EXPIRY).exp();
-        let parity_err = ((call - put) - forward_diff).abs();
+        let lhs = call - put;
+        let parity_err = (lhs - forward_diff).abs();
+        let roundoff_budget =
+            64.0 * f64::EPSILON * (call.abs() + put.abs() + forward_diff.abs()).max(1.0);
 
         assert!(
-            parity_err < 1e-10,
+            parity_err <= roundoff_budget,
             "put-call parity violated: K={strike} vol={vol} r={rate} q={q} \
-             C-P={} fwd_diff={forward_diff} err={parity_err:.2e}",
-            call - put
+             C-P={lhs} fwd_diff={forward_diff} err={parity_err:.3e} \
+             roundoff_budget={roundoff_budget:.3e}"
         );
     }
 }
@@ -394,14 +404,91 @@ fn strata_put_call_parity() {
 // Test 4: Greeks via finite differences
 // ============================================================================
 
-const FD_BUMP: f64 = 1e-5;
-// Absolute tolerance for finite-difference Greek checks. The FMA-optimized BS
-// kernel on x86_64 introduces tiny floating-point differences (~1e-6 in price)
-// that get amplified by the FD quotient, so we allow up to 1e-3 absolute error
-// in the Greek values.
-const GREEK_ABS_TOL: f64 = 1e-3;
-// Relative tolerance for Greek FD checks.
-const GREEK_REL_TOL: f64 = 1e-4;
+#[derive(Debug, Clone, Copy)]
+struct FdEstimate {
+    value: f64,
+    truncation: f64,
+    roundoff: f64,
+}
+
+/// Fourth-order Richardson estimate built from three central differences.
+/// The difference between successive Richardson levels measures the remaining
+/// O(h^4) truncation term.  The roundoff term follows directly from the
+/// differencing weights and the largest sampled price.
+fn first_derivative_with_budget(f: impl Fn(f64) -> f64, x: f64, h: f64) -> FdEstimate {
+    let h2 = 0.5 * h;
+    let h4 = 0.25 * h;
+    let samples = [
+        f(x + h),
+        f(x - h),
+        f(x + h2),
+        f(x - h2),
+        f(x + h4),
+        f(x - h4),
+    ];
+    let d_h = (samples[0] - samples[1]) / (2.0 * h);
+    let d_h2 = (samples[2] - samples[3]) / (2.0 * h2);
+    let d_h4 = (samples[4] - samples[5]) / (2.0 * h4);
+    let richardson_h = d_h2 + (d_h2 - d_h) / 3.0;
+    let richardson_h2 = d_h4 + (d_h4 - d_h2) / 3.0;
+    let sample_scale = samples
+        .iter()
+        .fold(1.0_f64, |scale, value| scale.max(value.abs()));
+
+    FdEstimate {
+        value: richardson_h2,
+        truncation: (richardson_h2 - richardson_h).abs() / 15.0,
+        roundoff: 64.0 * f64::EPSILON * sample_scale / h4,
+    }
+}
+
+/// Fourth-order Richardson estimate for a second derivative.  Gamma uses a
+/// price second difference (rather than differentiating the analytic delta),
+/// so the check remains independent of the implementation under test.
+fn second_derivative_with_budget(f: impl Fn(f64) -> f64, x: f64, h: f64) -> FdEstimate {
+    let h2 = 0.5 * h;
+    let h4 = 0.25 * h;
+    let center = f(x);
+    let samples = [
+        f(x + h),
+        f(x - h),
+        f(x + h2),
+        f(x - h2),
+        f(x + h4),
+        f(x - h4),
+    ];
+    let d_h = (samples[0] - 2.0 * center + samples[1]) / h.powi(2);
+    let d_h2 = (samples[2] - 2.0 * center + samples[3]) / h2.powi(2);
+    let d_h4 = (samples[4] - 2.0 * center + samples[5]) / h4.powi(2);
+    let richardson_h = d_h2 + (d_h2 - d_h) / 3.0;
+    let richardson_h2 = d_h4 + (d_h4 - d_h2) / 3.0;
+    let sample_scale = samples
+        .iter()
+        .chain(std::iter::once(&center))
+        .fold(1.0_f64, |scale, value| scale.max(value.abs()));
+
+    FdEstimate {
+        value: richardson_h2,
+        truncation: (richardson_h2 - richardson_h).abs() / 15.0,
+        roundoff: 128.0 * f64::EPSILON * sample_scale / h4.powi(2),
+    }
+}
+
+fn assert_greek_matches_fd(label: &str, analytic: f64, fd: FdEstimate) {
+    // A factor of four covers non-asymptotic variation in the measured
+    // Richardson remainder.  Every other term is an explicit binary64
+    // operation-count allowance rather than a blanket Greek tolerance.
+    let analytic_roundoff = 64.0 * f64::EPSILON * analytic.abs().max(1.0);
+    let tolerance = 4.0 * fd.truncation + fd.roundoff + analytic_roundoff;
+    let error = (analytic - fd.value).abs();
+    assert!(
+        error <= tolerance,
+        "{label}: analytic={analytic:.17e}, fd={:.17e}, error={error:.3e}, truncation={:.3e}, roundoff={:.3e}, total_budget={tolerance:.3e}",
+        fd.value,
+        fd.truncation,
+        fd.roundoff,
+    );
+}
 
 #[test]
 fn strata_greeks_delta_finite_diff() {
@@ -413,20 +500,21 @@ fn strata_greeks_delta_finite_diff() {
         let vol = VOLS[vi];
         let rate = RATES[ri];
         let q = div_yield(rate);
-        let ds = SPOT * FD_BUMP;
+        let ds = SPOT * 1.0e-2;
 
         for &opt in &[OptionType::Call, OptionType::Put] {
             let delta_analytic = bs_delta(opt, SPOT, strike, rate, q, vol, EXPIRY);
 
-            let p_up = bs_price(opt, SPOT + ds, strike, rate, q, vol, EXPIRY);
-            let p_dn = bs_price(opt, SPOT - ds, strike, rate, q, vol, EXPIRY);
-            let delta_fd = (p_up - p_dn) / (2.0 * ds);
+            let delta_fd = first_derivative_with_budget(
+                |spot| bs_price(opt, spot, strike, rate, q, vol, EXPIRY),
+                SPOT,
+                ds,
+            );
 
-            assert_relative_eq!(
+            assert_greek_matches_fd(
+                &format!("delta {opt:?}: K={strike} vol={vol} r={rate}"),
                 delta_analytic,
                 delta_fd,
-                max_relative = GREEK_REL_TOL,
-                epsilon = GREEK_ABS_TOL,
             );
         }
     }
@@ -442,21 +530,20 @@ fn strata_greeks_gamma_finite_diff() {
         let vol = VOLS[vi];
         let rate = RATES[ri];
         let q = div_yield(rate);
-        let ds = SPOT * FD_BUMP;
+        let ds = SPOT * 2.0e-2;
 
         let gamma_analytic = bs_gamma(SPOT, strike, rate, q, vol, EXPIRY);
 
-        // Second derivative: (P(S+h) - 2*P(S) + P(S-h)) / h^2
-        let p_up = bs_price(OptionType::Call, SPOT + ds, strike, rate, q, vol, EXPIRY);
-        let p_mid = bs_price(OptionType::Call, SPOT, strike, rate, q, vol, EXPIRY);
-        let p_dn = bs_price(OptionType::Call, SPOT - ds, strike, rate, q, vol, EXPIRY);
-        let gamma_fd = (p_up - 2.0 * p_mid + p_dn) / (ds * ds);
+        let gamma_fd = second_derivative_with_budget(
+            |spot| bs_price(OptionType::Call, spot, strike, rate, q, vol, EXPIRY),
+            SPOT,
+            ds,
+        );
 
-        assert_relative_eq!(
+        assert_greek_matches_fd(
+            &format!("gamma: K={strike} vol={vol} r={rate}"),
             gamma_analytic,
             gamma_fd,
-            max_relative = GREEK_REL_TOL,
-            epsilon = GREEK_ABS_TOL,
         );
     }
 }
@@ -471,19 +558,20 @@ fn strata_greeks_vega_finite_diff() {
         let vol = VOLS[vi];
         let rate = RATES[ri];
         let q = div_yield(rate);
-        let dv = vol * FD_BUMP;
+        let dv = vol * 1.0e-2;
 
         let vega_analytic = bs_vega(SPOT, strike, rate, q, vol, EXPIRY);
 
-        let p_up = bs_price(OptionType::Call, SPOT, strike, rate, q, vol + dv, EXPIRY);
-        let p_dn = bs_price(OptionType::Call, SPOT, strike, rate, q, vol - dv, EXPIRY);
-        let vega_fd = (p_up - p_dn) / (2.0 * dv);
+        let vega_fd = first_derivative_with_budget(
+            |sigma| bs_price(OptionType::Call, SPOT, strike, rate, q, sigma, EXPIRY),
+            vol,
+            dv,
+        );
 
-        assert_relative_eq!(
+        assert_greek_matches_fd(
+            &format!("vega: K={strike} vol={vol} r={rate}"),
             vega_analytic,
             vega_fd,
-            max_relative = GREEK_REL_TOL,
-            epsilon = GREEK_ABS_TOL,
         );
     }
 }
@@ -501,21 +589,25 @@ fn strata_greeks_theta_finite_diff() {
         let vol = VOLS[vi];
         let rate = RATES[ri];
         let q = div_yield(rate);
-        let dt = EXPIRY * FD_BUMP;
+        let dt = EXPIRY * 1.0e-2;
 
         for &opt in &[OptionType::Call, OptionType::Put] {
             let theta_analytic = bs_theta(opt, SPOT, strike, rate, q, vol, EXPIRY);
 
-            let p_up = bs_price(opt, SPOT, strike, rate, q, vol, EXPIRY + dt);
-            let p_dn = bs_price(opt, SPOT, strike, rate, q, vol, EXPIRY - dt);
-            let dp_dt = (p_up - p_dn) / (2.0 * dt);
+            let dp_dt = first_derivative_with_budget(
+                |expiry| bs_price(opt, SPOT, strike, rate, q, vol, expiry),
+                EXPIRY,
+                dt,
+            );
 
             // theta_analytic = -dP/dT (standard convention: time passes => T decreases)
-            assert_relative_eq!(
+            assert_greek_matches_fd(
+                &format!("theta {opt:?}: K={strike} vol={vol} r={rate}"),
                 theta_analytic,
-                -dp_dt,
-                max_relative = GREEK_REL_TOL,
-                epsilon = GREEK_ABS_TOL,
+                FdEstimate {
+                    value: -dp_dt.value,
+                    ..dp_dt
+                },
             );
         }
     }
@@ -532,20 +624,21 @@ fn strata_greeks_rho_finite_diff() {
         let vol = VOLS[vi];
         let rate = RATES[ri];
         let q = div_yield(rate);
-        let dr = FD_BUMP;
+        let dr = 1.0e-3;
 
         for &opt in &[OptionType::Call, OptionType::Put] {
             let rho_analytic = bs_rho(opt, SPOT, strike, rate, q, vol, EXPIRY);
 
-            let p_up = bs_price(opt, SPOT, strike, rate + dr, q, vol, EXPIRY);
-            let p_dn = bs_price(opt, SPOT, strike, rate - dr, q, vol, EXPIRY);
-            let rho_fd = (p_up - p_dn) / (2.0 * dr);
+            let rho_fd = first_derivative_with_budget(
+                |bumped_rate| bs_price(opt, SPOT, strike, bumped_rate, q, vol, EXPIRY),
+                rate,
+                dr,
+            );
 
-            assert_relative_eq!(
+            assert_greek_matches_fd(
+                &format!("rho {opt:?}: K={strike} vol={vol} r={rate}"),
                 rho_analytic,
                 rho_fd,
-                max_relative = GREEK_REL_TOL,
-                epsilon = GREEK_ABS_TOL,
             );
         }
     }

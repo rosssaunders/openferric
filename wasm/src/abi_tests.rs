@@ -8,17 +8,107 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 use super::{dsl, pricing};
 
+fn assert_roundoff_close(actual: f64, expected: f64, label: &str) {
+    let budget = 256.0 * f64::EPSILON * expected.abs().max(1.0);
+    assert!(
+        (actual - expected).abs() <= budget,
+        "{label}: actual={actual:.17e}, reference={expected:.17e}, budget={budget:.3e}"
+    );
+}
+
+// The uniform batch kernel deliberately uses the Abramowitz-Stegun 7.1.26
+// CDF approximation. These are measured worst-case absolute errors against
+// the cached SciPy closed-form values on the grids below, with only a small
+// final-digit allowance. They are not generic price/Greek acceptance ranges.
+const BATCH_ANALYTIC_BUDGETS: [f64; 5] = [1.3e-5, 7.2e-8, 3.0e-15, 5.0e-12, 3.3e-7];
+
+// Cached A&S grid values isolate implementation roundoff from the documented
+// approximation error above. SIMD128 evaluates the same f64 polynomial with
+// separate lane operations; the portable path uses scalar `mul_add`.
+#[cfg(all(feature = "simd", target_feature = "simd128"))]
+const BATCH_KERNEL_ROUNDOFF_ULPS: f64 = 256.0;
+#[cfg(not(all(feature = "simd", target_feature = "simd128")))]
+const BATCH_KERNEL_ROUNDOFF_ULPS: f64 = 64.0;
+
+fn assert_batch_row(
+    actual: [f64; 5],
+    analytic: [f64; 5],
+    approximation_grid: [f64; 5],
+    label: &str,
+) {
+    const FIELDS: [&str; 5] = ["price", "delta", "gamma", "vega", "theta"];
+    for field in 0..FIELDS.len() {
+        let approximation_error = (actual[field] - analytic[field]).abs();
+        assert!(
+            approximation_error <= BATCH_ANALYTIC_BUDGETS[field],
+            "{label} {}: actual={:.17e}, analytic={:.17e}, error={:.3e}, budget={:.3e}",
+            FIELDS[field],
+            actual[field],
+            analytic[field],
+            approximation_error,
+            BATCH_ANALYTIC_BUDGETS[field]
+        );
+
+        let roundoff_budget =
+            BATCH_KERNEL_ROUNDOFF_ULPS * f64::EPSILON * approximation_grid[field].abs().max(1.0);
+        let roundoff_error = (actual[field] - approximation_grid[field]).abs();
+        assert!(
+            roundoff_error <= roundoff_budget,
+            "{label} {} kernel: actual={:.17e}, A&S grid={:.17e}, error={:.3e}, budget={:.3e}",
+            FIELDS[field],
+            actual[field],
+            approximation_grid[field],
+            roundoff_error,
+            roundoff_budget
+        );
+    }
+}
+
 #[wasm_bindgen_test]
 fn implied_vol_export_round_trips_through_wasm() {
     let call =
         pricing::bs_price(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true).expect("valid call inputs");
     let implied = pricing::bs_implied_vol(call, 100.0, 100.0, 0.05, 0.0, 1.0, true)
         .expect("price generated from Black-Scholes has an implied volatility");
-    assert!((implied - 0.20).abs() < 1.0e-8);
+    assert!((implied - 0.20).abs() <= 1.0e-12);
 }
 
 #[wasm_bindgen_test]
 fn slice_and_vector_exports_preserve_shape_and_values() {
+    // scipy.stats.norm 1.17.1 closed-form references. Rows are
+    // [price, delta, gamma, vega, theta, rho, vanna, volga].
+    const SCIPY: [[f64; 8]; 3] = [
+        [
+            19.256_744_296_451_643,
+            -0.997_728_343_542_620_7,
+            0.001_186_078_233_901_680_7,
+            0.284_658_776_136_403_4,
+            2.886_852_720_554_918_2,
+            -24.768_752_944_965_325,
+            0.138_189_849_348_209_52,
+            15.685_915_156_123_569,
+        ],
+        [
+            11.235_557_594_039_619,
+            0.590_833_805_852_729_6,
+            0.015_331_789_545_074_541,
+            38.329_473_862_686_356,
+            -6.114_263_346_632_399,
+            47.847_822_991_233_33,
+            0.007_665_894_772_537_278,
+            -0.187_814_421_927_163_33,
+        ],
+        [
+            10.007_353_474_594_296,
+            -0.221_505_887_327_483_83,
+            0.004_918_244_023_908_108,
+            49.575_899_760_993_735,
+            -3.040_102_360_978_294_4,
+            -73.176_119_907_784_68,
+            -0.202_049_710_504_194_12,
+            25.272_716_549_454_152,
+        ],
+    ];
     let spots = [80.0, 100.0, 120.0];
     let strikes = [100.0, 100.0, 100.0];
     let rates = [0.03, 0.04, 0.05];
@@ -43,7 +133,9 @@ fn slice_and_vector_exports_preserve_shape_and_values() {
             is_calls[index] != 0,
         )
         .expect("valid scalar batch member");
-        assert!((batch[index] - scalar).abs() < 1.0e-12);
+        assert_roundoff_close(scalar, SCIPY[index][0], "scalar price vs SciPy");
+        assert_roundoff_close(batch[index], SCIPY[index][0], "batch price vs SciPy");
+        assert_eq!(batch[index].to_bits(), scalar.to_bits());
     }
 
     let greeks = pricing::bsm_greeks_batch_wasm(
@@ -51,7 +143,15 @@ fn slice_and_vector_exports_preserve_shape_and_values() {
     )
     .expect("matching batch lengths");
     assert_eq!(greeks.len(), spots.len() * 7);
-    assert!(greeks.iter().all(|value| value.is_finite()));
+    for index in 0..spots.len() {
+        for greek in 0..7 {
+            assert_roundoff_close(
+                greeks[index * 7 + greek],
+                SCIPY[index][greek + 1],
+                "batch Greek vs SciPy",
+            );
+        }
+    }
 }
 
 #[wasm_bindgen_test]
@@ -217,6 +317,25 @@ fn remaining_batch_exports_reject_mismatched_lengths_without_trapping() {
 
 #[wasm_bindgen_test]
 fn vector_return_values_remain_independent_across_calls() {
+    // Independent scipy.stats.norm 1.17.1 references for all seven Greeks.
+    const FIRST: [f64; 7] = [
+        0.636_830_651_175_619_1,
+        0.018_762_017_345_846_895,
+        37.524_034_691_693_79,
+        -6.414_027_546_438_197,
+        53.232_481_545_376_345,
+        -0.281_430_260_187_703_45,
+        9.850_059_106_569_622,
+    ];
+    const SECOND: [f64; 7] = [
+        -0.841_792_038_504_025_8,
+        0.010_190_287_964_317_096,
+        13.043_568_594_325_887,
+        -7.566_600_243_802_140_5,
+        -50.115_277_223_267_25,
+        0.761_120_212_289_303,
+        44.670_713_225_205_41,
+    ];
     let first = pricing::bsm_greeks_wasm(100.0, 100.0, 0.05, 0.0, 0.20, 1.0, true)
         .expect("valid first option");
     let second = pricing::bsm_greeks_wasm(80.0, 110.0, -0.01, 0.02, 0.40, 0.5, false)
@@ -224,9 +343,10 @@ fn vector_return_values_remain_independent_across_calls() {
 
     assert_eq!(first.len(), 7);
     assert_eq!(second.len(), 7);
-    assert!(first.iter().all(|value| value.is_finite()));
-    assert!(second.iter().all(|value| value.is_finite()));
-    assert_ne!(first, second);
+    for greek in 0..7 {
+        assert_roundoff_close(first[greek], FIRST[greek], "first scalar Greek vs SciPy");
+        assert_roundoff_close(second[greek], SECOND[greek], "second scalar Greek vs SciPy");
+    }
 }
 
 #[wasm_bindgen_test]
@@ -241,7 +361,165 @@ fn uniform_analytic_batches_match_scalar_exports_and_cover_f64x2_tail() {
     let vol = 0.27;
     let expiry = 1.4;
 
-    for is_call in [false, true] {
+    // scipy.stats.norm 1.17.1 closed-form references, [price, delta, gamma,
+    // vega, theta], ordered as puts then calls.
+    const ANALYTIC: [[[f64; 5]; 5]; 2] = [
+        [
+            [
+                26.902_156_828_552_96,
+                -0.765_711_631_470_484_9,
+                0.012_701_528_416_451_334,
+                24.889_305_411_514_04,
+                -0.190_446_213_967_233_82,
+            ],
+            [
+                11.911_230_862_887_805,
+                -0.442_420_553_294_698_87,
+                0.013_387_646_298_840_055,
+                41.906_251_422_262_51,
+                -2.698_080_660_328_436,
+            ],
+            [
+                10.785_641_740_665_284,
+                -0.390_611_091_035_622_64,
+                0.011_869_910_877_981_915,
+                44.868_263_118_771_644,
+                -3.050_679_544_719_192,
+            ],
+            [
+                7.392_265_337_949_354,
+                -0.269_927_703_883_271_9,
+                0.008_770_427_956_695_85,
+                45.382_070_777_101_19,
+                -3.391_023_515_528_074,
+            ],
+            [
+                3.709_610_860_637_326_4,
+                -0.137_348_317_187_422_21,
+                0.004_783_372_691_996_976,
+                36.974_141_131_528_25,
+                -2.983_788_613_759_915,
+            ],
+        ],
+        [
+            [
+                2.484_547_837_295_997,
+                0.217_628_701_565_536_3,
+                0.012_701_528_416_451_334,
+                24.889_305_411_514_04,
+                -2.673_474_120_168_879_4,
+            ],
+            [
+                10.937_993_847_807_753,
+                0.540_919_779_741_322_3,
+                0.013_387_646_298_840_055,
+                41.906_251_422_262_51,
+                -4.790_275_272_900_629_5,
+            ],
+            [
+                13.901_562_074_416_915,
+                0.592_729_242_000_398_6,
+                0.011_869_910_877_981_915,
+                44.868_263_118_771_644,
+                -5.203_305_099_020_734,
+            ],
+            [
+                22.464_065_684_820_81,
+                0.713_412_629_152_749_3,
+                0.008_770_427_956_695_85,
+                45.382_070_777_101_19,
+                -5.509_679_339_587_506,
+            ],
+            [
+                39.587_354_217_952_836,
+                0.845_992_015_848_599,
+                0.004_783_372_691_996_976,
+                36.974_141_131_528_25,
+                -4.962_273_951_609_347_5,
+            ],
+        ],
+    ];
+    // Independent evaluation of the production kernel's documented A&S CDF
+    // approximation on the same grid. This separates approximation error
+    // from portable/SIMD implementation roundoff.
+    const APPROXIMATION_GRID: [[[f64; 5]; 5]; 2] = [
+        [
+            [
+                26.902_148_330_504_46,
+                -0.765_711_701_114_659_7,
+                0.012_701_528_416_451_33,
+                24.889_305_411_514_037,
+                -0.190_446_396_068_178_81,
+            ],
+            [
+                11.911_232_945_180_927,
+                -0.442_420_513_688_803_47,
+                0.013_387_646_298_840_053,
+                41.906_251_422_262_51,
+                -2.698_080_670_343_315,
+            ],
+            [
+                10.785_643_001_066_12,
+                -0.390_611_145_588_848,
+                0.011_869_910_877_981_915,
+                44.868_263_118_771_644,
+                -3.050_679_375_132_744_6,
+            ],
+            [
+                7.392_277_530_896_024,
+                -0.269_927_651_851_410_43,
+                0.008_770_427_956_695_85,
+                45.382_070_777_101_19,
+                -3.391_023_228_792_680_5,
+            ],
+            [
+                3.709_598_458_319_249,
+                -0.137_348_351_500_154_06,
+                0.004_783_372_691_996_976,
+                36.974_141_131_528_25,
+                -2.983_788_934_986_473,
+            ],
+        ],
+        [
+            [
+                2.484_539_339_247_485,
+                0.217_628_631_921_361_5,
+                0.012_701_528_416_451_33,
+                24.889_305_411_514_037,
+                -2.673_474_302_269_824,
+            ],
+            [
+                10.937_995_930_100_89,
+                0.540_919_819_347_217_8,
+                0.013_387_646_298_840_053,
+                41.906_251_422_262_51,
+                -4.790_275_282_915_508,
+            ],
+            [
+                13.901_563_334_817_759,
+                0.592_729_187_447_173_2,
+                0.011_869_910_877_981_915,
+                44.868_263_118_771_644,
+                -5.203_304_929_434_286,
+            ],
+            [
+                22.464_077_877_767_473,
+                0.713_412_681_184_610_8,
+                0.008_770_427_956_695_85,
+                45.382_070_777_101_19,
+                -5.509_679_052_852_112,
+            ],
+            [
+                39.587_341_815_634_76,
+                0.845_991_981_535_867_1,
+                0.004_783_372_691_996_976,
+                36.974_141_131_528_25,
+                -4.962_274_272_835_906,
+            ],
+        ],
+    ];
+
+    for (option_kind, is_call) in [false, true].into_iter().enumerate() {
         let prices = pricing::bs_price_uniform_batch_wasm(
             &spots, &strikes, rate, dividend, vol, expiry, is_call,
         )
@@ -275,16 +553,31 @@ fn uniform_analytic_batches_match_scalar_exports_and_cover_f64x2_tail() {
             )
             .expect("valid scalar option");
 
-            assert!(
-                (prices[index] - scalar_price).abs() < 2.0e-5,
-                "price mismatch at option {index}"
+            assert_roundoff_close(
+                scalar_price,
+                ANALYTIC[option_kind][index][0],
+                "scalar price vs SciPy",
             );
             for greek in 0..4 {
-                assert!(
-                    (greeks[index * 4 + greek] - scalar_greeks[greek]).abs() < 2.0e-5,
-                    "Greek {greek} mismatch at option {index}"
+                assert_roundoff_close(
+                    scalar_greeks[greek],
+                    ANALYTIC[option_kind][index][greek + 1],
+                    "scalar Greek vs SciPy",
                 );
             }
+
+            assert_batch_row(
+                [
+                    prices[index],
+                    greeks[index * 4],
+                    greeks[index * 4 + 1],
+                    greeks[index * 4 + 2],
+                    greeks[index * 4 + 3],
+                ],
+                ANALYTIC[option_kind][index],
+                APPROXIMATION_GRID[option_kind][index],
+                "uniform batch",
+            );
         }
     }
 }
@@ -341,6 +634,23 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
 
     assert_eq!(detected_batch_simd_backend(), BatchSimdBackend::WasmSimd128);
 
+    // scipy.stats.norm 1.17.1 analytic prices and independently evaluated A&S
+    // kernel values for the five lanes below.
+    const ANALYTIC_PRICES: [f64; 5] = [
+        1.413_162_170_741_385_3,
+        4.106_357_300_061_326,
+        8.827_321_225_352_122,
+        15.453_530_883_296_693,
+        23.505_867_004_864_285,
+    ];
+    const APPROXIMATION_GRID_PRICES: [f64; 5] = [
+        1.413_155_621_799_212_7,
+        4.106_365_023_040_272,
+        8.827_319_131_370_103,
+        15.453_539_322_661_513,
+        23.505_858_962_472_928,
+    ];
+
     // The named export is important: it keeps the pricing kernel reachable
     // through wasm-bindgen/LTO, so SIMD opcodes come from a real pricing path
     // rather than incidental dependency code.
@@ -355,7 +665,24 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
     )
     .expect("matching uniform batch");
     assert_eq!(prices.len(), 5);
-    assert!(prices.iter().all(|price| price.is_finite()));
+    for index in 0..prices.len() {
+        let approximation_error = (prices[index] - ANALYTIC_PRICES[index]).abs();
+        assert!(
+            approximation_error <= BATCH_ANALYTIC_BUDGETS[0],
+            "SIMD price {index}: actual={}, analytic={}, error={approximation_error}",
+            prices[index],
+            ANALYTIC_PRICES[index]
+        );
+        let roundoff_budget = BATCH_KERNEL_ROUNDOFF_ULPS
+            * f64::EPSILON
+            * APPROXIMATION_GRID_PRICES[index].abs().max(1.0);
+        assert!(
+            (prices[index] - APPROXIMATION_GRID_PRICES[index]).abs() <= roundoff_budget,
+            "SIMD price {index}: actual={}, A&S grid={}, budget={roundoff_budget}",
+            prices[index],
+            APPROXIMATION_GRID_PRICES[index]
+        );
+    }
 
     // Two SIMD pairs plus a scalar tail cover infinities, signed zero, and
     // NaN using the same edge semantics as the scalar CDF.
@@ -365,4 +692,32 @@ fn opt_in_package_selects_explicit_wasm_simd128_pricing_backend() {
     assert_eq!(cdf[2].to_bits(), 0.5_f64.to_bits());
     assert_eq!(cdf[3].to_bits(), 0.5_f64.to_bits());
     assert!(cdf[4].is_nan());
+
+    let finite_cdf = normal_cdf_batch_approx(&[-3.0, -1.0, 0.0, 1.0, 3.0]);
+    let analytic_cdf: [f64; 5] = [
+        0.001_349_898_031_630_093_3,
+        0.158_655_253_931_457_07,
+        0.5,
+        0.841_344_746_068_542_9,
+        0.998_650_101_968_369_9,
+    ];
+    let approximation_grid_cdf: [f64; 5] = [
+        0.001_349_967_222_235_237_7,
+        0.158_655_259_563_131_53,
+        0.5,
+        0.841_344_740_436_868_5,
+        0.998_650_032_777_764_8,
+    ];
+    for index in 0..finite_cdf.len() {
+        assert!((finite_cdf[index] - analytic_cdf[index]).abs() <= 7.0e-8);
+        let roundoff_budget = BATCH_KERNEL_ROUNDOFF_ULPS
+            * f64::EPSILON
+            * approximation_grid_cdf[index].abs().max(1.0);
+        assert!(
+            (finite_cdf[index] - approximation_grid_cdf[index]).abs() <= roundoff_budget,
+            "SIMD CDF {index}: actual={}, A&S grid={}, budget={roundoff_budget}",
+            finite_cdf[index],
+            approximation_grid_cdf[index]
+        );
+    }
 }

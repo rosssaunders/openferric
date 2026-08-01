@@ -145,12 +145,19 @@ mod tests {
     fn dupire_local_vol_matches_flat_surface() {
         let lv = DupireLocalVol::new(FlatVolSurface { vol: 0.24 }, 100.0);
 
+        let mut max_err = 0.0_f64;
         for &t in &[0.25, 0.5, 1.0, 2.0] {
             for &k in &[70.0, 85.0, 100.0, 120.0, 140.0] {
                 let sigma_loc = lv.local_vol(k, t);
-                assert_relative_eq!(sigma_loc, 0.24, epsilon = 2e-3);
+                max_err = max_err.max((sigma_loc - 0.24).abs());
             }
         }
+        // Measured second-order finite-difference error on the stated default
+        // strike/time bumps; the economic target is exactly 24%.
+        assert!(
+            max_err < 4.4e-6,
+            "max zero-carry flat-surface error={max_err}"
+        );
     }
 
     #[test]
@@ -165,18 +172,22 @@ mod tests {
         // Hence local vol must equal the (flat) implied vol for any r, q.
         let lv = DupireLocalVol::new(FlatVolSurface { vol: 0.2 }, 100.0).with_rates(0.05, 0.02);
 
+        let mut max_err = 0.0_f64;
         for &t in &[0.25, 0.5, 1.0, 2.0] {
             for &k in &[70.0, 85.0, 100.0, 120.0, 140.0] {
                 let sigma_loc = lv.local_vol(k, t);
-                assert_relative_eq!(sigma_loc, 0.2, epsilon = 2e-3);
+                max_err = max_err.max((sigma_loc - 0.2).abs());
             }
         }
+        // Measured second-order finite-difference error; the carry-adjusted
+        // Dupire target remains exactly the flat 20% surface.
+        assert!(max_err < 5.7e-6, "max carry flat-surface error={max_err}");
     }
 
     #[test]
     fn dupire_local_vol_works_through_references() {
         let surface = FlatVolSurface { vol: 0.3 };
         let lv = DupireLocalVol::new(&surface, 100.0).with_rates(0.03, 0.0);
-        assert_relative_eq!(lv.local_vol(100.0, 1.0), 0.3, epsilon = 2e-3);
+        assert_relative_eq!(lv.local_vol(100.0, 1.0), 0.3, epsilon = 1.1e-7);
     }
 }

@@ -188,8 +188,16 @@ impl Calibrator<HullWhiteCalibrationParams> for HullWhiteCalibrator {
 mod tests {
     use super::*;
 
+    fn assert_close(label: &str, actual: f64, expected: f64, tolerance: f64) {
+        let error = (actual - expected).abs();
+        assert!(
+            actual.is_finite() && error <= tolerance,
+            "{label}: actual={actual:.16e}, expected={expected:.16e}, error={error:.3e}, tolerance={tolerance:.3e}"
+        );
+    }
+
     #[test]
-    fn calibrates_hull_white_swaption_matrix_with_sub_half_vol_point_error() {
+    fn recovers_hull_white_parameters_and_reprices_every_synthetic_quote() {
         let true_params = HullWhiteCalibrationParams {
             a: 0.06,
             sigma: 0.011,
@@ -210,10 +218,37 @@ mod tests {
         let cal = HullWhiteCalibrator::default();
         let result = cal.calibrate(&quotes).expect("calibration succeeds");
 
+        assert_eq!(result.per_instrument_error.len(), quotes.len());
+        assert!(result.objective.is_finite());
+        assert!(result.condition_number.is_finite());
+        assert!(result.jacobian.iter().flatten().all(|x| x.is_finite()));
         assert!(
-            result.diagnostics.fit_quality.liquid_rmse < 0.005,
-            "liquid RMSE too high: {}",
-            result.diagnostics.fit_quality.liquid_rmse
+            result.convergence.converged,
+            "optimizer did not converge: {:?}",
+            result.convergence
         );
+
+        // The initializer uses six nested 21x21 grids after its coarse/fine
+        // searches.  The resulting deterministic resolution is 3.3e-8 in a
+        // and 1.3e-9 in sigma for this matrix; the shared LM objective is
+        // already below its floating-point acceptance floor at that point.
+        assert_close("a", result.params.a, true_params.a, 3.3e-8);
+        assert_close("sigma", result.params.sigma, true_params.sigma, 1.3e-9);
+
+        for (error, quote) in result.per_instrument_error.iter().zip(&quotes) {
+            assert_eq!(error.id, quote.id);
+            assert_close(
+                &format!("{} model vol", quote.id),
+                error.model,
+                quote.market_vol,
+                9e-10,
+            );
+            assert_close(
+                &format!("{} recorded signed error", quote.id),
+                error.signed_error,
+                error.model - quote.market_vol,
+                f64::EPSILON,
+            );
+        }
     }
 }

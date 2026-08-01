@@ -4,12 +4,13 @@
 //! QuantLib test suite (BSD 3-Clause), and Barone-Adesi & Whaley (1987)
 //!
 //! These tests validate the LSM engine for American put pricing and barrier options.
-//! Because the LSM engine is Monte Carlo based, tolerances are wider than analytic tests.
+//! Stochastic assertions use reported or replicate-estimated standard errors.
 
-use openferric::core::PricingEngine;
+use openferric::core::{OptionType, PricingEngine};
 use openferric::engines::lsm::LongstaffSchwartzEngine;
 use openferric::instruments::{BarrierOption, VanillaOption};
 use openferric::market::Market;
+use openferric::pricing::european::black_scholes_price;
 
 // ============================================================================
 // Longstaff-Schwartz (2001) Table 1 -- American Put
@@ -23,7 +24,6 @@ struct LsmAmericanPutCase {
     sigma: f64,
     expiry: f64,
     expected: f64,
-    tolerance: f64,
 }
 
 fn longstaff_schwartz_table1_cases() -> Vec<LsmAmericanPutCase> {
@@ -33,145 +33,125 @@ fn longstaff_schwartz_table1_cases() -> Vec<LsmAmericanPutCase> {
             spot: 36.0,
             sigma: 0.20,
             expiry: 1.0,
-            expected: 4.474,
-            tolerance: 0.10,
+            expected: 4.486_693_114_646_285,
         },
         LsmAmericanPutCase {
             spot: 36.0,
             sigma: 0.20,
             expiry: 2.0,
-            expected: 4.831,
-            tolerance: 0.10,
+            expected: 4.848_315_697_580_784,
         },
         LsmAmericanPutCase {
             spot: 36.0,
             sigma: 0.40,
             expiry: 1.0,
-            expected: 7.081,
-            tolerance: 0.10,
+            expected: 7.109_023_651_525_109,
         },
         LsmAmericanPutCase {
             spot: 36.0,
             sigma: 0.40,
             expiry: 2.0,
-            expected: 8.480,
-            tolerance: 0.10,
+            expected: 8.514_294_765_551_25,
         },
         // S=38
         LsmAmericanPutCase {
             spot: 38.0,
             sigma: 0.20,
             expiry: 1.0,
-            expected: 3.242,
-            tolerance: 0.10,
+            expected: 3.257_207_614_108_937,
         },
         LsmAmericanPutCase {
             spot: 38.0,
             sigma: 0.20,
             expiry: 2.0,
-            expected: 3.746,
-            tolerance: 0.10,
+            expected: 3.751_361_696_554_655,
         },
         LsmAmericanPutCase {
             spot: 38.0,
             sigma: 0.40,
             expiry: 1.0,
-            expected: 6.141,
-            tolerance: 0.10,
+            expected: 6.154_718_699_114_115,
         },
         LsmAmericanPutCase {
             spot: 38.0,
             sigma: 0.40,
             expiry: 2.0,
-            expected: 7.647,
-            tolerance: 0.10,
+            expected: 7.675_053_485_814_676,
         },
         // S=40 (ATM)
         LsmAmericanPutCase {
             spot: 40.0,
             sigma: 0.20,
             expiry: 1.0,
-            expected: 2.319,
-            tolerance: 0.10,
+            expected: 2.319_547_063_106_665,
         },
         LsmAmericanPutCase {
             spot: 40.0,
             sigma: 0.20,
             expiry: 2.0,
-            expected: 2.875,
-            tolerance: 0.10,
+            expected: 2.889_913_925_641_943,
         },
         LsmAmericanPutCase {
             spot: 40.0,
             sigma: 0.40,
             expiry: 1.0,
-            expected: 5.318,
-            tolerance: 0.10,
+            expected: 5.318_221_267_864_815,
         },
         LsmAmericanPutCase {
             spot: 40.0,
             sigma: 0.40,
             expiry: 2.0,
-            expected: 6.912,
-            tolerance: 0.10,
+            expected: 6.923_369_771_907_185,
         },
         // S=42
         LsmAmericanPutCase {
             spot: 42.0,
             sigma: 0.20,
             expiry: 1.0,
-            expected: 1.615,
-            tolerance: 0.10,
+            expected: 1.621_176_005_773_276,
         },
         LsmAmericanPutCase {
             spot: 42.0,
             sigma: 0.20,
             expiry: 2.0,
-            expected: 2.216,
-            tolerance: 0.10,
+            expected: 2.216_770_711_147_334,
         },
         LsmAmericanPutCase {
             spot: 42.0,
             sigma: 0.40,
             expiry: 1.0,
-            expected: 4.586,
-            tolerance: 0.10,
+            expected: 4.588_155_734_065_328,
         },
         LsmAmericanPutCase {
             spot: 42.0,
             sigma: 0.40,
             expiry: 2.0,
-            expected: 6.241,
-            tolerance: 0.10,
+            expected: 6.250_359_492_586_553,
         },
         // S=44
         LsmAmericanPutCase {
             spot: 44.0,
             sigma: 0.20,
             expiry: 1.0,
-            expected: 1.100,
-            tolerance: 0.10,
+            expected: 1.112_978_968_983_765,
         },
         LsmAmericanPutCase {
             spot: 44.0,
             sigma: 0.20,
             expiry: 2.0,
-            expected: 1.678,
-            tolerance: 0.10,
+            expected: 1.693_341_191_929_454,
         },
         LsmAmericanPutCase {
             spot: 44.0,
             sigma: 0.40,
             expiry: 1.0,
-            expected: 3.942,
-            tolerance: 0.10,
+            expected: 3.952_776_596_660_82,
         },
         LsmAmericanPutCase {
             spot: 44.0,
             sigma: 0.40,
             expiry: 2.0,
-            expected: 5.642,
-            tolerance: 0.10,
+            expected: 5.646_890_690_597_949,
         },
     ]
 }
@@ -203,10 +183,14 @@ fn test_lsm_longstaff_schwartz_table1_american_put() {
 
         let result = engine.price(&option, &market).unwrap();
         let error = (result.price - c.expected).abs();
+        let stderr = result.stderr.expect("LSM reports standard error");
+        // QuantLib 1.43 CRR values use 10,000 steps. Across this grid the
+        // largest observed 5k-to-10k refinement is 2.80e-4.
+        let tolerance = 4.0 * stderr + 3.0e-4;
 
         assert!(
-            error <= c.tolerance,
-            "LSM Table 1 case {i}: S={} sigma={} T={} expected={} got={:.4} err={:.4}",
+            error <= tolerance,
+            "LSM/QuantLib case {i}: S={} sigma={} T={} expected={} got={:.6} err={:.6} stderr={stderr} tolerance={tolerance}",
             c.spot,
             c.sigma,
             c.expiry,
@@ -410,19 +394,19 @@ fn test_lsm_american_put_price_increases_with_maturity() {
 }
 
 // ============================================================================
-// Test: Convergence toward Bjerksund-Stensland reference with high paths
-// S=36, K=40, r=0.06, q=0, T=1, sigma=0.20 -> 4.4531
+// Test: Convergence toward a QuantLib CRR reference with high paths
+// S=36, K=40, r=0.06, q=0, T=1, sigma=0.20
 // ============================================================================
 
 #[test]
-fn test_lsm_convergence_toward_bjerksund_stensland() {
+fn test_lsm_matches_quantlib_crr_with_reported_stderr() {
     let spot = 36.0;
     let strike = 40.0;
     let rate = 0.06;
     let sigma = 0.20;
     let expiry = 1.0;
-    let reference = 4.4531;
-    let tolerance = 0.10;
+    // QuantLib 1.43 BinomialVanillaEngine("crr"), 10,000 steps.
+    let reference = 4.486_693_114_646_285;
 
     let engine = LongstaffSchwartzEngine::new(200_000, 100, 42);
 
@@ -436,10 +420,14 @@ fn test_lsm_convergence_toward_bjerksund_stensland() {
     let option = VanillaOption::american_put(strike, expiry);
     let result = engine.price(&option, &market).unwrap();
     let error = (result.price - reference).abs();
+    let stderr = result.stderr.expect("LSM reports standard error");
+    // QuantLib's 10k-to-5k CRR refinement is 1.91e-5; LSM sampling gets a
+    // four-standard-error budget on top of that external-grid uncertainty.
+    let tolerance = 4.0 * stderr + 2.0e-5;
 
     assert!(
         error <= tolerance,
-        "LSM should converge toward Bjerksund-Stensland: expected={} got={:.4} err={:.4}",
+        "LSM should converge toward QuantLib CRR: expected={} got={:.6} err={:.6} stderr={stderr} tolerance={tolerance}",
         reference,
         result.price,
         error
@@ -452,7 +440,7 @@ fn test_lsm_convergence_toward_bjerksund_stensland() {
     );
 
     println!(
-        "Bjerksund-Stensland convergence test passed: reference={} lsm={:.4} stderr={:.4}",
+        "QuantLib CRR convergence test passed: reference={} lsm={:.4} stderr={:.4}",
         reference,
         result.price,
         result.stderr.unwrap()
@@ -515,7 +503,7 @@ fn test_lsm_barrier_knockout_leq_plain() {
 // ============================================================================
 
 #[test]
-fn test_lsm_barrier_knockin_plus_knockout_approx_plain() {
+fn test_lsm_barrier_knockin_plus_knockout_within_reported_stderr() {
     let spot = 100.0;
     let strike = 105.0;
     let rate = 0.05;
@@ -552,32 +540,35 @@ fn test_lsm_barrier_knockin_plus_knockout_approx_plain() {
         .build()
         .unwrap();
 
-    let ko_price = engine.price(&ko, &market).unwrap().price;
-    let ki_price = engine.price(&ki, &market).unwrap().price;
+    let ko_result = engine.price(&ko, &market).unwrap();
+    let ki_result = engine.price(&ki, &market).unwrap();
 
     // For European-exercise barrier options (which LSM barrier uses):
     // knock-in + knock-out = plain European
     // Use a European put via LSM for the reference
     let plain = VanillaOption::european_put(strike, expiry);
-    let plain_price = engine.price(&plain, &market).unwrap().price;
+    let plain_result = engine.price(&plain, &market).unwrap();
 
-    let combined = ko_price + ki_price;
-    let error = (combined - plain_price).abs();
+    let combined = ko_result.price + ki_result.price;
+    let error = (combined - plain_result.price).abs();
+    let combined_stderr = (ko_result.stderr.unwrap().powi(2)
+        + ki_result.stderr.unwrap().powi(2)
+        + plain_result.stderr.unwrap().powi(2))
+    .sqrt();
 
-    // MC noise on sum of two estimates can be larger; use generous tolerance
     assert!(
-        error <= 0.50,
-        "KI + KO should approximate plain: ki={:.4} + ko={:.4} = {:.4} vs plain={:.4} err={:.4}",
-        ki_price,
-        ko_price,
+        error <= 4.0 * combined_stderr,
+        "KI + KO parity: ki={:.4} + ko={:.4} = {:.4} vs plain={:.4} err={:.4} combined_se={combined_stderr:.4}",
+        ki_result.price,
+        ko_result.price,
         combined,
-        plain_price,
+        plain_result.price,
         error
     );
 
     println!(
         "Barrier KI+KO ~ plain test passed: ki={:.4} + ko={:.4} = {:.4} vs plain={:.4} err={:.4}",
-        ki_price, ko_price, combined, plain_price, error
+        ki_result.price, ko_result.price, combined, plain_result.price, error
     );
 }
 
@@ -682,7 +673,7 @@ fn test_lsm_reproducible_across_rayon_thread_counts() {
 // ============================================================================
 
 #[test]
-fn test_lsm_american_call_no_dividend_approx_european() {
+fn test_lsm_american_call_no_dividend_matches_black_scholes_with_reported_stderr() {
     let spot = 100.0;
     let strike = 100.0;
     let rate = 0.05;
@@ -704,21 +695,26 @@ fn test_lsm_american_call_no_dividend_approx_european() {
     let american_call = VanillaOption::american_call(strike, expiry);
     let european_call = VanillaOption::european_call(strike, expiry);
 
-    let am_price = engine.price(&american_call, &market).unwrap().price;
-    let eu_price = engine.price(&european_call, &market).unwrap().price;
-
-    // For non-dividend calls, American ~ European (within MC noise)
-    let diff = (am_price - eu_price).abs();
+    let am_result = engine.price(&american_call, &market).unwrap();
+    let eu_result = engine.price(&european_call, &market).unwrap();
+    let exact = black_scholes_price(OptionType::Call, spot, strike, rate, sigma, expiry);
+    let am_stderr = am_result.stderr.expect("American LSM reports stderr");
+    let eu_stderr = eu_result.stderr.expect("European MC reports stderr");
+    let am_tolerance = 4.0 * am_stderr + 1.0e-12;
+    let eu_tolerance = 4.0 * eu_stderr + 1.0e-12;
     assert!(
-        diff < 0.50,
-        "American call (q=0) should be close to European: am={:.4} eu={:.4} diff={:.4}",
-        am_price,
-        eu_price,
-        diff
+        (am_result.price - exact).abs() <= am_tolerance,
+        "American q=0 call: price={} exact={exact} stderr={am_stderr} tolerance={am_tolerance}",
+        am_result.price
+    );
+    assert!(
+        (eu_result.price - exact).abs() <= eu_tolerance,
+        "European call: price={} exact={exact} stderr={eu_stderr} tolerance={eu_tolerance}",
+        eu_result.price
     );
 
     println!(
         "American call ~ European call (no dividend) test passed: am={:.4} eu={:.4}",
-        am_price, eu_price
+        am_result.price, eu_result.price
     );
 }

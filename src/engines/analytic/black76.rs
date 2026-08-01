@@ -213,8 +213,6 @@ impl PricingEngine<FuturesOption> for Black76Engine {
 
 #[cfg(test)]
 mod tests {
-    use approx::assert_relative_eq;
-
     use super::*;
     use crate::core::{ExerciseStyle, PricingEngine};
     use crate::engines::analytic::black_scholes::BlackScholesEngine;
@@ -230,15 +228,24 @@ mod tests {
             .unwrap()
     }
 
+    fn assert_close_to_scipy(actual: f64, expected: f64, label: &str) {
+        let tolerance = 256.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.15}, SciPy={expected:.15}, tolerance={tolerance:.3e}"
+        );
+    }
+
     #[test]
     fn reference_values() {
         let c1 = black76_price(OptionType::Call, 100.0, 100.0, 0.05, 0.20, 1.0).unwrap();
         let c2 = black76_price(OptionType::Call, 100.0, 90.0, 0.05, 0.20, 0.50).unwrap();
         let p1 = black76_price(OptionType::Put, 100.0, 110.0, 0.05, 0.20, 0.50).unwrap();
 
-        assert_relative_eq!(c1, 7.577_082_146_4, epsilon = 2e-4);
-        assert_relative_eq!(c2, 11.481_788_247_2, epsilon = 2e-4);
-        assert_relative_eq!(p1, 11.909_749_684_9, epsilon = 2e-4);
+        // scipy.stats.norm 1.17.1, evaluated from the Black-76 closed form.
+        assert_close_to_scipy(c1, 7.577_082_146_427_28, "ATM call");
+        assert_close_to_scipy(c2, 11.481788247156073, "ITM call");
+        assert_close_to_scipy(p1, 11.909_749_684_884_45, "ITM put");
     }
 
     #[test]
@@ -269,7 +276,8 @@ mod tests {
             .unwrap()
             .price;
 
-        assert_relative_eq!(black76, bsm, epsilon = 1e-10);
+        let roundoff = 256.0 * f64::EPSILON * black76.abs().max(bsm.abs()).max(1.0);
+        assert!((black76 - bsm).abs() <= roundoff);
     }
 
     #[test]
@@ -283,7 +291,20 @@ mod tests {
         let c = black76_price(OptionType::Call, f, k, r, vol, t).unwrap();
         let p = black76_price(OptionType::Put, f, k, r, vol, t).unwrap();
 
-        assert_relative_eq!(c - p, (-r * t).exp() * (f - k), epsilon = 2e-10);
+        let rhs = (-r * t).exp() * (f - k);
+        let roundoff = 64.0 * f64::EPSILON * c.abs().max(p.abs()).max(rhs.abs()).max(1.0);
+        assert!(((c - p) - rhs).abs() <= roundoff);
+    }
+
+    #[test]
+    fn greeks_match_scipy_closed_form_reference() {
+        let greeks = black76_greeks(OptionType::Call, 100.0, 95.0, 0.03, 0.22, 1.4).unwrap();
+
+        assert_close_to_scipy(greeks.delta, 0.6024029139901951, "delta");
+        assert_close_to_scipy(greeks.gamma, 0.013929479242032163, "gamma");
+        assert_close_to_scipy(greeks.vega, 42.90279606545907, "vega");
+        assert_close_to_scipy(greeks.theta, -3.0029907495587693, "theta");
+        assert_close_to_scipy(greeks.rho, -17.17068392727403, "rho");
     }
 
     #[test]

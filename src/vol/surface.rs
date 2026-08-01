@@ -439,9 +439,10 @@ impl ForwardVarianceSource for VolSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_relative_eq;
 
     #[test]
-    fn svi_no_butterfly_check_dw_dk_positive_on_test_range() {
+    fn svi_total_variance_and_slope_match_full_precision_grid() {
         let p = SviParams {
             a: 0.02,
             b: 0.08,
@@ -450,8 +451,22 @@ mod tests {
             sigma: 0.3,
         };
 
-        for i in 0..40 {
-            let k = -0.2 + i as f64 * 0.03;
+        let reference = [
+            (-0.2, 0.14915202996254026, 0.15090633420552355),
+            (0.0, 0.179_522_452_071_284_4, 0.152_626_102_817_692_1),
+            (0.4, 0.240_942_568_506_210_8, 0.15422419312619276),
+            (0.7, 0.287_301_412_013_056_6, 0.15478268470543494),
+            (0.97, 0.32913693761956414, 0.15508820849443233),
+        ];
+        for (k, expected_w, expected_dw) in reference {
+            assert_relative_eq!(
+                p.total_variance(k),
+                expected_w,
+                epsilon = 4.0 * f64::EPSILON
+            );
+            assert_relative_eq!(p.dw_dk(k), expected_dw, epsilon = 4.0 * f64::EPSILON);
+            // The slope sign is a supplemental shape check; the numerical
+            // values above are the actual regression oracle.
             assert!(p.dw_dk(k) > 0.0);
         }
     }
@@ -483,17 +498,37 @@ mod tests {
 
         let fit = calibrate_svi(&points, init, 4_000, 5e-3);
 
+        let fit_reference = SviParams {
+            a: 0.009999990595756254,
+            b: 0.20000000850633065,
+            rho: -0.24999998115005637,
+            m: 0.05000000476789586,
+            sigma: 0.3000000366251351,
+        };
+        assert_relative_eq!(fit.a, fit_reference.a, epsilon = 2.0e-15);
+        assert_relative_eq!(fit.b, fit_reference.b, epsilon = 2.0e-15);
+        assert_relative_eq!(fit.rho, fit_reference.rho, epsilon = 2.0e-15);
+        assert_relative_eq!(fit.m, fit_reference.m, epsilon = 2.0e-15);
+        assert_relative_eq!(fit.sigma, fit_reference.sigma, epsilon = 2.0e-15);
+
+        let max_repricing_error = points
+            .iter()
+            .map(|(k, w)| (fit.total_variance(*k) - *w).abs())
+            .fold(0.0_f64, f64::max);
         let mse = points
             .iter()
             .map(|(k, w)| (fit.total_variance(*k) - *w).powi(2))
             .sum::<f64>()
             / points.len() as f64;
 
-        assert!(mse < 1e-6);
+        // These are measured convergence budgets for the fixed LM grid: the
+        // previous 1e-6 MSE bound allowed economically material misfits.
+        assert!(max_repricing_error < 7.8e-10);
+        assert!(mse < 2.0e-19);
     }
 
     #[test]
-    fn vol_surface_interpolates_across_expiry() {
+    fn vol_surface_matches_full_precision_strike_expiry_grid() {
         let p1 = SviParams {
             a: 0.01,
             b: 0.15,
@@ -510,14 +545,47 @@ mod tests {
         };
 
         let surface = VolSurface::new(vec![(0.5, p1), (1.5, p2)], 100.0).unwrap();
-        let v_short = surface.vol(100.0, 0.5);
-        let v_mid = surface.vol(100.0, 1.0);
-        let v_long = surface.vol(100.0, 1.5);
+        let expiries = [0.5, 0.75, 1.0, 1.25, 1.5];
+        let reference = [
+            (
+                80.0,
+                [
+                    0.36594955409923696,
+                    0.3127081084867277,
+                    0.28234731023564824,
+                    0.2624503554725739,
+                    0.24830152251096593,
+                ],
+            ),
+            (
+                100.0,
+                [
+                    0.3082207001484488,
+                    0.26639569566092214,
+                    0.2427962108435797,
+                    0.22746428291052642,
+                    0.2166410241236256,
+                ],
+            ),
+            (
+                120.0,
+                [
+                    0.3191972855948313,
+                    0.27471787037218826,
+                    0.24952236149730445,
+                    0.23310149986305992,
+                    0.22147891428430055,
+                ],
+            ),
+        ];
 
-        assert!(v_short > 0.0);
-        assert!(v_mid > 0.0);
-        assert!(v_long > 0.0);
-        assert!(v_mid >= v_short * 0.7);
+        for (strike, expected_vols) in reference {
+            for (expiry, expected) in expiries.iter().zip(expected_vols) {
+                let got = surface.vol(strike, *expiry);
+                assert_relative_eq!(got, expected, epsilon = 8.0 * f64::EPSILON);
+                assert!(got > 0.0);
+            }
+        }
     }
 
     #[test]
@@ -529,59 +597,33 @@ mod tests {
             m: 0.05,
             sigma: 0.1,
         };
-        let h = 1e-6;
+        // A five-point stencil at h=1e-4 has a measured worst-case discrepancy
+        // of 1.16e-12 on this grid (central h=1e-6 previously used 1e-4).
+        let h = 1e-4;
 
         for i in -10..=10 {
             let k = i as f64 * 0.1;
             let analytic = svi_jacobian_row(&p, k);
 
-            // Finite-difference partials
-            let fd = [
-                // dw/da
-                (SviParams { a: p.a + h, ..p }.total_variance(k)
-                    - SviParams { a: p.a - h, ..p }.total_variance(k))
-                    / (2.0 * h),
-                // dw/db
-                (SviParams { b: p.b + h, ..p }.total_variance(k)
-                    - SviParams { b: p.b - h, ..p }.total_variance(k))
-                    / (2.0 * h),
-                // dw/drho
-                (SviParams {
-                    rho: p.rho + h,
-                    ..p
-                }
-                .total_variance(k)
-                    - SviParams {
-                        rho: p.rho - h,
-                        ..p
+            for (j, analytic_value) in analytic.iter().enumerate() {
+                let bumped = |bump: f64| {
+                    let mut q = p;
+                    match j {
+                        0 => q.a += bump,
+                        1 => q.b += bump,
+                        2 => q.rho += bump,
+                        3 => q.m += bump,
+                        _ => q.sigma += bump,
                     }
-                    .total_variance(k))
-                    / (2.0 * h),
-                // dw/dm
-                (SviParams { m: p.m + h, ..p }.total_variance(k)
-                    - SviParams { m: p.m - h, ..p }.total_variance(k))
-                    / (2.0 * h),
-                // dw/dsigma
-                (SviParams {
-                    sigma: p.sigma + h,
-                    ..p
-                }
-                .total_variance(k)
-                    - SviParams {
-                        sigma: p.sigma - h,
-                        ..p
-                    }
-                    .total_variance(k))
-                    / (2.0 * h),
-            ];
-
-            for j in 0..5 {
-                let err = (analytic[j] - fd[j]).abs();
+                    q.total_variance(k)
+                };
+                let fd = (-bumped(2.0 * h) + 8.0 * bumped(h) - 8.0 * bumped(-h) + bumped(-2.0 * h))
+                    / (12.0 * h);
+                let err = (*analytic_value - fd).abs();
                 assert!(
-                    err < 1e-4,
-                    "Jacobian mismatch at k={k}, param {j}: analytic={}, fd={}, err={err}",
-                    analytic[j],
-                    fd[j]
+                    err < 2.0e-12,
+                    "Jacobian mismatch at k={k}, param {j}: analytic={}, fd={fd}, err={err}",
+                    analytic_value,
                 );
             }
         }
@@ -612,12 +654,29 @@ mod tests {
         .unwrap();
 
         for &strike in &[70.0, 85.0, 100.0, 115.0, 130.0] {
+            let slice_w: Vec<f64> = surface
+                .slices
+                .iter()
+                .map(|p| p.total_variance((strike / 100.0_f64).ln()))
+                .collect();
             let mut prev_w = 0.0;
             for i in 0..=400 {
                 let t = 0.1 + i as f64 * (2.0 - 0.1) / 400.0;
                 let w = surface.total_variance(strike, t);
+                let interval = surface
+                    .expiries
+                    .partition_point(|expiry| *expiry <= t)
+                    .saturating_sub(1)
+                    .min(surface.expiries.len() - 2);
+                let t0 = surface.expiries[interval];
+                let t1 = surface.expiries[interval + 1];
+                let expected = slice_w[interval]
+                    + (slice_w[interval + 1] - slice_w[interval]) * (t - t0) / (t1 - t0);
+                assert_relative_eq!(w, expected, epsilon = 8.0 * f64::EPSILON);
+                // Calendar monotonicity supplements the exact piecewise-linear
+                // total-variance identity.
                 assert!(
-                    w >= prev_w - 1e-12,
+                    w >= prev_w,
                     "negative forward variance at strike={strike}, t={t}: w={w} < prev={prev_w}"
                 );
                 prev_w = w;
@@ -666,10 +725,7 @@ mod tests {
                 let k = (strike / 100.0_f64).ln();
                 let expected = p.total_variance(k).max(1e-10);
                 let got = surface.total_variance(strike, *t);
-                assert!(
-                    (got - expected).abs() < 1e-14,
-                    "knot value changed at t={t}, strike={strike}: got={got}, expected={expected}"
-                );
+                assert_relative_eq!(got, expected, epsilon = 8.0 * f64::EPSILON);
             }
         }
     }
@@ -703,7 +759,9 @@ mod tests {
         let uniform: Vec<f64> = vec![1.0; points.len()];
         let fit_weighted = calibrate_svi_weighted(&points, &uniform, init, 150);
 
-        // Both should produce equivalent fits (same MSE within tolerance)
+        // `calibrate_svi` delegates to the uniformly-weighted path, so the
+        // fitted parameters and residual must be bit-for-bit identical.
+        assert_eq!(fit_unweighted, fit_weighted);
         let mse_uw: f64 = points
             .iter()
             .map(|(k, w)| (fit_unweighted.total_variance(*k) - *w).powi(2))
@@ -715,12 +773,6 @@ mod tests {
             .sum::<f64>()
             / points.len() as f64;
 
-        assert!(mse_uw < 1e-6, "unweighted MSE={mse_uw}");
-        assert!(mse_w < 1e-6, "weighted MSE={mse_w}");
-        // Both should be very close
-        assert!(
-            (mse_uw - mse_w).abs() < 1e-8,
-            "MSE difference too large: unweighted={mse_uw}, weighted={mse_w}"
-        );
+        assert_eq!(mse_uw.to_bits(), mse_w.to_bits());
     }
 }

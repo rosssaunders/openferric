@@ -24,7 +24,7 @@ fn vanilla_market() -> Market {
 }
 
 #[test]
-fn european_call_put_match_black_scholes_within_half_percent() {
+fn european_call_put_lock_grids_and_converge_to_black_scholes() {
     let market = vanilla_market();
     let call = VanillaOption::european_call(100.0, 1.0);
     let put = VanillaOption::european_put(100.0, 1.0);
@@ -65,12 +65,36 @@ fn european_call_put_match_black_scholes_within_half_percent() {
         .price(&put, &market)
         .expect("hopscotch put price");
 
-    assert!(rel_err(explicit.price, bs_call) <= 0.005);
-    assert!(rel_err(explicit_put.price, bs_put) <= 0.005);
-    assert!(rel_err(implicit.price, bs_call) <= 0.005);
-    assert!(rel_err(implicit_put.price, bs_put) <= 0.005);
-    assert!(rel_err(hopscotch.price, bs_call) <= 0.005);
-    assert!(rel_err(hopscotch_put.price, bs_put) <= 0.005);
+    let locked = [
+        10.458_730_516_051_384,
+        5.581_633_331_131_337,
+        10.451_729_974_448_192,
+        5.575_043_960_538_109,
+        10.457_426_596_080_339,
+        5.580_149_489_332_889,
+    ];
+    for (actual, expected) in [
+        explicit.price,
+        explicit_put.price,
+        implicit.price,
+        implicit_put.price,
+        hopscotch.price,
+        hopscotch_put.price,
+    ]
+    .into_iter()
+    .zip(locked)
+    {
+        assert!((actual - expected).abs() <= 1.0e-9);
+    }
+
+    // Per-solver budgets are the measured error of these stated finite grids,
+    // rather than a common percentage band.
+    assert!(rel_err(explicit.price, bs_call) <= 8.0e-4);
+    assert!(rel_err(explicit_put.price, bs_put) <= 1.5e-3);
+    assert!(rel_err(implicit.price, bs_call) <= 1.2e-4);
+    assert!(rel_err(implicit_put.price, bs_put) <= 3.0e-4);
+    assert!(rel_err(hopscotch.price, bs_call) <= 7.0e-4);
+    assert!(rel_err(hopscotch_put.price, bs_put) <= 1.3e-3);
 }
 
 #[test]
@@ -173,7 +197,7 @@ fn explicit_solver_detects_cfl_violation() {
 }
 
 #[test]
-fn hopscotch_and_implicit_have_comparable_accuracy() {
+fn hopscotch_and_implicit_lock_grids_and_match_black_scholes() {
     let market = vanilla_market();
     let option = VanillaOption::european_put(100.0, 1.0);
     let bs = bs_price(OptionType::Put, 100.0, 100.0, 0.05, 0.0, 0.20, 1.0);
@@ -192,14 +216,20 @@ fn hopscotch_and_implicit_have_comparable_accuracy() {
     let implicit_err = (implicit.price - bs).abs();
     let hopscotch_err = (hopscotch.price - bs).abs();
 
+    // Deterministic locks for these stated finite grids.
+    assert!((implicit.price - 5.574_629_743_838_18).abs() <= 2.0e-10);
+    assert!((hopscotch.price - 5.580_824_714_200_105).abs() <= 2.0e-10);
+
+    // Measured discretization errors against the exact Black-Scholes price.
+    assert!(implicit_err <= 1.104e-3, "implicit BS error={implicit_err}");
     assert!(
-        hopscotch_err <= 8.0 * implicit_err + 1.0e-4,
-        "hopscotch should be reasonably close to implicit accuracy: hop={hopscotch_err} imp={implicit_err}"
+        hopscotch_err <= 7.299e-3,
+        "hopscotch BS error={hopscotch_err}"
     );
 }
 
 #[test]
-fn adi_heston_matches_fft_reference_values() {
+fn adi_heston_locks_grid_and_matches_fft_with_measured_error() {
     let model = Heston {
         mu: 0.0,
         kappa: 2.0,
@@ -247,9 +277,10 @@ fn adi_heston_matches_fft_reference_values() {
 
     let dr_err = rel_err(dr.price, ref_call);
     let cs_err = rel_err(cs.price, ref_call);
-
-    assert!(dr_err <= 0.04, "DR relative error too high: {dr_err}");
-    assert!(cs_err <= 0.03, "CS relative error too high: {cs_err}");
+    assert!((dr.price - 8.716_601_288_426_997).abs() <= 2.0e-10);
+    assert!((cs.price - 8.716_409_304_797_967).abs() <= 2.0e-10);
+    assert!(dr_err <= 5.1e-3, "DR relative error too high: {dr_err}");
+    assert!(cs_err <= 5.1e-3, "CS relative error too high: {cs_err}");
 }
 
 #[test]

@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn mc_call_converges_to_black_scholes_within_two_stderr() {
+    fn mc_call_converges_to_black_scholes_within_four_stderr() {
         let s0 = 100.0;
         let k = 100.0;
         let r = 0.05;
@@ -654,7 +654,7 @@ mod tests {
         );
 
         let bs = black_scholes_price(OptionType::Call, s0, k, r, sigma, t);
-        assert!((price - bs).abs() <= 2.0 * stderr + 2e-2);
+        assert!((price - bs).abs() <= 4.0 * stderr + 1.0e-12);
     }
 
     #[test]
@@ -676,7 +676,7 @@ mod tests {
         let bs = black_scholes_price(OptionType::Call, s0, k, r, sigma, t);
 
         let base = MonteCarloEngine::new(20_000, 123).with_antithetic(false);
-        let (p0, _e0) = base.run(
+        let (p0, e0) = base.run(
             &generator,
             |path| (path[path.len() - 1] - k).max(0.0),
             discount,
@@ -689,13 +689,24 @@ mod tests {
         let with_cv = MonteCarloEngine::new(20_000, 123)
             .with_antithetic(false)
             .with_control_variate(cv);
-        let (p1, _e1) = with_cv.run(
+        let (p1, e1) = with_cv.run(
             &generator,
             |path| (path[path.len() - 1] - k).max(0.0),
             discount,
         );
 
-        assert!((p1 - bs).abs() <= (p0 - bs).abs() + 0.15);
+        assert!(
+            (p0 - bs).abs() <= 4.0 * e0,
+            "plain={p0} exact={bs} stderr={e0}"
+        );
+        assert!(
+            (p1 - bs).abs() <= 4.0 * e1,
+            "cv={p1} exact={bs} stderr={e1}"
+        );
+        assert!(
+            e1 < e0,
+            "control variate stderr {e1} must be below plain {e0}"
+        );
     }
 
     #[test]

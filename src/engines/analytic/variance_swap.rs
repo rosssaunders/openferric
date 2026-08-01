@@ -267,11 +267,10 @@ impl PricingEngine<VolatilitySwap> for VarianceSwapEngine {
 
 #[cfg(test)]
 mod tests {
-    use approx::assert_relative_eq;
-
     use super::*;
     use crate::core::OptionType;
     use crate::pricing::european::black_scholes_price;
+    use approx::assert_relative_eq;
 
     fn flat_surface_quotes(
         spot: f64,
@@ -302,8 +301,20 @@ mod tests {
             fair_variance_strike_from_quotes(expiry, rate, spot, dividend_yield, &quotes).unwrap();
         let fair_volatility = fair_volatility_strike_from_variance(fair_variance, 0.0).unwrap();
 
-        assert_relative_eq!(fair_variance, 0.04, epsilon = 2e-4);
-        assert_relative_eq!(fair_volatility, 0.20, epsilon = 5e-4);
+        // Independent SciPy 1.17.1 BSM prices integrated over this exact
+        // integer-strike trapezoid grid.  The values deliberately include the
+        // grid truncation/discretization error relative to sigma^2=0.04.
+        let expected_variance = 0.04001585009118038;
+        let expected_volatility = 0.20003962130333175;
+        let tolerance = 512.0 * f64::EPSILON;
+        assert!(
+            (fair_variance - expected_variance).abs() <= tolerance,
+            "discrete variance={fair_variance:.17}, SciPy={expected_variance:.17}"
+        );
+        assert!(
+            (fair_volatility - expected_volatility).abs() <= tolerance,
+            "discrete volatility={fair_volatility:.17}, SciPy={expected_volatility:.17}"
+        );
     }
 
     #[test]

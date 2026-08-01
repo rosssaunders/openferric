@@ -1578,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_round_trip_quotes_within_point_one_vol() {
+    fn surface_round_trip_recovers_input_quotes_to_machine_precision() {
         let curve = FxForwardCurve::from_deposit_rates(
             vec![0.25, 1.0, 2.0],
             vec![0.03, 0.032, 0.033],
@@ -1636,24 +1636,15 @@ mod tests {
 
         for q in input_quotes {
             let reconstructed = surface.quote_from_surface(q.expiry, &[0.10, 0.25]).unwrap();
-            assert!(
-                (reconstructed.atm_vol - q.smile.atm_vol).abs() < 0.1,
-                "ATM round-trip outside 0.1 vol"
-            );
+            assert_relative_eq!(reconstructed.atm_vol, q.smile.atm_vol, epsilon = 2.0e-14);
             for p in &q.smile.pillars {
                 let rp = reconstructed
                     .pillars
                     .iter()
                     .find(|x| (x.delta - p.delta).abs() < 1.0e-12)
                     .unwrap();
-                assert!(
-                    (rp.risk_reversal - p.risk_reversal).abs() < 0.1,
-                    "RR round-trip outside 0.1 vol"
-                );
-                assert!(
-                    (rp.butterfly - p.butterfly).abs() < 0.1,
-                    "BF round-trip outside 0.1 vol"
-                );
+                assert_relative_eq!(rp.risk_reversal, p.risk_reversal, epsilon = 2.0e-14);
+                assert_relative_eq!(rp.butterfly, p.butterfly, epsilon = 2.0e-14);
             }
         }
     }
@@ -1680,9 +1671,10 @@ mod tests {
     }
 
     #[test]
-    fn premium_adjusted_delta_matches_ovml_style_benchmark_within_one_bp_delta() {
-        // Regression benchmark calibrated to a Bloomberg OVML-style setup.
-        // Tolerance requested in issue: <= 0.01 delta.
+    fn premium_adjusted_delta_matches_closed_form_and_scipy_reference() {
+        // For a domestic-premium call the premium-adjusted spot delta reduces
+        // algebraically to (K/S) exp(-r_d T) Phi(d2).  The fixed value below
+        // was independently evaluated with SciPy 1.17.1 `stats.norm.cdf`.
         let delta = fx_delta(
             OptionType::Call,
             1.0875,
@@ -1696,7 +1688,6 @@ mod tests {
         )
         .unwrap();
 
-        let ovml_reference = 0.4478;
-        assert!((delta - ovml_reference).abs() <= 0.01);
+        assert_relative_eq!(delta, 0.447_844_031_543_844_5, epsilon = 5.0e-15);
     }
 }
