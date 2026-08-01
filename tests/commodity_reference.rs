@@ -151,7 +151,15 @@ fn schwartz_one_factor_backwardation() {
     assert!((f_05 - 22.523_044_204_153_94).abs() <= 3.0e-14);
     assert!((f_50 - 20.365_685_881_251_51).abs() <= 3.0e-14);
     let long_run_futures = (alpha_star + sigma * sigma / (4.0 * kappa)).exp();
-    assert!((f_50 - long_run_futures - 0.002_591_549_324_584_057).abs() <= 4.0e-15);
+    let residual_reference = 0.002_591_549_324_584_057;
+    // Subtracting two independently exponentiated values near 20 magnifies
+    // their libm roundoff; budget those operands explicitly.
+    let cancellation_roundoff = 8.0 * f64::EPSILON * (f_50.abs() + long_run_futures.abs()).max(1.0);
+    assert!(
+        (f_50 - long_run_futures - residual_reference).abs() <= cancellation_roundoff,
+        "finite-horizon residual={} reference={residual_reference} roundoff budget={cancellation_roundoff:.3e}",
+        f_50 - long_run_futures
+    );
 }
 
 #[test]

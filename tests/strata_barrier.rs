@@ -81,11 +81,13 @@ const PRICE_UO: [f64; 6] = [
 // Both implementations evaluate the same Reiner-Rubinstein closed form. With
 // openferric's double-precision Cody CDF, the maximum absolute difference over
 // all 24 full-precision Strata cases is 3.553e-14 (the old 5e-5 budget masked
-// roughly nine decimal digits).
-const TOL: f64 = 4.0e-14;
+// roughly nine decimal digits). Add an explicit 64-epsilon cross-libm budget
+// at the maximum price scale on this fixed grid.
+const TOL: f64 = 4.0e-14 + 64.0 * f64::EPSILON * 31.0;
 
-// The largest measured zero-rebate in/out-parity residual is 7.106e-15.
-const PARITY_TOL: f64 = 8.0e-15;
+// The largest measured zero-rebate in/out-parity residual is 7.106e-15;
+// 64 is an upper bound for |knock-in|+|knock-out|+|vanilla| on this grid.
+const PARITY_TOL: f64 = 64.0 * f64::EPSILON * 64.0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 

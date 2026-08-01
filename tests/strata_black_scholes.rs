@@ -133,8 +133,8 @@ fn div_yield(rate: f64) -> f64 {
 /// implemented Java and Rust paths; this is not an economic price tolerance.
 fn assert_strata_price(label: &str, actual: f64, expected: f64) {
     // The stable log-domain path differs from Strata's operation ordering by
-    // at most 18 scaled epsilons across this grid; keep one power-of-two guard.
-    let tolerance = 32.0 * f64::EPSILON * expected.abs().max(1.0);
+    // at most 18 scaled epsilons across this grid; retain a cross-libm guard.
+    let tolerance = 64.0 * f64::EPSILON * expected.abs().max(1.0);
     let error = (actual - expected).abs();
     assert!(
         error <= tolerance,

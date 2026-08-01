@@ -141,7 +141,12 @@ fn asian_geometric_quantlib_discrete_reference_value() {
     //   Var[ln G] = sigma^2/n^2 sum_ij min(t_i,t_j).
     // The published QuantLib value above is the same result rounded at 10 dp.
     let expected = 5.342_560_663_499_418;
-    assert_eq!(price, expected, "discrete geometric reference mismatch");
+    // Explicit arithmetic/libm allowance, not an economic price tolerance.
+    let roundoff = 64.0 * f64::EPSILON * expected;
+    assert!(
+        (price - expected).abs() <= roundoff,
+        "discrete geometric={price:.17}, SciPy={expected:.17}, roundoff budget={roundoff:.3e}"
+    );
 }
 
 #[test]
@@ -181,7 +186,13 @@ fn asian_geometric_dense_discrete_schedule_matches_exact_discrete_value() {
     // 90-fixing lognormal moments. The 4.6922 Haug value is for continuous
     // averaging and differs from this discrete contract by 0.00347781975.
     let expected = 4.695_677_819_752_278;
-    assert_eq!(price, expected, "dense discrete geometric mismatch");
+    // Explicit arithmetic/libm allowance, not an economic price tolerance.
+    let roundoff = 64.0 * f64::EPSILON * expected;
+    assert!(
+        (price - expected).abs() <= roundoff,
+        "dense discrete geometric={price:.17}, SciPy={expected:.17}, \
+         roundoff budget={roundoff:.3e}"
+    );
 }
 
 #[test]

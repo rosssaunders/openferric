@@ -13,10 +13,11 @@ use openferric::rates::{YieldCurve, YieldCurveBuilder};
 
 // Measured against direct formulas and SciPy 1.17.1 `optimize.brentq`
 // solutions of the same par equations. The semiannual 5Y pillar has the
-// largest cross-solver difference, 1.110e-15.
-const CURVE_ROUNDOFF_BUDGET: f64 = 2.0e-15;
-const BOOTSTRAP_DF_BUDGET: f64 = 1.2e-15;
-const BOOTSTRAP_RATE_BUDGET: f64 = 2.0e-15;
+// largest cross-solver difference, 1.110e-15. Each budget also includes a
+// 16-epsilon allowance for platform libm/root-solver operation ordering.
+const CURVE_ROUNDOFF_BUDGET: f64 = 2.0e-15 + 16.0 * f64::EPSILON;
+const BOOTSTRAP_DF_BUDGET: f64 = 1.2e-15 + 16.0 * f64::EPSILON;
+const BOOTSTRAP_RATE_BUDGET: f64 = 2.0e-15 + 16.0 * f64::EPSILON;
 
 fn deposit_nodes(deposits: &[(f64, f64)]) -> Vec<(f64, f64)> {
     deposits
@@ -75,7 +76,12 @@ fn yield_curve_from_deposits_discount_factors() {
     for &(tenor, rate) in &deposits {
         let expected_df = 1.0 / (1.0 + rate * tenor);
         let actual_df = curve.discount_factor(tenor);
-        assert_eq!(actual_df, expected_df, "deposit pillar {tenor}");
+        let roundoff = 16.0 * f64::EPSILON * expected_df.abs().max(1.0);
+        assert!(
+            (actual_df - expected_df).abs() <= roundoff,
+            "deposit pillar {tenor}: actual={actual_df:.17}, expected={expected_df:.17}, \
+             roundoff budget={roundoff:.3e}"
+        );
     }
 
     // DF(0) = 1

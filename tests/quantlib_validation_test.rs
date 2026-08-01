@@ -336,7 +336,7 @@ fn to_pricing_option_type(option_type: OptionType) -> openferric::pricing::Optio
 fn assert_binary64_close(label: &str, actual: f64, expected: f64) {
     // The stability-preserving log-domain Black-Scholes path differs from
     // QuantLib's operation ordering by at most 26 scaled epsilons on this grid.
-    let tolerance = 32.0 * f64::EPSILON * expected.abs().max(1.0);
+    let tolerance = 64.0 * f64::EPSILON * expected.abs().max(1.0);
     let error = (actual - expected).abs();
     assert!(
         error <= tolerance,

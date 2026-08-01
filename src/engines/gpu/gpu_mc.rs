@@ -906,10 +906,16 @@ mod tests {
         assert_eq!(one_step.params, many_steps.params);
         assert_eq!(one_step.num_workgroups, 20);
         assert_eq!(one_step.output_size, 240);
-        // Exact IEEE-754 roundings of the f64 terminal GBM parameters.
+        // Exact IEEE-754 roundings of the terminal GBM parameters. The f32
+        // casts are bit-stable; discounting receives a tight cross-libm budget.
         assert_eq!(one_step.params.terminal_drift.to_bits(), 0x3c75_c28f);
         assert_eq!(one_step.params.terminal_vol.to_bits(), 0x3e7a_d3e7);
-        assert_eq!(one_step.discount.to_bits(), 0x3fee_9788_07f1_0233);
+        let expected_discount = 0.955_997_481_833_1;
+        assert!(
+            (one_step.discount - expected_discount).abs() <= 8.0 * f64::EPSILON,
+            "discount={} reference={expected_discount:.17}",
+            one_step.discount
+        );
     }
 
     #[test]

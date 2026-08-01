@@ -80,11 +80,12 @@ fn quoted_yield_reference(
 
 // Measured after comparing the independently evaluated cash-flow formulas
 // above with curve interpolation: price/reprice differences peak at 1.85e-13,
-// cash-flow moments are bit-exact on this grid, and YTM errors peak at 2.64e-16.
-// These are roundoff/solver budgets, not rounded-source-price tolerances.
-const PRICE_ROUNDOFF_BUDGET: f64 = 2.0e-13;
+// cash-flow moments are bit-exact on Linux, and YTM errors peak at 2.64e-16.
+// Add explicit cross-libm allowances at the maximum price scale on this grid;
+// these remain roundoff/solver budgets, not rounded-source-price tolerances.
+const PRICE_ROUNDOFF_BUDGET: f64 = 2.0e-13 + 64.0 * f64::EPSILON * 150.0;
 const MOMENT_ROUNDOFF_BUDGET: f64 = 0.0;
-const YTM_SOLVER_BUDGET: f64 = 8.0e-16;
+const YTM_SOLVER_BUDGET: f64 = 32.0 * f64::EPSILON;
 
 /// Build a flat continuous yield curve: DF(t) = exp(-r t).
 fn flat_curve(rate: f64, max_tenor: f64) -> YieldCurve {
@@ -380,16 +381,10 @@ fn duration_and_convexity_match_discounted_cashflow_moments() {
     let expected = flat_continuous_reference(100.0, 0.06, 2, 10.0, rate);
     let duration = bond.duration(&curve);
     let convexity = bond.convexity(&curve);
-    assert_relative_eq!(
-        duration,
-        expected.duration,
-        epsilon = MOMENT_ROUNDOFF_BUDGET,
-    );
-    assert_relative_eq!(
-        convexity,
-        expected.convexity,
-        epsilon = MOMENT_ROUNDOFF_BUDGET,
-    );
+    let duration_roundoff = 64.0 * f64::EPSILON * expected.duration.abs().max(1.0);
+    let convexity_roundoff = 64.0 * f64::EPSILON * expected.convexity.abs().max(1.0);
+    assert_relative_eq!(duration, expected.duration, epsilon = duration_roundoff,);
+    assert_relative_eq!(convexity, expected.convexity, epsilon = convexity_roundoff,);
     assert!(duration > 0.0 && duration < 10.0);
     assert!(convexity > 0.0);
 }

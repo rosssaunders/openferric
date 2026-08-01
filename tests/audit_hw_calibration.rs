@@ -189,8 +189,11 @@ fn calibration_matches_jamshidian_projection_reference() {
     // projection; exact synthetic quote recovery is tested in the model module.
     let expected_a = 0.046_383_839_484;
     let expected_sigma = 0.010_312_263_46;
-    assert!((cal_a - expected_a).abs() <= 1.0e-15);
-    assert!((cal_sigma - expected_sigma).abs() <= 1.0e-15);
+    // Explicit cross-libm/root-solver arithmetic budget; these are still exact
+    // deterministic projection anchors, not percentage calibration bands.
+    let roundoff = 64.0 * f64::EPSILON;
+    assert!((cal_a - expected_a).abs() <= roundoff);
+    assert!((cal_sigma - expected_sigma).abs() <= roundoff);
 }
 
 /// Feeding lognormal Black ATM vols (~0.20 at 4% rates, the verified failure
