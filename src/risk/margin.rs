@@ -198,42 +198,40 @@ mod tests {
     }
 
     #[test]
-    fn health_ratio_equals_collateral_over_maintenance_margin_without_pnl() {
+    fn margin_and_health_ratio_match_closed_form() {
         let params = sample_params();
         let notional = 100.0;
         let collateral = 4.0;
 
+        let initial_margin = MarginCalculator::initial_margin(notional, &params);
         let maintenance_margin = MarginCalculator::maintenance_margin(notional, &params);
         let health_ratio = MarginCalculator::health_ratio(collateral, notional, 0.0, &params);
 
-        assert_relative_eq!(
-            health_ratio,
-            collateral / maintenance_margin,
-            epsilon = 1.0e-12
-        );
+        // sigma*sqrt(T) = 0.16*sqrt(0.25) = 0.08 exactly for this fixture.
+        assert_relative_eq!(initial_margin, 1.6, epsilon = 4.0 * f64::EPSILON);
+        assert_relative_eq!(maintenance_margin, 0.8, epsilon = 2.0 * f64::EPSILON);
+        assert_relative_eq!(health_ratio, 5.0, epsilon = 4.0 * f64::EPSILON);
     }
 
     #[test]
-    fn liquidation_threshold_implies_unit_health_ratio() {
+    fn liquidation_rate_snaps_to_the_next_adverse_tick_for_each_sign() {
         let params = sample_params();
-        let notional = 100.0;
-        let collateral = 4.0;
-        let entry_rate = 0.05;
-        let liquidation_rate =
-            MarginCalculator::liquidation_rate(entry_rate, collateral, notional, &params);
-        let pnl = notional * (entry_rate - liquidation_rate);
-        let health_ratio = MarginCalculator::health_ratio(collateral, notional.abs(), pnl, &params);
-
-        assert!(health_ratio <= 1.0 + 1.0e-12);
-        assert!(health_ratio >= 1.0 - 5.0e-3);
+        // Maintenance margin is 0.8. With collateral 4.003, the unrounded
+        // thresholds are 0.08203 for a long and 0.01797 for a short.
+        let long_rate = MarginCalculator::liquidation_rate(0.05, 4.003, 100.0, &params);
+        let short_rate = MarginCalculator::liquidation_rate(0.05, 4.003, -100.0, &params);
+        assert_relative_eq!(long_rate, 0.0821, epsilon = f64::EPSILON);
+        assert_relative_eq!(short_rate, 0.0179, epsilon = f64::EPSILON);
     }
 
     #[test]
-    fn inherent_leverage_matches_notional_over_cost() {
+    fn inherent_leverage_and_return_match_linear_closed_form() {
+        let leverage = InherentLeverage::leverage(100.0, 5.0);
+        assert_relative_eq!(leverage, 20.0, epsilon = 1.0e-12);
         assert_relative_eq!(
-            InherentLeverage::leverage(100.0, 5.0),
-            20.0,
-            epsilon = 1.0e-12
+            InherentLeverage::leveraged_return(-0.0125, leverage),
+            -0.25,
+            epsilon = f64::EPSILON
         );
     }
 }

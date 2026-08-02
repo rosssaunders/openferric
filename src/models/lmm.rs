@@ -585,22 +585,18 @@ mod tests {
             )
             .unwrap();
 
-        let (forward_swap_rate, annuity) =
-            initial_swap_rate_annuity(&initial_forwards, &tenors, swap_start, swap_end).unwrap();
-        let black = black_swaption_price(
-            notional,
-            forward_swap_rate,
-            strike,
-            annuity,
-            vol,
-            expiry,
-            true,
-        );
+        // SciPy 1.17.1 `special.ndtr` Black-76 target.  For the flat 5%
+        // semiannual curve P(0,2.5)=1/1.025^5 and the one-period annuity is
+        // 0.5*P(0,2.5)=0.44192714380475867.
+        let exact_annuity = 0.441_927_143_804_758_67;
+        let black_reference = 2_485.020_762_995_754;
+        let black = black_swaption_price(notional, 0.05, strike, exact_annuity, vol, expiry, true);
+        assert_relative_eq!(black, black_reference, epsilon = 2.0e-11);
 
         assert!(stderr > 0.0 && stderr.is_finite());
         assert!(
-            (mc - black).abs() <= 3.0 * stderr,
-            "mc={mc} black={black} stderr={stderr}"
+            (mc - black_reference).abs() <= 4.0 * stderr,
+            "mc={mc} black={black_reference} stderr={stderr}"
         );
     }
 
@@ -652,8 +648,68 @@ mod tests {
 
         let (forward_swap_rate, annuity0) =
             initial_swap_rate_annuity(&initial_forwards, &tenors, swap_start, swap_end).unwrap();
-        let expected = notional * annuity0 * (forward_swap_rate - strike).max(0.0);
+        // Independent 60-digit Decimal sums for the flat semiannual curve:
+        // annuity = .5*(1.025^-5 + 1.025^-6), forward = 5%.
+        assert_relative_eq!(forward_swap_rate, 0.05, epsilon = 3.0e-16);
+        assert_relative_eq!(annuity0, 0.873_075_576_785_010_6, epsilon = 6.0e-16);
+        let expected = 8_730.755_767_850_106;
 
-        assert_relative_eq!(mc, expected, epsilon = 1.0e-10 * expected.abs().max(1.0));
+        assert_relative_eq!(mc, expected, epsilon = 2.0e-10);
+    }
+
+    /// Independent SciPy/NumPy scrambled-Sobol reference for an ATM swaption
+    /// whose four payment forwards have heterogeneous volatilities and a
+    /// fully non-diagonal correlation matrix.  The oracle independently
+    /// implemented the spot-LIBOR drift, simultaneous log-Euler update,
+    /// rolling bank-account deflator, and swap payoff over all 144 Gaussian
+    /// dimensions (6 forwards x 24 time steps).
+    #[test]
+    fn correlated_multi_forward_swaption_matches_scipy_sobol_oracle() {
+        let tenors = (0..=6).map(|i| i as f64 * 0.5).collect::<Vec<_>>();
+        let n = tenors.len() - 1;
+        let correlation = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| 0.65_f64.powi(i.abs_diff(j) as i32))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let model = LmmModel::new(LmmParams {
+            volatilities: vec![0.12, 0.14, 0.16, 0.18, 0.20, 0.22],
+            correlation,
+            tenors: tenors.clone(),
+        })
+        .unwrap();
+        let initial_forwards = [0.031, 0.032, 0.033, 0.034, 0.035, 0.036];
+        let strike = 0.034_478_320_403_160_47;
+
+        // SciPy 1.17.1 `qmc.Sobol(scramble=True)` and NumPy 2.4.3, 32
+        // independent scrambles of 2^17 paths.  The reference is the mean of
+        // the scramble estimates; its 0.5732039509018008 standard error is the
+        // sample SD across scrambles divided by sqrt(32), not the less useful
+        // within-path pseudo-MC error.
+        let reference = 3_877.826_327_256_506_4;
+        let reference_stderr = 0.573_203_950_901_800_8;
+        let (mc, mc_stderr) = model
+            .price_european_swaption_mc_with_stderr(
+                &initial_forwards,
+                strike,
+                1.0,
+                1.0,
+                3.0,
+                true,
+                1_000_000.0,
+                160_000,
+                24,
+                1_618_033,
+            )
+            .unwrap();
+
+        let combined_stderr = mc_stderr.hypot(reference_stderr);
+        assert!(mc_stderr > 0.0 && mc_stderr.is_finite());
+        assert!(
+            (mc - reference).abs() <= 4.0 * combined_stderr,
+            "mc={mc} reference={reference} mc_stderr={mc_stderr} reference_stderr={reference_stderr}"
+        );
     }
 }

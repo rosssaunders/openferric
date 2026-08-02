@@ -278,6 +278,33 @@ def test_pure_rust_mc_entry_points_release_gil():
         assert result is not None, name
 
 
+def test_arithmetic_asian_engine_binding_matches_scipy_sobol_reference():
+    result = McEngine.arithmetic_asian_price(
+        option_type="call",
+        spot=100.0,
+        strike=100.0,
+        expiry=1.0,
+        rate=0.05,
+        dividend_yield=0.0,
+        vol=0.2,
+        observation_times=[i / 11.0 for i in range(12)],
+        paths=100_000,
+        steps=252,
+        seed=42,
+        control_variate=True,
+        rng_kind="xoshiro",
+        reproducible=True,
+    )
+    # Independent SciPy scrambled-Sobol reference (32 scrambles x 2^20
+    # paths); combine its replicate error with the binding's reported MC
+    # standard error rather than applying an economic price cushion.
+    expected = 5.675787099986969
+    reference_stderr = 5.7394230939438166e-5
+    assert result.stderr is not None
+    tolerance = 4.0 * math.hypot(result.stderr, reference_stderr) + 32.0 * math.ulp(expected)
+    assert abs(result.price - expected) <= tolerance
+
+
 def spread_price(**overrides):
     parameters = dict(
         s1=100.0,

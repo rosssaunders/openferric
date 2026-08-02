@@ -397,6 +397,10 @@ impl PiecewiseConstantInterpolator {
 
 impl Interpolator for PiecewiseConstantInterpolator {
     fn value(&self, xq: f64) -> Result<f64, InterpolationError> {
+        let last = self.x.len() - 1;
+        if xq == self.x[last] {
+            return Ok(self.y[last]);
+        }
         match query_location(&self.x, xq) {
             QueryLocation::Left => match self.extrapolation {
                 ExtrapolationMode::Flat => Ok(self.y[0]),
@@ -421,6 +425,11 @@ impl Interpolator for PiecewiseConstantInterpolator {
 
     fn jacobian(&self, xq: f64) -> Result<Vec<f64>, InterpolationError> {
         let mut j = vec![0.0; self.y.len()];
+        let last = self.x.len() - 1;
+        if xq == self.x[last] {
+            j[last] = 1.0;
+            return Ok(j);
+        }
         match query_location(&self.x, xq) {
             QueryLocation::Left => match self.extrapolation {
                 ExtrapolationMode::Flat | ExtrapolationMode::Linear => {
@@ -1749,6 +1758,7 @@ mod tests {
             (1.5, 0.01, vec![1.0, 0.0, 0.0]),
             (2.0, 0.02, vec![0.0, 1.0, 0.0]),
             (3.999, 0.02, vec![0.0, 1.0, 0.0]),
+            (4.0, 0.04, vec![0.0, 0.0, 1.0]),
             (5.0, 0.04, vec![0.0, 0.0, 1.0]),
         ] {
             assert_eq!(itp.value(xq).unwrap(), expected);

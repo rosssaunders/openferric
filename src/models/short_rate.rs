@@ -217,47 +217,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vasicek_bond_price_matches_closed_form_value() {
+    fn vasicek_bond_prices_match_quantlib_1_43() {
         let model = Vasicek {
             a: 0.15,
             b: 0.05,
             sigma: 0.01,
         };
-        let short_rate = 0.03;
-        let maturity = 5.0;
 
-        let price = model.bond_price(0.0, maturity, short_rate);
-        let tau = maturity;
-        let b = (1.0 - (-model.a * tau).exp()) / model.a;
-        let sigma2 = model.sigma * model.sigma;
-        let a = ((model.b - sigma2 / (2.0 * model.a * model.a)) * (b - tau)
-            - sigma2 * b * b / (4.0 * model.a))
-            .exp();
-        let expected = a * (-b * short_rate).exp();
-
-        assert_relative_eq!(price, expected, epsilon = 1e-12);
+        // QuantLib-Python 1.43 Vasicek(r0=.03,a=.15,b=.05,sigma=.01,
+        // lambda=0).discountBond(t,T,r_t).
+        let references = [
+            (0.0, 0.25, 0.03, 0.992_436_413_167_702),
+            (0.0, 1.0, 0.03, 0.969_075_442_577_678_9),
+            (0.0, 5.0, 0.03, 0.836_593_696_385_110_6),
+            (1.0, 5.0, 0.04, 0.844_319_677_072_446_5),
+            (2.0, 10.0, 0.02, 0.773_808_386_486_136_3),
+        ];
+        for (t, maturity, short_rate, expected) in references {
+            assert_relative_eq!(
+                model.bond_price(t, maturity, short_rate),
+                expected,
+                epsilon = 3.0e-15
+            );
+        }
     }
 
     #[test]
-    fn cir_bond_price_matches_closed_form_value() {
+    fn cir_bond_prices_match_quantlib_1_43() {
         let model = CIR {
             a: 0.20,
             b: 0.04,
             sigma: 0.10,
         };
-        let short_rate = 0.03;
-        let maturity = 5.0;
 
-        let price = model.bond_price(0.0, maturity, short_rate);
-        let gamma = (model.a * model.a + 2.0 * model.sigma * model.sigma).sqrt();
-        let e = (gamma * maturity).exp();
-        let denom = (gamma + model.a) * (e - 1.0) + 2.0 * gamma;
-        let b = 2.0 * (e - 1.0) / denom;
-        let a = (2.0 * gamma * ((model.a + gamma) * maturity * 0.5).exp() / denom)
-            .powf(2.0 * model.a * model.b / (model.sigma * model.sigma));
-        let expected = a * (-b * short_rate).exp();
-
-        assert_relative_eq!(price, expected, epsilon = 1e-12);
+        // QuantLib-Python 1.43 CoxIngersollRoss(r0=.03,theta=.04,k=.20,
+        // sigma=.10).discountBond(t,T,r_t).
+        let references = [
+            (0.0, 0.25, 0.03, 0.992_467_794_747_472_8),
+            (0.0, 1.0, 0.03, 0.969_579_552_690_866),
+            (0.0, 5.0, 0.03, 0.847_811_373_675_468),
+            (1.0, 5.0, 0.04, 0.854_183_588_020_182_5),
+            (2.0, 10.0, 0.02, 0.792_585_079_051_245_6),
+        ];
+        for (t, maturity, short_rate, expected) in references {
+            assert_relative_eq!(
+                model.bond_price(t, maturity, short_rate),
+                expected,
+                epsilon = 3.0e-15
+            );
+        }
     }
 
     #[test]
@@ -281,7 +289,7 @@ mod tests {
         for maturity in [0.5, 1.0, 2.0, 5.0, 10.0] {
             let p_model = model.bond_price(0.0, maturity, r0, &initial_curve);
             let p_curve = initial_curve.discount_factor(maturity);
-            assert_relative_eq!(p_model, p_curve, epsilon = 3e-6);
+            assert_relative_eq!(p_model, p_curve, epsilon = 2.0e-15);
         }
 
         assert!(model.theta_at(1.0).is_finite());

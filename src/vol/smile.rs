@@ -644,7 +644,12 @@ pub fn shift_smile_for_spot_move(
 
             for (&k, &v0) in slice.strikes.iter().zip(slice.vols.iter()) {
                 let mut vol = v0.max(1e-8);
-                for _ in 0..12 {
+                // Solve the sticky-delta fixed point to pricing precision.
+                // Damping keeps steep smiles stable, while 100 iterations are
+                // sufficient to drive ordinary spot moves below binary64
+                // arithmetic noise (the previous 12-iteration cap left
+                // several-vol-micro-point errors).
+                for _ in 0..100 {
                     let delta = bsm_delta(
                         OptionType::Call,
                         spot_new,
@@ -655,7 +660,7 @@ pub fn shift_smile_for_spot_move(
                         expiry,
                     );
                     let next = delta_smile.vol_at_delta(delta).max(1e-8);
-                    if (next - vol).abs() < 1e-10 {
+                    if (next - vol).abs() < 1e-14 {
                         vol = next;
                         break;
                     }
@@ -783,6 +788,93 @@ mod tests {
             let market_put =
                 bsm_price_with_dividend(OptionType::Put, spot, k, rate, q, vol, expiry);
             assert_relative_eq!(vv_put, market_put, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn vanna_volga_matches_independent_non_pivot_scipy_prices() {
+        // Independent SciPy 1.17.1 evaluation of the Castagna-Mercurio
+        // logarithmic-weight construction.  Both strikes are deliberately
+        // away from the 25-delta/ATM pivots, so all three correction weights
+        // contribute.  The put targets were evaluated separately rather than
+        // derived from this implementation's put-call parity.
+        let spot = 1.0875;
+        let rate = 0.042;
+        let dividend_yield = 0.018;
+        let expiry = 0.75;
+        let quote = VannaVolgaQuote::new(0.115, -0.012, 0.0035);
+
+        for (strike, expected_call, expected_put) in [
+            (1.05, 0.077_316_948_404_490_6, 0.021_840_048_685_383_136),
+            (1.125, 0.034_588_075_051_706_83, 0.051_785_497_066_629_69),
+        ] {
+            let call = vanna_volga_price(
+                OptionType::Call,
+                spot,
+                strike,
+                rate,
+                dividend_yield,
+                expiry,
+                quote,
+            );
+            let put = vanna_volga_price(
+                OptionType::Put,
+                spot,
+                strike,
+                rate,
+                dividend_yield,
+                expiry,
+                quote,
+            );
+            assert_relative_eq!(call, expected_call, epsilon = 3.0e-12);
+            assert_relative_eq!(put, expected_put, epsilon = 3.0e-12);
+        }
+    }
+
+    #[test]
+    fn smile_spot_shifts_match_independent_sticky_dynamics_targets() {
+        let slice = SmileSlice::new(
+            vec![80.0, 90.0, 100.0, 110.0, 120.0],
+            vec![0.26, 0.225, 0.20, 0.215, 0.245],
+        )
+        .unwrap();
+
+        let sticky_strike = shift_smile_for_spot_move(
+            &slice,
+            100.0,
+            108.0,
+            0.025,
+            0.012,
+            1.4,
+            SmileDynamics::StickyStrike,
+        )
+        .unwrap();
+        assert_eq!(sticky_strike.strikes, slice.strikes);
+        assert_eq!(sticky_strike.vols, slice.vols);
+
+        let sticky_delta = shift_smile_for_spot_move(
+            &slice,
+            100.0,
+            108.0,
+            0.025,
+            0.012,
+            1.4,
+            SmileDynamics::StickyDelta,
+        )
+        .unwrap();
+
+        // SciPy 1.17.1 natural CubicSpline on the original Black-Scholes
+        // call-delta nodes, followed by independent Brent root solves of
+        // sigma_new(K) = spline(delta_new(K, sigma_new)).
+        let expected = [
+            0.26,
+            0.248_959_660_945_933_25,
+            0.216_135_030_425_240_9,
+            0.199_611_794_384_921_7,
+            0.218_365_801_143_708_13,
+        ];
+        for (actual, expected) in sticky_delta.vols.iter().zip(expected) {
+            assert_relative_eq!(*actual, expected, epsilon = 3.0e-13);
         }
     }
 

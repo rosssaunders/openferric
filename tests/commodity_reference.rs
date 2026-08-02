@@ -238,6 +238,77 @@ fn schwartz_smith_two_factor_spot_recovery() {
 }
 
 #[test]
+fn schwartz_smith_exact_step_matches_correlated_ou_brownian_transition() {
+    let model = SchwartzSmithTwoFactor {
+        kappa: 1.5,
+        sigma_chi: 0.30,
+        mu_xi: 0.02,
+        sigma_xi: 0.10,
+        rho: 0.60,
+    };
+
+    // Independent 80-digit Decimal evaluation of the exact joint transition.
+    // For instantaneous Brownian correlation rho, the normalized finite-step
+    // correlation is
+    //   rho * (1-exp(-k*dt))/k
+    //       / sqrt(dt * (1-exp(-2*k*dt))/(2*k)),
+    // not rho itself.  At dt=2 this is 0.4660853793831855 rather than 0.6,
+    // making the fixture sensitive to the common finite-step shortcut.
+    let (chi, xi) = model.step_exact(0.1, 3.0, 2.0, 0.7, -0.4).unwrap();
+    assert!((chi - 0.126_071_903_767_922_9).abs() <= 3.0e-17);
+    assert!((xi - 3.036_091_660_582_668).abs() <= 5.0e-16);
+}
+
+#[test]
+fn schwartz_smith_exact_step_retains_the_tiny_time_limit() {
+    let model = SchwartzSmithTwoFactor {
+        kappa: 1.5,
+        sigma_chi: 0.30,
+        mu_xi: 0.02,
+        sigma_xi: 0.10,
+        rho: 0.60,
+    };
+    let dt = 1.0e-18;
+    let z1 = 0.7;
+    let z2 = -0.4;
+    let (chi, xi) = model.step_exact(0.1, 0.0, dt, z1, z2).unwrap();
+
+    // At infinitesimal dt the normalized OU innovation becomes z1 and the
+    // finite-step correlation tends to the instantaneous rho. Directly
+    // subtracting exp(-k*dt) from one used to produce 0/0 and NaN here.
+    let limiting_correlated_z = model.rho * z1 + (1.0 - model.rho * model.rho).sqrt() * z2;
+    let expected_chi = 0.1 + model.sigma_chi * dt.sqrt() * z1;
+    let expected_xi = model.mu_xi * dt + model.sigma_xi * dt.sqrt() * limiting_correlated_z;
+    assert!(chi.is_finite() && xi.is_finite());
+    assert!((chi - expected_chi).abs() <= 2.0 * f64::EPSILON * expected_chi.abs());
+    assert!((xi - expected_xi).abs() <= 2.0 * f64::EPSILON * expected_xi.abs());
+}
+
+#[test]
+fn schwartz_smith_exact_step_retains_the_large_mean_reversion_limit() {
+    let model = SchwartzSmithTwoFactor {
+        kappa: 1.0e308,
+        sigma_chi: 0.30,
+        mu_xi: 0.0,
+        sigma_xi: 0.10,
+        rho: 0.60,
+    };
+    let dt = 2.0;
+    let z1 = 0.7;
+    let z2 = -0.4;
+    let (chi, xi) = model.step_exact(0.1, 0.0, dt, z1, z2).unwrap();
+
+    // When kappa*dt overflows, exp(-kappa*dt) is exactly zero, the OU
+    // innovation variance tends to 1/(2*kappa), and its normalized
+    // correlation with the long Brownian increment tends to zero.
+    let expected_chi = model.sigma_chi * (0.5 / model.kappa).sqrt() * z1;
+    let expected_xi = model.sigma_xi * dt.sqrt() * z2;
+    assert!(chi.is_finite() && xi.is_finite());
+    assert!((chi - expected_chi).abs() <= 2.0 * f64::EPSILON * expected_chi.abs());
+    assert!((xi - expected_xi).abs() <= 2.0 * f64::EPSILON * expected_xi.abs());
+}
+
+#[test]
 fn schwartz_smith_two_factor_chi_mean_reverts() {
     let model = SchwartzSmithTwoFactor {
         kappa: 2.0,

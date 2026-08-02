@@ -214,11 +214,49 @@ impl SchwartzSmithTwoFactor {
             return Ok((chi, xi));
         }
 
-        let exp_kdt = (-self.kappa * dt).exp();
-        let chi_var = (1.0 - (-2.0 * self.kappa * dt).exp()) / (2.0 * self.kappa);
+        let kdt = self.kappa * dt;
+        let exp_kdt = (-kdt).exp();
+        // Write the OU variance as dt times a dimensionless `expm1` ratio.
+        // This is algebraically identical to (1-exp(-2*k*dt))/(2*k), but it
+        // retains the dt limit when k*dt is too small for `1-exp(...)` to be
+        // represented by direct subtraction.
+        let chi_variance_factor = if kdt == 0.0 {
+            1.0
+        } else if kdt.is_infinite() {
+            0.0
+        } else {
+            -(-2.0 * kdt).exp_m1() / (2.0 * kdt)
+        };
+        let chi_var = if kdt.is_infinite() {
+            0.5 / self.kappa
+        } else {
+            dt * chi_variance_factor
+        };
         let chi_next = chi * exp_kdt + self.sigma_chi * chi_var.max(0.0).sqrt() * z1;
 
-        let z_corr = self.rho * z1 + (1.0 - self.rho * self.rho).max(0.0).sqrt() * z2;
+        // `rho` is the instantaneous Brownian correlation.  Over a finite
+        // step the OU innovation in chi and the Brownian increment in xi do
+        // not retain that same correlation because the OU kernel weights the
+        // earlier shocks less.  Their exact normalized correlation is
+        //
+        //   rho_dt = rho * integral_0^dt exp(-k(dt-s)) ds
+        //                  / sqrt(dt * integral_0^dt exp(-2k(dt-s)) ds).
+        //
+        // Using `rho` directly is only the dt -> 0 limit and overstates the
+        // factor covariance for finite simulation steps.
+        // Dividing numerator and denominator by dt avoids the underflow-prone
+        // product `chi_var * dt`. Both ratios tend smoothly to one.
+        let correlation_factor = if kdt == 0.0 {
+            1.0
+        } else if kdt.is_infinite() {
+            0.0
+        } else {
+            let cross_kernel_over_dt = -(-kdt).exp_m1() / kdt;
+            cross_kernel_over_dt / chi_variance_factor.sqrt()
+        };
+        let step_correlation = (self.rho * correlation_factor).clamp(-1.0, 1.0);
+        let z_corr = step_correlation * z1
+            + (1.0 - step_correlation * step_correlation).max(0.0).sqrt() * z2;
         let xi_next = xi + self.mu_xi * dt + self.sigma_xi * dt.sqrt() * z_corr;
 
         Ok((chi_next, xi_next))
@@ -1666,6 +1704,17 @@ mod tests {
         for q in &quotes {
             assert_relative_eq!(spline.forward(q.maturity), q.price, epsilon = 1.0e-12);
         }
+        // SciPy 1.17.1 `CubicSpline(..., bc_type="natural")` references for
+        // the same three contract nodes.  Off-grid values are the pricing-
+        // relevant part that node-reproduction alone cannot validate.
+        for (maturity, expected) in [
+            (0.375, 52.0625),
+            (0.625, 55.71875),
+            (0.75, 57.25),
+            (0.8, 57.824),
+        ] {
+            assert_relative_eq!(spline.forward(maturity), expected, epsilon = 1.0e-14);
+        }
     }
 
     #[test]
@@ -1707,23 +1756,28 @@ mod tests {
     }
 
     #[test]
-    fn deseasonalised_vol_recovers_signal() {
+    fn deseasonalised_vol_matches_exact_sample_standard_deviation() {
         let season = CommoditySeasonalityModel::default_natural_gas();
 
-        let mut obs = Vec::new();
-        for i in 0..60 {
-            let month = (i % 12 + 1) as u32;
-            let base = 100.0 * (0.01 * i as f64).exp();
-            let observed = season.apply(base, month).unwrap();
-            obs.push((month, observed));
+        // The six deseasonalised log returns below have mean 0.005 and a
+        // sample variance of exactly 0.0003.  Annualising monthly observations
+        // therefore gives sqrt(0.0003 * 12) = 0.06.  Applying a different
+        // calendar factor to every level makes the test sensitive to the
+        // deseasonalisation step as well as the volatility calculation.
+        let log_returns = [0.01_f64, -0.02, 0.03, 0.0, 0.015, -0.005];
+        let mut base = 100.0;
+        let mut obs = vec![(1, season.apply(base, 1).unwrap())];
+        for (i, log_return) in log_returns.into_iter().enumerate() {
+            base *= log_return.exp();
+            let month = (i + 2) as u32;
+            obs.push((month, season.apply(base, month).unwrap()));
         }
 
         let vol = season
             .estimate_deseasonalised_volatility(&obs, 12.0)
             .unwrap();
 
-        assert!(vol > 0.0);
-        assert!(vol < 0.20);
+        assert_relative_eq!(vol, 0.06, epsilon = 2.0e-15);
     }
 
     #[test]

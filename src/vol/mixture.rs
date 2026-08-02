@@ -375,17 +375,30 @@ mod tests {
     }
 
     #[test]
-    fn two_component_calibration_fits_synthetic_prices() {
-        let true_mix = LognormalMixture::new(vec![0.65, 0.35], vec![0.14, 0.30]).unwrap();
-
+    fn two_component_price_and_calibration_match_scipy_grid() {
         let spot = 100.0;
         let rate = 0.01;
         let expiry = 1.0;
         let strikes = vec![80.0, 90.0, 100.0, 110.0, 120.0];
-        let market_prices: Vec<f64> = strikes
-            .iter()
-            .map(|&k| true_mix.price(OptionType::Call, spot, k, rate, expiry))
-            .collect();
+        // SciPy 1.17.1 `special.ndtr` weighted Black-Scholes calls for
+        // weights (65%,35%) and vols (14%,30%).  These frozen values test the
+        // pricing method independently before they are used as calibration
+        // quotes, avoiding a model-price/calibrator round trip as the oracle.
+        let market_prices = vec![
+            22.118_406_470_589_786,
+            14.208_493_633_336_9,
+            8.270_827_995_708_279,
+            4.549_716_632_005_625,
+            2.521_311_743_401_722_3,
+        ];
+        let reference_mix = LognormalMixture::new(vec![0.65, 0.35], vec![0.14, 0.30]).unwrap();
+        for (&strike, &expected) in strikes.iter().zip(&market_prices) {
+            let actual = reference_mix.price(OptionType::Call, spot, strike, rate, expiry);
+            assert!(
+                (actual - expected).abs() <= 3.0e-14,
+                "strike={strike} actual={actual:.17e} expected={expected:.17e}"
+            );
+        }
 
         let fit = calibrate_lognormal_mixture(
             OptionType::Call,

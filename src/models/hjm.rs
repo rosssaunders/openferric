@@ -59,30 +59,65 @@ impl HjmFactor {
         let vol = self.volatility;
         let x = kappa * tau;
 
+        // Direct evaluation of the incomplete-gamma closed forms loses all
+        // significant digits for small x (the curvature numerator is a
+        // subtraction of quantities equal through O(x^2)).  Evaluate the
+        // normalized moment instead:
+        //
+        //   int_0^tau u^p exp(-kappa u) du
+        //     = tau^(p+1) sum_m (-x)^m / (m! (m+p+1)).
+        //
+        // Starting the scale with `vol * tau` also avoids forming `tau^2` or
+        // `tau^3` before a very small volatility has brought it into range.
+        if x <= 0.5 {
+            let power = match self.shape {
+                HjmFactorShape::Parallel => 0,
+                HjmFactorShape::Slope => 1,
+                HjmFactorShape::Curvature => 2,
+            };
+            let mut scale = vol * tau;
+            for _ in 0..power {
+                scale *= tau;
+            }
+            return scale * normalized_exp_moment(x, power);
+        }
+
+        // Once x is this large, every omitted exponential-polynomial tail is
+        // below binary64 roundoff (for curvature, exp(-50)*(x^2+2x+2) is
+        // about 5e-19).  Taking the gamma-function limit also avoids the
+        // indeterminate `0 * infinity` that would otherwise occur when the
+        // finite product `x*x` overflows before `exp(-x)` is applied.
+        if !x.is_finite() || x >= 50.0 {
+            return match self.shape {
+                HjmFactorShape::Parallel => vol / kappa,
+                HjmFactorShape::Slope => (vol / kappa) / kappa,
+                HjmFactorShape::Curvature => 2.0 * ((vol / kappa) / kappa) / kappa,
+            };
+        }
+
         match self.shape {
-            HjmFactorShape::Parallel => {
-                if kappa <= 1.0e-12 {
-                    vol * tau
-                } else {
-                    vol * (1.0 - (-x).exp()) / kappa
-                }
-            }
-            HjmFactorShape::Slope => {
-                if kappa <= 1.0e-12 {
-                    0.5 * vol * tau * tau
-                } else {
-                    vol * (1.0 - (-x).exp() * (1.0 + x)) / (kappa * kappa)
-                }
-            }
+            HjmFactorShape::Parallel => (vol / kappa) * -(-x).exp_m1(),
+            HjmFactorShape::Slope => ((vol / kappa) / kappa) * (1.0 - (-x).exp() * (1.0 + x)),
             HjmFactorShape::Curvature => {
-                if kappa <= 1.0e-12 {
-                    vol * tau * tau * tau / 3.0
-                } else {
-                    vol * (2.0 - (-x).exp() * (2.0 + 2.0 * x + x * x)) / (kappa * kappa * kappa)
-                }
+                ((vol / kappa) / kappa) / kappa * (2.0 - (-x).exp() * (2.0 + 2.0 * x + x * x))
             }
         }
     }
+}
+
+/// `int_0^1 u^power exp(-x u) du`, evaluated by its entire power series.
+/// The caller restricts `x <= 0.5`, where 32 terms are ample for binary64.
+fn normalized_exp_moment(x: f64, power: usize) -> f64 {
+    let mut term = 1.0 / (power + 1) as f64;
+    let mut sum = term;
+    for m in 1..=32 {
+        term *= -x / m as f64 * (m + power) as f64 / (m + power + 1) as f64;
+        sum += term;
+        if term.abs() <= f64::EPSILON * sum.abs() {
+            break;
+        }
+    }
+    sum
 }
 
 /// Heath-Jarrow-Morton model with 1-3 factors.
@@ -651,6 +686,111 @@ mod tests {
 
     use super::*;
 
+    /// 100-digit Python `Decimal` evaluation of
+    /// `vol * integral_0^tau u^p exp(-kappa*u) du`, using the entire moment
+    /// series rather than the production incomplete-gamma formulas.  The
+    /// `x=2e-8` row reproduces the former curvature cancellation (it could
+    /// return a negative loading). The extreme-scale rows verify that neither
+    /// `tau^p` nor `kappa^p` is formed as an overflowing/underflowing power and
+    /// that a finite but enormous `x` cannot create `0 * infinity`.
+    #[test]
+    fn integrated_sigma_matches_high_precision_moment_grid() {
+        let cases = [
+            (
+                0.0075,
+                1.0e-16,
+                2.0,
+                [
+                    0.014_999_999_999_999_998,
+                    0.014_999_999_999_999_998,
+                    0.019_999_999_999_999_997,
+                ],
+            ),
+            (
+                0.0075,
+                1.0e-8,
+                2.0,
+                [
+                    0.014_999_999_850_000_001,
+                    0.014_999_999_800_000_002,
+                    0.019_999_999_700_000_003,
+                ],
+            ),
+            (
+                0.0075,
+                0.00005,
+                2.0,
+                [
+                    0.014_999_250_024_999_375,
+                    0.014_999_000_037_499,
+                    0.019_998_500_059_998_335,
+                ],
+            ),
+            (
+                0.0075,
+                0.25,
+                2.0,
+                [
+                    0.011_804_080_208_620_997,
+                    0.010_824_481_251_725_984,
+                    0.013_812_170_848_291_859,
+                ],
+            ),
+            (
+                0.0075,
+                0.7,
+                2.0,
+                [
+                    0.008_072_175_386_339_931,
+                    0.006_247_458_467_451_191,
+                    0.007_281_440_023_791_695,
+                ],
+            ),
+            (
+                0.0075,
+                0.12,
+                30.0,
+                [
+                    0.060_792_267_347_044_22,
+                    0.455_370_248_303_361_6,
+                    6.052_544_750_729_153,
+                ],
+            ),
+            (
+                1.0e-308,
+                1.0e-150,
+                1.0e150,
+                [
+                    6.321_205_588_285_577e-159,
+                    2.642_411_176_571_153_6e-9,
+                    1.606_027_941_427_884e141,
+                ],
+            ),
+            (0.0075, 1.0, 1.0e200, [0.0075, 0.0075, 0.015]),
+        ];
+        let shapes = [
+            HjmFactorShape::Parallel,
+            HjmFactorShape::Slope,
+            HjmFactorShape::Curvature,
+        ];
+
+        for (volatility, mean_reversion, tau, expected) in cases {
+            for (shape, reference) in shapes.into_iter().zip(expected) {
+                let got = HjmFactor {
+                    shape,
+                    volatility,
+                    mean_reversion,
+                }
+                .integrated_sigma(tau);
+                let relative_error = ((got - reference) / reference).abs();
+                assert!(
+                    relative_error <= 3.0e-15,
+                    "shape={shape:?} kappa={mean_reversion} tau={tau} got={got:e} reference={reference:e} relative_error={relative_error:e}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn one_factor_drift_matches_closed_form_expression() {
         let sigma0 = 0.02;
@@ -686,15 +826,12 @@ mod tests {
     /// closed form using `sigma_p = sigma0 * (T1 - T0) * sqrt(T0)`.
     #[test]
     fn ho_lee_one_period_swaption_matches_gaussian_bond_option_closed_form() {
-        use crate::math::normal_cdf;
-
         let sigma0 = 0.015;
         let model = HjmModel::single_factor_exponential(sigma0, 0.0);
 
         let f0 = 0.03;
         let t0 = 3.0_f64;
         let t1 = 4.0_f64;
-        let tau = t1 - t0;
         let notional = 100.0;
         let num_steps = 60_usize;
 
@@ -707,16 +844,12 @@ mod tests {
         }
         let forwards = vec![f0; maturities.len()];
 
-        let p0_t0 = (-f0 * t0).exp();
-        let p0_t1 = (-f0 * t1).exp();
-        let strike = (p0_t0 - p0_t1) / (tau * p0_t1); // ATM forward swap rate
+        let strike = 0.030_454_533_953_516_896; // ATM forward swap rate
 
-        // Closed form: payer swaption = (1 + K*tau) * ZBP(0, T0, T1, X).
-        let x = 1.0 / (1.0 + strike * tau);
-        let sigma_p = sigma0 * tau * t0.sqrt();
-        let h = (p0_t1 / (x * p0_t0)).ln() / sigma_p + 0.5 * sigma_p;
-        let zbp = x * p0_t0 * normal_cdf(-h + sigma_p) - p0_t1 * normal_cdf(-h);
-        let closed_form = notional * (1.0 + strike * tau) * zbp;
+        // Independently evaluated with SciPy 1.17.1 `special.ndtr` from the
+        // Ho-Lee Gaussian bond-option formula.  Freezing the full-precision
+        // result keeps the oracle independent of OpenFerric's normal CDF.
+        let closed_form = 0.947_246_991_195_289_1;
 
         let (mc, stderr) = model
             .price_swaption_mc_with_stderr(
@@ -736,8 +869,111 @@ mod tests {
 
         assert!(stderr > 0.0 && stderr.is_finite());
         assert!(
-            (mc - closed_form).abs() <= 3.0 * stderr,
+            (mc - closed_form).abs() <= 4.0 * stderr,
             "mc={mc} closed_form={closed_form} stderr={stderr}"
+        );
+    }
+
+    /// A deterministic-volatility multi-factor HJM is Gaussian, so a
+    /// one-period swaption is still exactly a zero-coupon bond option.  This
+    /// fixture exercises both the slope loading and a non-zero cross-factor
+    /// correlation rather than reducing to the one-factor Ho-Lee case above.
+    #[test]
+    fn correlated_parallel_slope_swaption_matches_gaussian_bond_option() {
+        let model = HjmModel::multi_factor_parallel_slope_curvature(
+            &[0.012, 0.004],
+            &[0.10, 0.20],
+            Some(vec![vec![1.0, 0.35], vec![0.35, 1.0]]),
+        )
+        .unwrap();
+
+        let option_expiry = 1.0;
+        let swap_end = 2.0;
+        let num_steps = 40_usize;
+        let dt = option_expiry / num_steps as f64;
+        // A 0.025y maturity grid aligns the short-rate readout and the bond
+        // integral with every simulation step through the full swap tenor.
+        let maturities = (0..=80).map(|i| i as f64 * dt).collect::<Vec<_>>();
+        let forwards = vec![0.03; maturities.len()];
+
+        // SciPy 1.17.1 adaptive quadrature of
+        //   integral_0^T0 sum_ij rho_ij
+        //     [I_i(T1-s)-I_i(T0-s)] [I_j(T1-s)-I_j(T0-s)] ds
+        // gives variance 0.00015286151552659343 (reported quadrature error
+        // 1.7e-18).  Substitution in the Gaussian bond-option formula gives
+        // the following exact model price for notional 100.  The cached target
+        // is independent of the Euler path and OpenFerric's normal CDF.
+        let strike = 0.030_454_533_953_516_82;
+        let exact = 0.478_660_451_100_637;
+        let (mc, stderr) = model
+            .price_swaption_mc_with_stderr(
+                &forwards,
+                &maturities,
+                strike,
+                option_expiry,
+                option_expiry,
+                swap_end,
+                true,
+                100.0,
+                30_000,
+                num_steps,
+                314_159,
+            )
+            .unwrap();
+
+        assert!(stderr > 0.0 && stderr.is_finite());
+        assert!(
+            (mc - exact).abs() <= 4.0 * stderr,
+            "mc={mc} exact={exact} stderr={stderr}"
+        );
+    }
+
+    /// A three-payment Ho-Lee swaption has no single-bond reduction, but all
+    /// expiry-date discount bonds are driven by the same Gaussian factor.  An
+    /// independent SciPy 1.17.1 oracle solved the exercise root with `brentq`
+    /// and integrated the resulting one-dimensional payoff with adaptive
+    /// quadrature (`epsabs=epsrel=1e-14`, reported error 2.7e-16).
+    #[test]
+    fn ho_lee_multi_payment_swaption_matches_scipy_gaussian_oracle() {
+        let model = HjmModel::single_factor_exponential(0.012, 0.0);
+        let option_expiry = 1.0;
+        let num_steps = 80_usize;
+        let dt = option_expiry / num_steps as f64;
+        // Exact short-rate readout through expiry; after expiry the Ho-Lee
+        // forward curve is affine in maturity, so annual knots integrate it
+        // exactly with the production trapezoid.
+        let mut maturities = (0..=num_steps).map(|i| i as f64 * dt).collect::<Vec<_>>();
+        maturities.extend([2.0, 3.0, 4.0]);
+        let forwards = vec![0.03; maturities.len()];
+
+        // Flat continuously compounded 3% curve, ATM 1y into 3y annual swap.
+        // Under the T=1 forward measure,
+        //   P(1,Ti)=P(0,Ti)/P(0,1)*exp(-a_i^2/2-a_i Z),
+        // where a_i=.012*(Ti-1).  SciPy quadrature of
+        //   max(1-P(1,4)-K*sum_i P(1,Ti), 0)
+        // gives the frozen time-zero value below for notional 100.
+        let strike = 0.030_454_533_953_516_86;
+        let exact = 1.352_887_656_052_690_6;
+        let (mc, stderr) = model
+            .price_swaption_mc_with_stderr(
+                &forwards,
+                &maturities,
+                strike,
+                option_expiry,
+                option_expiry,
+                4.0,
+                true,
+                100.0,
+                30_000,
+                num_steps,
+                2_718_281,
+            )
+            .unwrap();
+
+        assert!(stderr > 0.0 && stderr.is_finite());
+        assert!(
+            (mc - exact).abs() <= 4.0 * stderr,
+            "mc={mc} exact={exact} stderr={stderr}"
         );
     }
 

@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn crush_spread_constructor_is_valid() {
+    fn crush_spread_kirk_price_matches_independent_scipy_value() {
         let spread = CommoditySpreadOption::crush_spread(
             OptionType::Call,
             320.0,
@@ -503,42 +503,59 @@ mod tests {
         );
 
         spread.validate().unwrap();
-        assert!(spread.price_kirk().unwrap() > 0.0);
+        // Independent SciPy 1.17.1 normal-CDF evaluation of Kirk with
+        // aggregated products forward 0.8*320 + 0.2*58 = 267.6.
+        let actual = spread.price_kirk().unwrap();
+        let expected = 97_147.638_941_076_18;
+        assert!(
+            (actual - expected).abs() <= 3.0e-8,
+            "crush-spread Kirk mismatch: actual={actual:.12}, expected={expected:.12}"
+        );
     }
 
     #[test]
-    fn two_factor_mc_pricing_returns_positive_value() {
-        let spread = CommoditySpreadOption::spark_spread(
-            OptionType::Call,
-            62.0,
-            5.4,
-            0.5,
-            9.5,
-            0.42,
-            0.36,
-            0.5,
-            0.03,
-            1.0,
-            1_000.0,
-        );
+    fn two_factor_mc_matches_nonzero_strike_conditional_lognormal_quadrature() {
+        let spread = CommoditySpreadOption {
+            option_type: OptionType::Call,
+            forward_1: 92.0,
+            forward_2: 76.0,
+            strike: 11.0,
+            quantity_1: 1.25,
+            quantity_2: 0.9,
+            vol_1: 0.0,
+            vol_2: 0.0,
+            rho: 0.0,
+            risk_free_rate: 0.027,
+            maturity: 1.35,
+            notional: 1.0,
+        };
 
         let model = TwoFactorSpreadModel {
             leg_1: TwoFactorCommodityProcess {
-                kappa_fast: 2.3,
-                sigma_fast: 0.25,
-                sigma_slow: 0.18,
+                kappa_fast: 1.7,
+                sigma_fast: 0.23,
+                sigma_slow: 0.16,
             },
             leg_2: TwoFactorCommodityProcess {
-                kappa_fast: 2.0,
-                sigma_fast: 0.20,
-                sigma_slow: 0.14,
+                kappa_fast: 2.4,
+                sigma_fast: 0.19,
+                sigma_slow: 0.13,
             },
-            rho_fast: 0.55,
-            rho_slow: 0.45,
+            rho_fast: -0.25,
+            rho_slow: 0.40,
         };
 
-        let (price, stderr) = spread.price_two_factor_mc(&model, 20_000, 17).unwrap();
-        assert!(price.is_finite() && price > 0.0);
-        assert!(stderr.is_finite() && stderr > 0.0);
+        let (price, stderr) = spread.price_two_factor_mc(&model, 300_000, 29).unwrap();
+        // Independent SciPy 1.17.1 adaptive quadrature: condition on the
+        // second terminal log-forward, value the first conditional lognormal
+        // call analytically, then integrate one standard normal dimension.
+        // quad reported 2.4e-12 absolute integration error.
+        let expected = 34.917_665_818_779_33;
+        let tolerance = 4.0 * stderr + 2.4e-12;
+        assert!(
+            (price - expected).abs() <= tolerance,
+            "two-factor spread mismatch: mc={price}, quadrature={expected}, \
+             stderr={stderr}, tolerance={tolerance}"
+        );
     }
 }

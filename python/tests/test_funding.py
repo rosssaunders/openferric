@@ -193,13 +193,25 @@ class TestMarginAndLiquidation:
 
         initial_margin = MarginCalculator.initial_margin(5_000_000.0, params)
         maintenance_margin = MarginCalculator.maintenance_margin(5_000_000.0, params)
-        assert initial_margin > maintenance_margin > 0.0
+        margin_scalar = 0.20 * math.sqrt(30.0 / 365.0)
+        expected_initial_margin = 5_000_000.0 * 0.18 * margin_scalar
+        expected_maintenance_margin = 5_000_000.0 * 0.12 * margin_scalar
+        assert initial_margin == pytest.approx(
+            expected_initial_margin,
+            rel=0.0,
+            abs=4 * math.ulp(expected_initial_margin),
+        )
+        assert maintenance_margin == pytest.approx(
+            expected_maintenance_margin,
+            rel=0.0,
+            abs=4 * math.ulp(expected_maintenance_margin),
+        )
 
         health_ratio = MarginCalculator.health_ratio(initial_margin * 1.2, 5_000_000.0, 0.0, params)
-        assert health_ratio > 1.0
+        assert health_ratio == pytest.approx(1.8, rel=0.0, abs=2 * math.ulp(1.8))
 
         liquidation_rate = MarginCalculator.liquidation_rate(0.12, initial_margin * 1.2, -5_000_000.0, params)
-        assert math.isfinite(liquidation_rate)
+        assert liquidation_rate == pytest.approx(0.1144, rel=0.0, abs=math.ulp(0.1144))
 
         leverage = InherentLeverage.leverage(5_000_000.0, 125_000.0)
         assert leverage == pytest.approx(40.0, rel=0.0, abs=ABS_TOL)
@@ -215,8 +227,20 @@ class TestMarginAndLiquidation:
         simulator = LiquidationSimulator(position, model, 0.12, 256, 32, 7)
 
         baseline = simulator.simulate()
-        assert 0.0 <= baseline.prob_liquidation <= 1.0
-        assert math.isfinite(baseline.worst_case_funding_rate)
+        # Exact core-engine regression for the documented seed/path grid. The
+        # distribution-level Vasicek first-passage oracle lives in the Rust
+        # liquidation tests; this pins lossless propagation through PyO3.
+        assert baseline.prob_liquidation == 0.58203125
+        assert baseline.expected_time_to_liquidation == pytest.approx(
+            0.02423692194538934,
+            rel=0.0,
+            abs=2 * math.ulp(0.02423692194538934),
+        )
+        assert baseline.worst_case_funding_rate == pytest.approx(
+            0.10525363024551053,
+            rel=0.0,
+            abs=16 * math.ulp(0.10525363024551053),
+        )
 
         scenarios = [StressScenario.baseline()]
         scenarios.extend(StressScenario.cascade_suite())
@@ -225,4 +249,19 @@ class TestMarginAndLiquidation:
 
         assert len(results) == 6
         assert results[0].scenario.kind == "baseline"
-        assert all(0.0 <= result.risk.prob_liquidation <= 1.0 for result in results)
+        assert [result.risk.prob_liquidation for result in results] == [
+            0.58203125,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+        ]
+        assert [result.risk.expected_time_to_liquidation for result in results] == [
+            baseline.expected_time_to_liquidation,
+            0.0,
+            0.0,
+            0.0,
+            None,
+            0.0,
+        ]

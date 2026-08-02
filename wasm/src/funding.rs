@@ -839,3 +839,78 @@ impl LiquidationSimulator {
 pub fn years_to_timestamp_ms(anchor_timestamp_ms: f64, year_fraction: f64) -> f64 {
     anchor_timestamp_ms + year_fraction * MS_PER_YEAR
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_roundoff(actual: f64, expected: f64, ulps: f64) {
+        let tolerance = ulps * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual={actual:.17}, expected={expected:.17}, tolerance={tolerance:e}"
+        );
+    }
+
+    #[test]
+    fn wasm_funding_curve_wrapper_preserves_exact_curve_values() {
+        let curve = FundingRateCurve::flat(0.12);
+        assert_roundoff(curve.forward_rate(0.75), 0.12 / 1_095.0, 2.0);
+        assert_roundoff(curve.forward_apr(0.75), 0.12, 2.0);
+        assert_roundoff(curve.cumulative_index(0.75), 0.09, 2.0);
+        assert_roundoff(curve.discount_factor(0.75), (-0.09_f64).exp(), 2.0);
+
+        let json = r#"[
+            {"venue":"x","asset":"BTC","rate":0.0001,"timestamp_ms":0},
+            {"venue":"x","asset":"BTC","rate":0.0003,"timestamp_ms":31536000000}
+        ]"#;
+        let step = FundingRateCurve::from_json_piecewise_constant(json).unwrap();
+        assert_eq!(step.forward_rate(0.5), 0.0001);
+        // Exact final-node lookup is part of the piecewise-constant contract.
+        assert_eq!(step.forward_rate(1.0), 0.0003);
+    }
+
+    #[test]
+    fn wasm_funding_swap_wrapper_matches_exact_discrete_cashflows() {
+        let entry = 1_767_225_600_000.0;
+        let maturity = 1_767_312_000_000.0;
+        let swap = FundingRateSwap::new(
+            2_000_000.0,
+            0.08,
+            entry,
+            maturity,
+            "test".to_string(),
+            "BTC".to_string(),
+        )
+        .unwrap();
+        let curve = FundingRateCurve::flat(0.12);
+        let interval_pnl = (0.12 - 0.08) * 2_000_000.0 * (8.0 / 8_760.0);
+
+        let mtm = funding_rate_swap_mtm(&swap, &curve, entry, None).unwrap();
+        let dv01 = funding_rate_swap_dv01(&swap, &curve, entry, None).unwrap();
+        let theta = funding_rate_swap_theta(&swap, &curve, entry, None).unwrap();
+        let risks = funding_rate_swap_risks(&swap, &curve, entry, None).unwrap();
+
+        assert_roundoff(mtm, 3.0 * interval_pnl, 8.0);
+        assert_roundoff(
+            dv01,
+            3.0 * 2_000_000.0 * (8.0 / 8_760.0) * 1.0e-4,
+            // DV01 subtracts two MTMs near 219.18, so its binary64 budget is
+            // governed by cancellation at that scale.
+            256.0,
+        );
+        assert_roundoff(theta, -interval_pnl, 16.0);
+        assert_roundoff(risks.mtm, mtm, 1.0);
+        assert_roundoff(risks.dv01, dv01, 1.0);
+        assert_roundoff(risks.theta, theta, 1.0);
+        assert_eq!(risks.vega, 0.0);
+        assert_eq!(
+            funding_rate_swap_vega(&swap, &curve, entry, None).unwrap(),
+            0.0
+        );
+        assert_eq!(
+            funding_rate_swap_discount_dv01(&swap, &curve, entry, None).unwrap(),
+            0.0
+        );
+    }
+}

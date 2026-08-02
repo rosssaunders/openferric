@@ -116,7 +116,17 @@ mod tests {
     }
 
     #[test]
-    fn heston_step_keeps_variance_non_negative() {
+    fn gbm_euler_step_matches_exact_discretization() {
+        let model = Gbm {
+            mu: 0.05,
+            sigma: 0.2,
+        };
+        // 100 + .05*100*.25 + .2*100*sqrt(.25)*(-.4) = 97.25.
+        assert_eq!(model.step_euler(100.0, 0.25, -0.4), 97.25);
+    }
+
+    #[test]
+    fn heston_euler_step_matches_decimal_reference() {
         let model = Heston {
             mu: 0.03,
             kappa: 2.0,
@@ -125,13 +135,22 @@ mod tests {
             rho: -0.6,
             v0: 0.04,
         };
-        let (_s1, v1) = model.step_euler(100.0, 0.001, 1.0 / 252.0, -15.0, 1.2);
-        assert!(v1 >= 0.0);
         assert!(model.validate());
+
+        // Independent 80-digit Decimal evaluation of the stated full-
+        // truncation Euler step, including the correlated spot shock.
+        let (s1, v1) = model.step_euler(100.0, 0.04, 0.25, 0.35, -0.8);
+        assert_relative_eq!(s1, 92.081_143_785_680_46, epsilon = 3.0e-14);
+        assert_relative_eq!(v1, 0.0645, epsilon = 2.0e-17);
+
+        // The extreme-shock fixture separately pins the full-truncation floor.
+        let (clipped_s, clipped_v) = model.step_euler(100.0, 0.001, 1.0 / 252.0, -15.0, 1.2);
+        assert_relative_eq!(clipped_s, 102.015_834_802_300_32, epsilon = 4.0e-14);
+        assert_eq!(clipped_v, 0.0);
     }
 
     #[test]
-    fn sabr_step_keeps_forward_and_alpha_positive() {
+    fn sabr_euler_step_matches_decimal_reference() {
         let model = Sabr {
             alpha: 0.2,
             beta: 0.6,
@@ -139,8 +158,11 @@ mod tests {
             nu: 0.4,
         };
         assert!(model.validate());
+
+        // Independent 80-digit Decimal evaluation of the Euler definition,
+        // including F^beta and the correlated forward shock.
         let (f1, a1) = model.step_euler(100.0, model.alpha, 0.1, -4.0, 2.0);
-        assert!(f1 > 0.0);
-        assert!(a1 > 0.0);
+        assert_relative_eq!(f1, 103.115_257_958_332_53, epsilon = 4.0e-14);
+        assert_relative_eq!(a1, 0.098_807_114_874_611_86, epsilon = 3.0e-17);
     }
 }

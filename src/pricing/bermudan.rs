@@ -44,10 +44,9 @@ pub fn longstaff_schwartz_bermudan(
         return f64::NAN;
     }
 
-    let dt = t / steps as f64;
-    let drift = (r - 0.5 * sigma * sigma) * dt;
-    let vol = sigma * dt.sqrt();
-    let disc = (-r * dt).exp();
+    if t <= 0.0 {
+        return intrinsic(option_type, s0, k);
+    }
 
     let mut can_exercise = vec![false; steps + 1];
     for &e in exercise_steps {
@@ -56,6 +55,26 @@ pub fn longstaff_schwartz_bermudan(
         }
     }
     can_exercise[steps] = true;
+
+    if sigma <= 0.0 {
+        // Exact deterministic finite-grid value.  This also avoids a singular
+        // least-squares design matrix when every simulated path is identical.
+        return can_exercise
+            .iter()
+            .enumerate()
+            .filter(|(_, exercise)| **exercise)
+            .map(|(i, _)| {
+                let exercise_time = t * i as f64 / steps as f64;
+                let spot = s0 * (r * exercise_time).exp();
+                (-r * exercise_time).exp() * intrinsic(option_type, spot, k)
+            })
+            .fold(0.0, f64::max);
+    }
+
+    let dt = t / steps as f64;
+    let drift = (r - 0.5 * sigma * sigma) * dt;
+    let vol = sigma * dt.sqrt();
+    let disc = (-r * dt).exp();
 
     let mut rng = StdRng::seed_from_u64(seed);
     let mut paths = vec![vec![0.0_f64; steps + 1]; num_paths];
@@ -126,7 +145,12 @@ pub fn longstaff_schwartz_bermudan(
         }
     }
 
-    values.iter().map(|v| v * disc).sum::<f64>() / num_paths as f64
+    let continuation = values.iter().map(|v| v * disc).sum::<f64>() / num_paths as f64;
+    if can_exercise[0] {
+        continuation.max(intrinsic(option_type, s0, k))
+    } else {
+        continuation
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +160,52 @@ mod tests {
     use crate::engines::tree::binomial::BinomialTreeEngine;
     use crate::instruments::vanilla::VanillaOption;
     use crate::market::Market;
+
+    #[test]
+    fn zero_vol_bermudan_matches_exact_allowed_exercise_cashflows() {
+        let s0: f64 = 90.0;
+        let k: f64 = 100.0;
+        let r: f64 = 0.05;
+        let t: f64 = 1.0;
+        let steps = 12;
+        let exercise_steps = [3, 6, 9, 12];
+
+        // For a deterministic put at positive rates, discounted intrinsic
+        // decreases with time.  Since t=0 is not an allowed Bermudan date,
+        // the first exercise date (3/12 years) is optimal.
+        let first_time = t * exercise_steps[0] as f64 / steps as f64;
+        let first_spot = s0 * (r * first_time).exp();
+        let reference = (-r * first_time).exp() * (k - first_spot).max(0.0);
+        let actual = longstaff_schwartz_bermudan(
+            OptionType::Put,
+            s0,
+            k,
+            r,
+            0.0,
+            t,
+            steps,
+            &exercise_steps,
+            1_000,
+            99,
+        );
+        assert!((actual - reference).abs() <= 8.0 * f64::EPSILON * reference.max(1.0));
+
+        // Adding t=0 makes the exact immediate intrinsic the optimum.
+        let with_root = [0, 3, 6, 9, 12];
+        let root_actual = longstaff_schwartz_bermudan(
+            OptionType::Put,
+            s0,
+            k,
+            r,
+            0.0,
+            t,
+            steps,
+            &with_root,
+            1_000,
+            99,
+        );
+        assert_eq!(root_actual, k - s0);
+    }
 
     #[test]
     fn bermudan_lsm_matches_independent_binomial_with_batch_stderr() {

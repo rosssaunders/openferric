@@ -136,14 +136,11 @@ impl LiquidationSimulator {
         let total_time = position.margin_params.time_to_maturity;
 
         let initial_health = health_at_rate(position, initial_rate, total_time);
-        if total_time <= EPSILON {
+        let initially_liquidatable = MarginCalculator::is_liquidatable(initial_health);
+        if initially_liquidatable || total_time <= EPSILON {
             return LiquidationRisk {
-                prob_liquidation: if MarginCalculator::is_liquidatable(initial_health) {
-                    1.0
-                } else {
-                    0.0
-                },
-                expected_time_to_liquidation: if MarginCalculator::is_liquidatable(initial_health) {
+                prob_liquidation: if initially_liquidatable { 1.0 } else { 0.0 },
+                expected_time_to_liquidation: if initially_liquidatable {
                     Some(0.0)
                 } else {
                     None
@@ -162,11 +159,7 @@ impl LiquidationSimulator {
             let mut rng = FastRng::from_seed(self.rng_kind, seed);
             let mut rate = initial_rate;
             let mut path_worst_rate = initial_rate;
-            let mut liquidated_at = if MarginCalculator::is_liquidatable(initial_health) {
-                Some(0.0)
-            } else {
-                None
-            };
+            let mut liquidated_at = None;
 
             for step in 1..=self.steps {
                 let z = sample_standard_normal(&mut rng);
@@ -342,6 +335,14 @@ fn validate_position(position: &LiquidationPosition) {
 mod tests {
     use super::*;
 
+    fn assert_roundoff(actual: f64, expected: f64, label: &str) {
+        let tolerance = 32.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: actual={actual:.17}, expected={expected:.17}, tolerance={tolerance:e}"
+        );
+    }
+
     fn margin_params() -> MarginParams {
         MarginParams {
             initial_margin_ratio: 0.20,
@@ -369,34 +370,105 @@ mod tests {
     }
 
     #[test]
-    fn high_collateral_keeps_liquidation_probability_near_zero() {
-        let risk = baseline_simulator(15.0).simulate();
-        assert!(
-            risk.prob_liquidation < 0.02,
-            "unexpected liquidation risk: {risk:?}"
-        );
-    }
-
-    #[test]
-    fn minimal_collateral_leads_to_high_liquidation_probability() {
+    fn vasicek_first_passage_matches_scipy_sobol_reference_and_seeded_grid() {
         let risk = baseline_simulator(4.8).simulate();
+
+        // Independent reference: 16 independently scrambled 2^16-path Sobol
+        // replicates from SciPy 1.17.1 / NumPy 2.4.3. Each path uses the exact
+        // Gaussian Vasicek transition and applies the same 63 pre-maturity
+        // monitoring dates. The replicate standard errors were 2.78e-4 for
+        // the hit probability and 1.94e-4 years for the conditional hit time.
+        const REFERENCE_PROBABILITY: f64 = 0.642_266_273_498_535_2;
+        const REFERENCE_TIME: f64 = 0.315_824_911_447_977_2;
+        const CONDITIONAL_TIME_STDDEV: f64 = 0.249_041_26;
+        const REFERENCE_PROBABILITY_ERROR: f64 = 2.78e-4;
+        const REFERENCE_TIME_ERROR: f64 = 1.94e-4;
+
+        let probability_stderr =
+            (REFERENCE_PROBABILITY * (1.0 - REFERENCE_PROBABILITY) / 5_000.0).sqrt();
+        let time_stderr = CONDITIONAL_TIME_STDDEV / (5_000.0 * REFERENCE_PROBABILITY).sqrt();
         assert!(
-            risk.prob_liquidation > 0.50,
-            "unexpected liquidation risk: {risk:?}"
+            (risk.prob_liquidation - REFERENCE_PROBABILITY).abs()
+                <= 4.0 * (probability_stderr.powi(2) + REFERENCE_PROBABILITY_ERROR.powi(2)).sqrt(),
+            "implementation={risk:?}, reference probability={REFERENCE_PROBABILITY}"
+        );
+        let expected_time = risk
+            .expected_time_to_liquidation
+            .expect("the referenced scenario has liquidation events");
+        assert!(
+            (expected_time - REFERENCE_TIME).abs()
+                <= 4.0 * (time_stderr.powi(2) + REFERENCE_TIME_ERROR.powi(2)).sqrt(),
+            "implementation={risk:?}, reference time={REFERENCE_TIME}"
+        );
+
+        // Exact seeded regression locks the implementation's path count,
+        // first-passage grid and stream partitioning in addition to the
+        // independent distribution-level comparison above.
+        assert_eq!(risk.prob_liquidation, 0.6436);
+        assert_eq!(expected_time, 0.317_146_713_797_389_7);
+        assert_roundoff(
+            risk.worst_case_funding_rate,
+            0.117_587_060_517_995_33,
+            "seeded adverse rate",
         );
     }
 
     #[test]
-    fn five_x_vol_stress_is_more_severe_than_baseline() {
-        let simulator = baseline_simulator(6.0);
-        let baseline = simulator.simulate();
-        let stressed = simulator.simulate_stress(StressScenario::LiquidationCascade {
+    fn high_collateral_seeded_tail_probability_is_not_a_wide_range_check() {
+        let risk = baseline_simulator(15.0).simulate();
+        assert_eq!(risk.prob_liquidation, 0.0006);
+        assert_eq!(
+            risk.expected_time_to_liquidation,
+            Some(0.713_541_666_666_666_6)
+        );
+        assert_roundoff(
+            risk.worst_case_funding_rate,
+            0.201_017_170_565_720_35,
+            "tail-scenario adverse rate",
+        );
+    }
+
+    #[test]
+    fn initially_under_margined_stress_liquidates_at_time_zero() {
+        let risk = baseline_simulator(6.0).simulate_stress(StressScenario::LiquidationCascade {
             vol_multiplier: 5.0,
         });
+        assert_eq!(
+            risk,
+            LiquidationRisk {
+                prob_liquidation: 1.0,
+                expected_time_to_liquidation: Some(0.0),
+                worst_case_funding_rate: 0.05,
+            }
+        );
+    }
 
-        assert!(
-            stressed.prob_liquidation > baseline.prob_liquidation,
-            "baseline={baseline:?}, stressed={stressed:?}"
+    #[test]
+    fn zero_vol_cir_path_has_exact_first_passage_time() {
+        let simulator = LiquidationSimulator::new(
+            LiquidationPosition {
+                size: 100.0,
+                entry_rate: 0.05,
+                collateral: 2.5,
+                margin_params: margin_params(),
+            },
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: 0.20,
+                sigma: 0.0,
+            }),
+            0.05,
+            17,
+            4,
+            123,
+        );
+        let risk = simulator.simulate();
+        assert_eq!(risk.prob_liquidation, 1.0);
+        assert_eq!(risk.expected_time_to_liquidation, Some(0.25));
+        assert_roundoff(
+            risk.worst_case_funding_rate,
+            0.087_500_000_000_000_01,
+            "deterministic CIR adverse rate",
         );
     }
 }

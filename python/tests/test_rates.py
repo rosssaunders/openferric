@@ -43,9 +43,18 @@ class TestSwaptionPrice:
         put = py_swaption_price(**swaption_params, option_type="put")
         assert receiver == put
 
-    def test_higher_vol_higher_price(self, swaption_params):
+    def test_volatility_grid_matches_scipy_black76(self, swaption_params):
         low_vol = py_swaption_price(**{**swaption_params, "vol": 0.10}, option_type="payer")
         high_vol = py_swaption_price(**{**swaption_params, "vol": 0.30}, option_type="payer")
+
+        # SciPy 1.17.1 `ndtr`, with the wrapper's quarterly flat continuous
+        # curve and the core pricer's annual fixed-leg schedule.  These replace
+        # the old monotonic-only check with full price oracles; the inequality
+        # remains as a supplemental no-arbitrage assertion.
+        low_reference = 6_419.314647624688
+        high_reference = 17_026.091194743705
+        assert low_vol == pytest.approx(low_reference, rel=0.0, abs=512 * math.ulp(low_reference))
+        assert high_vol == pytest.approx(high_reference, rel=0.0, abs=512 * math.ulp(high_reference))
         assert high_vol > low_vol
 
     def test_invalid_option_type(self, swaption_params):
