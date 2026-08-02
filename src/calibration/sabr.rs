@@ -197,11 +197,23 @@ impl Calibrator<SabrCalibrationParams> for SabrCalibrator {
         if instruments.is_empty() {
             return Err("sabr calibration requires non-empty instrument set".to_string());
         }
-        if self.forward <= 0.0 || self.maturity <= 0.0 {
-            return Err("sabr forward and maturity must be > 0".to_string());
+        if !self.forward.is_finite()
+            || !self.maturity.is_finite()
+            || self.forward <= 0.0
+            || self.maturity <= 0.0
+        {
+            return Err("sabr forward and maturity must be finite and > 0".to_string());
+        }
+        if self
+            .beta_pin
+            .is_some_and(|beta| !beta.is_finite() || !(0.0..=1.0).contains(&beta))
+        {
+            return Err("sabr beta pin must be finite and in [0, 1]".to_string());
         }
         if instruments.iter().any(|q| {
-            q.strike <= 0.0
+            !q.strike.is_finite()
+                || !q.maturity.is_finite()
+                || q.strike <= 0.0
                 || q.market_vol <= 0.0
                 || !q.market_vol.is_finite()
                 || (q.maturity - self.maturity).abs() > 1e-12
@@ -349,6 +361,217 @@ mod tests {
         assert_eq!(
             result.per_instrument_error.len(),
             roundtrip.per_instrument_error.len()
+        );
+    }
+
+    #[test]
+    fn pinned_and_free_beta_helpers_cover_exact_parameter_layouts() {
+        let pinned = SabrCalibrator::default();
+        assert_eq!(pinned.name(), "sabr");
+        assert_eq!(pinned.bounds().dimension(), 3);
+        assert!(pinned.decode_params(&[0.2, -0.1]).is_none());
+        let pinned_params = pinned.decode_params(&[0.2, -0.1, 0.7]).unwrap();
+        assert_eq!(
+            pinned_params,
+            SabrCalibrationParams {
+                alpha: 0.2,
+                beta: 0.5,
+                rho: -0.1,
+                nu: 0.7,
+            }
+        );
+        assert_eq!(pinned.encode_params(pinned_params), vec![0.2, -0.1, 0.7]);
+
+        let free = SabrCalibrator {
+            beta_pin: None,
+            ..SabrCalibrator::default()
+        };
+        assert_eq!(free.bounds().dimension(), 4);
+        assert!(free.decode_params(&[0.2, 0.7, -0.1]).is_none());
+        let free_params = free.decode_params(&[0.2, 0.7, -0.1, 0.8]).unwrap();
+        assert_eq!(free.encode_params(free_params), vec![0.2, 0.7, -0.1, 0.8]);
+        assert_eq!(free.initial_guess(&[]), vec![2.0, 0.5, -0.2, 0.6]);
+
+        let quotes = [OptionVolQuote::new("atm", 100.0, 1.0, 0.2)];
+        assert!(free.model_vols(&[0.2, 0.7, -0.1], &quotes).is_none());
+        assert_eq!(free.residuals(&[0.2, 0.7, -0.1], &quotes), vec![1.0e6]);
+        assert_eq!(free.objective(&[0.2, 0.7, -0.1], &quotes), 5.0e11);
+
+        let model = free.model_vols(&[0.2, 0.7, -0.1, 0.8], &quotes).unwrap();
+        let oracle = SabrParams {
+            alpha: 0.2,
+            beta: 0.7,
+            rho: -0.1,
+            nu: 0.8,
+        }
+        .implied_vol(100.0, 100.0, 1.0);
+        assert_eq!(model, vec![oracle]);
+    }
+
+    #[test]
+    fn sabr_validation_rejects_nonfinite_domains_and_inconsistent_quotes() {
+        let default = SabrCalibrator::default();
+        assert_eq!(
+            default.calibrate(&[]).unwrap_err(),
+            "sabr calibration requires non-empty instrument set"
+        );
+        let quote = OptionVolQuote::new("q", 100.0, 1.0, 0.2);
+
+        for forward in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let calibrator = SabrCalibrator {
+                forward,
+                ..SabrCalibrator::default()
+            };
+            assert_eq!(
+                calibrator
+                    .calibrate(std::slice::from_ref(&quote))
+                    .unwrap_err(),
+                "sabr forward and maturity must be finite and > 0"
+            );
+        }
+        for maturity in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let calibrator = SabrCalibrator {
+                maturity,
+                ..SabrCalibrator::default()
+            };
+            assert_eq!(
+                calibrator
+                    .calibrate(std::slice::from_ref(&quote))
+                    .unwrap_err(),
+                "sabr forward and maturity must be finite and > 0"
+            );
+        }
+        for beta in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let calibrator = SabrCalibrator {
+                beta_pin: Some(beta),
+                ..SabrCalibrator::default()
+            };
+            assert_eq!(
+                calibrator
+                    .calibrate(std::slice::from_ref(&quote))
+                    .unwrap_err(),
+                "sabr beta pin must be finite and in [0, 1]"
+            );
+        }
+
+        let invalid_quotes = [
+            OptionVolQuote {
+                strike: 0.0,
+                ..quote.clone()
+            },
+            OptionVolQuote {
+                strike: f64::NAN,
+                ..quote.clone()
+            },
+            OptionVolQuote {
+                strike: f64::INFINITY,
+                ..quote.clone()
+            },
+            OptionVolQuote {
+                maturity: 2.0,
+                ..quote.clone()
+            },
+            OptionVolQuote {
+                maturity: f64::NAN,
+                ..quote.clone()
+            },
+            OptionVolQuote {
+                market_vol: 0.0,
+                ..quote.clone()
+            },
+            OptionVolQuote {
+                market_vol: f64::INFINITY,
+                ..quote
+            },
+        ];
+        for invalid in invalid_quotes {
+            assert_eq!(
+                default.calibrate(&[invalid]).unwrap_err(),
+                "invalid SABR quote set for configured expiry"
+            );
+        }
+    }
+
+    #[test]
+    fn global_search_and_nelder_mead_fallback_improve_free_beta_start() {
+        let true_params = SabrParams {
+            alpha: 0.25,
+            beta: 0.7,
+            rho: -0.2,
+            nu: 0.6,
+        };
+        let quotes: Vec<_> = [80.0, 90.0, 100.0, 110.0, 120.0]
+            .into_iter()
+            .map(|strike| {
+                OptionVolQuote::new(
+                    format!("k{strike:.0}"),
+                    strike,
+                    1.0,
+                    true_params.implied_vol(100.0, strike, 1.0),
+                )
+            })
+            .collect();
+
+        let baseline = SabrCalibrator {
+            beta_pin: None,
+            use_global_search: false,
+            use_nelder_mead_fallback: false,
+            lm_options: LmOptions {
+                max_iterations: 0,
+                ..LmOptions::default()
+            },
+            ..SabrCalibrator::default()
+        }
+        .calibrate(&quotes)
+        .unwrap();
+
+        let global = SabrCalibrator {
+            beta_pin: None,
+            use_global_search: true,
+            use_nelder_mead_fallback: false,
+            de_options: DifferentialEvolutionOptions {
+                max_generations: 24,
+                population_size: 16,
+                seed: 17,
+                ..DifferentialEvolutionOptions::default()
+            },
+            lm_options: LmOptions {
+                max_iterations: 0,
+                ..LmOptions::default()
+            },
+            ..SabrCalibrator::default()
+        };
+        let global_result = global.calibrate(&quotes).unwrap();
+        assert!(
+            global_result.objective < baseline.objective,
+            "differential evolution did not improve the free-beta heuristic: baseline={}, global={}",
+            baseline.objective,
+            global_result.objective
+        );
+        assert_eq!(global_result.per_instrument_error.len(), quotes.len());
+
+        let fallback = SabrCalibrator {
+            beta_pin: None,
+            lm_options: LmOptions {
+                max_iterations: 0,
+                ..LmOptions::default()
+            },
+            nm_options: NelderMeadOptions {
+                max_iterations: 120,
+                ..NelderMeadOptions::default()
+            },
+            use_global_search: false,
+            use_nelder_mead_fallback: true,
+            ..SabrCalibrator::default()
+        };
+        let fallback_result = fallback.calibrate(&quotes).unwrap();
+        assert!(!fallback_result.convergence.converged);
+        assert_eq!(fallback_result.per_instrument_error.len(), quotes.len());
+        assert!(
+            fallback_result.objective < baseline.objective,
+            "Nelder-Mead fallback did not improve the forced-zero-iteration LM: baseline={}, fallback={}",
+            baseline.objective,
+            fallback_result.objective
         );
     }
 }

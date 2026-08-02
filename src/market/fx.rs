@@ -1649,6 +1649,114 @@ mod tests {
         }
     }
 
+    fn flat_surface_quote(expiry: f64, atm_vol: f64) -> FxVolExpiryQuote {
+        FxVolExpiryQuote {
+            expiry,
+            smile: FxSmileMarketQuote {
+                atm_vol,
+                pillars: vec![
+                    FxRrBfPillar {
+                        delta: 0.10,
+                        risk_reversal: 0.0,
+                        butterfly: 0.0,
+                    },
+                    FxRrBfPillar {
+                        delta: 0.25,
+                        risk_reversal: 0.0,
+                        butterfly: 0.0,
+                    },
+                ],
+                atm_convention: FxAtmConvention::Forward,
+                delta_convention: FxDeltaConvention::Forward,
+                premium_currency: PremiumCurrency::Domestic,
+            },
+        }
+    }
+
+    #[test]
+    fn surface_interior_expiry_matches_total_variance_interpolation() {
+        let t0: f64 = 0.5;
+        let t1: f64 = 2.0;
+        let t: f64 = 1.0;
+        let v0: f64 = 0.09;
+        let v1: f64 = 0.15;
+        let curve = FxForwardCurve::from_deposit_rates(
+            vec![t0, t1],
+            vec![0.03, 0.03],
+            vec![0.01, 0.01],
+            vec![0.0, 0.0],
+        )
+        .unwrap();
+        let surface = FxVolSurface::from_market_quotes(
+            1.10,
+            curve,
+            vec![flat_surface_quote(t0, v0), flat_surface_quote(t1, v1)],
+        )
+        .unwrap();
+
+        let weight = (t - t0) / (t1 - t0);
+        let expected = ((v0 * v0 * t0 + weight * (v1 * v1 * t1 - v0 * v0 * t0)) / t).sqrt();
+
+        for delta in [-0.25, 0.0, 0.25] {
+            assert_relative_eq!(
+                surface.vol_at_signed_delta(t, delta).unwrap(),
+                expected,
+                epsilon = 3.0e-16
+            );
+        }
+        for strike in [0.90, 1.10, 1.30] {
+            assert_relative_eq!(surface.vol(strike, t).unwrap(), expected, epsilon = 3.0e-16);
+        }
+
+        // Surface endpoint extrapolation is deliberately flat in total smile
+        // selection rather than extending the variance slope.
+        assert_eq!(surface.vol_at_signed_delta(0.25, 0.25).unwrap(), v0);
+        assert_eq!(surface.vol_at_signed_delta(3.0, -0.25).unwrap(), v1);
+    }
+
+    #[test]
+    fn smile_signed_delta_and_reconstructed_pillars_round_trip() {
+        let quote = forward_delta_test_quote();
+        let slice = FxSmileSlice::new(0.75, 1.12, 0.04, 0.015, quote.clone()).unwrap();
+
+        for target in [-0.25, -0.10, 0.10, 0.25] {
+            let strike = slice.strike_from_signed_delta(target).unwrap();
+            let option_type = if target > 0.0 {
+                OptionType::Call
+            } else {
+                OptionType::Put
+            };
+            let recovered = fx_delta(
+                option_type,
+                slice.spot,
+                strike,
+                slice.domestic_rate,
+                slice.foreign_rate,
+                slice.vol_at_signed_delta(target),
+                slice.expiry,
+                quote.delta_convention,
+                quote.premium_currency,
+            )
+            .unwrap();
+            // Forward-delta inversion uses the Acklam inverse-normal
+            // approximation.  The measured delta residual on this grid is
+            // 2.47e-10 at the 10-delta put; 5e-10 retains roughly 2x
+            // headroom for cross-platform libm differences.
+            assert_relative_eq!(recovered, target, epsilon = 5.0e-10);
+        }
+
+        let reconstructed = slice.reconstruct_pillars();
+        for (actual, expected) in reconstructed.iter().zip(quote.sorted_pillars()) {
+            assert_eq!(actual.delta, expected.delta);
+            assert_relative_eq!(
+                actual.risk_reversal,
+                expected.risk_reversal,
+                epsilon = 3.0e-17
+            );
+            assert_relative_eq!(actual.butterfly, expected.butterfly, epsilon = 3.0e-17);
+        }
+    }
+
     #[test]
     fn ndf_settlement_and_pv_match_market_standard_formula() {
         let pair = FxPair::from_code("USD/INR").unwrap();
@@ -1668,6 +1776,66 @@ mod tests {
             settlement_inr * (-0.06_f64 * 0.5).exp(),
             epsilon = 1.0e-10
         );
+    }
+
+    #[test]
+    fn ndf_direction_and_settlement_currency_match_exact_cashflows() {
+        let fixing: f64 = 83.0;
+        let strike: f64 = 82.0;
+        let notional: f64 = 1_000_000.0;
+        let rd: f64 = 0.06;
+        let rf: f64 = 0.025;
+        let expiry: f64 = 0.5;
+
+        for settlement_currency in [
+            NdfSettlementCurrency::Domestic,
+            NdfSettlementCurrency::Foreign,
+        ] {
+            for is_long_base in [true, false] {
+                let ndf = NdfContract {
+                    pair: FxPair::from_code("USD/INR").unwrap(),
+                    notional_base: notional,
+                    agreed_forward: strike,
+                    settlement_currency,
+                    is_long_base,
+                };
+                let sign = if is_long_base { 1.0 } else { -1.0 };
+                let domestic = sign * notional * (fixing - strike);
+                let (expected_settlement, discount_rate) = match settlement_currency {
+                    NdfSettlementCurrency::Domestic => (domestic, rd),
+                    NdfSettlementCurrency::Foreign => (domestic / fixing, rf),
+                };
+
+                assert_relative_eq!(
+                    ndf.settlement_amount(fixing).unwrap(),
+                    expected_settlement,
+                    epsilon = 2.0e-12
+                );
+                assert_relative_eq!(
+                    ndf.present_value(fixing, rd, rf, expiry).unwrap(),
+                    expected_settlement * (-discount_rate * expiry).exp(),
+                    epsilon = 2.0e-12
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_pair_follows_market_rank_then_lexicographic_order() {
+        assert_eq!(
+            canonical_pair("usd", "jpy").unwrap(),
+            ("USD".to_string(), "JPY".to_string())
+        );
+        assert_eq!(
+            canonical_pair("USD", "EUR").unwrap(),
+            ("EUR".to_string(), "USD".to_string())
+        );
+        assert_eq!(
+            canonical_pair("PLN", "MXN").unwrap(),
+            ("MXN".to_string(), "PLN".to_string())
+        );
+        assert!(canonical_pair("USD", "USD").is_err());
+        assert!(canonical_pair("US", "JPY").is_err());
     }
 
     #[test]

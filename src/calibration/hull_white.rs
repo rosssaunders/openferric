@@ -251,4 +251,121 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn helper_paths_decode_fallback_and_penalize_wrong_dimensions_exactly() {
+        assert!(HullWhiteCalibrationParams::from_slice(&[0.1]).is_none());
+        let params = HullWhiteCalibrationParams::from_slice(&[0.07, 0.012]).unwrap();
+        assert_eq!(params.to_vec(), vec![0.07, 0.012]);
+
+        let calibrator = HullWhiteCalibrator::default();
+        assert_eq!(calibrator.name(), "hull-white");
+        assert_eq!(calibrator.initial_guess(&[]), vec![0.05, 0.01]);
+
+        let quotes = [
+            SwaptionVolQuote::new("1x2", 1.0, 2.0, 0.01),
+            SwaptionVolQuote::new("2x5", 2.0, 5.0, 0.012),
+        ];
+        assert!(calibrator.model_vols(&[0.05], &quotes).is_none());
+        assert_eq!(calibrator.residuals(&[0.05], &quotes), vec![1.0e6; 2]);
+        assert_eq!(calibrator.objective(&[0.05], &quotes), 1.0e12);
+    }
+
+    #[test]
+    fn calibration_rejects_empty_and_malformed_quotes() {
+        let calibrator = HullWhiteCalibrator::default();
+        assert_eq!(
+            calibrator.calibrate(&[]).unwrap_err(),
+            "hull-white calibration requires non-empty instrument set"
+        );
+
+        let valid = SwaptionVolQuote::new("q", 1.0, 2.0, 0.01);
+        let invalid = [
+            SwaptionVolQuote {
+                expiry: 0.0,
+                ..valid.clone()
+            },
+            SwaptionVolQuote {
+                expiry: f64::NAN,
+                ..valid.clone()
+            },
+            SwaptionVolQuote {
+                tenor: 0.0,
+                ..valid.clone()
+            },
+            SwaptionVolQuote {
+                tenor: f64::INFINITY,
+                ..valid.clone()
+            },
+            SwaptionVolQuote {
+                market_vol: 0.0,
+                ..valid.clone()
+            },
+            SwaptionVolQuote {
+                market_vol: f64::NAN,
+                ..valid.clone()
+            },
+            SwaptionVolQuote {
+                market_vol: f64::INFINITY,
+                ..valid
+            },
+        ];
+        for quote in invalid {
+            assert_eq!(
+                calibrator.calibrate(&[quote]).unwrap_err(),
+                "invalid Hull-White swaption quote set"
+            );
+        }
+    }
+
+    #[test]
+    fn forced_nonconvergence_and_nelder_mead_fallback_improves_objective() {
+        let quotes = [
+            SwaptionVolQuote::new("1x1", 1.0, 1.0, 0.0103),
+            SwaptionVolQuote::new("2x5", 2.0, 5.0, 0.0074),
+            SwaptionVolQuote::new("5x10", 5.0, 10.0, 0.0041),
+        ];
+        let no_fallback = HullWhiteCalibrator {
+            lm_options: LmOptions {
+                max_iterations: 0,
+                ..LmOptions::default()
+            },
+            use_nelder_mead_fallback: false,
+            ..HullWhiteCalibrator::default()
+        };
+        let result = no_fallback.calibrate(&quotes).unwrap();
+        assert!(!result.convergence.converged);
+        assert_eq!(
+            result.convergence.reason,
+            crate::calibration::TerminationReason::MaxIterations
+        );
+        assert!(
+            result
+                .diagnostics
+                .warning_flags
+                .contains(&crate::calibration::CalibrationWarningFlag::NonConvergent)
+        );
+
+        let fallback = HullWhiteCalibrator {
+            lm_options: LmOptions {
+                max_iterations: 0,
+                ..LmOptions::default()
+            },
+            nm_options: NelderMeadOptions {
+                max_iterations: 80,
+                ..NelderMeadOptions::default()
+            },
+            use_nelder_mead_fallback: true,
+            ..HullWhiteCalibrator::default()
+        };
+        let fallback_result = fallback.calibrate(&quotes).unwrap();
+        assert!(!fallback_result.convergence.converged);
+        assert!(
+            fallback_result.objective < result.objective,
+            "Nelder-Mead fallback did not improve the forced-zero-iteration LM: baseline={}, fallback={}",
+            result.objective,
+            fallback_result.objective
+        );
+        assert_eq!(fallback_result.per_instrument_error.len(), quotes.len());
+    }
 }

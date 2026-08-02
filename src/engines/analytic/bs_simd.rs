@@ -1620,4 +1620,81 @@ mod tests {
             );
         }
     }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[test]
+    fn forced_avx2_price_greek_and_cdf_kernels_match_scalar_oracles() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            eprintln!("skipping direct AVX2 coverage: AVX2+FMA unavailable");
+            return;
+        }
+
+        // Nine lanes force two vector chunks plus the scalar tail even on an
+        // AVX-512 host, where normal runtime dispatch would never enter AVX2.
+        let spots = [72.0, 85.0, 95.0, 100.0, 105.0, 115.0, 130.0, 160.0, 210.0];
+        let strikes = [100.0; 9];
+        let (r, q, vol, t) = (0.037, 0.012, 0.24, 1.35);
+
+        let xs = [-8.0, -3.0, -1.0, -0.1, 0.0, 0.3, 1.5, 4.0, 8.0];
+        let mut cdf = [0.0; 9];
+        unsafe { avx2_impl::normal_cdf_batch_avx2(&xs, &mut cdf) };
+        for (actual, x) in cdf.into_iter().zip(xs) {
+            let expected = normal_cdf_approx(x);
+            assert!(
+                (actual - expected).abs() <= 3.0e-7,
+                "x={x} actual={actual} expected={expected}"
+            );
+        }
+
+        for is_call in [true, false] {
+            let mut prices = [0.0; 9];
+            unsafe {
+                avx2_impl::bs_price_batch_avx2(&spots, &strikes, r, q, vol, t, is_call, &mut prices)
+            };
+            for i in 0..spots.len() {
+                let expected = bs_price_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+                let scale = expected.abs().max(1.0);
+                assert!(
+                    (prices[i] - expected).abs() <= 2.0e-12 * scale,
+                    "lane={i} call={is_call} actual={} expected={expected}",
+                    prices[i]
+                );
+            }
+
+            let mut delta = [0.0; 9];
+            let mut gamma = [0.0; 9];
+            let mut vega = [0.0; 9];
+            let mut theta = [0.0; 9];
+            unsafe {
+                avx2_impl::bs_greeks_batch_avx2(
+                    &spots, &strikes, r, q, vol, t, is_call, &mut delta, &mut gamma, &mut vega,
+                    &mut theta,
+                )
+            };
+            for i in 0..spots.len() {
+                let expected = bs_greeks_scalar(spots[i], strikes[i], r, q, vol, t, is_call);
+                for (name, actual, reference) in [
+                    ("delta", delta[i], expected.0),
+                    ("gamma", gamma[i], expected.1),
+                    ("vega", vega[i], expected.2),
+                    ("theta", theta[i], expected.3),
+                ] {
+                    let scale = reference.abs().max(1.0);
+                    assert!(
+                        (actual - reference).abs() <= 3.0e-12 * scale,
+                        "{name} lane={i} call={is_call} actual={actual} expected={reference}"
+                    );
+                }
+            }
+        }
+
+        // Exercise the AVX2 kernels' deterministic expiry/zero-vol guard.
+        let mut intrinsic = [0.0; 9];
+        unsafe {
+            avx2_impl::bs_price_batch_avx2(&spots, &strikes, r, q, 0.0, t, true, &mut intrinsic)
+        };
+        for (actual, spot) in intrinsic.into_iter().zip(spots) {
+            assert_eq!(actual, bs_price_scalar(spot, 100.0, r, q, 0.0, t, true));
+        }
+    }
 }

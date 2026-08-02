@@ -198,6 +198,9 @@ impl YieldCurve {
         if t <= 0.0 {
             return Ok(0.0);
         }
+        if self.tenors.is_empty() {
+            return Ok(0.0);
+        }
 
         let Some(state) = &self.interpolation_state else {
             return Ok(-discount_factor_one_point(
@@ -1082,5 +1085,169 @@ mod tests {
 
         assert!(yc.try_discount_factor(3.0).is_err());
         assert!(yc.discount_factor(3.0).is_nan());
+    }
+
+    #[test]
+    fn empty_curve_has_neutral_rates_and_empty_jacobians() {
+        let curve = YieldCurve::new(Vec::new());
+
+        for t in [-1.0, 0.0, 1.0, 30.0] {
+            assert_eq!(curve.try_discount_factor(t).unwrap(), 1.0);
+            assert_eq!(curve.try_zero_rate(t).unwrap(), 0.0);
+            assert_eq!(curve.try_instantaneous_forward_rate(t).unwrap(), 0.0);
+            assert!(curve.discount_factor_jacobian(t).unwrap().is_empty());
+            assert!(curve.zero_rate_jacobian(t).unwrap().is_empty());
+        }
+
+        assert_eq!(curve.try_forward_rate(1.0, 2.0).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn instantaneous_forwards_match_piecewise_curve_derivatives() {
+        let points = vec![(1.0, 0.97), (2.0, 0.91), (4.0, 0.80)];
+        let log_df = YieldCurve::new_with_settings(
+            points.clone(),
+            settings(YieldCurveInterpolationMethod::LogLinearDiscount),
+        )
+        .unwrap();
+
+        // Between 1y and 2y, log-linear discount interpolation makes the
+        // instantaneous forward exactly ln(P(1)/P(2)) / (2-1).
+        let expected_log_df_forward = (0.97_f64 / 0.91).ln();
+        assert_relative_eq!(
+            log_df.instantaneous_forward_rate(1.5),
+            expected_log_df_forward,
+            epsilon = 16.0 * f64::EPSILON
+        );
+
+        let linear_zero = YieldCurve::new_with_settings(
+            points,
+            settings(YieldCurveInterpolationMethod::LinearZeroRate),
+        )
+        .unwrap();
+        let z1 = -0.97_f64.ln();
+        let z2 = -0.91_f64.ln() / 2.0;
+        let dz = z2 - z1;
+        let expected_linear_zero_forward = (z1 + 0.5 * dz) + 1.5 * dz;
+        assert_relative_eq!(
+            linear_zero.instantaneous_forward_rate(1.5),
+            expected_linear_zero_forward,
+            epsilon = 32.0 * f64::EPSILON
+        );
+
+        // At the origin the zero-rate limit is used.
+        assert_relative_eq!(
+            linear_zero.instantaneous_forward_rate(0.0),
+            z1,
+            epsilon = 16.0 * f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn discount_and_zero_rate_jacobians_match_closed_form_weights() {
+        let df1 = 0.97_f64;
+        let df2 = 0.91_f64;
+        let t = 1.5;
+
+        let log_df = YieldCurve::new_with_settings(
+            vec![(1.0, df1), (2.0, df2)],
+            settings(YieldCurveInterpolationMethod::LogLinearDiscount),
+        )
+        .unwrap();
+        let p = (df1 * df2).sqrt();
+        let expected_df_jac = [p / (2.0 * df1), p / (2.0 * df2)];
+        let expected_zero_jac = [-1.0 / (3.0 * df1), -1.0 / (3.0 * df2)];
+        for (got, expected) in log_df
+            .discount_factor_jacobian(t)
+            .unwrap()
+            .iter()
+            .zip(expected_df_jac)
+        {
+            assert_relative_eq!(*got, expected, epsilon = 32.0 * f64::EPSILON);
+        }
+        for (got, expected) in log_df
+            .zero_rate_jacobian(t)
+            .unwrap()
+            .iter()
+            .zip(expected_zero_jac)
+        {
+            assert_relative_eq!(*got, expected, epsilon = 32.0 * f64::EPSILON);
+        }
+
+        let linear_zero = YieldCurve::new_with_settings(
+            vec![(1.0, df1), (2.0, df2)],
+            settings(YieldCurveInterpolationMethod::LinearZeroRate),
+        )
+        .unwrap();
+        let z = 0.5 * (-df1.ln()) + 0.5 * (-df2.ln() / 2.0);
+        let p = (-z * t).exp();
+        let expected_zero_jac = [-0.5 / df1, -0.25 / df2];
+        let expected_df_jac = [0.75 * p / df1, 0.375 * p / df2];
+        for (got, expected) in linear_zero
+            .zero_rate_jacobian(t)
+            .unwrap()
+            .iter()
+            .zip(expected_zero_jac)
+        {
+            assert_relative_eq!(*got, expected, epsilon = 32.0 * f64::EPSILON);
+        }
+        for (got, expected) in linear_zero
+            .discount_factor_jacobian(t)
+            .unwrap()
+            .iter()
+            .zip(expected_df_jac)
+        {
+            assert_relative_eq!(*got, expected, epsilon = 32.0 * f64::EPSILON);
+        }
+
+        // The synthetic zero-rate origin is linked to the first input node.
+        // Both interpolator weights must therefore map back to pillar zero.
+        let at_half_year = linear_zero.zero_rate_jacobian(0.5).unwrap();
+        assert_relative_eq!(at_half_year[0], -1.0 / df1, epsilon = 16.0 * f64::EPSILON);
+        assert_eq!(at_half_year[1], 0.0);
+
+        assert_eq!(
+            linear_zero.discount_factor_jacobian(0.0).unwrap(),
+            vec![0.0, 0.0]
+        );
+        assert_eq!(
+            linear_zero.zero_rate_jacobian(-1.0).unwrap(),
+            vec![0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn curve_construction_sanitizes_nodes_and_deposit_builder_reprices() {
+        let curve = YieldCurve::new(vec![
+            (2.0, 0.90),
+            (f64::NAN, 0.8),
+            (1.0, 0.96),
+            (1.0 + 5.0e-13, 0.95),
+            (-1.0, 0.9),
+            (3.0, f64::INFINITY),
+        ]);
+        assert_eq!(curve.tenors, vec![(1.0, 0.95), (2.0, 0.90)]);
+
+        let deposits = [(-1.0, 0.10), (0.5, 0.04), (2.0, 0.05)];
+        let deposit_curve = YieldCurveBuilder::from_deposits_with_settings(
+            &deposits,
+            settings(YieldCurveInterpolationMethod::LinearZeroRate),
+        )
+        .unwrap();
+        assert_eq!(deposit_curve.tenors.len(), 2);
+        assert_relative_eq!(
+            deposit_curve.discount_factor(0.5),
+            1.0 / 1.02,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        assert_relative_eq!(
+            deposit_curve.discount_factor(2.0),
+            1.0 / 1.10,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        assert_eq!(
+            deposit_curve.interpolation_settings().method,
+            YieldCurveInterpolationMethod::LinearZeroRate
+        );
     }
 }

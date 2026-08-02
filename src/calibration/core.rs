@@ -166,12 +166,10 @@ pub fn matrix_condition_number(jacobian: &DMatrix<f64>) -> f64 {
 
     for s in svd.singular_values.iter() {
         sigma_max = sigma_max.max(*s);
-        if *s > 1e-14 {
-            sigma_min = sigma_min.min(*s);
-        }
+        sigma_min = sigma_min.min(*s);
     }
 
-    if sigma_min.is_finite() && sigma_min > 0.0 {
+    if sigma_min.is_finite() && sigma_min > 1e-14 {
         sigma_max / sigma_min
     } else {
         f64::INFINITY
@@ -187,4 +185,71 @@ pub fn sanitize_convergence(mut c: ConvergenceInfo) -> ConvergenceInfo {
     c.gradient_norm = finite_metric(c.gradient_norm);
     c.step_norm = finite_metric(c.step_norm);
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_constraints_validate_clamp_and_detect_boundaries_exactly() {
+        for (lower, upper) in [
+            (vec![], vec![]),
+            (vec![0.0], vec![1.0, 2.0]),
+            (vec![f64::NAN], vec![1.0]),
+            (vec![0.0], vec![f64::INFINITY]),
+            (vec![2.0], vec![1.0]),
+        ] {
+            assert!(BoxConstraints::new(lower, upper).is_err());
+        }
+
+        let bounds = BoxConstraints::new(vec![-1.0, 2.0], vec![1.0, 4.0]).unwrap();
+        assert_eq!(bounds.dimension(), 2);
+        assert_eq!(bounds.clamp(&[-3.0, 3.0]), vec![-1.0, 3.0]);
+        assert!(bounds.hits_boundary(&[-1.0, 3.0], 0.0));
+        assert!(bounds.hits_boundary(&[0.0, 4.0 - 5.0e-7], 1.0e-6));
+        assert!(!bounds.hits_boundary(&[0.0, 3.0], 1.0e-6));
+    }
+
+    #[test]
+    fn matrix_helpers_match_exact_rectangular_and_singular_references() {
+        let matrix = DMatrix::from_row_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            matrix_to_rows(&matrix),
+            vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]
+        );
+        assert!(matrix_to_rows(&DMatrix::<f64>::zeros(0, 3)).is_empty());
+
+        assert_eq!(matrix_condition_number(&DMatrix::zeros(0, 2)), 1.0);
+        let diagonal = DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![4.0, 2.0]));
+        assert!((matrix_condition_number(&diagonal) - 2.0).abs() <= 8.0 * f64::EPSILON);
+
+        let rank_deficient = DMatrix::from_row_slice(2, 2, &[3.0, 0.0, 0.0, 0.0]);
+        assert!(matrix_condition_number(&rank_deficient).is_infinite());
+        assert!(matrix_condition_number(&DMatrix::zeros(2, 2)).is_infinite());
+    }
+
+    #[test]
+    fn finite_metrics_sanitize_nonfinite_optimizer_diagnostics() {
+        assert_eq!(finite_metric(1.25), 1.25);
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(finite_metric(value), f64::MAX);
+        }
+
+        let convergence = ConvergenceInfo {
+            iterations: 7,
+            objective_evaluations: 19,
+            gradient_norm: f64::NAN,
+            step_norm: f64::NEG_INFINITY,
+            converged: false,
+            reason: TerminationReason::NumericalFailure,
+        };
+        let sanitized = sanitize_convergence(convergence);
+        assert_eq!(sanitized.iterations, 7);
+        assert_eq!(sanitized.objective_evaluations, 19);
+        assert_eq!(sanitized.gradient_norm, f64::MAX);
+        assert_eq!(sanitized.step_norm, f64::MAX);
+        assert!(!sanitized.converged);
+        assert_eq!(sanitized.reason, TerminationReason::NumericalFailure);
+    }
 }

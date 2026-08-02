@@ -142,91 +142,110 @@ impl ExoticOption {
     pub fn validate(&self) -> Result<(), PricingError> {
         match self {
             Self::LookbackFloating(spec) => {
-                if spec.expiry < 0.0 {
+                if !spec.expiry.is_finite() || spec.expiry < 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "lookback expiry must be >= 0".to_string(),
+                        "lookback expiry must be finite and >= 0".to_string(),
                     ));
                 }
                 if let Some(extreme) = spec.observed_extreme
-                    && extreme <= 0.0
+                    && (!extreme.is_finite() || extreme <= 0.0)
                 {
                     return Err(PricingError::InvalidInput(
-                        "lookback observed_extreme must be > 0".to_string(),
+                        "lookback observed_extreme must be finite and > 0".to_string(),
                     ));
                 }
             }
             Self::LookbackFixed(spec) => {
-                if spec.strike <= 0.0 {
+                if !spec.strike.is_finite() || spec.strike <= 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "lookback fixed strike must be > 0".to_string(),
+                        "lookback fixed strike must be finite and > 0".to_string(),
                     ));
                 }
-                if spec.expiry < 0.0 {
+                if !spec.expiry.is_finite() || spec.expiry < 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "lookback fixed expiry must be >= 0".to_string(),
+                        "lookback fixed expiry must be finite and >= 0".to_string(),
                     ));
                 }
                 if let Some(extreme) = spec.observed_extreme
-                    && extreme <= 0.0
+                    && (!extreme.is_finite() || extreme <= 0.0)
                 {
                     return Err(PricingError::InvalidInput(
-                        "lookback fixed observed_extreme must be > 0".to_string(),
+                        "lookback fixed observed_extreme must be finite and > 0".to_string(),
                     ));
                 }
             }
             Self::Chooser(spec) => {
-                if spec.strike <= 0.0 {
+                if !spec.strike.is_finite() || spec.strike <= 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "chooser strike must be > 0".to_string(),
+                        "chooser strike must be finite and > 0".to_string(),
                     ));
                 }
-                if spec.expiry < 0.0 {
+                if !spec.expiry.is_finite() || spec.expiry < 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "chooser expiry must be >= 0".to_string(),
+                        "chooser expiry must be finite and >= 0".to_string(),
                     ));
                 }
-                if spec.choose_time < 0.0 || spec.choose_time > spec.expiry {
+                if !spec.choose_time.is_finite()
+                    || spec.choose_time < 0.0
+                    || spec.choose_time > spec.expiry
+                {
                     return Err(PricingError::InvalidInput(
-                        "chooser choose_time must lie in [0, expiry]".to_string(),
+                        "chooser choose_time must be finite and lie in [0, expiry]".to_string(),
                     ));
                 }
             }
             Self::Quanto(spec) => {
-                if spec.strike <= 0.0 {
+                if !spec.strike.is_finite() || spec.strike <= 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "quanto strike must be > 0".to_string(),
+                        "quanto strike must be finite and > 0".to_string(),
                     ));
                 }
-                if spec.expiry < 0.0 {
+                if !spec.expiry.is_finite() || spec.expiry < 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "quanto expiry must be >= 0".to_string(),
+                        "quanto expiry must be finite and >= 0".to_string(),
                     ));
                 }
-                if spec.fx_rate <= 0.0 {
+                if !spec.fx_rate.is_finite() || spec.fx_rate <= 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "quanto fx_rate must be > 0".to_string(),
+                        "quanto fx_rate must be finite and > 0".to_string(),
                     ));
                 }
-                if spec.fx_vol < 0.0 {
+                if !spec.foreign_rate.is_finite() {
                     return Err(PricingError::InvalidInput(
-                        "quanto fx_vol must be >= 0".to_string(),
+                        "quanto foreign_rate must be finite".to_string(),
                     ));
                 }
-                if spec.asset_fx_corr < -1.0 || spec.asset_fx_corr > 1.0 {
+                if !spec.fx_vol.is_finite() || spec.fx_vol < 0.0 {
                     return Err(PricingError::InvalidInput(
-                        "quanto asset_fx_corr must be in [-1, 1]".to_string(),
+                        "quanto fx_vol must be finite and >= 0".to_string(),
+                    ));
+                }
+                if !spec.asset_fx_corr.is_finite()
+                    || spec.asset_fx_corr < -1.0
+                    || spec.asset_fx_corr > 1.0
+                {
+                    return Err(PricingError::InvalidInput(
+                        "quanto asset_fx_corr must be finite and in [-1, 1]".to_string(),
                     ));
                 }
             }
             Self::Compound(spec) => {
-                if spec.compound_strike <= 0.0 || spec.underlying_strike <= 0.0 {
+                if !spec.compound_strike.is_finite()
+                    || !spec.underlying_strike.is_finite()
+                    || spec.compound_strike <= 0.0
+                    || spec.underlying_strike <= 0.0
+                {
                     return Err(PricingError::InvalidInput(
-                        "compound strikes must be > 0".to_string(),
+                        "compound strikes must be finite and > 0".to_string(),
                     ));
                 }
-                if spec.compound_expiry < 0.0 || spec.underlying_expiry < 0.0 {
+                if !spec.compound_expiry.is_finite()
+                    || !spec.underlying_expiry.is_finite()
+                    || spec.compound_expiry < 0.0
+                    || spec.underlying_expiry < 0.0
+                {
                     return Err(PricingError::InvalidInput(
-                        "compound expiries must be >= 0".to_string(),
+                        "compound expiries must be finite and >= 0".to_string(),
                     ));
                 }
                 if spec.compound_expiry > spec.underlying_expiry {
@@ -244,5 +263,281 @@ impl ExoticOption {
 impl Instrument for ExoticOption {
     fn instrument_type(&self) -> &str {
         "ExoticOption"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookback_constructors_create_valid_contracts() {
+        for option in [
+            ExoticOption::lookback_floating_call(1.0),
+            ExoticOption::lookback_floating_put(1.0),
+            ExoticOption::lookback_fixed_call(100.0, 1.0),
+            ExoticOption::lookback_fixed_put(100.0, 1.0),
+        ] {
+            assert!(option.validate().is_ok());
+            assert_eq!(option.instrument_type(), "ExoticOption");
+        }
+    }
+
+    #[test]
+    fn lookback_validation_rejects_each_invalid_domain() {
+        let invalid = [
+            ExoticOption::lookback_floating_call(-1.0),
+            ExoticOption::LookbackFloating(LookbackFloatingOption {
+                option_type: OptionType::Put,
+                expiry: 1.0,
+                observed_extreme: Some(0.0),
+            }),
+            ExoticOption::lookback_fixed_call(0.0, 1.0),
+            ExoticOption::lookback_fixed_put(100.0, -1.0),
+            ExoticOption::LookbackFixed(LookbackFixedOption {
+                option_type: OptionType::Call,
+                strike: 100.0,
+                expiry: 1.0,
+                observed_extreme: Some(-1.0),
+            }),
+        ];
+        for option in invalid {
+            assert!(option.validate().is_err(), "unexpectedly valid: {option:?}");
+        }
+    }
+
+    #[test]
+    fn exotic_validation_rejects_nonfinite_scalar_fields() {
+        let floating = LookbackFloatingOption {
+            option_type: OptionType::Call,
+            expiry: 1.0,
+            observed_extreme: Some(90.0),
+        };
+        let fixed = LookbackFixedOption {
+            option_type: OptionType::Put,
+            strike: 100.0,
+            expiry: 1.0,
+            observed_extreme: Some(110.0),
+        };
+        let chooser = ChooserOption {
+            strike: 100.0,
+            expiry: 1.0,
+            choose_time: 0.5,
+        };
+        let quanto = QuantoOption {
+            option_type: OptionType::Call,
+            strike: 100.0,
+            expiry: 1.0,
+            fx_rate: 1.2,
+            foreign_rate: 0.02,
+            fx_vol: 0.15,
+            asset_fx_corr: -0.35,
+        };
+        let compound = CompoundOption {
+            option_type: OptionType::Put,
+            underlying_option_type: OptionType::Call,
+            compound_strike: 8.0,
+            underlying_strike: 100.0,
+            compound_expiry: 0.5,
+            underlying_expiry: 1.0,
+        };
+
+        let invalid = [
+            ExoticOption::LookbackFloating(LookbackFloatingOption {
+                expiry: f64::NAN,
+                ..floating.clone()
+            }),
+            ExoticOption::LookbackFloating(LookbackFloatingOption {
+                observed_extreme: Some(f64::NAN),
+                ..floating
+            }),
+            ExoticOption::LookbackFixed(LookbackFixedOption {
+                strike: f64::NAN,
+                ..fixed.clone()
+            }),
+            ExoticOption::LookbackFixed(LookbackFixedOption {
+                expiry: f64::NAN,
+                ..fixed.clone()
+            }),
+            ExoticOption::LookbackFixed(LookbackFixedOption {
+                observed_extreme: Some(f64::NAN),
+                ..fixed
+            }),
+            ExoticOption::Chooser(ChooserOption {
+                strike: f64::NAN,
+                ..chooser.clone()
+            }),
+            ExoticOption::Chooser(ChooserOption {
+                expiry: f64::NAN,
+                ..chooser.clone()
+            }),
+            ExoticOption::Chooser(ChooserOption {
+                choose_time: f64::NAN,
+                ..chooser
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                strike: f64::NAN,
+                ..quanto.clone()
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                expiry: f64::NAN,
+                ..quanto.clone()
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                fx_rate: f64::NAN,
+                ..quanto.clone()
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                foreign_rate: f64::NAN,
+                ..quanto.clone()
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                fx_vol: f64::NAN,
+                ..quanto.clone()
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                asset_fx_corr: f64::NAN,
+                ..quanto
+            }),
+            ExoticOption::Compound(CompoundOption {
+                compound_strike: f64::NAN,
+                ..compound.clone()
+            }),
+            ExoticOption::Compound(CompoundOption {
+                underlying_strike: f64::NAN,
+                ..compound.clone()
+            }),
+            ExoticOption::Compound(CompoundOption {
+                compound_expiry: f64::NAN,
+                ..compound.clone()
+            }),
+            ExoticOption::Compound(CompoundOption {
+                underlying_expiry: f64::NAN,
+                ..compound
+            }),
+        ];
+
+        for option in invalid {
+            assert!(option.validate().is_err(), "unexpectedly valid: {option:?}");
+        }
+    }
+
+    #[test]
+    fn chooser_quanto_and_compound_validation_cover_all_contract_rules() {
+        let chooser = ExoticOption::Chooser(ChooserOption {
+            strike: 100.0,
+            expiry: 2.0,
+            choose_time: 0.75,
+        });
+        let quanto = ExoticOption::Quanto(QuantoOption {
+            option_type: OptionType::Call,
+            strike: 100.0,
+            expiry: 1.0,
+            fx_rate: 1.2,
+            foreign_rate: 0.02,
+            fx_vol: 0.15,
+            asset_fx_corr: -0.35,
+        });
+        let compound = ExoticOption::Compound(CompoundOption {
+            option_type: OptionType::Put,
+            underlying_option_type: OptionType::Call,
+            compound_strike: 8.0,
+            underlying_strike: 100.0,
+            compound_expiry: 0.5,
+            underlying_expiry: 1.0,
+        });
+        for option in [&chooser, &quanto, &compound] {
+            assert!(option.validate().is_ok());
+        }
+
+        let invalid = [
+            ExoticOption::Chooser(ChooserOption {
+                strike: 0.0,
+                expiry: 1.0,
+                choose_time: 0.5,
+            }),
+            ExoticOption::Chooser(ChooserOption {
+                strike: 100.0,
+                expiry: -1.0,
+                choose_time: 0.0,
+            }),
+            ExoticOption::Chooser(ChooserOption {
+                strike: 100.0,
+                expiry: 1.0,
+                choose_time: 1.5,
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                option_type: OptionType::Call,
+                strike: 0.0,
+                expiry: 1.0,
+                fx_rate: 1.0,
+                foreign_rate: 0.0,
+                fx_vol: 0.2,
+                asset_fx_corr: 0.0,
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                option_type: OptionType::Call,
+                strike: 100.0,
+                expiry: -1.0,
+                fx_rate: 1.0,
+                foreign_rate: 0.0,
+                fx_vol: 0.2,
+                asset_fx_corr: 0.0,
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                option_type: OptionType::Call,
+                strike: 100.0,
+                expiry: 1.0,
+                fx_rate: 0.0,
+                foreign_rate: 0.0,
+                fx_vol: 0.2,
+                asset_fx_corr: 0.0,
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                option_type: OptionType::Call,
+                strike: 100.0,
+                expiry: 1.0,
+                fx_rate: 1.0,
+                foreign_rate: 0.0,
+                fx_vol: -0.1,
+                asset_fx_corr: 0.0,
+            }),
+            ExoticOption::Quanto(QuantoOption {
+                option_type: OptionType::Call,
+                strike: 100.0,
+                expiry: 1.0,
+                fx_rate: 1.0,
+                foreign_rate: 0.0,
+                fx_vol: 0.2,
+                asset_fx_corr: 1.1,
+            }),
+            ExoticOption::Compound(CompoundOption {
+                option_type: OptionType::Call,
+                underlying_option_type: OptionType::Put,
+                compound_strike: 0.0,
+                underlying_strike: 100.0,
+                compound_expiry: 0.5,
+                underlying_expiry: 1.0,
+            }),
+            ExoticOption::Compound(CompoundOption {
+                option_type: OptionType::Call,
+                underlying_option_type: OptionType::Put,
+                compound_strike: 5.0,
+                underlying_strike: 100.0,
+                compound_expiry: -0.5,
+                underlying_expiry: 1.0,
+            }),
+            ExoticOption::Compound(CompoundOption {
+                option_type: OptionType::Call,
+                underlying_option_type: OptionType::Put,
+                compound_strike: 5.0,
+                underlying_strike: 100.0,
+                compound_expiry: 1.5,
+                underlying_expiry: 1.0,
+            }),
+        ];
+        for option in invalid {
+            assert!(option.validate().is_err(), "unexpectedly valid: {option:?}");
+        }
     }
 }

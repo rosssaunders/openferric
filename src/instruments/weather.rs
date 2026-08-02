@@ -425,4 +425,130 @@ mod tests {
 
         assert!(high < low);
     }
+
+    #[test]
+    fn cumulative_degree_day_dispatch_matches_exact_daily_sums() {
+        let temperatures = [60.0, 65.0, 70.0, 80.0];
+        assert_eq!(cumulative_hdd(&temperatures, 65.0), 5.0);
+        assert_eq!(cumulative_cdd(&temperatures, 65.0), 20.0);
+        assert_eq!(
+            cumulative_degree_days(&temperatures, 65.0, DegreeDayType::HDD),
+            5.0
+        );
+        assert_eq!(
+            cumulative_degree_days(&temperatures, 65.0, DegreeDayType::CDD),
+            20.0
+        );
+        assert_eq!(cumulative_hdd(&[], 65.0), 0.0);
+        assert_eq!(cumulative_cdd(&[], 65.0), 0.0);
+    }
+
+    #[test]
+    fn weather_swap_payer_receiver_and_historical_prices_match_cashflows() {
+        let payer = WeatherSwap {
+            index_type: DegreeDayType::CDD,
+            strike: 100.0,
+            tick_size: 20.0,
+            notional: 5.0,
+            is_payer: true,
+            discount_rate: 0.03,
+            maturity: 0.5,
+        };
+        let receiver = WeatherSwap {
+            is_payer: false,
+            ..payer
+        };
+        assert_eq!(payer.payoff(112.0).unwrap(), 1_200.0);
+        assert_eq!(receiver.payoff(112.0).unwrap(), -1_200.0);
+
+        let historical = [90.0, 100.0, 125.0];
+        let expected_index = historical.iter().sum::<f64>() / historical.len() as f64;
+        let expected = 5.0 * 20.0 * (expected_index - 100.0) * (-0.03_f64 * 0.5).exp();
+        assert!(
+            (payer.price_from_historical_indices(&historical).unwrap() - expected).abs()
+                <= 8.0 * f64::EPSILON * expected.abs().max(1.0)
+        );
+        assert_eq!(payer.instrument_type(), "WeatherSwap");
+    }
+
+    #[test]
+    fn weather_put_burn_analysis_matches_temperature_path_cashflows() {
+        let option = WeatherOption {
+            index_type: DegreeDayType::CDD,
+            option_type: OptionType::Put,
+            strike: 12.0,
+            tick_size: 10.0,
+            notional: 2.0,
+            discount_rate: 0.04,
+            maturity: 0.25,
+        };
+        assert_eq!(option.payoff(7.0).unwrap(), 100.0);
+        assert_eq!(option.payoff(15.0).unwrap(), 0.0);
+
+        let paths = vec![vec![70.0, 68.0], vec![80.0, 60.0]];
+        // CDD indices versus 65F are 8 and 15, hence put payoffs 80 and 0.
+        let expected = 40.0 * (-0.04_f64 * 0.25).exp();
+        let actual = option
+            .price_burn_from_temperature_history(&paths, 65.0)
+            .unwrap();
+        assert!((actual - expected).abs() <= 8.0 * f64::EPSILON * expected);
+        assert_eq!(option.instrument_type(), "WeatherOption");
+    }
+
+    #[test]
+    fn zero_loss_cat_bond_matches_exact_discounted_coupon_strip() {
+        let bond = CatastropheBond {
+            principal: 1_000.0,
+            coupon_rate: 0.08,
+            risk_free_rate: 0.03,
+            maturity: 2.0,
+            coupon_frequency: 2,
+            loss_intensity: 0.0,
+            expected_loss_per_event: 0.75,
+        };
+        let coupon = 1_000.0 * 0.08 / 2.0;
+        let expected = (1..=4)
+            .map(|period| coupon * (-0.03 * period as f64 / 2.0).exp())
+            .sum::<f64>()
+            + 1_000.0 * (-0.03_f64 * 2.0).exp();
+        let actual = bond.price().unwrap();
+        assert!((actual - expected).abs() <= 8.0 * f64::EPSILON * expected);
+        assert_eq!(bond.instrument_type(), "CatastropheBond");
+    }
+
+    #[test]
+    fn weather_products_reject_empty_and_non_finite_histories() {
+        let swap = WeatherSwap {
+            index_type: DegreeDayType::HDD,
+            strike: 100.0,
+            tick_size: 1.0,
+            notional: 1.0,
+            is_payer: true,
+            discount_rate: 0.0,
+            maturity: 1.0,
+        };
+        assert!(swap.price_from_historical_indices(&[]).is_err());
+        assert!(swap.price_from_historical_indices(&[f64::NAN]).is_err());
+
+        let option = WeatherOption {
+            index_type: DegreeDayType::CDD,
+            option_type: OptionType::Call,
+            strike: 100.0,
+            tick_size: 1.0,
+            notional: 1.0,
+            discount_rate: 0.0,
+            maturity: 1.0,
+        };
+        assert!(option.price_burn_analysis(&[]).is_err());
+        assert!(
+            option
+                .price_burn_from_temperature_history(&[vec![]], 65.0)
+                .is_err()
+        );
+        assert!(
+            option
+                .price_burn_from_temperature_history(&[vec![60.0]], f64::NAN)
+                .is_err()
+        );
+    }
 }

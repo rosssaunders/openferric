@@ -1852,4 +1852,328 @@ mod tests {
             NaiveDate::from_ymd_opt(2025, 12, 20).unwrap()
         );
     }
+
+    #[test]
+    fn frequency_defaults_and_calendar_constructors_cover_public_contract() {
+        assert_eq!(Frequency::Annual.months(), 12);
+        assert_eq!(Frequency::SemiAnnual.months(), 6);
+        assert_eq!(Frequency::Quarterly.months(), 3);
+        assert_eq!(Frequency::Monthly.months(), 1);
+
+        let default = ScheduleConfig::default();
+        assert_eq!(default.calendar, Calendar::weekends_only());
+        assert_eq!(
+            default.business_day_convention,
+            BusinessDayConvention::ModifiedFollowing
+        );
+        assert_eq!(default.stub_convention, StubConvention::ShortBack);
+        assert_eq!(default.roll_convention, RollConvention::None);
+
+        let empty_joint = Calendar::joint(Vec::new());
+        assert!(empty_joint.is_business_day(NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()));
+        assert!(empty_joint.is_holiday(NaiveDate::from_ymd_opt(2026, 1, 3).unwrap()));
+
+        let generated = generate_schedule(
+            NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            Frequency::Quarterly,
+        );
+        assert_eq!(
+            generated,
+            vec![
+                NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_calendar_mutations_and_nearest_tie_break_are_deterministic() {
+        let wednesday = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let mut custom = CustomCalendar::new(WeekendConvention::SaturdaySunday);
+        custom.add_holiday(wednesday);
+        let calendar = Calendar::custom(custom.clone());
+
+        // Tuesday and Thursday are equally close: Nearest is documented to
+        // resolve the tie in favor of Following.
+        assert_eq!(
+            adjust_business_day(wednesday, BusinessDayConvention::Nearest, &calendar),
+            NaiveDate::from_ymd_opt(2026, 1, 8).unwrap()
+        );
+
+        custom.add_holiday(NaiveDate::from_ymd_opt(2026, 1, 8).unwrap());
+        let calendar = Calendar::custom(custom.clone());
+        assert_eq!(
+            adjust_business_day(wednesday, BusinessDayConvention::Nearest, &calendar),
+            NaiveDate::from_ymd_opt(2026, 1, 6).unwrap()
+        );
+
+        custom.add_business_day_override(wednesday);
+        let calendar = Calendar::custom(custom);
+        assert!(calendar.is_business_day(wednesday));
+        assert_eq!(
+            adjust_business_day(wednesday, BusinessDayConvention::Nearest, &calendar),
+            wednesday
+        );
+    }
+
+    #[test]
+    fn business_day_arithmetic_covers_zero_negative_and_reverse_intervals() {
+        let calendar = Calendar::weekends_only();
+        let friday = NaiveDate::from_ymd_opt(2026, 1, 9).unwrap();
+
+        assert_eq!(add_business_days(friday, 0, &calendar), friday);
+        assert_eq!(
+            add_business_days(friday, -5, &calendar),
+            NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()
+        );
+        assert_eq!(
+            subtract_business_days(friday, -1, &calendar),
+            NaiveDate::from_ymd_opt(2026, 1, 12).unwrap()
+        );
+        assert_eq!(business_day_count(friday, friday, &calendar), 0);
+        assert_eq!(
+            business_day_count(
+                friday,
+                NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+                &calendar
+            ),
+            -5
+        );
+        assert_eq!(
+            year_fraction_business_252(
+                friday,
+                NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+                &calendar
+            ),
+            -5.0 / 252.0
+        );
+
+        // Modified Preceding crosses into January and therefore switches to
+        // Following in February.
+        let february_first = NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+        assert_eq!(
+            adjust_business_day(
+                february_first,
+                BusinessDayConvention::ModifiedPreceding,
+                &calendar
+            ),
+            NaiveDate::from_ymd_opt(2026, 2, 2).unwrap()
+        );
+    }
+
+    #[test]
+    fn front_stub_and_day_of_month_schedules_lock_unadjusted_boundaries() {
+        let start = NaiveDate::from_ymd_opt(2024, 1, 20).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 10, 31).unwrap();
+        let base = ScheduleConfig {
+            calendar: Calendar::weekends_only(),
+            business_day_convention: BusinessDayConvention::Unadjusted,
+            stub_convention: StubConvention::ShortFront,
+            roll_convention: RollConvention::EndOfMonth,
+        };
+
+        assert_eq!(
+            generate_schedule_with_config(start, end, Frequency::Quarterly, &base),
+            vec![
+                NaiveDate::from_ymd_opt(2024, 1, 20).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 1, 31).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 4, 30).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 7, 31).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 10, 31).unwrap(),
+            ]
+        );
+        assert_eq!(
+            generate_schedule_with_config(
+                start,
+                end,
+                Frequency::Quarterly,
+                &ScheduleConfig {
+                    stub_convention: StubConvention::LongFront,
+                    ..base
+                }
+            ),
+            vec![
+                NaiveDate::from_ymd_opt(2024, 1, 20).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 4, 30).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 7, 31).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 10, 31).unwrap(),
+            ]
+        );
+
+        let day_31 = ScheduleConfig {
+            calendar: Calendar::weekends_only(),
+            business_day_convention: BusinessDayConvention::Unadjusted,
+            stub_convention: StubConvention::ShortBack,
+            roll_convention: RollConvention::DayOfMonth(31),
+        };
+        assert_eq!(
+            generate_schedule_with_config(
+                NaiveDate::from_ymd_opt(2024, 1, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 5, 20).unwrap(),
+                Frequency::Monthly,
+                &day_31
+            ),
+            vec![
+                NaiveDate::from_ymd_opt(2024, 1, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 3, 31).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 4, 30).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 5, 20).unwrap(),
+            ]
+        );
+        assert_eq!(
+            generate_schedule_with_config(
+                NaiveDate::from_ymd_opt(2024, 1, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 4, 20).unwrap(),
+                Frequency::Monthly,
+                &ScheduleConfig {
+                    roll_convention: RollConvention::DayOfMonth(0),
+                    ..day_31
+                }
+            ),
+            vec![
+                NaiveDate::from_ymd_opt(2024, 1, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 4, 20).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn schedule_edge_cases_cover_imm_steps_collapsed_dates_and_month_arithmetic() {
+        let unadjusted_imm = ScheduleConfig {
+            calendar: Calendar::weekends_only(),
+            business_day_convention: BusinessDayConvention::Unadjusted,
+            stub_convention: StubConvention::ShortBack,
+            roll_convention: RollConvention::Imm,
+        };
+        assert_eq!(
+            generate_schedule_with_config(
+                NaiveDate::from_ymd_opt(2025, 1, 15).unwrap(),
+                NaiveDate::from_ymd_opt(2028, 12, 20).unwrap(),
+                Frequency::Annual,
+                &unadjusted_imm
+            ),
+            vec![
+                NaiveDate::from_ymd_opt(2025, 1, 15).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 12, 17).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 12, 16).unwrap(),
+                NaiveDate::from_ymd_opt(2027, 12, 15).unwrap(),
+                NaiveDate::from_ymd_opt(2028, 12, 20).unwrap(),
+            ]
+        );
+        assert_eq!(
+            generate_schedule_with_config(
+                NaiveDate::from_ymd_opt(2025, 1, 15).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 11, 20).unwrap(),
+                Frequency::Quarterly,
+                &ScheduleConfig {
+                    stub_convention: StubConvention::ShortFront,
+                    ..unadjusted_imm
+                }
+            ),
+            vec![
+                NaiveDate::from_ymd_opt(2025, 1, 15).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 3, 19).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 6, 18).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 9, 17).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 11, 20).unwrap(),
+            ]
+        );
+
+        let collapsed = generate_schedule_with_config(
+            NaiveDate::from_ymd_opt(2021, 1, 30).unwrap(),
+            NaiveDate::from_ymd_opt(2021, 2, 1).unwrap(),
+            Frequency::Monthly,
+            &ScheduleConfig {
+                business_day_convention: BusinessDayConvention::Following,
+                ..ScheduleConfig::default()
+            },
+        );
+        assert_eq!(
+            collapsed,
+            vec![NaiveDate::from_ymd_opt(2021, 2, 1).unwrap()]
+        );
+
+        let non_increasing = generate_schedule_with_config(
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            Frequency::Annual,
+            &ScheduleConfig::default(),
+        );
+        assert_eq!(
+            non_increasing,
+            vec![NaiveDate::from_ymd_opt(2026, 1, 30).unwrap()]
+        );
+
+        assert_eq!(
+            add_months(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap(), -1),
+            NaiveDate::from_ymd_opt(2024, 2, 29).unwrap()
+        );
+        assert_eq!(
+            add_months(NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(), 12),
+            NaiveDate::from_ymd_opt(2025, 2, 28).unwrap()
+        );
+        assert_eq!(
+            add_months(NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(), -13),
+            NaiveDate::from_ymd_opt(2024, 12, 31).unwrap()
+        );
+    }
+
+    #[test]
+    fn imm_and_cds_boundaries_are_inclusive_and_wrap_years() {
+        let imm = NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(is_imm_date(imm));
+        assert!(!is_imm_date(NaiveDate::from_ymd_opt(2026, 3, 20).unwrap()));
+        assert_eq!(next_imm_date(imm), imm);
+        assert_eq!(previous_imm_date(imm), imm);
+        assert_eq!(
+            third_wednesday(2026, 12),
+            NaiveDate::from_ymd_opt(2026, 12, 16).unwrap()
+        );
+        assert_eq!(
+            next_imm_date(NaiveDate::from_ymd_opt(2026, 12, 20).unwrap()),
+            NaiveDate::from_ymd_opt(2027, 3, 17).unwrap()
+        );
+
+        let cds = NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+        assert!(is_cds_standard_date(cds));
+        assert!(!is_cds_standard_date(
+            NaiveDate::from_ymd_opt(2026, 6, 19).unwrap()
+        ));
+        assert_eq!(next_cds_date(cds), cds);
+        assert_eq!(previous_cds_date(cds), cds);
+        assert_eq!(
+            next_cds_date(NaiveDate::from_ymd_opt(2026, 12, 21).unwrap()),
+            NaiveDate::from_ymd_opt(2027, 3, 20).unwrap()
+        );
+        assert_eq!(
+            previous_cds_date(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
+            NaiveDate::from_ymd_opt(2025, 12, 20).unwrap()
+        );
+    }
+
+    #[test]
+    fn representative_observed_and_special_holidays_preserve_business_day_edges() {
+        let nyc = Calendar::nyc();
+        // New Year's Day 2022 fell on Saturday and was observed in the prior year.
+        assert!(nyc.is_holiday(NaiveDate::from_ymd_opt(2021, 12, 31).unwrap()));
+        assert!(nyc.is_business_day(NaiveDate::from_ymd_opt(2021, 6, 18).unwrap()));
+        assert!(nyc.is_holiday(NaiveDate::from_ymd_opt(2022, 6, 20).unwrap()));
+        assert!(nyc.is_holiday(NaiveDate::from_ymd_opt(2024, 11, 28).unwrap()));
+
+        let london = Calendar::london();
+        assert!(london.is_holiday(NaiveDate::from_ymd_opt(1995, 5, 8).unwrap()));
+        assert!(london.is_holiday(NaiveDate::from_ymd_opt(2011, 4, 29).unwrap()));
+        assert!(london.is_holiday(NaiveDate::from_ymd_opt(1999, 12, 31).unwrap()));
+        assert!(london.is_business_day(NaiveDate::from_ymd_opt(2024, 5, 7).unwrap()));
+
+        let target = Calendar::target();
+        assert!(target.is_holiday(NaiveDate::from_ymd_opt(2024, 5, 1).unwrap()));
+        assert!(target.is_holiday(NaiveDate::from_ymd_opt(2024, 12, 26).unwrap()));
+        assert!(target.is_business_day(NaiveDate::from_ymd_opt(2024, 5, 2).unwrap()));
+    }
 }
