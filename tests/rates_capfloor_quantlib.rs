@@ -13,10 +13,14 @@
 //! formed `F=(DF(t1)/DF(t2)-1)/accrual` and called SciPy's `special.ndtr` in the
 //! Black-76 formula.  Across the 16 aggregate fixtures the largest measured
 //! `|QuantLib - SciPy strip|` was 3.7834979593753815e-10 currency units.  Each
-//! case records its own measured gap.  The Linux Rust-vs-QuantLib session also
-//! measured a maximum 3.7834979593753815e-10 gap; assertions allow four times
-//! the per-case oracle gap for implementation-order/cross-platform libm
-//! variation, plus 64 binary64 ULP.
+//! case records its own measured gap.  The Linux Rust-vs-QuantLib session
+//! measured a maximum 3.7834979593753815e-10 gap.  A subsequent macOS CI run
+//! measured a 1.2096279533579946e-10 maximum on cases whose Linux gap was near
+//! zero: the discount-factor ratio subtracts two notional-scale quantities, so
+//! the expected option price is not the correct roundoff scale.  Assertions
+//! therefore allow four times the per-case oracle gap, 64 scaled epsilons at
+//! the fixed notional input scale for cross-libm operation order, and 64 ULP
+//! for the final strip sum.  This is an arithmetic budget, not a price band.
 
 use chrono::NaiveDate;
 
@@ -59,13 +63,17 @@ fn assert_quantlib_black_reference(
     measured_scipy_gap: f64,
     case: &str,
 ) {
-    let cross_platform_oracle_budget = 4.0 * measured_scipy_gap;
-    let rust_roundoff_budget = 64.0 * ulp(expected.abs().max(1.0));
-    let tolerance = cross_platform_oracle_budget + rust_roundoff_budget;
+    let measured_oracle_budget = 4.0 * measured_scipy_gap;
+    let cross_platform_libm_budget = 64.0 * f64::EPSILON * NOTIONAL;
+    let strip_sum_roundoff_budget = 64.0 * ulp(expected.abs().max(1.0));
+    let tolerance = measured_oracle_budget + cross_platform_libm_budget + strip_sum_roundoff_budget;
     let error = (actual - expected).abs();
     assert!(
         error <= tolerance,
-        "{case}: actual={actual:.17}, QuantLib={expected:.17}, error={error:e}, tolerance={tolerance:e}"
+        "{case}: actual={actual:.17}, QuantLib={expected:.17}, error={error:e}, \
+         measured-oracle budget={measured_oracle_budget:e}, cross-libm \
+         budget={cross_platform_libm_budget:e}, strip-sum \
+         roundoff={strip_sum_roundoff_budget:e}, tolerance={tolerance:e}"
     );
 }
 
