@@ -99,6 +99,7 @@ impl LiquidationSimulator {
         seed: u64,
     ) -> Self {
         validate_position(&position);
+        validate_model(model);
         assert!(
             initial_funding_rate.is_finite(),
             "initial_funding_rate must be finite"
@@ -129,10 +130,21 @@ impl LiquidationSimulator {
 
     /// Estimates liquidation risk under a single stress scenario.
     pub fn simulate_stress(&self, scenario: StressScenario) -> LiquidationRisk {
+        // The simulator fields are public, so repeat constructor invariants at
+        // the calculation boundary after callers may have mutated them.
+        assert!(self.num_paths > 0, "num_paths must be > 0");
+        assert!(self.steps > 0, "steps must be > 0");
+        validate_stress_scenario(scenario);
         let position = stressed_position(self.position, scenario);
+        validate_position(&position);
         let model = self.model.stressed(scenario);
-        let initial_rate =
-            model.normalize_rate(stressed_initial_rate(self.initial_funding_rate, scenario));
+        validate_model(model);
+        let stressed_initial_rate = stressed_initial_rate(self.initial_funding_rate, scenario);
+        assert!(
+            stressed_initial_rate.is_finite(),
+            "stressed initial funding rate must be finite"
+        );
+        let initial_rate = model.normalize_rate(stressed_initial_rate);
         let total_time = position.margin_params.time_to_maturity;
 
         let initial_health = health_at_rate(position, initial_rate, total_time);
@@ -331,6 +343,49 @@ fn validate_position(position: &LiquidationPosition) {
     let _ = MarginCalculator::initial_margin(position.size.abs(), &position.margin_params);
 }
 
+fn validate_model(model: FundingRateModel) {
+    match model {
+        FundingRateModel::Vasicek(model) => {
+            assert!(
+                model.a.is_finite() && model.a >= 0.0,
+                "Vasicek mean reversion must be finite and >= 0"
+            );
+            assert!(model.b.is_finite(), "Vasicek mean rate must be finite");
+            assert!(
+                model.sigma.is_finite() && model.sigma >= 0.0,
+                "Vasicek volatility must be finite and >= 0"
+            );
+        }
+        FundingRateModel::CIR(model) => {
+            assert!(
+                model.a.is_finite() && model.a >= 0.0,
+                "CIR mean reversion must be finite and >= 0"
+            );
+            assert!(
+                model.b.is_finite() && model.b >= 0.0,
+                "CIR mean rate must be finite and >= 0"
+            );
+            assert!(
+                model.sigma.is_finite() && model.sigma >= 0.0,
+                "CIR volatility must be finite and >= 0"
+            );
+        }
+    }
+}
+
+fn validate_stress_scenario(scenario: StressScenario) {
+    match scenario {
+        StressScenario::Baseline => {}
+        StressScenario::LiquidationCascade { vol_multiplier } => assert!(
+            vol_multiplier.is_finite() && vol_multiplier >= 0.0,
+            "cascade volatility multiplier must be finite and >= 0"
+        ),
+        StressScenario::MeanShift { shift } => {
+            assert!(shift.is_finite(), "mean shift must be finite")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +525,376 @@ mod tests {
             0.087_500_000_000_000_01,
             "deterministic CIR adverse rate",
         );
+    }
+
+    #[test]
+    fn stress_suite_constructors_and_batch_dispatch_preserve_scenario_order() {
+        assert_eq!(
+            StressScenario::cascade_suite(),
+            vec![
+                StressScenario::LiquidationCascade {
+                    vol_multiplier: 3.0
+                },
+                StressScenario::LiquidationCascade {
+                    vol_multiplier: 5.0
+                },
+                StressScenario::LiquidationCascade {
+                    vol_multiplier: 10.0
+                },
+            ]
+        );
+        assert_eq!(
+            StressScenario::mean_shift_suite(0.02),
+            vec![
+                StressScenario::MeanShift { shift: 0.02 },
+                StressScenario::MeanShift { shift: -0.02 },
+            ]
+        );
+
+        let simulator = LiquidationSimulator::new(
+            LiquidationPosition {
+                size: 100.0,
+                entry_rate: 0.05,
+                collateral: 20.0,
+                margin_params: margin_params(),
+            },
+            FundingRateModel::Vasicek(Vasicek {
+                a: 1.0,
+                b: 0.05,
+                sigma: 0.0,
+            }),
+            0.05,
+            3,
+            4,
+            11,
+        );
+        let scenarios = [
+            StressScenario::Baseline,
+            StressScenario::MeanShift { shift: 0.02 },
+            StressScenario::LiquidationCascade {
+                vol_multiplier: 0.0,
+            },
+        ];
+        let results = simulator.run_stress_scenarios(&scenarios);
+
+        assert_eq!(results.len(), scenarios.len());
+        for (result, scenario) in results.iter().zip(scenarios) {
+            assert_eq!(result.scenario, scenario);
+            assert_eq!(result.risk.prob_liquidation, 0.0);
+            assert_eq!(result.risk.expected_time_to_liquidation, None);
+        }
+        assert_roundoff(
+            results[0].risk.worst_case_funding_rate,
+            0.05,
+            "baseline adverse rate",
+        );
+        assert_roundoff(
+            results[1].risk.worst_case_funding_rate,
+            0.07,
+            "mean-shift adverse rate",
+        );
+        assert_roundoff(
+            results[2].risk.worst_case_funding_rate,
+            0.05,
+            "zero-cascade adverse rate",
+        );
+    }
+
+    #[test]
+    fn zero_vol_vasicek_and_short_cir_paths_lock_both_adverse_directions() {
+        let vasicek = LiquidationSimulator::new(
+            LiquidationPosition {
+                size: 100.0,
+                entry_rate: 0.05,
+                collateral: 20.0,
+                margin_params: margin_params(),
+            },
+            FundingRateModel::Vasicek(Vasicek {
+                a: 0.0,
+                b: 0.25,
+                sigma: 0.0,
+            }),
+            0.05,
+            2,
+            4,
+            9,
+        )
+        .with_rng_kind(FastRngKind::Pcg64);
+        assert_eq!(vasicek.rng_kind, FastRngKind::Pcg64);
+        let vasicek_risk = vasicek.simulate();
+        assert_eq!(vasicek_risk.prob_liquidation, 0.0);
+        assert_eq!(vasicek_risk.expected_time_to_liquidation, None);
+        assert_roundoff(
+            vasicek_risk.worst_case_funding_rate,
+            0.05,
+            "zero-vol Vasicek adverse rate",
+        );
+
+        // With dt=1/4 and zero CIR volatility, r_{n+1}=0.75*r_n.
+        // A short position is harmed by falling rates, so the adverse extreme
+        // after all four steps is 0.2*(3/4)^4 = 0.06328125.
+        let short_cir = LiquidationSimulator::new(
+            LiquidationPosition {
+                size: -100.0,
+                entry_rate: 0.20,
+                collateral: 100.0,
+                margin_params: margin_params(),
+            },
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: 0.0,
+                sigma: 0.0,
+            }),
+            0.20,
+            2,
+            4,
+            10,
+        );
+        let short_cir_risk = short_cir.simulate();
+        assert_eq!(short_cir_risk.prob_liquidation, 0.0);
+        assert_eq!(short_cir_risk.expected_time_to_liquidation, None);
+        assert_roundoff(
+            short_cir_risk.worst_case_funding_rate,
+            0.063_281_250_000_000_01,
+            "zero-vol short CIR adverse rate",
+        );
+    }
+
+    #[test]
+    fn expired_position_and_cir_mean_shift_use_normalized_initial_state() {
+        let mut expired_params = margin_params();
+        expired_params.time_to_maturity = 0.0;
+        let simulator = LiquidationSimulator::new(
+            LiquidationPosition {
+                size: 100.0,
+                entry_rate: 0.05,
+                collateral: 1.0,
+                margin_params: expired_params,
+            },
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: 0.01,
+                sigma: 0.0,
+            }),
+            -0.01,
+            1,
+            1,
+            0,
+        );
+        assert_eq!(
+            simulator.simulate_stress(StressScenario::MeanShift { shift: -0.02 }),
+            LiquidationRisk {
+                prob_liquidation: 0.0,
+                expected_time_to_liquidation: None,
+                worst_case_funding_rate: 0.0,
+            }
+        );
+    }
+
+    #[test]
+    fn cascade_and_mean_shift_transform_models_and_margin_terms_exactly() {
+        let cascade = StressScenario::LiquidationCascade {
+            vol_multiplier: 2.5,
+        };
+        let position = LiquidationPosition {
+            size: 100.0,
+            entry_rate: 0.05,
+            collateral: 20.0,
+            margin_params: margin_params(),
+        };
+        let stressed = stressed_position(position, cascade);
+        assert_roundoff(
+            stressed.margin_params.funding_rate_vol,
+            0.5,
+            "cascade margin volatility",
+        );
+
+        let stressed_vasicek = FundingRateModel::Vasicek(Vasicek {
+            a: 1.0,
+            b: 0.05,
+            sigma: 0.08,
+        })
+        .stressed(cascade);
+        let FundingRateModel::Vasicek(stressed_vasicek) = stressed_vasicek else {
+            panic!("cascade must preserve the Vasicek model variant")
+        };
+        assert_eq!(stressed_vasicek.a, 1.0);
+        assert_eq!(stressed_vasicek.b, 0.05);
+        assert_roundoff(stressed_vasicek.sigma, 0.20, "Vasicek cascade sigma");
+
+        let stressed_cir = FundingRateModel::CIR(CIR {
+            a: 1.0,
+            b: 0.01,
+            sigma: 0.04,
+        })
+        .stressed(cascade);
+        let FundingRateModel::CIR(stressed_cir) = stressed_cir else {
+            panic!("cascade must preserve the CIR model variant")
+        };
+        assert_eq!(stressed_cir.a, 1.0);
+        assert_eq!(stressed_cir.b, 0.01);
+        assert_roundoff(stressed_cir.sigma, 0.10, "CIR cascade sigma");
+
+        assert_eq!(
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: 0.01,
+                sigma: 0.04,
+            })
+            .stressed(StressScenario::MeanShift { shift: -0.02 }),
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: 0.0,
+                sigma: 0.04,
+            })
+        );
+    }
+
+    #[test]
+    fn simulator_rejects_invalid_position_model_grid_and_stress_inputs() {
+        fn panics(f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
+            std::panic::catch_unwind(f).is_err()
+        }
+
+        let valid_position = LiquidationPosition {
+            size: 100.0,
+            entry_rate: 0.05,
+            collateral: 20.0,
+            margin_params: margin_params(),
+        };
+        let valid_model = FundingRateModel::Vasicek(Vasicek {
+            a: 1.0,
+            b: 0.05,
+            sigma: 0.10,
+        });
+        for position in [
+            LiquidationPosition {
+                size: 0.0,
+                ..valid_position
+            },
+            LiquidationPosition {
+                size: f64::NAN,
+                ..valid_position
+            },
+            LiquidationPosition {
+                entry_rate: f64::INFINITY,
+                ..valid_position
+            },
+            LiquidationPosition {
+                collateral: -1.0,
+                ..valid_position
+            },
+            LiquidationPosition {
+                margin_params: MarginParams {
+                    funding_rate_vol: f64::NAN,
+                    ..margin_params()
+                },
+                ..valid_position
+            },
+        ] {
+            assert!(panics(|| {
+                LiquidationSimulator::new(position, valid_model, 0.05, 1, 1, 0);
+            }));
+        }
+
+        for model in [
+            FundingRateModel::Vasicek(Vasicek {
+                a: -1.0,
+                b: 0.05,
+                sigma: 0.10,
+            }),
+            FundingRateModel::Vasicek(Vasicek {
+                a: 1.0,
+                b: f64::NAN,
+                sigma: 0.10,
+            }),
+            FundingRateModel::Vasicek(Vasicek {
+                a: 1.0,
+                b: 0.05,
+                sigma: -0.10,
+            }),
+            FundingRateModel::CIR(CIR {
+                a: f64::INFINITY,
+                b: 0.05,
+                sigma: 0.10,
+            }),
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: -0.05,
+                sigma: 0.10,
+            }),
+            FundingRateModel::CIR(CIR {
+                a: 1.0,
+                b: 0.05,
+                sigma: f64::NAN,
+            }),
+        ] {
+            assert!(panics(|| {
+                LiquidationSimulator::new(valid_position, model, 0.05, 1, 1, 0);
+            }));
+        }
+
+        assert!(panics(|| {
+            LiquidationSimulator::new(valid_position, valid_model, f64::NAN, 1, 1, 0);
+        }));
+        assert!(panics(|| {
+            LiquidationSimulator::new(valid_position, valid_model, 0.05, 0, 1, 0);
+        }));
+        assert!(panics(|| {
+            LiquidationSimulator::new(valid_position, valid_model, 0.05, 1, 0, 0);
+        }));
+
+        let simulator = LiquidationSimulator::new(valid_position, valid_model, 0.05, 1, 1, 0);
+        for scenario in [
+            StressScenario::LiquidationCascade {
+                vol_multiplier: -1.0,
+            },
+            StressScenario::LiquidationCascade {
+                vol_multiplier: f64::NAN,
+            },
+            StressScenario::MeanShift { shift: f64::NAN },
+        ] {
+            assert!(panics(|| {
+                simulator.simulate_stress(scenario);
+            }));
+        }
+
+        let overflow_vol_simulator = LiquidationSimulator::new(
+            valid_position,
+            FundingRateModel::Vasicek(Vasicek {
+                sigma: f64::MAX,
+                ..match valid_model {
+                    FundingRateModel::Vasicek(model) => model,
+                    FundingRateModel::CIR(_) => unreachable!(),
+                }
+            }),
+            0.05,
+            1,
+            1,
+            0,
+        );
+        assert!(panics(|| {
+            overflow_vol_simulator.simulate_stress(StressScenario::LiquidationCascade {
+                vol_multiplier: 2.0,
+            });
+        }));
+
+        let overflow_shift_simulator =
+            LiquidationSimulator::new(valid_position, valid_model, f64::MAX, 1, 1, 0);
+        assert!(panics(|| {
+            overflow_shift_simulator.simulate_stress(StressScenario::MeanShift { shift: f64::MAX });
+        }));
+        assert!(panics(|| {
+            StressScenario::mean_shift_suite(f64::INFINITY);
+        }));
+
+        for (num_paths, steps) in [(0, 1), (1, 0)] {
+            let mut mutated = simulator;
+            mutated.num_paths = num_paths;
+            mutated.steps = steps;
+            assert!(panics(|| {
+                mutated.simulate();
+            }));
+        }
     }
 }
