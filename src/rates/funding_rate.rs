@@ -654,21 +654,14 @@ mod tests {
             snaps,
             FundingRateInterpolation::PiecewiseConstant,
         );
-        // Midpoint between nodes should return first node's rate (step function)
-        let midpoint = 0.125; // ~halfway between 0 and 0.25 years
-        let rate = curve.forward_rate(midpoint);
-        assert!(
-            (rate - 0.001).abs() < 1e-10,
-            "piecewise constant should hold first rate flat, got {rate}"
-        );
-        // At the second node, should return second rate
-        let at_second = 0.25; // approximately where the second node is
-        let rate2 = curve.forward_rate(at_second);
-        // The exact time depends on node computation, but after the jump it should be 0.003
-        assert!(
-            rate2 > 0.001,
-            "should have jumped to higher rate at second node"
-        );
+        // Use the exact timestamp-derived node rather than an approximate
+        // quarter-year and pin both sides of the discontinuity.  This catches
+        // accidental linear interpolation as well as an off-by-one step
+        // convention.
+        let second_node = curve.nodes()[1].0;
+        let midpoint = 0.5 * second_node;
+        assert_relative_eq!(curve.forward_rate(midpoint), 0.001, epsilon = 2.0e-16);
+        assert_relative_eq!(curve.forward_rate(second_node), 0.003, epsilon = 2.0e-16);
     }
 
     #[test]
@@ -743,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_interpolation_differs_from_piecewise_constant() {
+    fn linear_and_piecewise_constant_interpolation_match_exact_segment_oracles() {
         let snaps = vec![
             FundingRateSnapshot {
                 venue: "binance".into(),
@@ -763,18 +756,39 @@ mod tests {
             snaps,
             FundingRateInterpolation::PiecewiseConstant,
         );
-        let mid = 0.25; // quarter way between nodes
+        let second_node = linear.nodes()[1].0;
+        let mid = 0.5 * second_node;
         let linear_rate = linear.forward_rate(mid);
         let step_rate = step.forward_rate(mid);
-        // Linear should interpolate between 0.001 and 0.005
-        // Step should hold at 0.001
-        assert!(
-            (linear_rate - step_rate).abs() > 1e-6,
-            "linear and step should differ at midpoint: linear={linear_rate}, step={step_rate}"
+        // Halfway on a line from 10bp to 50bp per period is exactly 30bp;
+        // the left-continuous step holds the first 10bp node.
+        assert_relative_eq!(linear_rate, 0.003, epsilon = 2.0e-16);
+        assert_relative_eq!(step_rate, 0.001, epsilon = 2.0e-16);
+
+        // The pricing primitive integrates the same two paths exactly:
+        // trapezoidal area for linear interpolation and rectangular area for
+        // the step curve.  Pin both cumulative indices and discount factors.
+        let expected_linear_index = FUNDING_PERIODS_PER_YEAR * 0.5 * (0.001 + 0.005) * second_node;
+        let expected_step_index = FUNDING_PERIODS_PER_YEAR * 0.001 * second_node;
+        assert_relative_eq!(
+            linear.cumulative_index(second_node),
+            expected_linear_index,
+            epsilon = 2.0e-15
         );
-        assert!(
-            (step_rate - 0.001).abs() < 1e-10,
-            "step should hold first rate: got {step_rate}"
+        assert_relative_eq!(
+            step.cumulative_index(second_node),
+            expected_step_index,
+            epsilon = 2.0e-15
+        );
+        assert_relative_eq!(
+            linear.discount_factor(second_node),
+            (-expected_linear_index).exp(),
+            epsilon = 2.0e-15
+        );
+        assert_relative_eq!(
+            step.discount_factor(second_node),
+            (-expected_step_index).exp(),
+            epsilon = 2.0e-15
         );
     }
 

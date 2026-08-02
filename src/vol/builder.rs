@@ -319,39 +319,54 @@ impl VolSurfaceBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pricing::european::black_scholes_price;
-    use approx::assert_relative_eq;
 
     #[test]
-    fn builder_recovers_flat_surface_from_bs_prices() {
+    fn builder_recovers_flat_surface_from_independent_scipy_prices() {
         let spot = 100.0;
         let rate = 0.01;
         let flat_vol = 0.25;
-        let expiries = [0.5, 1.0, 2.0];
-        let strikes = [80.0, 90.0, 100.0, 110.0, 120.0];
 
-        let mut quotes = Vec::new();
-        for &expiry in &expiries {
-            for &strike in &strikes {
-                let price =
-                    black_scholes_price(OptionType::Call, spot, strike, rate, flat_vol, expiry);
-                quotes.push(MarketOptionQuote::new(
-                    strike,
-                    expiry,
-                    price,
-                    OptionType::Call,
-                ));
-            }
-        }
+        // SciPy 1.17.1 `special.ndtr` Black-Scholes premiums, evaluated
+        // independently from OpenFerric for S=100, r=1%, q=0 and sigma=25%.
+        // Freezing the premiums avoids the former circular test which created
+        // every quote with OpenFerric's own Black-Scholes function and then
+        // accepted any recovered volatility within 1e-4.
+        let scipy_quotes = [
+            (80.0, 0.5, 21.129_603_912_480_505),
+            (90.0, 0.5, 13.154_955_980_372_549),
+            (100.0, 0.5, 7.277_812_513_480_185),
+            (110.0, 0.5, 3.589_238_815_956_854),
+            (120.0, 0.5, 1.595_979_359_423_136_4),
+            (80.0, 1.0, 22.890_064_143_625_56),
+            (90.0, 1.0, 15.830_989_589_188_69),
+            (100.0, 1.0, 10.403_539_152_996_622),
+            (110.0, 1.0, 6.533_446_175_893_907),
+            (120.0, 1.0, 3.947_154_079_494_567),
+            (80.0, 2.0, 26.111_311_844_732_15),
+            (90.0, 2.0, 19.907_712_441_384_32),
+            (100.0, 2.0, 14.904_755_419_137_21),
+            (110.0, 2.0, 10.995_381_861_880_077),
+            (120.0, 2.0, 8.016_944_922_105_399),
+        ];
+        let quotes = scipy_quotes
+            .into_iter()
+            .map(|(strike, expiry, price)| {
+                MarketOptionQuote::new(strike, expiry, price, OptionType::Call)
+            })
+            .collect();
 
         let surface = VolSurfaceBuilder::from_quotes(spot, rate, quotes)
+            .with_solver_params(1.0e-13, 100)
             .build()
             .unwrap();
 
         for &expiry in &[0.5, 0.75, 1.0, 1.5, 2.0] {
             for &strike in &[80.0, 85.0, 95.0, 100.0, 105.0, 115.0, 120.0] {
                 let vol = surface.implied_vol(strike, expiry);
-                assert_relative_eq!(vol, flat_vol, epsilon = 1e-4);
+                assert!(
+                    (vol - flat_vol).abs() <= 3.0e-13,
+                    "strike={strike} expiry={expiry} recovered={vol:.17e}"
+                );
             }
         }
     }

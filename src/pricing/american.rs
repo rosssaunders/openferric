@@ -32,6 +32,28 @@ pub fn crr_binomial_american(
         return f64::NAN;
     }
 
+    let intrinsic = |spot: f64| match option_type {
+        OptionType::Call => (spot - k).max(0.0),
+        OptionType::Put => (k - spot).max(0.0),
+    };
+    if t <= 0.0 {
+        return intrinsic(s0);
+    }
+
+    if sigma <= 0.0 {
+        // The zero-width CRR limit is a deterministic path.  Pin the exact
+        // finite exercise grid instead of evaluating the undefined 0/0 CRR
+        // probability.  Discount every exercise cashflow to time zero and
+        // choose the holder-optimal date, including immediate exercise.
+        return (0..=steps)
+            .map(|i| {
+                let exercise_time = t * i as f64 / steps as f64;
+                let spot = s0 * (r * exercise_time).exp();
+                (-r * exercise_time).exp() * intrinsic(spot)
+            })
+            .fold(0.0, f64::max);
+    }
+
     let dt = t / steps as f64;
     let u = (sigma * dt.sqrt()).exp();
     let d = 1.0 / u;
@@ -80,6 +102,20 @@ pub fn longstaff_schwartz_american_put(
 ) -> f64 {
     if steps <= 1 || paths <= 2 {
         return f64::NAN;
+    }
+
+    if t <= 0.0 {
+        return (k - s0).max(0.0);
+    }
+
+    if sigma <= 0.0 {
+        return (0..=steps)
+            .map(|i| {
+                let exercise_time = t * i as f64 / steps as f64;
+                let spot = s0 * (r * exercise_time).exp();
+                (-r * exercise_time).exp() * (k - spot).max(0.0)
+            })
+            .fold(0.0, f64::max);
     }
 
     let dt = t / steps as f64;
@@ -147,7 +183,10 @@ pub fn longstaff_schwartz_american_put(
         }
     }
 
-    values.iter().map(|v| v * disc).sum::<f64>() / paths as f64
+    let continuation = values.iter().map(|v| v * disc).sum::<f64>() / paths as f64;
+    // American exercise includes t=0.  The regression rollback starts at the
+    // first positive time index, so enforce the root exercise decision here.
+    continuation.max((k - s0).max(0.0))
 }
 
 #[cfg(test)]
@@ -156,7 +195,32 @@ mod tests {
     use crate::pricing::european::black_scholes_price;
 
     #[test]
-    fn american_put_is_worth_at_least_european_put() {
+    fn zero_vol_american_methods_match_exact_exercise_cashflows() {
+        let s0: f64 = 100.0;
+        let k: f64 = 95.0;
+        let r: f64 = 0.05;
+        let t: f64 = 1.0;
+
+        // With positive rates a deterministic non-dividend call is optimally
+        // held to maturity: PV(ST-K) = S0-K*exp(-rT).
+        let call = crr_binomial_american(OptionType::Call, s0, k, r, 0.0, t, 64);
+        let call_reference = (s0 - k * (-r * t).exp()).max(0.0);
+        assert!((call - call_reference).abs() <= 8.0 * f64::EPSILON * call_reference.max(1.0));
+
+        // The deterministic ITM put loses value as spot grows, so immediate
+        // exercise is exact for both the CRR and LSM entry points.
+        let put_spot: f64 = 90.0;
+        let put_strike: f64 = 100.0;
+        let put_reference = put_strike - put_spot;
+        let crr_put = crr_binomial_american(OptionType::Put, put_spot, put_strike, r, 0.0, t, 64);
+        let lsm_put =
+            longstaff_schwartz_american_put(put_spot, put_strike, r, 0.0, t, 64, 1_000, 42);
+        assert_eq!(crr_put, put_reference);
+        assert_eq!(lsm_put, put_reference);
+    }
+
+    #[test]
+    fn crr_american_put_matches_independent_decimal_finite_grid() {
         let s0 = 100.0;
         let k = 100.0;
         let r = 0.05;
@@ -166,6 +230,18 @@ mod tests {
         let eur_put = black_scholes_price(OptionType::Put, s0, k, r, sigma, t);
         let am_put = crr_binomial_american(OptionType::Put, s0, k, r, sigma, t, 500);
 
+        // Independently generated with an 80-digit Python Decimal CRR
+        // recurrence using the same stated 500-step methodology.  The
+        // tolerance only covers accumulated binary64/libm roundoff; it is not
+        // an economic range around an American-option price.
+        const DECIMAL_500_STEP_REFERENCE: f64 = 6.088_810_110_703_653;
+        const BINARY64_ACCUMULATION_BUDGET: f64 = 2.0e-12;
+        assert!(
+            (am_put - DECIMAL_500_STEP_REFERENCE).abs() <= BINARY64_ACCUMULATION_BUDGET,
+            "500-step CRR={am_put:.17e}, Decimal={DECIMAL_500_STEP_REFERENCE:.17e}, roundoff budget={BINARY64_ACCUMULATION_BUDGET:.3e}"
+        );
+
+        // Supplemental no-arbitrage property.
         assert!(am_put >= eur_put - 1e-8);
     }
 

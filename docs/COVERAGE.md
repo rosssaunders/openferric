@@ -55,7 +55,7 @@ package value, or stated finite-grid regression target.
 | Bonds, curves, FRA, swaps, OIS/basis, caps/floors, swaptions, XCCY, inflation, CMS | `rates_*`, `strata_bond_reference` and focused rates module tests | QuantLib/Strata values, exact discounted cashflows, Black-76 reductions, SciPy conditional-lognormal quadrature and QuantLib spread-basket QMC |
 | CDS, CDS options/index, ISDA, copulas, first/nth default, CDO | `credit_isda_quantlib`, `credit_quantlib_cds_test`, `cdo_heterogeneous_reference` and focused credit module tests | QuantLib and FinancePy values, exact survival cashflows, SciPy quadrature, direct finite-pool Bernoulli enumeration and distribution formulas |
 | Commodity, weather, catastrophe bonds, MBS/PSA and funding swaps | `commodity_reference`, `commodity_weather_test` and focused instrument tests | Black-76/Kirk, exact Poisson/cashflow calculations, SIFMA PSA formulas, and OTS refinancing-incentive coefficients/seasonality with full cashflow paths independently evaluated using Decimal arithmetic under the library's gross-WAC convention |
-| VaR/ES, XVA, KVA/FVA/MVA and portfolio sensitivities | `var_es_reference` and focused risk module tests | Exact empirical order statistics, Gaussian formulas, discounted exposure/capital cashflows, and reported sampling error |
+| VaR/ES, XVA, KVA/FVA/MVA, margin/liquidation and portfolio sensitivities | `var_es_reference` and focused risk module tests | Exact empirical order statistics, Gaussian formulas, discounted exposure/capital cashflows, closed-form margin rules, and an independent SciPy Sobol discrete-Vasicek first-passage reference with reported sampling error |
 | Rust, Python and WebAssembly surfaces | workspace tests, `python/tests`, and `wasm-pack test --node` | The same full-precision references exercised through each binding |
 
 ## Known Model Scope
@@ -119,6 +119,13 @@ external engine exists:
   deterministic discounting its value depends only on conditional forward
   means and its volatility sensitivity is mathematically zero. Nonlinear
   funding options require a separate stochastic model.
+- Liquidation probability and conditional first-passage time are checked
+  against independently scrambled SciPy Sobol paths using the exact Gaussian
+  Vasicek transition on the contract's monitoring grid. Seeded engine values
+  additionally lock path-stream partitioning, while a zero-volatility CIR path
+  pins its Euler methodology exactly. A position already below maintenance
+  margin is a time-zero liquidation and is never advanced to a later simulated
+  passage time.
 - General correlated CMS-spread prices are checked against independent SciPy
   conditional-lognormal quadrature and a converged QuantLib-Python 1.43
   low-discrepancy spread-basket engine. Correlated first-to-default is checked
@@ -270,6 +277,7 @@ external engine exists:
 | MVA (Margin Value Adjustment) | `risk::mva` |
 | KVA (Capital Value Adjustment) | `risk::kva` |
 | Wrong-way risk (alpha, copula, Hull-White) | `risk::wrong_way_risk` |
+| Margin and liquidation first-passage risk (Vasicek/CIR) | `risk::margin`, `risk::liquidation` |
 | Portfolio Greeks aggregation | `risk::portfolio` |
 | Scenario analysis | `risk::portfolio` |
 

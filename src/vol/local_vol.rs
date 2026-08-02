@@ -141,6 +141,15 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct AffineStrikeTimeVolSurface;
+
+    impl ImpliedVolSurface for AffineStrikeTimeVolSurface {
+        fn implied_vol(&self, strike: f64, expiry: f64) -> f64 {
+            0.19 + 0.000_35 * (strike - 100.0) + 0.012 * expiry
+        }
+    }
+
     #[test]
     fn dupire_local_vol_matches_flat_surface() {
         let lv = DupireLocalVol::new(FlatVolSurface { vol: 0.24 }, 100.0);
@@ -189,5 +198,37 @@ mod tests {
         let surface = FlatVolSurface { vol: 0.3 };
         let lv = DupireLocalVol::new(&surface, 100.0).with_rates(0.03, 0.0);
         assert_relative_eq!(lv.local_vol(100.0, 1.0), 0.3, epsilon = 1.1e-7);
+    }
+
+    #[test]
+    fn dupire_local_vol_matches_non_flat_analytic_total_variance_targets() {
+        // Independent Gatheral total-variance evaluation for
+        //   sigma_imp(K,T) = 0.19 + 0.00035 (K - 100) + 0.012 T,
+        // F(T) = 100 exp(0.026 T).  At fixed k = ln(K/F(T)), writing A for
+        // sigma_imp gives
+        //   w=T A^2,
+        //   w_k=2 T A b K,
+        //   w_kk=2 T [(bK)^2 + A bK],
+        //   w_T=A^2 + 2 T A (c + b (r-q) K).
+        // Substitution in Gatheral's exact Dupire denominator gives the
+        // frozen targets below. They were evaluated independently with
+        // Decimal arithmetic; the tolerance is the measured second-order
+        // finite-difference truncation/cancellation error at the stated bumps.
+        let lv = DupireLocalVol::new(AffineStrikeTimeVolSurface, 100.0)
+            .with_rates(0.043, 0.017)
+            .with_bumps(2.5e-4, 2.5e-4);
+
+        for (strike, expiry, expected) in [
+            (85.0, 0.4, 0.189_248_603_406_369_65),
+            (103.0, 1.1, 0.217_177_692_913_345_65),
+            (120.0, 2.0, 0.249_622_220_743_609_8),
+        ] {
+            let actual = lv.local_vol(strike, expiry);
+            assert!(
+                (actual - expected).abs() <= 8.0e-9,
+                "non-flat Dupire mismatch at K={strike}, T={expiry}: \
+                 actual={actual:.17}, analytic={expected:.17}"
+            );
+        }
     }
 }

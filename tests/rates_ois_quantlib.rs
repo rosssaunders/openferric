@@ -6,8 +6,9 @@
 //!
 //! Our API uses annual periods with continuous-rate projection and OIS
 //! discounting. QuantLib uses daily compounding with business-day calendars,
-//! so exact NPV values differ. We verify structural properties and
-//! approximate values.
+//! so its dated cached NPV is not a like-for-like target.  The tests below pin
+//! this API's prices to exact independently assembled cashflow sums; QuantLib's
+//! suite supplies the product/convention scenarios and structural properties.
 
 use approx::assert_relative_eq;
 

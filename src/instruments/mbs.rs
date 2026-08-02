@@ -1050,12 +1050,21 @@ mod tests {
     }
 
     #[test]
-    fn test_io_po_equals_whole() {
+    fn io_and_po_strips_match_independent_decimal_cashflows() {
         let mbs = make_mbs(PrepaymentModel::Psa(PsaModel { psa_speed: 1.5 }));
         let yield_rate = 0.05;
         let whole = mbs.price(yield_rate);
         let io = IoStrip { mbs: &mbs }.price(yield_rate);
         let po = PoStrip { mbs: &mbs }.price(yield_rate);
+
+        // Independent 80-digit Decimal monthly amortization, 150% PSA/SMM,
+        // and 5% nominal-yield discounting. Pin each strip separately so an
+        // interest/principal allocation error cannot hide behind IO+PO parity.
+        assert_relative_eq!(io, 40.158_863_626_459_05, epsilon = 3.0e-12);
+        assert_relative_eq!(po, 66.534_280_311_284_13, epsilon = 3.0e-12);
+        assert_relative_eq!(whole, 106.693_143_937_743_18, epsilon = 3.0e-12);
+
+        // Supplemental cashflow partition identity.
         assert_relative_eq!(io + po, whole, epsilon = 1.0e-12);
     }
 

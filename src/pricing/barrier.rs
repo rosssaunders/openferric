@@ -50,8 +50,13 @@ fn bs_price_with_dividend(
     sigma: f64,
     t: f64,
 ) -> f64 {
-    if t <= 0.0 || sigma <= 0.0 {
+    if t <= 0.0 {
         return vanilla_payoff(option_type, s, k);
+    }
+
+    if sigma <= 0.0 {
+        let terminal = s * ((r - q) * t).exp();
+        return (-r * t).exp() * vanilla_payoff(option_type, terminal, k);
     }
 
     let st = sigma * t.sqrt();
@@ -94,10 +99,33 @@ pub fn barrier_price_closed_form_with_carry_and_rebate(
         };
     }
 
-    if t <= 0.0 || sigma <= 0.0 {
+    if t <= 0.0 {
         return match style {
             BarrierStyle::Out => vanilla,
-            BarrierStyle::In => 0.0,
+            // A knock-in that never activates pays its rebate at expiry;
+            // expiry is immediate in this branch.
+            BarrierStyle::In => rebate,
+        };
+    }
+
+    if sigma <= 0.0 {
+        // Under zero volatility S(t)=S0*exp((r-q)t), so both the terminal
+        // payoff and any first barrier-hit time are deterministic.  This is
+        // the exact zero-width limit of the continuous-monitoring contract.
+        let carry = r - q;
+        let terminal = s * (carry * t).exp();
+        let hit = match direction {
+            BarrierDirection::Up => carry > 0.0 && terminal >= h,
+            BarrierDirection::Down => carry < 0.0 && terminal <= h,
+        };
+
+        return match (style, hit) {
+            (BarrierStyle::Out, false) | (BarrierStyle::In, true) => vanilla,
+            (BarrierStyle::In, false) => rebate * (-r * t).exp(),
+            (BarrierStyle::Out, true) => {
+                let hit_time = ((h / s).ln() / carry).clamp(0.0, t);
+                rebate * (-r * hit_time).exp()
+            }
         };
     }
 
@@ -242,6 +270,90 @@ pub fn barrier_price_mc(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn zero_vol_barriers_match_exact_deterministic_path_cashflows() {
+        let s0: f64 = 100.0;
+        let k: f64 = 95.0;
+        let r: f64 = 0.05;
+        let q: f64 = 0.02;
+        let t: f64 = 1.0;
+        let rebate: f64 = 7.0;
+        let terminal = s0 * ((r - q) * t).exp();
+        let discounted_call = (-r * t).exp() * (terminal - k).max(0.0);
+
+        // The deterministic path rises and therefore never reaches the down
+        // barrier.  KO receives the option payoff; KI receives its rebate at
+        // expiry.  These are contractual cashflows, not price ranges.
+        let down_out = barrier_price_closed_form_with_carry_and_rebate(
+            OptionType::Call,
+            BarrierStyle::Out,
+            BarrierDirection::Down,
+            s0,
+            k,
+            80.0,
+            r,
+            q,
+            0.0,
+            t,
+            rebate,
+        );
+        let down_in = barrier_price_closed_form_with_carry_and_rebate(
+            OptionType::Call,
+            BarrierStyle::In,
+            BarrierDirection::Down,
+            s0,
+            k,
+            80.0,
+            r,
+            q,
+            0.0,
+            t,
+            rebate,
+        );
+        let roundoff = 8.0 * f64::EPSILON * discounted_call.max(rebate).max(1.0);
+        assert!((down_out - discounted_call).abs() <= roundoff);
+        assert!((down_in - rebate * (-r * t).exp()).abs() <= roundoff);
+
+        // With 10% positive carry the path first touches 110 at the exact
+        // time ln(1.1)/0.1.  KO rebate is paid then, while KI survives to the
+        // terminal vanilla payoff.
+        let crossing_r = 0.10;
+        let crossing_t = 2.0;
+        let upper = 110.0;
+        let hit_time = (upper / s0).ln() / crossing_r;
+        let crossing_terminal = s0 * (crossing_r * crossing_t).exp();
+        let crossing_vanilla = (-crossing_r * crossing_t).exp() * (crossing_terminal - k).max(0.0);
+        let up_out = barrier_price_closed_form_with_carry_and_rebate(
+            OptionType::Call,
+            BarrierStyle::Out,
+            BarrierDirection::Up,
+            s0,
+            k,
+            upper,
+            crossing_r,
+            0.0,
+            0.0,
+            crossing_t,
+            rebate,
+        );
+        let up_in = barrier_price_closed_form_with_carry_and_rebate(
+            OptionType::Call,
+            BarrierStyle::In,
+            BarrierDirection::Up,
+            s0,
+            k,
+            upper,
+            crossing_r,
+            0.0,
+            0.0,
+            crossing_t,
+            rebate,
+        );
+        let crossing_roundoff = 8.0 * f64::EPSILON * crossing_vanilla.max(rebate);
+        assert!((up_out - rebate * (-crossing_r * hit_time).exp()).abs() <= crossing_roundoff);
+        assert!((up_in - crossing_vanilla).abs() <= crossing_roundoff);
+    }
 
     #[test]
     fn barrier_parity_closed_form_down_call() {

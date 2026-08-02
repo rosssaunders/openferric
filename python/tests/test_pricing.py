@@ -54,6 +54,26 @@ def test_free_monte_carlo_pricer_releases_gil():
     assert all(math.isfinite(value) for value in result)
 
 
+def test_arithmetic_asian_binding_matches_exact_one_step_reduction():
+    # With one time step the floating arithmetic call is
+    # 0.5 * (S_T - S_0)+.  This is exactly one half of a Black-Scholes call
+    # struck at S_0; the target is an independent SciPy 1.17.1 ndtr value.
+    price, stderr = py_arithmetic_asian_price_mc(
+        AsianStrike.floating(),
+        spot=100.0,
+        rate=0.03,
+        vol=0.25,
+        expiry=1.2,
+        steps=1,
+        num_paths=160_000,
+        seed=7_104,
+        option_type="call",
+    )
+    expected = 6.2792909318947565
+    tolerance = 4.0 * stderr + 16.0 * math.ulp(expected)
+    assert abs(price - expected) <= tolerance
+
+
 # =========================================================================
 # 1. py_bs_price
 # =========================================================================

@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn irs_receiver_benefits_from_higher_fixed_rate() {
+    fn irs_off_market_values_match_exact_flat_curve_cashflows() {
         let ois = make_flat_curve(0.03);
         let fwd_3m = make_flat_curve(0.035);
         let mut env = MultiCurveEnvironment::new(ois);
@@ -289,7 +289,24 @@ mod tests {
 
         let pv_low = price_irs_multi_curve(&env, "3M", 1_000_000.0, 0.03, 5.0, 4).unwrap();
         let pv_high = price_irs_multi_curve(&env, "3M", 1_000_000.0, 0.04, 5.0, 4).unwrap();
-        // Float - Fixed: higher fixed rate → lower PV for payer
+
+        // Independent closed-form sum for quarterly simple forwards projected
+        // from a flat 3.5% continuous curve and discounted at flat 3%.
+        let dt = 0.25;
+        let projected_forward = (0.035_f64 * dt).exp_m1() / dt;
+        let annuity: f64 = (1..=20)
+            .map(|period| dt * (-0.03 * period as f64 * dt).exp())
+            .sum();
+        let expected_low = 1_000_000.0 * (projected_forward - 0.03) * annuity;
+        let expected_high = 1_000_000.0 * (projected_forward - 0.04) * annuity;
+        let cashflow_roundoff =
+            64.0 * f64::EPSILON * 1_000_000.0 * annuity * projected_forward.max(0.04);
+        assert_relative_eq!(pv_low, expected_low, epsilon = cashflow_roundoff);
+        assert_relative_eq!(pv_high, expected_high, epsilon = cashflow_roundoff);
+        assert_relative_eq!(pv_low, 23_838.765_891_680_305, epsilon = cashflow_roundoff);
+        assert_relative_eq!(pv_high, -22_418.011_247_414_55, epsilon = cashflow_roundoff);
+
+        // Supplemental orientation check: float - fixed falls with K.
         assert!(pv_high < pv_low);
     }
 }

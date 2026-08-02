@@ -269,6 +269,24 @@ mod tests {
         (quotes, fwd_curve)
     }
 
+    fn non_flat_data() -> (Vec<(f64, f64, f64)>, Vec<(f64, f64)>) {
+        let log_moneyness = [-0.3_f64, -0.1, 0.05, 0.25];
+        let slices = [
+            (0.5, 101.0, [0.018, 0.016, 0.0175, 0.022]),
+            (1.0, 103.0, [0.034, 0.032, 0.035, 0.044]),
+            (2.0, 105.0, [0.065, 0.064, 0.071, 0.088]),
+        ];
+        let mut quotes = Vec::new();
+        let mut forwards = Vec::new();
+        for (expiry, forward, total_variances) in slices {
+            forwards.push((expiry, forward));
+            for (k, w) in log_moneyness.into_iter().zip(total_variances) {
+                quotes.push((forward * k.exp(), expiry, f64::sqrt(w / expiry)));
+            }
+        }
+        (quotes, forwards)
+    }
+
     #[test]
     fn fengler_no_arbitrage_flat_vol() {
         let (quotes, fwd_curve) = synthetic_data();
@@ -335,5 +353,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn fengler_non_flat_off_grid_values_match_scipy_natural_splines() {
+        let (quotes, fwd_curve) = non_flat_data();
+        let surface = FenglerSurface::new(&quotes, &fwd_curve);
+
+        // Independent SciPy 1.17.1 CubicSpline(..., bc_type="natural")
+        // evaluation on each non-flat expiry slice, followed by linear
+        // calendar interpolation in total variance.
+        for (k, expiry, expected_w, expected_iv) in [
+            (
+                -0.18_f64,
+                0.75,
+                0.024_317_433_155_080_212,
+                0.180_064_555_664_832_65,
+            ),
+            (
+                0.0,
+                1.4,
+                0.047_270_469_399_881_165,
+                0.183_751_519_721_375_68,
+            ),
+            (
+                0.17,
+                1.75,
+                0.070_495_101_604_278_08,
+                0.200_706_041_768_663_77,
+            ),
+        ] {
+            let actual_w = surface.total_variance(k, expiry);
+            let forward = interpolate_forward(&fwd_curve, expiry);
+            let actual_iv = surface.implied_vol(forward * k.exp(), expiry);
+            assert!(
+                (actual_w - expected_w).abs() <= 3.0e-15,
+                "off-grid total variance mismatch at k={k}, T={expiry}: {actual_w:.17}"
+            );
+            assert!(
+                (actual_iv - expected_iv).abs() <= 8.0e-15,
+                "off-grid implied vol mismatch at k={k}, T={expiry}: {actual_iv:.17}"
+            );
+        }
+    }
+
+    #[test]
+    fn fengler_reports_explicit_calendar_and_butterfly_arbitrage() {
+        let ks = [-0.4_f64, -0.2, 0.0, 0.2, 0.4];
+
+        let mut calendar_quotes = Vec::new();
+        for (expiry, forward, total_variance) in [(1.0, 100.0, 0.05), (2.0, 102.0, 0.04)] {
+            for k in ks {
+                calendar_quotes.push((
+                    forward * k.exp(),
+                    expiry,
+                    f64::sqrt(total_variance / expiry),
+                ));
+            }
+        }
+        let calendar = FenglerSurface::new(&calendar_quotes, &[(1.0, 100.0), (2.0, 102.0)]);
+        assert!(
+            calendar
+                .check_arbitrage()
+                .iter()
+                .any(|violation| matches!(violation, ArbitrageViolation::Calendar { .. }))
+        );
+
+        // This deliberately oscillating total-variance slice has negative
+        // Gatheral density g(k) (SciPy minimum -8.2378987559), so the surface
+        // checker must not silently accept it.
+        let butterfly_w = [0.04_f64, 0.20, 0.02, 0.20, 0.04];
+        let butterfly_quotes = ks
+            .into_iter()
+            .zip(butterfly_w)
+            .map(|(k, w)| (100.0 * k.exp(), 1.0, w.sqrt()))
+            .collect::<Vec<_>>();
+        let butterfly = FenglerSurface::new(&butterfly_quotes, &[(1.0, 100.0)]);
+        assert!(
+            butterfly
+                .check_arbitrage()
+                .iter()
+                .any(|violation| matches!(violation, ArbitrageViolation::Butterfly { .. }))
+        );
     }
 }

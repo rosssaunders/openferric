@@ -1274,11 +1274,9 @@ mod tests {
     /// Independent, deliberately direct implementation of the finite-grid
     /// Hull-White note recurrence used as a pricing oracle below.  It builds
     /// each complete time slice and discovers cash-flow/exercise events from
-    /// their contractual dates; it does not call the production event maps,
-    /// transition helper, coupon helper, or callable-note pricer.
-    ///
-    /// The oracle is intentionally limited to fixed and range-accrual coupons,
-    /// the two callable contracts exercised by these regression tests.
+    /// their contractual dates. Every coupon branch is expanded directly: the
+    /// oracle does not call the production event maps, transition, coupon,
+    /// floor/cap or CMS helpers, or the callable-note pricer.
     fn independent_callable_note_grid_reference(
         note: &CallableRateNote,
         hw: &HullWhite,
@@ -1311,39 +1309,101 @@ mod tests {
             note.coupon_schedule
                 .iter()
                 .filter_map(|period| {
-                    let observation_time = match period.coupon {
+                    let observation_time = match &period.coupon {
                         CouponType::Fixed { .. } => period.payment_time,
-                        CouponType::Structured(StructuredCoupon::RangeAccrual { .. }) => {
+                        CouponType::Floating { .. } | CouponType::Structured(_) => {
                             period.start_time
                         }
-                        _ => panic!("oracle only supports fixed and range-accrual coupons"),
                     };
                     (nearest_step(observation_time) == level).then(|| {
-                        let (coupon_rate, fixing_discount) = match period.coupon {
-                            CouponType::Fixed { rate: fixed_rate } => (fixed_rate, 1.0),
+                        let fixing_time = level as f64 * dt;
+                        let discount_from_fixing =
+                            || calibrated.bond_price(fixing_time, period.payment_time, rate, curve);
+                        let apply_contractual_bounds =
+                            |mut coupon_rate: f64, floor: &Option<f64>, cap: &Option<f64>| {
+                                if let Some(floor_rate) = floor {
+                                    coupon_rate = coupon_rate.max(*floor_rate);
+                                }
+                                if let Some(cap_rate) = cap {
+                                    coupon_rate = coupon_rate.min(*cap_rate);
+                                }
+                                coupon_rate
+                            };
+
+                        let (coupon_rate, fixing_discount) = match &period.coupon {
+                            CouponType::Fixed { rate: fixed_rate } => (*fixed_rate, 1.0),
+                            CouponType::Floating { spread, floor, cap } => (
+                                apply_contractual_bounds(rate + *spread, floor, cap),
+                                discount_from_fixing(),
+                            ),
                             CouponType::Structured(StructuredCoupon::RangeAccrual {
                                 in_range_coupon_rate,
                                 out_of_range_coupon_rate,
                                 lower_bound,
                                 upper_bound,
                             }) => {
-                                let earned_rate = if (lower_bound..=upper_bound).contains(&rate) {
-                                    in_range_coupon_rate
+                                let earned_rate = if (*lower_bound..=*upper_bound).contains(&rate) {
+                                    *in_range_coupon_rate
                                 } else {
-                                    out_of_range_coupon_rate
+                                    *out_of_range_coupon_rate
                                 };
-                                let fixing_time = level as f64 * dt;
+                                (earned_rate, discount_from_fixing())
+                            }
+                            CouponType::Structured(StructuredCoupon::InverseFloater {
+                                fixed_rate,
+                                leverage,
+                                floor,
+                                cap,
+                            }) => (
+                                apply_contractual_bounds(
+                                    *fixed_rate - *leverage * rate,
+                                    floor,
+                                    cap,
+                                ),
+                                discount_from_fixing(),
+                            ),
+                            CouponType::Structured(StructuredCoupon::CmsLinked {
+                                multiplier,
+                                spread,
+                                cms_tenor,
+                                swap_payment_frequency,
+                                floor,
+                                cap,
+                            }) => {
+                                let swap_period = match swap_payment_frequency {
+                                    Frequency::Annual => 1.0,
+                                    Frequency::SemiAnnual => 0.5,
+                                    Frequency::Quarterly => 0.25,
+                                    Frequency::Monthly => 1.0 / 12.0,
+                                };
+                                let swap_end = fixing_time + *cms_tenor;
+                                let mut annuity = 0.0;
+                                let mut payment_time = fixing_time + swap_period;
+                                while payment_time < swap_end - 1.0e-12 {
+                                    annuity += swap_period
+                                        * calibrated.bond_price(
+                                            fixing_time,
+                                            payment_time,
+                                            rate,
+                                            curve,
+                                        );
+                                    payment_time += swap_period;
+                                }
+                                let final_accrual =
+                                    swap_end - (payment_time - swap_period).max(fixing_time);
+                                let final_discount =
+                                    calibrated.bond_price(fixing_time, swap_end, rate, curve);
+                                annuity += final_accrual * final_discount;
+                                let cms_rate = (1.0 - final_discount) / annuity;
                                 (
-                                    earned_rate,
-                                    calibrated.bond_price(
-                                        fixing_time,
-                                        period.payment_time,
-                                        rate,
-                                        curve,
+                                    apply_contractual_bounds(
+                                        *multiplier * cms_rate + *spread,
+                                        floor,
+                                        cap,
                                     ),
+                                    discount_from_fixing(),
                                 )
                             }
-                            _ => unreachable!(),
                         };
                         note.notional * period.accrual() * coupon_rate * fixing_discount
                     })
@@ -1513,6 +1573,102 @@ mod tests {
             (refined - actual).abs() <= GRID_240_TO_480_BUDGET,
             "callable range-accrual grid change exceeded budget: p240={actual:.12}, \
              p480={refined:.12}"
+        );
+    }
+
+    #[test]
+    fn callable_floating_note_matches_independent_nonzero_volatility_grid() {
+        let curve = flat_curve(0.027);
+        let hw = HullWhite::new(0.11, 0.012);
+        let coupons = CouponScheduleBuilder::new(0.0, 2.0, Frequency::SemiAnnual)
+            .unwrap()
+            .build_floating(0.004, Some(0.005), Some(0.06))
+            .unwrap();
+        let note = CallableRateNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            call_price: 1_005_000.0,
+            maturity: 2.0,
+            coupon_schedule: coupons,
+            exercise_schedule: ExerciseSchedule::new(vec![0.75, 1.25, 1.75], 0.0).unwrap(),
+        };
+
+        let steps = 240;
+        let actual = note.price_hull_white_tree(&hw, &curve, steps).unwrap();
+        let reference = independent_callable_note_grid_reference(&note, &hw, &curve, steps);
+        let roundoff_budget = 512.0 * f64::EPSILON * reference.abs();
+        assert!(
+            (actual - reference).abs() <= roundoff_budget,
+            "callable floating-note finite-grid mismatch: actual={actual:.17e}, \
+             independent={reference:.17e}, binary64 budget={roundoff_budget:.3e}"
+        );
+    }
+
+    #[test]
+    fn callable_inverse_floater_matches_independent_nonzero_volatility_grid() {
+        let curve = flat_curve(0.031);
+        let hw = HullWhite::new(0.09, 0.014);
+        let coupons = CouponScheduleBuilder::new(0.0, 2.0, Frequency::SemiAnnual)
+            .unwrap()
+            .build_structured(StructuredCoupon::InverseFloater {
+                fixed_rate: 0.075,
+                leverage: 1.8,
+                floor: Some(0.005),
+                cap: Some(0.08),
+            })
+            .unwrap();
+        let note = CallableRateNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            call_price: 1_015_000.0,
+            maturity: 2.0,
+            coupon_schedule: coupons,
+            exercise_schedule: ExerciseSchedule::new(vec![1.0, 1.5], 0.0).unwrap(),
+        };
+
+        let steps = 240;
+        let actual = note.price_hull_white_tree(&hw, &curve, steps).unwrap();
+        let reference = independent_callable_note_grid_reference(&note, &hw, &curve, steps);
+        let roundoff_budget = 512.0 * f64::EPSILON * reference.abs();
+        assert!(
+            (actual - reference).abs() <= roundoff_budget,
+            "callable inverse-floater finite-grid mismatch: actual={actual:.17e}, \
+             independent={reference:.17e}, binary64 budget={roundoff_budget:.3e}"
+        );
+    }
+
+    #[test]
+    fn callable_cms_note_matches_independent_nonzero_volatility_grid() {
+        let curve = flat_curve(0.029);
+        let hw = HullWhite::new(0.07, 0.013);
+        let coupons = CouponScheduleBuilder::new(0.0, 3.0, Frequency::Annual)
+            .unwrap()
+            .build_structured(StructuredCoupon::CmsLinked {
+                multiplier: 1.25,
+                spread: -0.002,
+                cms_tenor: 4.5,
+                swap_payment_frequency: Frequency::SemiAnnual,
+                floor: Some(0.0),
+                cap: Some(0.09),
+            })
+            .unwrap();
+        let note = CallableRateNote {
+            notional: 1_000_000.0,
+            redemption: 1_000_000.0,
+            call_price: 1_010_000.0,
+            maturity: 3.0,
+            coupon_schedule: coupons,
+            exercise_schedule: ExerciseSchedule::new(vec![1.0, 2.0], 0.0).unwrap(),
+        };
+
+        let steps = 300;
+        let actual = note.price_hull_white_tree(&hw, &curve, steps).unwrap();
+        let reference = independent_callable_note_grid_reference(&note, &hw, &curve, steps);
+        let roundoff_budget = 512.0 * f64::EPSILON * reference.abs();
+        assert!(
+            (actual - reference).abs() <= roundoff_budget,
+            "callable CMS-note finite-grid mismatch: actual={actual:.17e}, \
+             independent={reference:.17e}, binary64 budget={roundoff_budget:.3e}"
         );
     }
 

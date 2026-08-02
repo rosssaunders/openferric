@@ -407,4 +407,104 @@ mod tests {
         assert!((price - reduced).abs() <= roundoff);
         assert_close_to_scipy(price, 4.508300020405416, "zero-correlation reduction");
     }
+
+    #[test]
+    fn correlation_calls_and_puts_match_direct_scipy_payoff_quadrature() {
+        // Generated with SciPy 1.17.1 `integrate.quad` (epsabs=epsrel=2e-13).
+        // The oracle integrates the discounted payoff directly over the first
+        // asset's Gaussian driver and uses only the conditional exercise
+        // probability of the second asset.  It therefore does not reuse the
+        // production bivariate-normal closed form.  Positive and negative
+        // correlations are both covered for calls and puts because the sign
+        // changes which joint tail drives the price most strongly.
+        let cases: [(TwoAssetCorrelationOption, f64, f64, &str); 4] = [
+            (
+                TwoAssetCorrelationOption {
+                    option_type: OptionType::Call,
+                    s1: 104.0,
+                    s2: 91.0,
+                    k1: 100.0,
+                    k2: 95.0,
+                    vol1: 0.23,
+                    vol2: 0.31,
+                    rho: 0.65,
+                    q1: 0.012,
+                    q2: 0.025,
+                    r: 0.037,
+                    t: 1.7,
+                },
+                11.824_685_796_803_442,
+                1.54e-13,
+                "positive-rho call",
+            ),
+            (
+                TwoAssetCorrelationOption {
+                    option_type: OptionType::Call,
+                    s1: 104.0,
+                    s2: 91.0,
+                    k1: 100.0,
+                    k2: 95.0,
+                    vol1: 0.23,
+                    vol2: 0.31,
+                    rho: -0.55,
+                    q1: 0.012,
+                    q2: 0.025,
+                    r: 0.037,
+                    t: 1.7,
+                },
+                2.414_305_173_721_496_4,
+                4.03e-14,
+                "negative-rho call",
+            ),
+            (
+                TwoAssetCorrelationOption {
+                    option_type: OptionType::Put,
+                    s1: 96.0,
+                    s2: 109.0,
+                    k1: 102.0,
+                    k2: 103.0,
+                    vol1: 0.27,
+                    vol2: 0.19,
+                    rho: 0.60,
+                    q1: 0.018,
+                    q2: 0.006,
+                    r: 0.029,
+                    t: 2.3,
+                },
+                11.122_282_885_280_57,
+                1.70e-12,
+                "positive-rho put",
+            ),
+            (
+                TwoAssetCorrelationOption {
+                    option_type: OptionType::Put,
+                    s1: 96.0,
+                    s2: 109.0,
+                    k1: 102.0,
+                    k2: 103.0,
+                    vol1: 0.27,
+                    vol2: 0.19,
+                    rho: -0.70,
+                    q1: 0.018,
+                    q2: 0.006,
+                    r: 0.029,
+                    t: 2.3,
+                },
+                2.267_580_078_878_059_3,
+                1.09e-13,
+                "negative-rho put",
+            ),
+        ];
+
+        for (option, scipy, scipy_error, label) in cases {
+            let actual = two_asset_correlation_price(&option).unwrap();
+            let binary64_budget = 512.0 * f64::EPSILON * scipy.abs().max(1.0);
+            let tolerance = scipy_error + binary64_budget;
+            assert!(
+                (actual - scipy).abs() <= tolerance,
+                "{label}: actual={actual:.17e}, direct SciPy integral={scipy:.17e}, \
+                 source error={scipy_error:.3e}, binary64 budget={binary64_budget:.3e}"
+            );
+        }
+    }
 }

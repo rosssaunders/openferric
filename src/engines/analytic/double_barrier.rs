@@ -198,16 +198,84 @@ fn double_no_touch_digital_price(
     (prefactor * sum).clamp(0.0, df_r)
 }
 
+/// Infinite-horizon transform `E[exp(-r*tau)]` of the first exit time from a
+/// bounded log-price corridor.
+///
+/// This is the closed-form solution of
+/// `0.5*sigma^2*f'' + carry*f' - r*f = 0`, with `f(0)=f(width)=1`.
+/// Returning `None` only covers the singular negative-rate parameter sets at
+/// which the infinite-horizon exponential moment does not exist; the finite
+/// maturity calculation below then falls back to direct integration.
+fn eventual_double_touch_discount_factor(
+    carry: f64,
+    vol_sq: f64,
+    width: f64,
+    x: f64,
+    rate: f64,
+) -> Option<f64> {
+    let alpha = -carry / vol_sq;
+    // Divide the principal eigenvalue by positive `vol_sq` before checking its
+    // sign, avoiding products that can underflow for very small volatilities.
+    let corridor_mode = PI / width;
+    let principal_nu_over_vol_sq =
+        (-0.5 * alpha).mul_add(alpha, -(rate / vol_sq)) - 0.5 * corridor_mode * corridor_mode;
+    if principal_nu_over_vol_sq.is_nan() || principal_nu_over_vol_sq >= 0.0 {
+        return None;
+    }
+
+    // Normalize the characteristic discriminant before evaluating it.  The
+    // dimensional form `carry^2 + 2*r*vol_sq` can underflow even when the
+    // characteristic root itself is order one because the root subsequently
+    // divides by `vol_sq`.
+    let drift_term = alpha * alpha;
+    let rate_term = 2.0 * (rate / vol_sq);
+    let discriminant = alpha.mul_add(alpha, rate_term);
+    let coefficient_scale = drift_term.abs().max(rate_term.abs());
+    if !coefficient_scale.is_finite() {
+        return None;
+    }
+    let scale = 64.0 * f64::EPSILON * coefficient_scale;
+
+    let (left_ratio, right_ratio) = if discriminant > scale {
+        let delta = discriminant.sqrt();
+        let sinh_ratio = |part: f64| {
+            let whole = delta * width;
+            if whole.abs() < 1.0e-5 {
+                (delta * part).sinh() / whole.sinh()
+            } else {
+                (delta * (part - width)).exp() * (-2.0 * delta * part).exp_m1()
+                    / (-2.0 * whole).exp_m1()
+            }
+        };
+        (sinh_ratio(width - x), sinh_ratio(x))
+    } else if discriminant >= -scale {
+        ((width - x) / width, x / width)
+    } else {
+        let omega = (-discriminant).sqrt();
+        let denominator = (omega * width).sin();
+        if denominator.abs() <= 64.0 * f64::EPSILON {
+            return None;
+        }
+        (
+            (omega * (width - x)).sin() / denominator,
+            (omega * x).sin() / denominator,
+        )
+    };
+
+    let factor = (alpha * x).exp() * left_ratio + (alpha * (x - width)).exp() * right_ratio;
+    (factor.is_finite() && factor >= 0.0).then_some(factor)
+}
+
 /// Expected discount factor to the first barrier-touch time,
 /// `E[exp(-r*tau) * 1{tau <= T}]`, for a knock-out rebate paid at hit.
 ///
-/// Uses the same eigenfunction expansion as `double_no_touch_digital_price`:
-/// the discounted survival probability is `D(t) = sum_n a_n * exp(nu_n * t)`
-/// with `a_n = exp(alpha*x) * b_n * sin(w_n * x)` and
-/// `nu_n = c - 0.5*sigma^2*w_n^2` (where `c` already contains `-r`).
-/// Integrating by parts against the first-passage density gives
-/// `E[e^{-r tau} 1{tau<=T}] = 1 - D(T) - r * sum_n a_n * (exp(nu_n*T) - 1)/nu_n`,
-/// which reduces to `P(tau <= T) = 1 - survival` when `r = 0`.
+/// The discounted survival expansion is
+/// `D(t) = sum_n a_n * exp(nu_n*t)`.  Directly integrating each term creates a
+/// slowly converging `1/n^2` tail.  Instead, subtract the exponentially small
+/// finite-horizon correction from the closed-form infinite-horizon transform:
+/// `F(T) = F(infinity) - sum_n a_n*exp(nu_n*T)*(1 + r/nu_n)`.
+/// This preserves the exact `1-D(T)` reduction at `r=0` and makes the requested
+/// series term count control only an exponentially convergent remainder.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn double_touch_pay_at_hit_factor(
@@ -230,23 +298,24 @@ fn double_touch_pay_at_hit_factor(
     let amp = (alpha * x).exp();
 
     let mut survival_disc = 0.0;
-    let mut integral_term = 0.0;
+    let mut finite_horizon_correction = 0.0;
     for n in 1..=series_terms {
         let w = (n as f64) * PI / width;
         let b_n = 2.0 / width * exp_sin_integral(-alpha, w, 0.0, width);
         let a_n = amp * b_n * (w * x).sin();
-        // nu_n < 0 always: c <= -r and the diffusion decay term is negative.
+        // Ordinary non-negative-rate inputs have nu_n < 0.  For sufficiently
+        // negative rates a mode can be non-decaying; the acceleration helper
+        // rejects that domain and the direct finite-horizon identity is used.
         let nu_n = c - 0.5 * vol_sq * w * w;
         let exp_nu_t = (nu_n * expiry).exp();
         survival_disc += a_n * exp_nu_t;
-        // (exp(nu*T) - 1)/nu via exp_m1 stays accurate for small |nu| and has
-        // the exact limit a_n * T as nu -> 0 (reachable only for r < 0, where
-        // the diffusion decay can cancel against c = -carry^2/(2 sigma^2) - r).
-        integral_term += if nu_n == 0.0 {
-            a_n * expiry
-        } else {
-            a_n * (nu_n * expiry).exp_m1() / nu_n
-        };
+        finite_horizon_correction += a_n
+            * exp_nu_t
+            * if nu_n == 0.0 {
+                f64::NAN
+            } else {
+                1.0 + rate / nu_n
+            };
     }
 
     let df_r = (-rate * expiry).exp();
@@ -260,7 +329,30 @@ fn double_touch_pay_at_hit_factor(
     // scaled by P(touch). At r = 0 both bounds collapse to 1 - survival.
     let lo = touch_prob * df_r.min(1.0);
     let hi = touch_prob * df_r.max(1.0);
-    (1.0 - survival_disc - rate * integral_term).clamp(lo, hi)
+    let accelerated = eventual_double_touch_discount_factor(carry, vol_sq, width, x, rate)
+        .map(|eventual| eventual - finite_horizon_correction)
+        .filter(|factor| factor.is_finite());
+
+    // At a singular negative-rate infinite-horizon transform, retain the
+    // finite-maturity term-by-term identity.  This path is not needed for
+    // ordinary positive/near-zero rates but keeps the routine total over the
+    // validated market domain.
+    let factor = accelerated.unwrap_or_else(|| {
+        let mut integral_term = 0.0;
+        for n in 1..=series_terms {
+            let w = (n as f64) * PI / width;
+            let b_n = 2.0 / width * exp_sin_integral(-alpha, w, 0.0, width);
+            let a_n = amp * b_n * (w * x).sin();
+            let nu_n = c - 0.5 * vol_sq * w * w;
+            integral_term += if nu_n == 0.0 {
+                a_n * expiry
+            } else {
+                a_n * (nu_n * expiry).exp_m1() / nu_n
+            };
+        }
+        1.0 - survival_disc - rate * integral_term
+    });
+    factor.clamp(lo, hi)
 }
 
 impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
@@ -445,6 +537,17 @@ mod tests {
         );
     }
 
+    fn assert_binary64_reference(actual: f64, expected: f64, label: &str) {
+        // Transcendental implementations can differ by a last-place bit across
+        // targets. Keep the stored full-precision reference while
+        // allowing only binary64 evaluation-order roundoff, never a price range.
+        let roundoff = 2.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= roundoff,
+            "{label}: actual={actual:.17e}, expected={expected:.17e}, roundoff={roundoff:.3e}"
+        );
+    }
+
     #[test]
     fn double_knock_out_call_matches_haug_case_1() {
         let option = DoubleBarrierOption::new(
@@ -532,10 +635,11 @@ mod tests {
         let p1 = engine.price(&with_rebate, &market).unwrap().price;
         let rebate_component = p1 - p0;
 
-        assert_eq!(p1, 9.842665096069378, "20-term rebate price changed");
-        assert_eq!(
-            rebate_component, 9.842665096068536,
-            "20-term rebate component changed"
+        assert_binary64_reference(p1, 9.84266426875577, "20-term rebate price changed");
+        assert_binary64_reference(
+            rebate_component,
+            9.842664268754929,
+            "20-term rebate component changed",
         );
 
         let pay_at_expiry_cap = rebate * (-0.10_f64 * 5.0).exp();
@@ -546,6 +650,81 @@ mod tests {
         assert!(
             rebate_component <= rebate + 64.0 * f64::EPSILON * rebate,
             "discounted rebate component {rebate_component} cannot exceed undiscounted rebate {rebate}"
+        );
+    }
+
+    #[test]
+    fn nonzero_rebate_matches_independent_scipy_log_space_pde() {
+        // Independent SciPy 1.17.1 method-of-lines reference for the complete
+        // knock-out contract, including the rebate paid at first touch.  The
+        // log-space Black-Scholes PDE uses Dirichlet value 7.5 at both
+        // barriers and is advanced with a sparse matrix exponential.  Spot
+        // and strike are exact grid nodes.  Richardson-extrapolated values
+        // from 500, 1_000, and 2_000 intervals were respectively
+        // 7.097463687167115, 7.097463686975762, and 7.097463687057019.
+        const SCIPY_PDE_REFERENCE: f64 = 7.097_463_687_0;
+        const PDE_DISCRETIZATION_BUDGET: f64 = 3.0e-9;
+
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.047)
+            .dividend_yield(0.013)
+            .flat_vol(0.29)
+            .build()
+            .unwrap();
+        let option = DoubleBarrierOption::new(
+            OptionType::Call,
+            100.0,
+            1.4,
+            80.0,
+            125.0,
+            DoubleBarrierType::KnockOut,
+            7.5,
+        );
+        let actual = DoubleBarrierAnalyticEngine::new()
+            .with_series_terms(5)
+            .price(&option, &market)
+            .unwrap()
+            .price;
+        let binary64_budget = 256.0 * f64::EPSILON * SCIPY_PDE_REFERENCE;
+        let tolerance = PDE_DISCRETIZATION_BUDGET + binary64_budget;
+
+        assert!(
+            (actual - SCIPY_PDE_REFERENCE).abs() <= tolerance,
+            "nonzero-rebate double barrier: actual={actual:.17e}, \
+             SciPy PDE={SCIPY_PDE_REFERENCE:.17e}, tolerance={tolerance:.3e}"
+        );
+    }
+
+    #[test]
+    fn eventual_touch_transform_resolves_small_positive_discriminant() {
+        // The dimensional coefficients are tiny, but their ratio is not: the
+        // dimensional discriminant=1e-16 and vol^2=1e-8 imply delta=1. An absolute
+        // epsilon threshold would incorrectly take the delta -> 0 limit and
+        // return 1 instead of the exact symmetric-corridor value 1/cosh(0.5).
+        let factor = eventual_double_touch_discount_factor(0.0, 1.0e-8, 1.0, 0.5, 5.0e-9)
+            .expect("finite exit-time transform");
+        let expected = 1.0 / 0.5_f64.cosh();
+        let roundoff = 32.0 * f64::EPSILON * expected;
+        assert!(
+            (factor - expected).abs() <= roundoff,
+            "small-discriminant transform: factor={factor:.17e}, expected={expected:.17e}"
+        );
+    }
+
+    #[test]
+    fn eventual_touch_transform_survives_dimensional_discriminant_underflow() {
+        // Here 2*r*vol^2 = 1e-400 underflows to zero in binary64, while the
+        // normalized characteristic discriminant 2*r/vol^2 is exactly one.
+        // Evaluating the dimensional expression first used to return the
+        // repeated-root value 1 instead of the exact 1/cosh(0.5).
+        let factor = eventual_double_touch_discount_factor(0.0, 1.0e-200, 1.0, 0.5, 5.0e-201)
+            .expect("finite exit-time transform");
+        let expected = 1.0 / 0.5_f64.cosh();
+        let roundoff = 32.0 * f64::EPSILON * expected;
+        assert!(
+            (factor - expected).abs() <= roundoff,
+            "underflowed-dimensional transform: factor={factor:.17e}, expected={expected:.17e}"
         );
     }
 
@@ -561,7 +740,7 @@ mod tests {
         // Undiscounted touch probability from the r = 0 series.
         let touch_prob_r0 =
             1.0 - double_no_touch_digital_price(100.0, 90.0, 110.0, 0.0, q - rate, vol, expiry, 20);
-        assert_eq!(factor, 1.003223656988966, "20-term hit factor changed");
+        assert_eq!(factor, 1.003223639428337, "20-term hit factor changed");
         assert_eq!(touch_prob_r0, 1.0, "20-term touch probability changed");
         assert!(factor.is_finite());
         let roundoff = 64.0 * f64::EPSILON * df_r * touch_prob_r0;
@@ -593,7 +772,7 @@ mod tests {
         );
 
         let price = engine.price(&option, &market).unwrap().price;
-        assert_eq!(price, 10.032236569889662, "negative-rate price changed");
+        assert_eq!(price, 10.032236394283366, "negative-rate price changed");
         assert!(price.is_finite() && price >= 0.0);
         // With r < 0 the rebate component may exceed the undiscounted rebate
         // (paid-at-hit cash is reinvested at a negative rate relative to par),

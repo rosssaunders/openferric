@@ -1073,6 +1073,46 @@ fn general_stochastic_baskets_match_independent_scipy_sobol_references() {
 }
 
 #[test]
+fn student_t_copula_basket_matches_independent_scipy_sobol_reference() {
+    // Independent oracle: SciPy 1.17.1 / NumPy 2.4.3, using a four-dimensional
+    // Sobol sequence (three correlated Gaussian drivers plus the common
+    // chi-square scale), SciPy's t CDF, and inverse-normal marginal mapping.
+    // The cached price is the mean of 32 independently Owen-scrambled 2^19
+    // point replicates (seeds 367000..367031); the quoted uncertainty is the
+    // replicate standard deviation divided by sqrt(32).
+    let basket = BasketOption {
+        weights: vec![0.40, 0.35, 0.25],
+        strike: 100.0,
+        maturity: 1.25,
+        is_call: true,
+        basket_type: BasketType::Average,
+    };
+    let result = price_basket_mc_with_copula(
+        &basket,
+        &[100.0, 96.0, 104.0],
+        &[0.20, 0.25, 0.18],
+        &[
+            vec![1.0, 0.45, 0.20],
+            vec![0.45, 1.0, 0.30],
+            vec![0.20, 0.30, 1.0],
+        ],
+        0.03,
+        &[0.01, 0.02, 0.0],
+        500_000,
+        BasketCopula::StudentT {
+            degrees_of_freedom: 5,
+        },
+    );
+    assert_mc_matches_qmc(
+        "three-asset Student-t copula average call",
+        result.price,
+        result.stderr,
+        7.828_172_306_368_756_5,
+        1.791_229_479_546_623e-5,
+    );
+}
+
+#[test]
 fn zero_vol_outperformance_and_quanto_baskets_equal_discounted_payoffs() {
     let spots = [100.0, 120.0];
     let vols = [0.0, 0.0];

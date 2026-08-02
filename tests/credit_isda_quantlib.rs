@@ -46,6 +46,106 @@ fn flat_survival_curve(hazard: f64, max_tenor: f64) -> SurvivalCurve {
     SurvivalCurve::from_piecewise_hazard(&tenors, &vec![hazard; tenors.len()])
 }
 
+/// Exhaustive finite-state oracle for an independent-default basket.  This is
+/// deliberately different from `NthToDefaultBasket`'s Poisson-binomial dynamic
+/// program: every one of the 2^N default/no-default states is enumerated.
+fn exhaustive_probability_at_least_n(default_probabilities: &[f64], nth: usize) -> f64 {
+    (0..(1_usize << default_probabilities.len()))
+        .filter(|state| state.count_ones() as usize >= nth)
+        .map(|state| {
+            default_probabilities
+                .iter()
+                .enumerate()
+                .map(|(name, probability)| {
+                    if state & (1 << name) != 0 {
+                        *probability
+                    } else {
+                        1.0 - probability
+                    }
+                })
+                .product::<f64>()
+        })
+        .sum()
+}
+
+fn independent_nth_default_reference(
+    nth: usize,
+    maturity: f64,
+    payment_freq: usize,
+    recovery: f64,
+    discount_rate: f64,
+    hazards: &[f64],
+) -> (f64, f64, f64) {
+    let dt_regular = 1.0 / payment_freq as f64;
+    let mut premium_annuity = 0.0;
+    let mut protection_term = 0.0;
+    let mut triggered_previous = 0.0;
+    let mut period_start = 0.0;
+
+    while period_start < maturity - 1.0e-12 {
+        let period_end = (period_start + dt_regular).min(maturity);
+        let probabilities = hazards
+            .iter()
+            .map(|hazard| 1.0 - (-hazard * period_end).exp())
+            .collect::<Vec<_>>();
+        let triggered = exhaustive_probability_at_least_n(&probabilities, nth);
+        let accrual = period_end - period_start;
+        let alive_midpoint = 1.0 - 0.5 * (triggered_previous + triggered);
+        premium_annuity += accrual * (-discount_rate * period_end).exp() * alive_midpoint;
+        protection_term += (-discount_rate * 0.5 * (period_start + period_end)).exp()
+            * (triggered - triggered_previous);
+        triggered_previous = triggered;
+        period_start = period_end;
+    }
+
+    let fair_spread = (1.0 - recovery) * protection_term / premium_annuity;
+    (fair_spread, premium_annuity, protection_term)
+}
+
+/// Independent flat-curve midpoint CDS cashflow sum used for index oracles.
+/// The implementation is intentionally local to the reference test and never
+/// calls a constituent's pricing methods.
+fn independent_flat_cds_reference(
+    notional: f64,
+    spread: f64,
+    maturity: f64,
+    recovery: f64,
+    payment_freq: usize,
+    discount_rate: f64,
+    hazard: f64,
+) -> (f64, f64) {
+    let regular_dt = 1.0 / payment_freq as f64;
+    let mut coupon_annuity = 0.0;
+    let mut accrual_annuity = 0.0;
+    let mut protection_term = 0.0;
+    let mut survival_previous = 1.0;
+    let mut period_start = 0.0;
+
+    while period_start < maturity - 1.0e-12 {
+        let period_end = (period_start + regular_dt).min(maturity);
+        let accrual = period_end - period_start;
+        let survival = (-hazard * period_end).exp();
+        let default_probability = survival_previous - survival;
+        coupon_annuity += accrual * (-discount_rate * period_end).exp() * survival;
+        accrual_annuity += 0.5
+            * accrual
+            * (-discount_rate * 0.5 * (period_start + period_end)).exp()
+            * default_probability;
+        protection_term +=
+            (-discount_rate * 0.5 * (period_start + period_end)).exp() * default_probability;
+        survival_previous = survival;
+        period_start = period_end;
+    }
+
+    let risky_annuity = coupon_annuity + accrual_annuity;
+    let protection_pv = notional * (1.0 - recovery) * protection_term;
+    let premium_pv = notional * spread * risky_annuity;
+    (
+        protection_pv - premium_pv,
+        (1.0 - recovery) * protection_term / risky_annuity,
+    )
+}
+
 // ===========================================================================
 // 1. Survival Curve Construction & Interpolation
 // ===========================================================================
@@ -1551,7 +1651,7 @@ fn correlated_first_to_default_matches_financepy_gaussian_copula() {
 }
 
 #[test]
-fn nth_to_default_spread_decreases_with_n() {
+fn nth_to_default_matches_exhaustive_finite_state_reference() {
     let discount_curve = flat_discount_curve(0.03, 20.0);
     let hazard = 0.02;
     let curve = flat_survival_curve(hazard, 20.0);
@@ -1577,54 +1677,131 @@ fn nth_to_default_spread_decreases_with_n() {
     let s2 = basket2.fair_spread(&discount_curve, &curves);
     let s3 = basket3.fair_spread(&discount_curve, &curves);
 
+    // Python Decimal (80 digits) independently enumerated all 2^5 default
+    // states at every quarterly date.  The cached fixtures below are included
+    // alongside the live exhaustive oracle so a shared formula transcription
+    // cannot silently move both expected and actual values.
+    for (nth, spread) in [(1, s1), (2, s2), (3, s3)] {
+        let (expected, _, _) =
+            independent_nth_default_reference(nth, 5.0, 4, 0.4, 0.03, &[hazard; 5]);
+        assert_relative_eq!(spread, expected, epsilon = 2.0e-15);
+    }
     assert_relative_eq!(s1, 0.060_222_285_858_122_26, epsilon = 1.0e-14);
     assert_relative_eq!(s2, 0.009_019_522_989_712_63, epsilon = 1.0e-14);
     assert_relative_eq!(s3, 0.000_865_832_177_931_71, epsilon = 1.0e-14);
+
+    // The ordering is now only a supplemental economic invariant.
+    assert!(s1 > s2 && s2 > s3);
 }
 
 #[test]
-fn index_npv_is_weighted_sum_of_constituents() {
+fn heterogeneous_second_to_default_fair_spread_and_npv_match_decimal_enumeration() {
+    let discount_curve = flat_discount_curve(0.027, 4.0);
+    let hazards = [0.01, 0.015, 0.025, 0.04];
+    let curves = hazards
+        .iter()
+        .map(|hazard| flat_survival_curve(*hazard, 4.0))
+        .collect::<Vec<_>>();
+    let basket = NthToDefaultBasket {
+        n: 2,
+        notional: 7_500_000.0,
+        maturity: 3.25,
+        recovery_rate: 0.4,
+        payment_freq: 4,
+    };
+    let running_spread = 0.004;
+
+    let fair = basket.fair_spread(&discount_curve, &curves);
+    let npv = basket.npv(running_spread, &discount_curve, &curves);
+    let (expected_fair, expected_annuity, expected_protection) =
+        independent_nth_default_reference(2, 3.25, 4, 0.4, 0.027, &hazards);
+    let expected_npv = basket.notional * (expected_fair - running_spread) * expected_annuity;
+
+    assert_relative_eq!(fair, expected_fair, epsilon = 3.0e-15);
+    assert_relative_eq!(npv, expected_npv, epsilon = 2.0e-9);
+    // Python Decimal, precision=80, direct enumeration of all sixteen states.
+    assert_relative_eq!(expected_annuity, 3.074_710_782_194_91, epsilon = 2.0e-15);
+    assert_relative_eq!(
+        expected_protection,
+        0.023_486_160_445_583_964,
+        epsilon = 2.0e-17
+    );
+    assert_relative_eq!(fair, 0.004_583_096_513_972_249, epsilon = 3.0e-15);
+    assert_relative_eq!(npv, 13_446.398_539_280_54, epsilon = 2.0e-9);
+}
+
+#[test]
+fn heterogeneous_index_npv_and_spread_match_decimal_cashflows() {
     let discount_curve = flat_discount_curve(0.03, 20.0);
-    let recovery = 0.4;
-
-    // Different credit qualities
-    let curves = vec![
-        flat_survival_curve(0.01, 20.0),
-        flat_survival_curve(0.02, 20.0),
-        flat_survival_curve(0.03, 20.0),
-    ];
-    let spread = 0.01;
-    let constituents: Vec<Cds> = (0..3)
-        .map(|_| Cds {
-            notional: 1.0,
-            spread,
+    let hazards = [0.01, 0.02, 0.035];
+    let curves = hazards
+        .iter()
+        .map(|hazard| flat_survival_curve(*hazard, 20.0))
+        .collect::<Vec<_>>();
+    let constituents = vec![
+        Cds {
+            notional: 2_000_000.0,
+            spread: 0.008,
             maturity: 5.0,
-            recovery_rate: recovery,
+            recovery_rate: 0.40,
             payment_freq: 4,
-        })
-        .collect();
-
-    let weights = vec![1.0, 1.0, 1.0];
+        },
+        Cds {
+            notional: 1_500_000.0,
+            spread: 0.012,
+            maturity: 5.0,
+            recovery_rate: 0.35,
+            payment_freq: 4,
+        },
+        Cds {
+            notional: 3_000_000.0,
+            spread: 0.020,
+            maturity: 5.0,
+            recovery_rate: 0.50,
+            payment_freq: 4,
+        },
+    ];
+    let weights = vec![2.0, 3.0, 5.0];
     let index = CdsIndex {
         constituents: constituents.clone(),
         weights: weights.clone(),
     };
 
     let index_npv = index.npv(&discount_curve, &curves);
+    let index_spread = index.fair_spread(&discount_curve, &curves);
 
-    // Manually compute weighted average
-    let norm_w: Vec<f64> = {
-        let s: f64 = weights.iter().sum();
-        weights.iter().map(|w| w / s).collect()
-    };
-    let manual: f64 = constituents
+    let references = constituents
         .iter()
-        .zip(curves.iter())
-        .zip(norm_w.iter())
-        .map(|((cds, curve), w)| w * cds.npv(&discount_curve, curve))
-        .sum();
+        .zip(hazards)
+        .map(|(cds, hazard)| {
+            independent_flat_cds_reference(
+                cds.notional,
+                cds.spread,
+                cds.maturity,
+                cds.recovery_rate,
+                cds.payment_freq,
+                0.03,
+                hazard,
+            )
+        })
+        .collect::<Vec<_>>();
+    let weight_sum = weights.iter().sum::<f64>();
+    let expected_npv = references
+        .iter()
+        .zip(&weights)
+        .map(|((npv, _), weight)| npv * weight / weight_sum)
+        .sum::<f64>();
+    let expected_spread = references
+        .iter()
+        .zip(&weights)
+        .map(|((_, spread), weight)| spread * weight / weight_sum)
+        .sum::<f64>();
 
-    assert_relative_eq!(index_npv, manual, epsilon = 1e-12);
+    assert_relative_eq!(index_npv, expected_npv, epsilon = 2.0e-9);
+    assert_relative_eq!(index_spread, expected_spread, epsilon = 3.0e-15);
+    // Python Decimal, precision=80, independent midpoint cashflow sums.
+    assert_relative_eq!(index_npv, -17_022.726_352_288_623, epsilon = 2.0e-9);
+    assert_relative_eq!(index_spread, 0.013_901_783_400_369_618, epsilon = 3.0e-15);
 }
 
 // ===========================================================================

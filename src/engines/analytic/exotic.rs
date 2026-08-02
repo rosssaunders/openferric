@@ -87,11 +87,20 @@ fn bs_price_with_dividend(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 {
+    if expiry <= 0.0 {
         return match option_type {
             OptionType::Call => (spot - strike).max(0.0),
             OptionType::Put => (strike - spot).max(0.0),
         };
+    }
+
+    if vol <= 0.0 {
+        let terminal_spot = spot * ((rate - dividend_yield) * expiry).exp();
+        let payoff = match option_type {
+            OptionType::Call => (terminal_spot - strike).max(0.0),
+            OptionType::Put => (strike - terminal_spot).max(0.0),
+        };
+        return (-rate * expiry).exp() * payoff;
     }
 
     let sqrt_t = expiry.sqrt();
@@ -125,6 +134,29 @@ fn floating_lookback_price(spec: &LookbackFloatingOption, market: &Market, vol: 
 
     let q = market.effective_dividend_yield(spec.expiry);
     let b = market.rate - q;
+    if vol <= 0.0 {
+        let terminal_spot = market.spot * (b * spec.expiry).exp();
+        let discount = (-market.rate * spec.expiry).exp();
+        return match spec.option_type {
+            OptionType::Call => {
+                let running_min = spec
+                    .observed_extreme
+                    .unwrap_or(market.spot)
+                    .min(market.spot)
+                    .min(terminal_spot);
+                discount * (terminal_spot - running_min).max(0.0)
+            }
+            OptionType::Put => {
+                let running_max = spec
+                    .observed_extreme
+                    .unwrap_or(market.spot)
+                    .max(market.spot)
+                    .max(terminal_spot);
+                discount * (running_max - terminal_spot).max(0.0)
+            }
+        };
+    }
+
     match spec.option_type {
         OptionType::Call => {
             let s_min = spec
@@ -245,6 +277,29 @@ fn fixed_lookback_price(spec: &LookbackFixedOption, market: &Market, vol: f64) -
 
     let q = market.effective_dividend_yield(spec.expiry);
     let carry = market.rate - q;
+    if vol <= 0.0 {
+        let terminal_spot = market.spot * (carry * spec.expiry).exp();
+        let discount = (-market.rate * spec.expiry).exp();
+        return match spec.option_type {
+            OptionType::Call => {
+                let running_max = spec
+                    .observed_extreme
+                    .unwrap_or(market.spot)
+                    .max(market.spot)
+                    .max(terminal_spot);
+                discount * (running_max - spec.strike).max(0.0)
+            }
+            OptionType::Put => {
+                let running_min = spec
+                    .observed_extreme
+                    .unwrap_or(market.spot)
+                    .min(market.spot)
+                    .min(terminal_spot);
+                discount * (spec.strike - running_min).max(0.0)
+            }
+        };
+    }
+
     match spec.option_type {
         OptionType::Call => {
             let s_max = spec
@@ -386,6 +441,11 @@ fn fixed_lookback_put_formula(
 #[inline]
 fn chooser_price(spec: &ChooserOption, market: &Market, vol: f64) -> f64 {
     let q_expiry = market.effective_dividend_yield(spec.expiry);
+    if vol <= 0.0 && spec.expiry > 0.0 {
+        let terminal_spot = market.spot * ((market.rate - q_expiry) * spec.expiry).exp();
+        return (-market.rate * spec.expiry).exp() * (terminal_spot - spec.strike).abs();
+    }
+
     let call = bs_price_with_dividend(
         OptionType::Call,
         market.spot,
@@ -439,6 +499,15 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
     let q = market.effective_dividend_yield(spec.expiry);
     // Quanto drift adjustment under domestic measure: mu_adj = rf - q - rho * vol * fx_vol
     let mu_adj = (-spec.asset_fx_corr * spec.fx_vol).mul_add(vol, spec.foreign_rate - q);
+    if vol <= 0.0 {
+        let terminal_spot = market.spot * (mu_adj * spec.expiry).exp();
+        let payoff = match spec.option_type {
+            OptionType::Call => (terminal_spot - spec.strike).max(0.0),
+            OptionType::Put => (spec.strike - terminal_spot).max(0.0),
+        };
+        return spec.fx_rate * (-market.rate * spec.expiry).exp() * payoff;
+    }
+
     let sqrt_t = spec.expiry.sqrt();
     let sig_sqrt_t = vol * sqrt_t;
     let d1 = ((market.spot / spec.strike).ln() + (0.5 * vol).mul_add(vol, mu_adj) * spec.expiry)
@@ -486,6 +555,24 @@ fn compound_price(spec: &CompoundOption, market: &Market, vol: f64) -> Result<f6
     let tau = (t2 - t1).max(0.0);
     let q_t1 = market.effective_dividend_yield(t1.max(1.0e-12));
     let q_tau = market.effective_dividend_yield(tau.max(1.0e-12));
+    if vol <= 0.0 {
+        let s_t1 = market.spot * ((market.rate - q_t1) * t1).exp();
+        let inner = bs_price_with_dividend(
+            spec.underlying_option_type,
+            s_t1,
+            spec.underlying_strike,
+            market.rate,
+            q_tau,
+            vol,
+            tau,
+        );
+        let payoff = match spec.option_type {
+            OptionType::Call => (inner - spec.compound_strike).max(0.0),
+            OptionType::Put => (spec.compound_strike - inner).max(0.0),
+        };
+        return Ok((-market.rate * t1).exp() * payoff);
+    }
+
     // drift = (r - q - 0.5 * vol^2) * t1 via FMA
     let drift = (-0.5 * vol).mul_add(vol, market.rate - q_t1) * t1;
     let vol_t1 = vol * t1.sqrt();
@@ -652,6 +739,170 @@ mod tests {
                 .price;
             assert_relative_eq!(price, expected, epsilon = 5e-12);
         }
+    }
+
+    #[test]
+    fn zero_vol_exotics_equal_discounted_deterministic_cashflows() {
+        // The public Market contract currently rejects a zero volatility
+        // surface, so exercise the formula layer directly.  These limits also
+        // protect callers if the market contract is relaxed in the future.
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.04)
+            .dividend_yield(0.01)
+            .flat_vol(0.20)
+            .build()
+            .expect("valid test market");
+
+        let assert_cashflow = |label: &str, actual: f64, expected: f64| {
+            let tolerance = 64.0 * f64::EPSILON * actual.abs().max(expected.abs()).max(1.0);
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "{label}: actual={actual:.17e}, expected={expected:.17e}, tolerance={tolerance:.3e}"
+            );
+        };
+
+        let expiry = 2.0;
+        let terminal = market.spot * ((market.rate - market.dividend_yield) * expiry).exp();
+        let discount = (-market.rate * expiry).exp();
+
+        let floating_call = LookbackFloatingOption {
+            option_type: OptionType::Call,
+            expiry,
+            observed_extreme: Some(95.0),
+        };
+        assert_cashflow(
+            "floating lookback call",
+            floating_lookback_price(&floating_call, &market, 0.0),
+            discount * (terminal - 95.0),
+        );
+
+        let floating_put = LookbackFloatingOption {
+            option_type: OptionType::Put,
+            expiry,
+            observed_extreme: Some(110.0),
+        };
+        assert_cashflow(
+            "floating lookback put",
+            floating_lookback_price(&floating_put, &market, 0.0),
+            discount * (110.0 - terminal),
+        );
+
+        let fixed_call = LookbackFixedOption {
+            option_type: OptionType::Call,
+            strike: 102.0,
+            expiry,
+            observed_extreme: Some(104.0),
+        };
+        assert_cashflow(
+            "fixed lookback call",
+            fixed_lookback_price(&fixed_call, &market, 0.0),
+            discount * (terminal - 102.0),
+        );
+
+        let fixed_put = LookbackFixedOption {
+            option_type: OptionType::Put,
+            strike: 103.0,
+            expiry,
+            observed_extreme: Some(98.0),
+        };
+        assert_cashflow(
+            "fixed lookback put",
+            fixed_lookback_price(&fixed_put, &market, 0.0),
+            discount * (103.0 - 98.0),
+        );
+
+        let chooser = ChooserOption {
+            strike: 104.0,
+            expiry,
+            choose_time: 0.75,
+        };
+        assert_cashflow(
+            "chooser",
+            chooser_price(&chooser, &market, 0.0),
+            discount * (terminal - chooser.strike).abs(),
+        );
+
+        for option_type in [OptionType::Call, OptionType::Put] {
+            let quanto = QuantoOption {
+                option_type,
+                strike: 104.0,
+                expiry: 1.25,
+                fx_rate: 1.20,
+                foreign_rate: 0.025,
+                fx_vol: 0.18,
+                asset_fx_corr: -0.40,
+            };
+            let terminal =
+                market.spot * ((quanto.foreign_rate - market.dividend_yield) * quanto.expiry).exp();
+            let payoff = match option_type {
+                OptionType::Call => (terminal - quanto.strike).max(0.0),
+                OptionType::Put => (quanto.strike - terminal).max(0.0),
+            };
+            assert_cashflow(
+                "quanto",
+                quanto_price(&quanto, &market, 0.0),
+                quanto.fx_rate * (-market.rate * quanto.expiry).exp() * payoff,
+            );
+        }
+
+        for (outer_type, inner_type, mother_strike) in [
+            (OptionType::Call, OptionType::Call, 4.0),
+            (OptionType::Call, OptionType::Put, 4.0),
+            (OptionType::Put, OptionType::Call, 6.0),
+            (OptionType::Put, OptionType::Put, 6.0),
+        ] {
+            let compound = CompoundOption {
+                option_type: outer_type,
+                underlying_option_type: inner_type,
+                compound_strike: mother_strike,
+                underlying_strike: match inner_type {
+                    OptionType::Call => 100.0,
+                    OptionType::Put => 110.0,
+                },
+                compound_expiry: 0.5,
+                underlying_expiry: 1.5,
+            };
+            let s_t1 = market.spot
+                * ((market.rate - market.dividend_yield) * compound.compound_expiry).exp();
+            let tau = compound.underlying_expiry - compound.compound_expiry;
+            let s_t2 = s_t1 * ((market.rate - market.dividend_yield) * tau).exp();
+            let inner_payoff = match inner_type {
+                OptionType::Call => (s_t2 - compound.underlying_strike).max(0.0),
+                OptionType::Put => (compound.underlying_strike - s_t2).max(0.0),
+            };
+            let inner_at_t1 = (-market.rate * tau).exp() * inner_payoff;
+            let outer_payoff = match outer_type {
+                OptionType::Call => (inner_at_t1 - mother_strike).max(0.0),
+                OptionType::Put => (mother_strike - inner_at_t1).max(0.0),
+            };
+            assert_cashflow(
+                "compound",
+                compound_price(&compound, &market, 0.0).expect("deterministic compound price"),
+                (-market.rate * compound.compound_expiry).exp() * outer_payoff,
+            );
+        }
+
+        // With negative carry, the terminal point is the running minimum.
+        let negative_carry_market = Market::builder()
+            .spot(100.0)
+            .rate(0.01)
+            .dividend_yield(0.05)
+            .flat_vol(0.20)
+            .build()
+            .expect("valid test market");
+        let falling_terminal = 100.0 * (-0.04_f64 * expiry).exp();
+        let falling_fixed_put = LookbackFixedOption {
+            option_type: OptionType::Put,
+            strike: 103.0,
+            expiry,
+            observed_extreme: Some(98.0),
+        };
+        assert_cashflow(
+            "falling fixed lookback put",
+            fixed_lookback_price(&falling_fixed_put, &negative_carry_market, 0.0),
+            (-0.01_f64 * expiry).exp() * (103.0 - falling_terminal),
+        );
     }
 
     #[test]
