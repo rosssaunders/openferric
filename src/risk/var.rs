@@ -95,6 +95,7 @@ pub fn delta_normal_var(
     confidence: f64,
     horizon_days: f64,
 ) -> f64 {
+    assert!(delta.is_finite(), "delta must be finite");
     validate_params(confidence, annual_volatility, horizon_days);
     let z = normal_inv_cdf(confidence);
     let sigma_h = annual_volatility.abs() * (horizon_days / TRADING_DAYS_PER_YEAR).sqrt();
@@ -109,6 +110,8 @@ pub fn delta_gamma_normal_var(
     confidence: f64,
     horizon_days: f64,
 ) -> f64 {
+    assert!(delta.is_finite(), "delta must be finite");
+    assert!(gamma.is_finite(), "gamma must be finite");
     validate_params(confidence, annual_volatility, horizon_days);
 
     let z = normal_inv_cdf(confidence);
@@ -133,13 +136,14 @@ pub fn delta_gamma_normal_var(
 /// ```
 pub fn normal_expected_shortfall(mean_loss: f64, std_dev_loss: f64, confidence: f64) -> f64 {
     assert!(
-        (0.0..1.0).contains(&confidence),
+        confidence.is_finite() && confidence > 0.0 && confidence < 1.0,
         "confidence must be in (0,1)"
     );
     assert!(
         std_dev_loss.is_finite() && std_dev_loss >= 0.0,
         "std_dev_loss must be finite and >= 0"
     );
+    assert!(mean_loss.is_finite(), "mean_loss must be finite");
     let z = normal_inv_cdf(confidence);
     mean_loss + std_dev_loss * normal_pdf(z) / (1.0 - confidence)
 }
@@ -155,12 +159,18 @@ pub fn cornish_fisher_var(
     confidence: f64,
 ) -> f64 {
     assert!(
-        (0.0..1.0).contains(&confidence),
+        confidence.is_finite() && confidence > 0.0 && confidence < 1.0,
         "confidence must be in (0,1)"
     );
     assert!(
         std_dev_loss.is_finite() && std_dev_loss >= 0.0,
         "std_dev_loss must be finite and >= 0"
+    );
+    assert!(mean_loss.is_finite(), "mean_loss must be finite");
+    assert!(skewness.is_finite(), "skewness must be finite");
+    assert!(
+        excess_kurtosis.is_finite(),
+        "excess_kurtosis must be finite"
     );
 
     let z = normal_inv_cdf(confidence);
@@ -218,7 +228,7 @@ pub fn rolling_historical_var_from_prices(
     use_log_returns: bool,
 ) -> Vec<f64> {
     assert!(
-        (0.0..1.0).contains(&confidence),
+        confidence.is_finite() && confidence > 0.0 && confidence < 1.0,
         "confidence must be in (0,1)"
     );
     let returns = if use_log_returns {
@@ -254,7 +264,7 @@ pub fn backtest_historical_var_from_prices(
     use_log_returns: bool,
 ) -> VarBacktestResult {
     assert!(
-        (0.0..1.0).contains(&confidence),
+        confidence.is_finite() && confidence > 0.0 && confidence < 1.0,
         "confidence must be in (0,1)"
     );
     let returns = if use_log_returns {
@@ -276,14 +286,18 @@ pub fn backtest_historical_var_from_prices(
 fn validate_inputs(pnl: &[f64], confidence: f64) {
     assert!(!pnl.is_empty(), "pnl must not be empty");
     assert!(
-        (0.0..1.0).contains(&confidence),
+        pnl.iter().all(|value| value.is_finite()),
+        "pnl must contain only finite values"
+    );
+    assert!(
+        confidence.is_finite() && confidence > 0.0 && confidence < 1.0,
         "confidence must be in (0,1)"
     );
 }
 
 fn validate_params(confidence: f64, annual_volatility: f64, horizon_days: f64) {
     assert!(
-        (0.0..1.0).contains(&confidence),
+        confidence.is_finite() && confidence > 0.0 && confidence < 1.0,
         "confidence must be in (0,1)"
     );
     assert!(
@@ -461,5 +475,207 @@ mod tests {
 
         assert_eq!(forecasts.len(), prices.len() - 1 - window);
         assert_eq!(bt, expected);
+    }
+
+    #[test]
+    fn historical_tail_metrics_cover_singleton_interpolation_and_empty_tail() {
+        assert_eq!(historical_var(&[-7.5], 0.975), 7.5);
+
+        // Losses sort to [-1, 2, 3, 4]. At confidence 0.5, VaR is 2.5 and
+        // expected shortfall is the exact average of the two losses above it.
+        let pnl = [-4.0, -3.0, -2.0, 1.0];
+        assert_eq!(historical_var(&pnl, 0.5), 2.5);
+        assert_eq!(historical_expected_shortfall(&pnl, 0.5), 3.5);
+
+        // With an all-profit sample the non-negative VaR floor leaves no
+        // observations in the loss tail, so ES returns that zero floor.
+        let profits = [1.0, 2.0, 3.0];
+        assert_eq!(historical_var(&profits, 0.99), 0.0);
+        assert_eq!(historical_expected_shortfall(&profits, 0.99), 0.0);
+    }
+
+    #[test]
+    fn delta_gamma_var_reduces_to_delta_normal_and_has_exact_gamma_sign_shift() {
+        let delta_only = delta_gamma_normal_var(1.75, 0.0, 0.30, 0.99, 10.0);
+        assert_relative_eq!(
+            delta_only,
+            delta_normal_var(1.75, 0.30, 0.99, 10.0),
+            epsilon = 16.0 * f64::EPSILON
+        );
+        assert_relative_eq!(
+            delta_gamma_normal_var(-1.75, 0.0, 0.30, 0.99, 10.0),
+            delta_only,
+            epsilon = 16.0 * f64::EPSILON
+        );
+
+        let gamma = 2.0;
+        let annual_volatility = 0.30;
+        let horizon_days = 10.0;
+        let positive_gamma =
+            delta_gamma_normal_var(0.0, gamma, annual_volatility, 0.99, horizon_days);
+        let negative_gamma =
+            delta_gamma_normal_var(0.0, -gamma, annual_volatility, 0.99, horizon_days);
+        let sigma_squared = annual_volatility * annual_volatility * horizon_days / 252.0;
+        assert_relative_eq!(
+            negative_gamma - positive_gamma,
+            gamma * sigma_squared,
+            epsilon = 8.0 * f64::EPSILON
+        );
+
+        assert_eq!(delta_gamma_normal_var(0.0, 0.0, 0.20, 0.99, 1.0), 0.0);
+    }
+
+    #[test]
+    fn zero_dispersion_tail_formulas_and_sample_moment_paths_are_exact() {
+        assert_eq!(normal_expected_shortfall(3.25, 0.0, 0.975), 3.25);
+        assert_eq!(cornish_fisher_var(3.25, 0.0, 2.0, 5.0, 0.975), 3.25);
+
+        let constant_losses = [-2.0; 5];
+        assert_eq!(cornish_fisher_var_from_pnl(&constant_losses, 0.99), 2.0);
+        assert_eq!(cornish_fisher_var_from_pnl(&[2.0; 5], 0.99), 0.0);
+        assert_eq!(sample_moments(&[]), (0.0, 0.0, 0.0, 0.0));
+
+        // Population moments of [-2,-1,0,1,2] are mean=0, variance=2,
+        // skew=0 and excess kurtosis=-1.3.
+        let symmetric = [-2.0, -1.0, 0.0, 1.0, 2.0];
+        let moments = sample_moments(&symmetric);
+        assert_eq!(moments.0, 0.0);
+        assert_relative_eq!(moments.1, 2.0_f64.sqrt(), epsilon = f64::EPSILON);
+        assert_eq!(moments.2, 0.0);
+        assert_relative_eq!(moments.3, -1.3, epsilon = 2.0 * f64::EPSILON);
+        assert_relative_eq!(
+            cornish_fisher_var_from_pnl(&symmetric, 0.95),
+            cornish_fisher_var(0.0, 2.0_f64.sqrt(), 0.0, -1.3, 0.95),
+            epsilon = 16.0 * f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn price_series_wrappers_match_explicit_simple_and_log_return_samples() {
+        let prices = [100.0, 102.0, 99.0, 103.0, 101.0, 104.0, 100.0];
+        let simple = simple_returns(&prices);
+        let log = log_returns(&prices);
+
+        assert_eq!(
+            historical_var_from_prices(&prices, 0.80, false),
+            historical_var(&simple, 0.80)
+        );
+        assert_eq!(
+            historical_var_from_prices(&prices, 0.80, true),
+            historical_var(&log, 0.80)
+        );
+        assert_eq!(
+            historical_expected_shortfall_from_prices(&prices, 0.80, false),
+            historical_expected_shortfall(&simple, 0.80)
+        );
+        assert_eq!(
+            historical_expected_shortfall_from_prices(&prices, 0.80, true),
+            historical_expected_shortfall(&log, 0.80)
+        );
+    }
+
+    #[test]
+    fn rolling_forecasts_match_each_explicit_trailing_window_for_both_return_types() {
+        let prices = [
+            100.0, 102.0, 101.0, 104.0, 100.0, 105.0, 103.0, 107.0, 106.0,
+        ];
+        let window = 3;
+        let confidence = 0.75;
+
+        for use_log_returns in [false, true] {
+            let returns = if use_log_returns {
+                log_returns(&prices)
+            } else {
+                simple_returns(&prices)
+            };
+            let forecasts =
+                rolling_historical_var_from_prices(&prices, window, confidence, use_log_returns);
+            let expected = (window..returns.len())
+                .map(|i| historical_var(&returns[(i - window)..i], confidence))
+                .collect::<Vec<_>>();
+            assert_eq!(forecasts, expected);
+
+            let losses = returns[window..].iter().map(|r| -r).collect::<Vec<_>>();
+            assert_eq!(
+                backtest_historical_var_from_prices(&prices, window, confidence, use_log_returns,),
+                backtest_var(&losses, &expected, confidence)
+            );
+        }
+    }
+
+    #[test]
+    fn var_entry_points_reject_non_finite_and_shape_invalid_inputs() {
+        fn panics(f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
+            std::panic::catch_unwind(f).is_err()
+        }
+
+        assert!(panics(|| {
+            historical_var(&[], 0.95);
+        }));
+        assert!(panics(|| {
+            historical_var(&[0.0, f64::NAN], 0.95);
+        }));
+        assert!(panics(|| {
+            historical_expected_shortfall(&[0.0, f64::INFINITY], 0.95);
+        }));
+        for confidence in [0.0, 1.0, f64::NAN] {
+            assert!(panics(|| {
+                historical_var(&[0.0], confidence);
+            }));
+        }
+
+        for (delta, vol, confidence, horizon) in [
+            (f64::NAN, 0.2, 0.99, 1.0),
+            (1.0, f64::INFINITY, 0.99, 1.0),
+            (1.0, -0.2, 0.99, 1.0),
+            (1.0, 0.2, 1.0, 1.0),
+            (1.0, 0.2, 0.99, 0.0),
+            (1.0, 0.2, 0.99, f64::NAN),
+        ] {
+            assert!(panics(|| {
+                delta_normal_var(delta, vol, confidence, horizon);
+            }));
+        }
+        assert!(panics(|| {
+            delta_gamma_normal_var(1.0, f64::NAN, 0.2, 0.99, 1.0);
+        }));
+
+        for (mean, std_dev, confidence) in [
+            (f64::NAN, 1.0, 0.95),
+            (0.0, f64::INFINITY, 0.95),
+            (0.0, -1.0, 0.95),
+            (0.0, 1.0, f64::NAN),
+        ] {
+            assert!(panics(|| {
+                normal_expected_shortfall(mean, std_dev, confidence);
+            }));
+        }
+        for (mean, std_dev, skew, kurtosis, confidence) in [
+            (f64::INFINITY, 1.0, 0.0, 0.0, 0.95),
+            (0.0, -1.0, 0.0, 0.0, 0.95),
+            (0.0, 1.0, f64::NAN, 0.0, 0.95),
+            (0.0, 1.0, 0.0, f64::INFINITY, 0.95),
+            (0.0, 1.0, 0.0, 0.0, 1.0),
+        ] {
+            assert!(panics(|| {
+                cornish_fisher_var(mean, std_dev, skew, kurtosis, confidence);
+            }));
+        }
+
+        let prices = [100.0, 101.0, 102.0, 103.0];
+        for window in [1, prices.len() - 1] {
+            assert!(panics(|| {
+                rolling_historical_var_from_prices(&prices, window, 0.95, false);
+            }));
+            assert!(panics(|| {
+                backtest_historical_var_from_prices(&prices, window, 0.95, true);
+            }));
+        }
+        assert!(panics(|| {
+            rolling_historical_var_from_prices(&prices, 2, 0.0, false);
+        }));
+        assert!(panics(|| {
+            backtest_historical_var_from_prices(&prices, 2, 1.0, false);
+        }));
     }
 }
