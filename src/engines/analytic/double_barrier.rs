@@ -537,6 +537,17 @@ mod tests {
         );
     }
 
+    fn assert_binary64_reference(actual: f64, expected: f64, label: &str) {
+        // Transcendental implementations can differ by a last-place bit across
+        // targets. Keep the stored full-precision reference while
+        // allowing only binary64 evaluation-order roundoff, never a price range.
+        let roundoff = 2.0 * f64::EPSILON * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= roundoff,
+            "{label}: actual={actual:.17e}, expected={expected:.17e}, roundoff={roundoff:.3e}"
+        );
+    }
+
     #[test]
     fn double_knock_out_call_matches_haug_case_1() {
         let option = DoubleBarrierOption::new(
@@ -624,10 +635,11 @@ mod tests {
         let p1 = engine.price(&with_rebate, &market).unwrap().price;
         let rebate_component = p1 - p0;
 
-        assert_eq!(p1, 9.84266426875577, "20-term rebate price changed");
-        assert_eq!(
-            rebate_component, 9.842664268754929,
-            "20-term rebate component changed"
+        assert_binary64_reference(p1, 9.84266426875577, "20-term rebate price changed");
+        assert_binary64_reference(
+            rebate_component,
+            9.842664268754929,
+            "20-term rebate component changed",
         );
 
         let pay_at_expiry_cap = rebate * (-0.10_f64 * 5.0).exp();
