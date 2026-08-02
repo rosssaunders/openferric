@@ -2763,4 +2763,234 @@ mod tests {
         assert_eq!(first.price, third.price);
         assert_eq!(first.stderr, third.stderr);
     }
+
+    #[test]
+    fn arena_pricer_covers_guards_expiry_and_discrete_dividend_fallback() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let mut arena = PricingArena::with_capacity(32, 8);
+
+        let option = VanillaOption::european_call(100.0, 1.0);
+        assert!(
+            mc_european_with_arena(&option, &market, 0, 8, &mut arena)
+                .price
+                .is_nan()
+        );
+
+        let american = VanillaOption::american_call(100.0, 1.0);
+        assert!(
+            mc_european_with_arena(&american, &market, 32, 8, &mut arena)
+                .price
+                .is_nan()
+        );
+
+        let expired = VanillaOption::european_put(105.0, 0.0);
+        let expired_result = mc_european_with_arena(&expired, &market, 32, 8, &mut arena);
+        assert_eq!(expired_result.price, 5.0);
+        assert_eq!(expired_result.stderr, Some(0.0));
+
+        let schedule =
+            DividendSchedule::new(vec![DividendEvent::cash(0.5, 1.25).unwrap()]).unwrap();
+        let dividend_market = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .dividend_yield(0.0)
+            .dividend_schedule(schedule)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let arena_result = mc_european_with_arena(&option, &dividend_market, 257, 7, &mut arena);
+        let generic_result = MonteCarloPricingEngine::new(257, 7, ARENA_MC_SEED)
+            .price(&option, &dividend_market)
+            .unwrap();
+        assert_eq!(arena_result.price, generic_result.price);
+        assert_eq!(arena_result.stderr, generic_result.stderr);
+        assert_eq!(arena_result.diagnostics, generic_result.diagnostics);
+    }
+
+    #[test]
+    fn asian_path_semantics_cover_floating_strike_and_geometric_averages() {
+        let path = [100.0, 80.0, 120.0];
+        let observation_times = vec![0.0, 0.5, 1.0];
+
+        let floating_call = AsianOption::new(
+            OptionType::Call,
+            100.0,
+            1.0,
+            AsianSpec {
+                averaging: Averaging::Arithmetic,
+                strike_type: StrikeType::Floating,
+                observation_times: observation_times.clone(),
+            },
+        );
+        assert_eq!(floating_call.reference_strike(97.0), 97.0);
+        assert_eq!(floating_call.payoff_from_path(&path), 20.0);
+
+        let floating_put = AsianOption::new(
+            OptionType::Put,
+            100.0,
+            1.0,
+            AsianSpec {
+                averaging: Averaging::Geometric,
+                strike_type: StrikeType::Floating,
+                observation_times,
+            },
+        );
+        let geometric_average = ((100.0_f64.ln() + 80.0_f64.ln() + 120.0_f64.ln()) / 3.0).exp();
+        assert_eq!(floating_put.reference_strike(103.0), 103.0);
+        assert_eq!(floating_put.payoff_from_path(&path), 0.0);
+
+        let floating_geometric_call = AsianOption {
+            option_type: OptionType::Call,
+            ..floating_put.clone()
+        };
+        assert!(
+            (floating_geometric_call.payoff_from_path(&path) - (120.0 - geometric_average)).abs()
+                <= 4.0 * f64::EPSILON * 120.0
+        );
+        assert!(
+            floating_geometric_call
+                .control_variate(
+                    &Market::builder()
+                        .spot(100.0)
+                        .rate(0.03)
+                        .dividend_yield(0.0)
+                        .flat_vol(0.2)
+                        .build()
+                        .unwrap(),
+                    0.2,
+                )
+                .is_none()
+        );
+    }
+
+    fn arithmetic_asian_for_guard_tests(
+        averaging: Averaging,
+        strike_type: StrikeType,
+    ) -> AsianOption {
+        AsianOption::new(
+            OptionType::Call,
+            100.0,
+            1.0,
+            AsianSpec {
+                averaging,
+                strike_type,
+                observation_times: vec![0.5, 1.0],
+            },
+        )
+    }
+
+    #[test]
+    fn arithmetic_asian_engine_rejects_unsupported_contracts_and_empty_work() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.02)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let arithmetic_fixed =
+            arithmetic_asian_for_guard_tests(Averaging::Arithmetic, StrikeType::Fixed);
+        let geometric_fixed =
+            arithmetic_asian_for_guard_tests(Averaging::Geometric, StrikeType::Fixed);
+        let arithmetic_floating =
+            arithmetic_asian_for_guard_tests(Averaging::Arithmetic, StrikeType::Floating);
+
+        assert!(
+            ArithmeticAsianMC::new(32, 4, 1)
+                .price(&geometric_fixed, &market)
+                .unwrap_err()
+                .to_string()
+                .contains("Averaging::Arithmetic")
+        );
+        assert!(
+            ArithmeticAsianMC::new(32, 4, 1)
+                .price(&arithmetic_floating, &market)
+                .unwrap_err()
+                .to_string()
+                .contains("StrikeType::Fixed")
+        );
+        assert!(
+            ArithmeticAsianMC::new(0, 4, 1)
+                .price(&arithmetic_fixed, &market)
+                .is_err()
+        );
+        assert!(
+            ArithmeticAsianMC::new(32, 0, 1)
+                .price(&arithmetic_fixed, &market)
+                .is_err()
+        );
+
+        assert!(
+            MonteCarloPricingEngine::new(0, 4, 1)
+                .price(&VanillaOption::european_call(100.0, 1.0), &market)
+                .is_err()
+        );
+        assert!(
+            MonteCarloPricingEngine::new(32, 0, 1)
+                .price(&VanillaOption::european_call(100.0, 1.0), &market)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn arithmetic_asian_discrete_dividend_disables_control_variate_exactly() {
+        let schedule = DividendSchedule::new(vec![DividendEvent::cash(0.5, 2.0).unwrap()]).unwrap();
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.02)
+            .dividend_yield(0.0)
+            .dividend_schedule(schedule)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let option = arithmetic_asian_for_guard_tests(Averaging::Arithmetic, StrikeType::Fixed);
+        let with_requested_cv = ArithmeticAsianMC::new(512, 8, 77)
+            .with_control_variate(true)
+            .price(&option, &market)
+            .unwrap();
+        let without_cv = ArithmeticAsianMC::new(512, 8, 77)
+            .with_control_variate(false)
+            .price(&option, &market)
+            .unwrap();
+        assert_eq!(with_requested_cv.price, without_cv.price);
+        assert_eq!(with_requested_cv.stderr, without_cv.stderr);
+    }
+
+    #[test]
+    fn generic_engine_zero_maturity_and_configuration_accessors_are_exact() {
+        let market = Market::builder()
+            .spot(90.0)
+            .rate(0.02)
+            .dividend_yield(0.0)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let expired = VanillaOption::european_put(100.0, 0.0);
+        let result = MonteCarloPricingEngine::new(16, 4, 1)
+            .price(&expired, &market)
+            .unwrap();
+        assert_eq!(result.price, 10.0);
+        assert_eq!(result.stderr, Some(0.0));
+        assert_eq!(result.diagnostics.get("num_steps"), Some(&0.0));
+
+        let engine = MonteCarloPricingEngine::new(64, 8, 1)
+            .with_rng_kind(FastRngKind::Pcg64)
+            .with_randomized_streams()
+            .with_accuracy_tier(AccuracyTier::Fast)
+            .with_execution_policy(ExecutionPolicy::Scalar);
+        assert_eq!(engine.rng_kind(), FastRngKind::Pcg64);
+        assert!(!engine.is_reproducible());
+        assert_eq!(engine.effective_accuracy_tier(), AccuracyTier::Fast);
+        assert_eq!(
+            engine.resolve_execution_backend(&expired, &market).unwrap(),
+            ExecutionBackend::Scalar
+        );
+        assert!(engine.with_seed(99).is_reproducible());
+    }
 }

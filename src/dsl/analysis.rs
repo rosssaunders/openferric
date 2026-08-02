@@ -317,8 +317,10 @@ pub fn build_symbol_table(ast: &ProductDef, source: &str) -> SymbolTable {
         });
     }
 
-    // Walk AST items.
-    let mut schedule_index = 0usize;
+    // Collect product-scope declarations before walking any schedule. The
+    // compiler performs the same two-pass traversal, so a declaration remains
+    // visible regardless of whether its block appears before or after a
+    // schedule in the source.
     for item in &ast.body {
         match item {
             ProductItem::Underlyings(decls, _) => {
@@ -356,20 +358,35 @@ pub fn build_symbol_table(ast: &ProductDef, source: &str) -> SymbolTable {
                     });
                 }
             }
-            ProductItem::Schedule(sched) => {
-                let mut scope_decls = declarations.clone();
-                walk_statements(
-                    &sched.body,
-                    &mut scope_decls,
-                    &mut references,
-                    &mut declarations,
-                    SymbolScope::Schedule(schedule_index),
-                    source,
-                );
-                schedule_index += 1;
-            }
             _ => {}
         }
+    }
+
+    // Each schedule gets a fresh copy of the product scope. Locals are still
+    // retained in `declarations` for editor features, but must not leak into a
+    // later schedule.
+    for (schedule_index, sched) in ast
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            ProductItem::Schedule(sched) => Some(sched),
+            _ => None,
+        })
+        .enumerate()
+    {
+        let mut scope_decls = declarations
+            .iter()
+            .filter(|declaration| declaration.kind != SymbolKind::Local)
+            .cloned()
+            .collect();
+        walk_statements(
+            &sched.body,
+            &mut scope_decls,
+            &mut references,
+            &mut declarations,
+            SymbolScope::Schedule(schedule_index),
+            source,
+        );
     }
 
     SymbolTable {
@@ -530,7 +547,9 @@ fn determine_context(source: &str, offset: usize) -> Context {
     let before = &source[..floor_char_boundary(source, offset)];
 
     let line_start = before.rfind('\n').map_or(0, |nl| nl + 1);
-    let line = before[line_start..].trim();
+    // Preserve trailing whitespace: `set ` and `schedule ` are distinct
+    // completion contexts while the user is typing.
+    let line = before[line_start..].trim_start();
 
     if line.starts_with("set ") && !line.contains('=') {
         return Context::AfterSet;
@@ -1010,6 +1029,554 @@ mod tests {
 
     const UTF8_SOURCE: &str =
         "product \"Caf\u{e9} \u{2014} N\u{f8}te\"\n    notional: 100\n    maturity: 1.0\n";
+
+    const ANALYSIS_SOURCE: &str = "\
+product \"Analysis\"
+    notional: 100
+    maturity: 2.0
+    underlyings
+        SPX = equity(0)
+        EURUSD = fx(1)
+        WTI = commodity(2)
+        USD3M = rate(3)
+    state
+        active: bool = true
+        accrued: float = 0.0
+    schedule semi_annual from 0.5 to 2.0
+        let perf = SPX / 100
+        if not active or perf >= 1.0 then
+            pay max(perf, accrued) + price(1)
+            set active = false
+        else
+            redeem WTI * notional
+        skip
+";
+
+    fn analysis_symbols() -> SymbolTable {
+        let tokens = lexer::tokenize(ANALYSIS_SOURCE).expect("fixture should lex");
+        let ast = parser::parse(tokens).expect("fixture should parse");
+        build_symbol_table(&ast, ANALYSIS_SOURCE)
+    }
+
+    fn labels(items: &[CompletionCandidate]) -> Vec<&str> {
+        items.iter().map(|item| item.label.as_str()).collect()
+    }
+
+    fn nth_offset(source: &str, needle: &str, occurrence: usize) -> usize {
+        source
+            .match_indices(needle)
+            .nth(occurrence)
+            .unwrap_or_else(|| panic!("missing occurrence {occurrence} of {needle:?}"))
+            .0
+    }
+
+    fn decoded_semantic_tokens(source: &str, symbols: &SymbolTable) -> Vec<(String, u32, u32)> {
+        let mut line = 0u32;
+        let mut col = 0u32;
+        semantic_token_data(source, symbols)
+            .into_iter()
+            .map(|token| {
+                line += token.delta_line;
+                if token.delta_line == 0 {
+                    col += token.delta_start;
+                } else {
+                    col = token.delta_start;
+                }
+                let start = line_col_to_offset(source, line, col);
+                let end = start + token.length as usize;
+                assert!(source.is_char_boundary(end));
+                assert_eq!(token.modifiers, 0);
+                (source[start..end].to_string(), token.token_type, line)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn symbol_table_records_declarations_references_and_asset_metadata() {
+        let symbols = analysis_symbols();
+
+        // Four constants, nine functions, four underlyings, two state
+        // variables and one local declaration.
+        assert_eq!(symbols.declarations.len(), 20);
+        for (name, kind, type_hint, doc) in [
+            ("SPX", SymbolKind::Underlying, "float", "Underlying equity"),
+            (
+                "EURUSD",
+                SymbolKind::Underlying,
+                "float",
+                "Underlying FX pair",
+            ),
+            (
+                "WTI",
+                SymbolKind::Underlying,
+                "float",
+                "Underlying commodity",
+            ),
+            (
+                "USD3M",
+                SymbolKind::Underlying,
+                "float",
+                "Underlying interest rate",
+            ),
+            (
+                "active",
+                SymbolKind::StateVar,
+                "bool",
+                "State variable (mutable across dates)",
+            ),
+            (
+                "accrued",
+                SymbolKind::StateVar,
+                "float",
+                "State variable (mutable across dates)",
+            ),
+            ("perf", SymbolKind::Local, "float", "Local variable"),
+        ] {
+            let declaration = symbols
+                .declarations
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing declaration {name}"));
+            assert_eq!(declaration.kind, kind);
+            assert_eq!(declaration.type_hint, type_hint);
+            assert_eq!(declaration.doc, doc);
+        }
+
+        let referenced_names: Vec<_> = symbols
+            .references
+            .iter()
+            .map(|reference| reference.name.as_str())
+            .collect();
+        for expected in [
+            "SPX", "active", "perf", "max", "accrued", "price", "WTI", "notional",
+        ] {
+            assert!(
+                referenced_names.contains(&expected),
+                "missing reference {expected}: {referenced_names:?}"
+            );
+        }
+
+        let set_active = symbols
+            .references
+            .iter()
+            .find(|reference| {
+                reference.name == "active"
+                    && &ANALYSIS_SOURCE[reference.span.start..reference.span.end] == "active"
+                    && ANALYSIS_SOURCE[..reference.span.start].ends_with("set ")
+            })
+            .expect("set target should be recorded as a reference");
+        assert_eq!(set_active.kind, SymbolKind::StateVar);
+        assert_eq!(
+            &ANALYSIS_SOURCE[set_active.def_span.start..set_active.def_span.start + 6],
+            "active"
+        );
+
+        assert!(symbols.declaration_at(usize::MAX).is_none());
+        assert!(symbols.reference_at(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn branch_and_schedule_locals_do_not_leak_into_sibling_scopes() {
+        let source = "\
+product \"Scopes\"
+    notional: 100
+    maturity: 2.0
+    schedule annual from 1.0 to 1.0
+        if is_final then
+            let branch_only = 1.0
+            pay branch_only
+        else
+            pay branch_only
+        pay branch_only
+    schedule annual from 2.0 to 2.0
+        pay branch_only
+";
+        let ast = parser::parse(lexer::tokenize(source).unwrap()).unwrap();
+        let symbols = build_symbol_table(&ast, source);
+
+        assert_eq!(
+            symbols
+                .declarations
+                .iter()
+                .filter(|declaration| declaration.name == "branch_only")
+                .count(),
+            1
+        );
+        let branch_references: Vec<_> = symbols
+            .references
+            .iter()
+            .filter(|reference| reference.name == "branch_only")
+            .collect();
+        assert_eq!(branch_references.len(), 1);
+        assert_eq!(
+            branch_references[0].span.start,
+            nth_offset(source, "branch_only", 1)
+        );
+        assert_eq!(
+            branch_references[0].def_span.start,
+            source.find("let branch_only").unwrap()
+        );
+    }
+
+    #[test]
+    fn product_declarations_after_schedule_resolve_forward_references() {
+        let source = "\
+product \"Forward declarations\"
+    notional: 100
+    maturity: 1.0
+    schedule annual from 1.0 to 1.0
+        let performance = SPX / 100
+        if active then
+            pay performance
+            set active = false
+    underlyings
+        SPX = equity(0)
+    state
+        active: bool = true
+";
+        let ast = parser::parse(lexer::tokenize(source).unwrap()).unwrap();
+        let symbols = build_symbol_table(&ast, source);
+
+        for name in ["SPX", "active"] {
+            let declaration = symbols
+                .declarations
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing declaration {name}"));
+            let references: Vec<_> = symbols
+                .references
+                .iter()
+                .filter(|reference| reference.name == name)
+                .collect();
+            assert!(!references.is_empty(), "missing reference {name}");
+            assert!(
+                references
+                    .iter()
+                    .all(|reference| reference.def_span == declaration.def_span)
+            );
+            assert!(references[0].span.start < declaration.def_span.start);
+        }
+    }
+
+    #[test]
+    fn completions_cover_every_editor_context() {
+        let symbols = analysis_symbols();
+
+        let top_level = completions("", &symbols, 0);
+        assert_eq!(
+            labels(&top_level),
+            ["notional:", "maturity:", "underlyings", "state", "schedule"]
+        );
+        assert!(
+            top_level
+                .iter()
+                .all(|item| item.kind == CompletionCandidateKind::Keyword)
+        );
+
+        let after_schedule_source = "schedule ";
+        let frequencies = completions(after_schedule_source, &symbols, after_schedule_source.len());
+        assert_eq!(
+            labels(&frequencies),
+            ["monthly", "quarterly", "semi_annual", "annual"]
+        );
+        assert!(
+            frequencies
+                .iter()
+                .all(|item| item.kind == CompletionCandidateKind::EnumMember)
+        );
+
+        let statement_source = "schedule annual from 1.0 to 1.0\n        ";
+        assert_eq!(
+            labels(&completions(
+                statement_source,
+                &symbols,
+                statement_source.len()
+            )),
+            ["let", "if", "pay", "redeem", "set", "skip"]
+        );
+
+        let set_source = "schedule annual from 1.0 to 1.0\n        set ";
+        let state_items = completions(set_source, &symbols, set_source.len());
+        assert_eq!(labels(&state_items), ["active", "accrued"]);
+        assert!(state_items.iter().all(|item| {
+            item.kind == CompletionCandidateKind::Variable
+                && item.detail.is_some()
+                && item.documentation.is_none()
+        }));
+
+        let type_source = "state\n    active:";
+        assert_eq!(
+            labels(&completions(type_source, &symbols, type_source.len())),
+            ["bool", "float"]
+        );
+
+        let expression_source = "schedule annual from 1.0 to 1.0\n        active +";
+        let expression_items =
+            completions(expression_source, &symbols, expression_source.len() + 100);
+        for (label, kind) in [
+            ("SPX", CompletionCandidateKind::Variable),
+            ("active", CompletionCandidateKind::Variable),
+            ("perf", CompletionCandidateKind::Variable),
+            ("notional", CompletionCandidateKind::Constant),
+            ("worst_of", CompletionCandidateKind::Function),
+        ] {
+            let item = expression_items
+                .iter()
+                .find(|item| item.label == label)
+                .unwrap_or_else(|| panic!("missing expression completion {label}"));
+            assert_eq!(item.kind, kind);
+            assert!(item.detail.is_some());
+            assert!(item.documentation.is_some());
+        }
+    }
+
+    #[test]
+    fn hover_and_goto_definition_resolve_each_symbol_kind() {
+        let symbols = analysis_symbols();
+
+        let spx_reference = nth_offset(ANALYSIS_SOURCE, "SPX", 1);
+        let spx_hover = hover_info(ANALYSIS_SOURCE, &symbols, spx_reference).unwrap();
+        assert_eq!(spx_hover.markdown, "`SPX: float` — underlying equity");
+        assert_eq!(
+            goto_definition(ANALYSIS_SOURCE, &symbols, spx_reference),
+            Some(Span::new(
+                nth_offset(ANALYSIS_SOURCE, "SPX", 0),
+                nth_offset(ANALYSIS_SOURCE, "SPX", 0) + "SPX = equity(0".len()
+            ))
+        );
+
+        let state_reference = nth_offset(ANALYSIS_SOURCE, "active", 1);
+        assert!(
+            hover_info(ANALYSIS_SOURCE, &symbols, state_reference)
+                .unwrap()
+                .markdown
+                .contains("state variable")
+        );
+        assert_eq!(
+            goto_definition(ANALYSIS_SOURCE, &symbols, state_reference)
+                .unwrap()
+                .start,
+            nth_offset(ANALYSIS_SOURCE, "active", 0)
+        );
+
+        let local_reference = nth_offset(ANALYSIS_SOURCE, "perf", 1);
+        assert!(
+            hover_info(ANALYSIS_SOURCE, &symbols, local_reference)
+                .unwrap()
+                .markdown
+                .contains("local variable")
+        );
+        assert_eq!(
+            goto_definition(ANALYSIS_SOURCE, &symbols, local_reference)
+                .unwrap()
+                .start,
+            ANALYSIS_SOURCE.find("let perf").unwrap()
+        );
+
+        let function_reference = nth_offset(ANALYSIS_SOURCE, "max", 0);
+        let function_hover = hover_info(ANALYSIS_SOURCE, &symbols, function_reference).unwrap();
+        assert_eq!(
+            function_hover.markdown,
+            "`max(a: float, b: float) -> float` — Maximum of two values"
+        );
+        assert!(goto_definition(ANALYSIS_SOURCE, &symbols, function_reference).is_none());
+
+        let builtin_reference = ANALYSIS_SOURCE.rfind("notional").unwrap();
+        assert!(
+            hover_info(ANALYSIS_SOURCE, &symbols, builtin_reference)
+                .unwrap()
+                .markdown
+                .contains("built-in")
+        );
+        assert!(goto_definition(ANALYSIS_SOURCE, &symbols, builtin_reference).is_none());
+
+        let declaration_offset = nth_offset(ANALYSIS_SOURCE, "accrued", 0);
+        let declaration_hover = hover_info(ANALYSIS_SOURCE, &symbols, declaration_offset).unwrap();
+        assert_eq!(declaration_hover.start, declaration_offset);
+        assert!(declaration_hover.markdown.contains("accrued: float"));
+
+        assert!(hover_info(ANALYSIS_SOURCE, &symbols, ANALYSIS_SOURCE.len()).is_none());
+        assert!(goto_definition(ANALYSIS_SOURCE, &symbols, 0).is_none());
+    }
+
+    #[test]
+    fn keyword_hover_documents_all_language_keywords() {
+        for (word, expected) in [
+            ("product", "structured product"),
+            ("notional", "face value"),
+            ("maturity", "year fractions"),
+            ("underlyings", "underlying assets"),
+            ("state", "persist across observation dates"),
+            ("schedule", "observation schedule"),
+            ("let", "local variable"),
+            ("if", "Conditional branch"),
+            ("then", "conditional branch"),
+            ("else", "Alternative branch"),
+            ("pay", "cashflow payment"),
+            ("redeem", "terminate the product"),
+            ("set", "state variable"),
+            ("skip", "without payment"),
+            ("and", "AND"),
+            ("or", "OR"),
+            ("not", "NOT"),
+            ("from", "start date"),
+            ("to", "end date"),
+            ("monthly", "every month"),
+            ("quarterly", "every quarter"),
+            ("semi_annual", "every 6 months"),
+            ("annual", "every year"),
+            ("true", "Boolean literal"),
+            ("false", "Boolean literal"),
+            ("bool", "Boolean type"),
+            ("float", "Floating-point"),
+            ("asset", "underlying by index"),
+            ("equity", "Equity underlying"),
+            ("fx", "FX pair"),
+            ("commodity", "Commodity underlying"),
+            ("rate", "Interest rate underlying"),
+        ] {
+            let hover = keyword_hover(word, word.len() / 2).unwrap();
+            assert_eq!(hover.start, 0);
+            assert_eq!(hover.end, word.len());
+            assert!(
+                hover.markdown.contains(expected),
+                "{word:?} hover was {:?}",
+                hover.markdown
+            );
+        }
+
+        assert!(keyword_hover("unknown", 2).is_none());
+        assert!(keyword_hover(" ", 0).is_none());
+        assert!(keyword_hover("product", 100).is_none());
+    }
+
+    #[test]
+    fn semantic_tokens_classify_and_delta_encode_source_tokens() {
+        let symbols = analysis_symbols();
+        let decoded = decoded_semantic_tokens(ANALYSIS_SOURCE, &symbols);
+
+        for (text, token_type) in [
+            ("product", TOKEN_KEYWORD),
+            ("\"Analysis\"", TOKEN_STRING),
+            ("100", TOKEN_NUMBER),
+            ("semi_annual", TOKEN_ENUM_MEMBER),
+            ("SPX", TOKEN_VARIABLE),
+            ("max", TOKEN_FUNCTION),
+            ("not", TOKEN_OPERATOR),
+            (">=", TOKEN_OPERATOR),
+            ("+", TOKEN_OPERATOR),
+        ] {
+            assert!(
+                decoded
+                    .iter()
+                    .any(|(actual, actual_type, _)| actual == text && *actual_type == token_type),
+                "missing semantic token ({text:?}, {token_type}); decoded={decoded:?}"
+            );
+        }
+
+        assert!(decoded.windows(2).all(|pair| pair[0].2 <= pair[1].2));
+        assert!(
+            !decoded
+                .iter()
+                .any(|(text, _, _)| matches!(text.as_str(), "(" | ")" | ":" | ","))
+        );
+        assert!(semantic_token_data("product \"unterminated", &symbols).is_empty());
+    }
+
+    #[test]
+    fn parse_and_diagnose_maps_lex_parse_and_compile_errors_to_source_spans() {
+        let lex_source = "product \"Bad\"\n    notional: @\n";
+        let (ast, product, diagnostics) = parse_and_diagnose(lex_source);
+        assert!(ast.is_none());
+        assert!(product.is_none());
+        assert_eq!(diagnostics.len(), 1);
+        let at = lex_source.find('@').unwrap();
+        assert_eq!((diagnostics[0].start, diagnostics[0].end), (at, at + 1));
+        assert!(diagnostics[0].message.contains("unexpected character"));
+
+        let parse_source = "product \"Bad\"\n    pay 1\n";
+        let (ast, product, diagnostics) = parse_and_diagnose(parse_source);
+        assert!(ast.is_none());
+        assert!(product.is_none());
+        let pay = parse_source.find("pay").unwrap();
+        assert_eq!((diagnostics[0].start, diagnostics[0].end), (pay, pay + 3));
+        assert!(diagnostics[0].message.contains("unexpected token"));
+
+        let compile_source = "\
+product \"Bad\"
+    notional: 100
+    maturity: 1.0
+    schedule annual from 1.0 to 1.0
+        pay undefined_value
+";
+        let (ast, product, diagnostics) = parse_and_diagnose(compile_source);
+        assert!(ast.is_some());
+        assert!(product.is_none());
+        let undefined = compile_source.find("undefined_value").unwrap();
+        assert_eq!(
+            (diagnostics[0].start, diagnostics[0].end),
+            (undefined, undefined + "undefined_value".len())
+        );
+        assert!(diagnostics[0].message.contains("undefined variable"));
+
+        let missing_notional = "product \"Bad\"\n    maturity: 1.0\n";
+        let (ast, product, diagnostics) = parse_and_diagnose(missing_notional);
+        assert!(ast.is_some());
+        assert!(product.is_none());
+        assert_eq!((diagnostics[0].start, diagnostics[0].end), (0, 1));
+        assert_eq!(diagnostics[0].message, "missing notional declaration");
+
+        let eval = error_to_diagnostic(&DslError::EvalError("path failed".into()));
+        assert_eq!(eval.severity, DiagnosticSeverity::Error);
+        assert_eq!((eval.start, eval.end), (0, 1));
+        assert_eq!(eval.message, "path failed");
+    }
+
+    #[test]
+    fn analysis_helpers_handle_unknown_types_unresolved_targets_and_empty_scopes() {
+        let source = "\
+product \"Partial\"
+    notional: 100
+    state
+        custom: decimal = 0.0
+    schedule annual from 1.0 to 1.0
+        set missing = custom
+";
+        let ast = parser::parse(lexer::tokenize(source).unwrap()).unwrap();
+        assert!(lint_warnings(&ast).is_empty());
+        let symbols = build_symbol_table(&ast, source);
+
+        let custom = symbols
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == "custom")
+            .unwrap();
+        assert_eq!(custom.type_hint, "unknown");
+        assert!(
+            symbols
+                .references
+                .iter()
+                .all(|reference| reference.name != "missing")
+        );
+
+        assert!(!is_in_state_block("ordinary text"));
+        assert!(!is_in_schedule_body("ordinary text"));
+        assert!(line_is_statement_start("pay 1.0"));
+        assert!(!line_is_statement_start("custom +"));
+
+        let synthetic = SymbolTable {
+            declarations: vec![],
+            references: vec![SymbolRef {
+                name: "synthetic".into(),
+                span: Span::new(0, 9),
+                def_span: Span::new(0, 0),
+                kind: SymbolKind::Underlying,
+                type_hint: "float",
+                doc: "Synthetic test symbol",
+            }],
+        };
+        assert!(goto_definition("synthetic", &synthetic, 1).is_none());
+    }
 
     #[test]
     fn line_col_to_offset_clamps_to_char_boundary() {

@@ -176,3 +176,127 @@ impl Instrument for RealOptionInstrument {
         "RealOption"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model() -> RealOptionBinomialSpec {
+        RealOptionBinomialSpec {
+            project_value: 120.0,
+            volatility: 0.3,
+            risk_free_rate: 0.05,
+            maturity: 2.0,
+            steps: 200,
+            cash_flows: vec![DiscreteCashFlow {
+                time: 1.0,
+                amount: 4.0,
+            }],
+        }
+    }
+
+    #[test]
+    fn real_option_enum_dispatches_validation_and_instrument_type() {
+        let options = [
+            RealOptionInstrument::Defer(DeferInvestmentOption {
+                model: model(),
+                investment_cost: 100.0,
+            }),
+            RealOptionInstrument::Expand(ExpandOption {
+                model: model(),
+                expansion_multiplier: 1.5,
+                expansion_cost: 25.0,
+            }),
+            RealOptionInstrument::Abandon(AbandonmentOption {
+                model: model(),
+                salvage_value: 70.0,
+            }),
+        ];
+        for option in options {
+            assert!(option.validate().is_ok());
+            assert_eq!(option.instrument_type(), "RealOption");
+        }
+    }
+
+    #[test]
+    fn binomial_spec_rejects_each_invalid_field() {
+        let base = model();
+        let invalid = [
+            RealOptionBinomialSpec {
+                project_value: 0.0,
+                ..base.clone()
+            },
+            RealOptionBinomialSpec {
+                volatility: -0.1,
+                ..base.clone()
+            },
+            RealOptionBinomialSpec {
+                risk_free_rate: f64::NAN,
+                ..base.clone()
+            },
+            RealOptionBinomialSpec {
+                maturity: 0.0,
+                ..base.clone()
+            },
+            RealOptionBinomialSpec {
+                steps: 0,
+                ..base.clone()
+            },
+            RealOptionBinomialSpec {
+                cash_flows: vec![DiscreteCashFlow {
+                    time: -0.1,
+                    amount: 1.0,
+                }],
+                ..base.clone()
+            },
+            RealOptionBinomialSpec {
+                cash_flows: vec![DiscreteCashFlow {
+                    time: 0.5,
+                    amount: f64::INFINITY,
+                }],
+                ..base
+            },
+        ];
+        for spec in invalid {
+            assert!(spec.validate().is_err(), "unexpectedly valid: {spec:?}");
+        }
+    }
+
+    #[test]
+    fn real_option_specific_terms_are_validated() {
+        assert!(
+            DeferInvestmentOption {
+                model: model(),
+                investment_cost: 0.0,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ExpandOption {
+                model: model(),
+                expansion_multiplier: 0.0,
+                expansion_cost: 20.0,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ExpandOption {
+                model: model(),
+                expansion_multiplier: 1.5,
+                expansion_cost: 0.0,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            AbandonmentOption {
+                model: model(),
+                salvage_value: f64::NAN,
+            }
+            .validate()
+            .is_err()
+        );
+    }
+}
