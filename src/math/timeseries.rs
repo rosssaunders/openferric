@@ -1501,16 +1501,25 @@ mod tests {
     }
 
     #[test]
-    fn acf_and_pacf_match_ar1_behavior() {
+    fn acf_and_pacf_match_ar1_within_bartlett_error_bands() {
         let phi = 0.7;
-        let s = ar1_series(phi, 8000, 321);
+        let n = 8000;
+        let s = ar1_series(phi, n, 321);
         let acf = autocorrelation(&s, 5);
         let pacf = partial_autocorrelation(&s, 5);
 
-        assert!((acf[1] - phi).abs() < 0.05);
-        assert!((pacf[1] - phi).abs() < 0.05);
-        assert!(pacf[2].abs() < 0.10);
-        assert!(pacf[3].abs() < 0.10);
+        // For a stationary Gaussian AR(1), the lag-one estimator has
+        // asymptotic SE sqrt((1-phi^2)/n).  ACF/PACF estimators also carry an
+        // O(1/n) finite-sample bias, negligible beside this four-SE band.
+        let lag_one_band = 4.0 * ((1.0 - phi * phi) / n as f64).sqrt();
+        assert!((acf[1] - phi).abs() < lag_one_band);
+        assert!((pacf[1] - phi).abs() < lag_one_band);
+
+        // The population PACF is zero beyond lag one; Bartlett's white-noise
+        // approximation gives SE 1/sqrt(n) for those coefficients.
+        let zero_pacf_band = 4.0 / (n as f64).sqrt();
+        assert!(pacf[2].abs() < zero_pacf_band);
+        assert!(pacf[3].abs() < zero_pacf_band);
     }
 
     #[test]

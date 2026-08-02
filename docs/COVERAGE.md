@@ -23,11 +23,12 @@ Here, "exact" means the target price is exact for the stated contract and model.
 Stochastic and discretized methods necessarily compare to that target with an
 explicit statistical or numerical error budget rather than bitwise equality.
 
-Reference values in this audit were regenerated with
+Reference values in this audit were regenerated with Python 3.11.15,
 [QuantLib-Python 1.43](https://pypi.org/project/QuantLib/) and
 [SciPy 1.17.1](https://docs.scipy.org/doc/scipy/reference/), with
 [NumPy 2.4.3 Gauss-Hermite nodes](https://numpy.org/doc/stable/reference/generated/numpy.polynomial.hermite.hermgauss.html)
-for Gaussian-factor integration. Each cached value is accompanied by its
+for Gaussian-factor integration and mpmath 1.4.1 for selected high-precision
+closed-form cross-checks. Each cached value is accompanied by its
 contract/model parameters;
 SciPy Sobol references additionally record replicate counts and reference
 standard errors. Correlated first-to-default is also checked against
@@ -37,6 +38,8 @@ in the test. Lévy-process FFT values use the open-source
 [fypy Carr-Madan implementation](https://github.com/jkirkby3/fypy), and product
 grids are cross-checked against the upstream
 [QuantLib test suite](https://github.com/lballabio/QuantLib/tree/master/test-suite).
+`vendor/QuantLib` is citation-only: CI and local tests consume the committed
+literals and never build, import, or read that submodule at runtime.
 Four-decimal Haug book values are retained only as provenance checks within half
 of their last printed digit; every such product also has a full-precision formula,
 package value, or stated finite-grid regression target.
@@ -47,15 +50,21 @@ package value, or stated finite-grid regression target.
 |---|---|---|
 | Vanilla equity, Greeks, FX, Black-76, Bachelier | `strata_black_scholes`, `european_quantlib`, `quantlib_reference`, Python/WASM pricing tests | Strata/QuantLib grids and closed forms |
 | Barriers, digitals, lookbacks, compound, chooser, quanto, rainbow, spreads | `barrier_quantlib`, `strata_barrier`, `digital_reference`, `exotic_reference`, `equity_exotics_exact_reference`, `haug_rainbow_spread` | QuantLib/Haug grids and independent SciPy formulas |
-| Asian, basket, autocall, range accrual, TARF, swing, convertible, real options, structured notes | `asian_quantlib`, `equity_exotics_exact_reference`, `audit_convertible`, DSL tests and focused structured-note/swing/real-option tests | QuantLib/SciPy Sobol values, including full stochastic path Greeks; Black-Scholes reductions, exact discounted cashflows, independent Decimal CRR and separately implemented full-slice Hull-White recurrences |
+| Asian, basket, autocall, range accrual, TARF and convertible products | `asian_quantlib`, `equity_exotics_exact_reference`, `audit_convertible`, DSL tests and focused product tests | QuantLib/formula values, exact discounted cashflows and independently scrambled SciPy Sobol prices/Greeks/termination statistics with combined sampling error |
+| Employee stock options and real options | `instruments::employee_stock_option`, `hjm_adjustments_test` and focused `pricing::real_option` tests | Independent 80-digit Decimal CRR recurrences on the stated finite grids, plus analytic reductions and deterministic exercise cases |
+| Swing options | `engines::tree::swing` tests | Black-Scholes strip reduction and QuantLib-Python 1.43 `FdSimpleBSSwingEngine` values with tree convergence; `min_exercises=2` has supplemental state-path coverage but is non-binding for the nonnegative payoff |
+| Structured notes | focused `instruments::structured_notes` tests | Exact deterministic discounted cashflows and a separately written in-repo full-slice Hull-White recurrence; no independent external callable-note price is claimed |
 | American/Bermudan, binomial/trinomial, PDE, LSM | `american_approx_reference`, `bermudan_quantlib`, `hull_white_tree_reference`, `pde_solvers_issue35`, `lsm_reference`, `cross_engine_consistency`, tree module tests | QuantLib, Black-Scholes/CRR, published approximations, Jamshidian's closed form, an independent continuous-state Hull-White Gaussian program, and a local-vol log-price trinomial chain |
-| FFT/FRFT, Heston, VG, CGMY, NIG | `fang_oosterlee_heston`, `fft_levy_reference`, `heston_quantlib`, `variance_gamma_model_quantlib`, Python/WASM FFT tests | QuantLib, fypy, Lewis and Fang-Oosterlee values |
+| FFT/FRFT, Heston, VG, CGMY, NIG | `fang_oosterlee_heston`, `fft_levy_reference`, `heston_quantlib`, `variance_gamma_model_quantlib`, `models::cgmy`, Python/WASM FFT tests | QuantLib, fypy and Fang-Oosterlee values; independent NumPy high-resolution Carr-Madan grids cross-checked by SciPy Lewis integrals |
 | SABR, SVI, Heston, Hull-White and mixture calibration | focused calibration/model tests and Python/WASM vol tests | Exact synthetic quote repricing, identifiable parameter recovery, and solver-conditioned error budgets |
-| MC, QMC, SIMD/parallel MC, AAD, rough volatility and SLV | `cross_engine_consistency` and focused engine/model tests | Closed-form BSM/Margrabe/moment targets, non-flat SLV surface repricing, two-step conditional-Gaussian and eight-step SciPy/NumPy Sobol rough-Bergomi grids, all with reported sampling/calibration error |
-| Bonds, curves, FRA, swaps, OIS/basis, caps/floors, swaptions, XCCY, inflation, CMS | `rates_*`, `strata_bond_reference` and focused rates module tests | QuantLib/Strata values, exact discounted cashflows, Black-76 reductions, SciPy conditional-lognormal quadrature and QuantLib spread-basket QMC |
+| MC, QMC, SIMD/parallel MC, AAD, rough volatility, SLV and LMM | `cross_engine_consistency`, `models::lmm` and focused engine/model tests | Closed-form BSM/Margrabe/Black-76/moment targets, non-flat SLV repricing and independent SciPy/NumPy Sobol rough-Bergomi and correlated multi-forward LMM grids with reported sampling/calibration error |
+| GPU Monte Carlo | `engines::gpu::gpu_mc` tests | CPU-side reduction/layout/shader invariants always run; Black-Scholes and deterministic-payoff price locks run only when a WebGPU adapter is available and otherwise report an explicit skip |
+| Bonds, curves, FRA, swaps, OIS/basis, caps/floors, swaptions, XCCY, inflation, CMS | `rates_*`, `rates_capfloor_quantlib`, `strata_bond_reference` and focused rates module tests | QuantLib/Strata values, exact discounted cashflows, QuantLib Black cap/floor and optionlet NPVs, Black-76 reductions, SciPy conditional-lognormal quadrature and QuantLib spread-basket QMC |
 | CDS, CDS options/index, ISDA, copulas, first/nth default, CDO | `credit_isda_quantlib`, `credit_quantlib_cds_test`, `cdo_heterogeneous_reference` and focused credit module tests | QuantLib and FinancePy values, exact survival cashflows, SciPy quadrature, direct finite-pool Bernoulli enumeration and distribution formulas |
-| Commodity, weather, catastrophe bonds, MBS/PSA and funding swaps | `commodity_reference`, `commodity_weather_test` and focused instrument tests | Black-76/Kirk, exact Poisson/cashflow calculations, SIFMA PSA formulas, and OTS refinancing-incentive coefficients/seasonality with full cashflow paths independently evaluated using Decimal arithmetic under the library's gross-WAC convention |
-| VaR/ES, XVA, KVA/FVA/MVA, margin/liquidation and portfolio sensitivities | `var_es_reference` and focused risk module tests | Exact empirical order statistics, Gaussian formulas, discounted exposure/capital cashflows, closed-form margin rules, and an independent SciPy Sobol discrete-Vasicek first-passage reference with reported sampling error |
+| Commodity, weather and catastrophe bonds | `commodity_reference`, `commodity_weather_test` and focused instrument tests | Black-76/Kirk, exact Poisson and discounted-cashflow calculations |
+| MBS/PSA | focused `instruments::mbs` and `pricing::mbs` tests | Independently evaluated Decimal PSA and documented OTS refinancing-incentive/seasonality cashflow paths under the gross-WAC convention; no low-precision published example is presented as an exact external NPV |
+| Funding-rate/perpetual swaps | `funding_swap_reference` and focused funding-rate tests | Independent 80-digit Decimal realised P&L, piecewise-linear funding integral, non-flat discounted MTM and same-bump funding/discount DV01 arithmetic |
+| VaR/ES, XVA, KVA/FVA/MVA, margin/liquidation, portfolio sensitivities and statistical primitives | `var_es_reference`, `math::timeseries`, `math::correlation` and focused risk tests | Exact empirical order statistics, Gaussian formulas, discounted cashflows, closed-form margin rules, independent SciPy Sobol first-passage references, Bartlett ACF/PACF bands and chi-square central-moment sampling errors |
 | Rust, Python and WebAssembly surfaces | workspace tests, `python/tests`, and `wasm-pack test --node` | The same full-precision references exercised through each binding |
 
 ## Known Model Scope
@@ -92,7 +101,9 @@ external engine exists:
   scenario duration rebuilds prepayment cashflows under each parallel rate bump.
   The benchmark intentionally omits proprietary borrower calibration, default,
   burnout, and a stochastic OAS rate engine; it is not labeled as the full
-  Richard--Roll model.
+  Richard--Roll model. Published SIFMA/Fabozzi examples are too coarsely rounded
+  to improve on the existing Decimal cashflow locks, so no external MBS NPV
+  anchor is claimed.
 - Cross-currency swaps accept explicit fixed- and floating-leg frequencies;
   legacy methods remain annual compatibility wrappers. Quarterly dual-curve
   cashflows and par rates are pinned to independent high-precision Decimal
@@ -118,7 +129,15 @@ external engine exists:
 - The funding-rate swap payoff is linear in realised rates, so under
   deterministic discounting its value depends only on conditional forward
   means and its volatility sensitivity is mathematically zero. Nonlinear
-  funding options require a separate stochastic model.
+  funding options require a separate stochastic model. Realised P&L, non-flat
+  discounted MTM and both one-basis-point curve sensitivities are recomputed by
+  an independent 80-digit Decimal cashflow program.
+- `InterestRateFutureQuote::convexity_adjustment` implements the standalone
+  Hull approximation `sigma^2 * T1 * T2 / 2`. QuantLib's
+  `HullWhite::convexityBias` additionally depends on the futures quote, accrual
+  period and mean reversion; even its zero-mean-reversion expression does not
+  reduce to this API for the same `(T1, T2)` arguments. The validation map
+  therefore does not claim a like-for-like QuantLib Hull-White oracle.
 - Liquidation probability and conditional first-passage time are checked
   against independently scrambled SciPy Sobol paths using the exact Gaussian
   Vasicek transition on the contract's monitoring grid. Seeded engine values
@@ -154,15 +173,26 @@ external engine exists:
   and LSM reported error tested separately.
 - Swing tests reduce unconstrained rights to a strip of Black-Scholes calls and
   converge to a QuantLib-Python 1.43 finite-difference price for the constrained
-  monthly contract. Real-option defer, expansion, and abandonment trees are
-  checked against Black-Scholes reductions, independent high-precision
-  multi-stage CRR recurrences and deterministic immediate exercise. Structured
+  monthly contract. A `min_exercises=2, max_exercises=6` case executes the
+  constrained state path, but minimum exercise is not economically binding
+  because unused rights can be spent for zero payoff; that case is supplemental.
+  Real-option defer, expansion, and abandonment trees are checked against
+  Black-Scholes reductions, independent high-precision multi-stage CRR
+  recurrences and deterministic immediate exercise. Structured
   notes and convertibles pin exact discounted cashflows plus finite-grid
   recurrences for non-zero-volatility callable and fully featured exercise
   cases. The callable-note recurrence is independently written at the lattice
   and event-order layer but deliberately reuses the model's calibrated-theta
   and bond-price primitives, which the separate Jamshidian/QuantLib tests cover;
-  exercise/order/no-arbitrage properties remain supplemental.
+  exercise/order/no-arbitrage properties remain supplemental. A dated
+  QuantLib-Python bridge matched deterministic bond cashflows within 1.5e-14
+  and reconciled clean/dirty call semantics, but the 1,200-step non-zero-vol
+  OpenFerric tree remained 3.36e-5 from the analytic Hull-White bond-option
+  value. The external callable-note lock is therefore deferred rather than
+  presented with a false closed-form tolerance.
+- GPU Monte Carlo integration tests request a real WebGPU adapter. If none is
+  available they print an explicit skip and return; CPU reduction, request
+  validation, WGSL parsing and shader validation still run in every build.
 - Native and WebAssembly SIMD batch pricers evaluate the tail-accurate Cody
   normal CDF independently per lane while retaining vectorized log, discount
   and payoff arithmetic. Cached SciPy price/Greek grids are checked with an

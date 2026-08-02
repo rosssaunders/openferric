@@ -100,7 +100,7 @@ fn timing_adjustment_matches_zero_and_nonzero_closed_forms() {
 }
 
 #[test]
-fn real_option_to_defer_is_at_least_intrinsic_value() {
+fn real_option_to_defer_matches_independent_decimal_crr_grid() {
     let option = DeferInvestmentOption {
         model: RealOptionBinomialSpec {
             project_value: 120.0,
@@ -113,12 +113,29 @@ fn real_option_to_defer_is_at_least_intrinsic_value() {
         investment_cost: 100.0,
     };
 
+    // Python 3.11.15 `decimal`, precision=80, independently materialized the
+    // 200-step CRR terminal slice and rolled back
+    // max(V - 100, exp(-r dt) E[next]).  Before generating the reference, the
+    // CRR parameters were independently checked from dt=0.01:
+    // u=exp(0.03), d=1/u, p=0.5008347292820301768798637453, and
+    // discount=0.9995001249791692705729383665.  No OpenFerric output was used.
+    const DECIMAL_200_STEP_REFERENCE: f64 = 36.114_318_311_734_4;
+    const RELATIVE_ROUNDOFF_BUDGET: f64 = 1.0e-12;
     let value = price_option_to_defer(&option).unwrap().price;
+    let roundoff_budget = RELATIVE_ROUNDOFF_BUDGET * DECIMAL_200_STEP_REFERENCE.abs().max(1.0);
+    assert!(
+        (value - DECIMAL_200_STEP_REFERENCE).abs() <= roundoff_budget,
+        "defer-option finite-grid price: actual={value:.17e}, \
+         independent Decimal reference={DECIMAL_200_STEP_REFERENCE:.17e}, \
+         roundoff budget={roundoff_budget:.3e}"
+    );
+
+    // Supplemental no-arbitrage bound.
     assert!(value >= (option.model.project_value - option.investment_cost).max(0.0));
 }
 
 #[test]
-fn option_to_abandon_is_above_european_put_equivalent() {
+fn real_option_to_abandon_matches_independent_decimal_crr_grid() {
     let option = AbandonmentOption {
         model: RealOptionBinomialSpec {
             project_value: 90.0,
@@ -131,8 +148,25 @@ fn option_to_abandon_is_above_european_put_equivalent() {
         salvage_value: 100.0,
     };
 
+    // Python 3.11.15 `decimal`, precision=80, independently materialized the
+    // 200-step CRR terminal slice and rolled back
+    // max(100 - V, exp(-r dt) E[next]).  The independently checked dt=0.01
+    // parameters were u=exp(0.035), d=1/u,
+    // p=0.4969651551103012289869698153, and
+    // discount=0.9996000799893343999146723552.
+    const DECIMAL_200_STEP_REFERENCE: f64 = 20.320_892_847_045_855;
+    const RELATIVE_ROUNDOFF_BUDGET: f64 = 1.0e-12;
     let american = price_option_to_abandon(&option).unwrap().price;
+    let roundoff_budget = RELATIVE_ROUNDOFF_BUDGET * DECIMAL_200_STEP_REFERENCE.abs().max(1.0);
+    assert!(
+        (american - DECIMAL_200_STEP_REFERENCE).abs() <= roundoff_budget,
+        "abandon-option finite-grid price: actual={american:.17e}, \
+         independent Decimal reference={DECIMAL_200_STEP_REFERENCE:.17e}, \
+         roundoff budget={roundoff_budget:.3e}"
+    );
+
     let european = european_abandonment_put(&option).unwrap();
 
+    // Supplemental American-exercise dominance bound.
     assert!(american >= european - 1.0e-10);
 }

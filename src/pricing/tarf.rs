@@ -313,12 +313,39 @@ mod tests {
     }
 
     #[test]
-    fn tarf_higher_vol_changes_price() {
+    fn standard_tarf_price_matches_scipy_sobol_reference_across_vols() {
         let tarf = make_standard_tarf();
-        let low_vol = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.10, 5000, 42).unwrap();
-        let high_vol = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, 0.30, 5000, 42).unwrap();
-        // Higher vol should lead to more KO events and different pricing
-        assert!((low_vol.price - high_vol.price).abs() > 0.01);
+        let mut prices = [0.0_f64; 2];
+
+        // Independent Python 3.11.15 / SciPy 1.17.1 / NumPy 2.4.3
+        // inverse-normal integration with `qmc.Sobol(...).random_base2(17)`
+        // and `norm.ppf`: 24 Owen scrambles x 2^17 paths, dimension 52, with
+        // scramble seeds 73_001 + 104_729 * replicate.
+        // Each path uses the weekly GBM increments and contract conventions
+        // documented on `tarf_mc_price`: KO before fixing P&L, full-gain
+        // target termination, and discounting at each fixing.  The literals
+        // are (mean across scrambles, replicate standard error).
+        for (index, (vol, reference, reference_se)) in [
+            (0.10, -156_141.929_416_458_53, 22.302_196_410_223_71),
+            (0.30, -585_948.393_144_894, 142.626_894_341_611_06),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let actual = tarf_mc_price(&tarf, 100.0, 0.03, 0.0, vol, 250_000, 42).unwrap();
+            let combined_se = actual.std_error.hypot(reference_se);
+            assert!(
+                (actual.price - reference).abs() <= 4.0 * combined_se,
+                "standard TARF vol={vol}: actual={} reference={reference} implementation_se={} reference_se={reference_se}",
+                actual.price,
+                actual.std_error,
+            );
+            prices[index] = actual.price;
+        }
+
+        // Supplemental economic regression: volatility makes this leveraged
+        // downside structure less valuable at the two locked grid points.
+        assert!(prices[1] < prices[0]);
     }
 
     #[test]
@@ -476,28 +503,96 @@ mod tests {
     }
 
     #[test]
-    fn tarf_decumulator_differs_from_standard() {
-        let std_price = tarf_mc_price(&make_standard_tarf(), 100.0, 0.03, 0.0, 0.15, 5000, 42)
-            .unwrap()
-            .price;
-        let dec_price = tarf_mc_price(&make_decumulator_tarf(), 100.0, 0.03, 0.0, 0.15, 5000, 42)
-            .unwrap()
-            .price;
-        // Standard and decumulator should give different values
-        assert!((std_price - dec_price).abs() > 0.01);
-    }
-
-    #[test]
-    fn tarf_decumulator_does_not_knock_out_immediately() {
+    fn decumulator_tarf_price_and_termination_stats_match_scipy_sobol_reference() {
         // Regression for the inverted KO direction: the old code applied the
         // upside check `s >= ko_barrier` to decumulators, so a downside
         // barrier at 80 with spot 100 knocked out every path at fixing 1
         // (prob_ko = 1, avg_fixings = 1, price = 0).
-        let result =
-            tarf_mc_price(&make_decumulator_tarf(), 100.0, 0.03, 0.0, 0.15, 5000, 42).unwrap();
-        assert!(result.prob_ko_hit < 0.9);
-        assert!(result.avg_fixings > 2.0);
-        assert!(result.price.abs() > 1.0);
+        const N_REPLICATES: usize = 12;
+        const PATHS_PER_REPLICATE: usize = 20_000;
+        let tarf = make_decumulator_tarf();
+        let mut prices = [0.0_f64; N_REPLICATES];
+        let mut target_probabilities = [0.0_f64; N_REPLICATES];
+        let mut ko_probabilities = [0.0_f64; N_REPLICATES];
+        let mut average_fixings = [0.0_f64; N_REPLICATES];
+
+        for replicate in 0..N_REPLICATES {
+            let result = tarf_mc_price(
+                &tarf,
+                100.0,
+                0.03,
+                0.0,
+                0.15,
+                PATHS_PER_REPLICATE,
+                91_003 + 65_537 * replicate as u64,
+            )
+            .unwrap();
+            prices[replicate] = result.price;
+            target_probabilities[replicate] = result.prob_target_hit;
+            ko_probabilities[replicate] = result.prob_ko_hit;
+            average_fixings[replicate] = result.avg_fixings;
+        }
+
+        fn mean_and_replicate_se<const N: usize>(samples: &[f64; N]) -> (f64, f64) {
+            let mean = samples.iter().sum::<f64>() / N as f64;
+            let variance = samples
+                .iter()
+                .map(|sample| (sample - mean).powi(2))
+                .sum::<f64>()
+                / (N - 1) as f64;
+            (mean, (variance / N as f64).sqrt())
+        }
+
+        // Independent Python 3.11.15 / SciPy 1.17.1 / NumPy 2.4.3
+        // inverse-normal integration with `qmc.Sobol(...).random_base2(17)`
+        // and `norm.ppf`: 24 Owen scrambles x 2^17 paths, dimension 52, with
+        // scramble seeds 73_001 + 104_729 * replicate.
+        // Weekly GBM paths implement the documented decumulator conventions
+        // directly: downside KO before P&L, full-gain target termination, and
+        // per-fixing discounting.  Each tuple is (mean, scramble-replicate SE).
+        let price_reference = (-424_355.735_306_639, 55.419_705_784_844_77);
+        let target_reference = (0.564_653_714_497_884_2, 1.576_225_240_594_642_6e-4);
+        let ko_reference = (8.583_068_847_656_25e-6, 1.544_595_726_015_269_6e-6);
+        let avg_fixings_reference = (34.607_343_673_706_055, 3.726_654_134_463_966e-3);
+
+        let (price, price_implementation_se) = mean_and_replicate_se(&prices);
+        let price_combined_se = price_implementation_se.hypot(price_reference.1);
+        assert!(
+            (price - price_reference.0).abs() <= 4.0 * price_combined_se,
+            "decumulator TARF price={price} reference={} implementation_se={price_implementation_se} reference_se={}",
+            price_reference.0,
+            price_reference.1,
+        );
+
+        let total_paths = (N_REPLICATES * PATHS_PER_REPLICATE) as f64;
+        for (label, samples, reference) in [
+            ("target", &target_probabilities, target_reference),
+            ("KO", &ko_probabilities, ko_reference),
+        ] {
+            let probability = samples.iter().sum::<f64>() / N_REPLICATES as f64;
+            // Evaluate the binomial sampling SE under the independently
+            // estimated reference probability.  A plug-in SE based on the
+            // implementation count collapses to zero when a legitimate
+            // rare-event run observes no KO hits (the expected count here is
+            // only about two), which would create a false rejection.
+            let implementation_se = (reference.0 * (1.0 - reference.0) / total_paths).sqrt();
+            let combined_se = implementation_se.hypot(reference.1);
+            assert!(
+                (probability - reference.0).abs() <= 4.0 * combined_se,
+                "decumulator TARF {label} probability={probability} reference={} implementation_se={implementation_se} reference_se={}",
+                reference.0,
+                reference.1,
+            );
+        }
+
+        let (avg_fixings, avg_fixings_implementation_se) = mean_and_replicate_se(&average_fixings);
+        let avg_fixings_combined_se = avg_fixings_implementation_se.hypot(avg_fixings_reference.1);
+        assert!(
+            (avg_fixings - avg_fixings_reference.0).abs() <= 4.0 * avg_fixings_combined_se,
+            "decumulator TARF avg_fixings={avg_fixings} reference={} implementation_se={avg_fixings_implementation_se} reference_se={}",
+            avg_fixings_reference.0,
+            avg_fixings_reference.1,
+        );
     }
 
     #[test]

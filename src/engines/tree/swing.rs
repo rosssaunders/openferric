@@ -341,4 +341,51 @@ mod tests {
             euro_price
         );
     }
+
+    #[test]
+    fn minimum_rights_swing_matches_quantlib_fd_reference_and_converges() {
+        // Offline QuantLib-Python 1.43 reference: evaluation date 2025-01-01,
+        // monthly SwingExercise dates through 2026-01-01, 30/360 Bond Basis
+        // (so the times are exactly m/12), flat continuous r=5%, q=0%,
+        // BlackConstantVol=20%, PlainVanillaPayoff(Call, K=100), and
+        // VanillaSwingOption(minExerciseRights=2, maxExerciseRights=6).
+        // FdSimpleBSSwingEngine(tGrid=960, xGrid=1200) gives the literal below.
+        // Because every exercise payoff is floored at zero, the two minimum
+        // rights can be spent for zero and do not alter this particular NPV.
+        // This is supplemental state-path execution coverage, not evidence
+        // that a positive minimum has an economically binding effect.
+        const QUANTLIB_REFERENCE: f64 = 54.200_380_350_565_76;
+        const FINE_GRID_DISCRETIZATION_BUDGET: f64 = 7.5e-3;
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.05)
+            .dividend_yield(0.0)
+            .flat_vol(0.20)
+            .build()
+            .unwrap();
+        let exercise_dates: Vec<f64> = (1..=12).map(|m| m as f64 / 12.0).collect();
+        let swing = SwingOption::new(2, 6, exercise_dates, 100.0, 1.0);
+
+        let coarse_price = SwingTreeEngine::new(960)
+            .price(&swing, &market)
+            .unwrap()
+            .price;
+        let fine_price = SwingTreeEngine::new(1_920)
+            .price(&swing, &market)
+            .unwrap()
+            .price;
+        let coarse_error = (coarse_price - QUANTLIB_REFERENCE).abs();
+        let fine_error = (fine_price - QUANTLIB_REFERENCE).abs();
+
+        assert!(
+            fine_error <= FINE_GRID_DISCRETIZATION_BUDGET,
+            "fine minimum-rights swing price {fine_price:.12} differs from QuantLib reference \
+             {QUANTLIB_REFERENCE:.12} by {fine_error:.12}"
+        );
+        assert!(
+            fine_error <= 0.51 * coarse_error,
+            "expected first-order convergence for minimum-rights swing: \
+             coarse error={coarse_error:.12}, fine error={fine_error:.12}"
+        );
+    }
 }

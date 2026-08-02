@@ -758,9 +758,11 @@ mod tests {
             let mean = sum / n as f64;
             let var = sum_sq / n as f64 - mean * mean;
 
-            // Mean nu, variance 2*nu. Std errors: sqrt(2nu/n) and ~sqrt(8nu^2... )
+            // Mean nu, variance 2*nu.  The variance-estimator SE follows from
+            // the chi-square central moments:
+            // sqrt((mu_4 - variance^2) / n) = sqrt((8 nu^2 + 48 nu) / n).
             let mean_tol = 5.0 * (2.0 * nu / n as f64).sqrt();
-            let var_tol = 0.05 * 2.0 * nu + 0.5;
+            let var_tol = 5.0 * ((8.0 * nu * nu + 48.0 * nu) / n as f64).sqrt();
             assert!(
                 (mean - nu).abs() < mean_tol,
                 "nu={nu} mean={mean} tol={mean_tol}"
