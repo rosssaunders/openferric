@@ -36,14 +36,14 @@ pub struct BasketOption {
 impl BasketOption {
     /// Validates basket fields.
     pub fn validate(&self) -> Result<(), PricingError> {
-        if self.strike < 0.0 {
+        if !self.strike.is_finite() || self.strike < 0.0 {
             return Err(PricingError::InvalidInput(
-                "basket strike must be >= 0".to_string(),
+                "basket strike must be finite and >= 0".to_string(),
             ));
         }
-        if self.maturity < 0.0 {
+        if !self.maturity.is_finite() || self.maturity < 0.0 {
             return Err(PricingError::InvalidInput(
-                "basket maturity must be >= 0".to_string(),
+                "basket maturity must be finite and >= 0".to_string(),
             ));
         }
 
@@ -95,14 +95,14 @@ impl OutperformanceBasketOption {
                 "outperformance lagger weights cannot be empty".to_string(),
             ));
         }
-        if self.strike < 0.0 {
+        if !self.strike.is_finite() || self.strike < 0.0 {
             return Err(PricingError::InvalidInput(
-                "outperformance strike must be >= 0".to_string(),
+                "outperformance strike must be finite and >= 0".to_string(),
             ));
         }
-        if self.maturity < 0.0 {
+        if !self.maturity.is_finite() || self.maturity < 0.0 {
             return Err(PricingError::InvalidInput(
-                "outperformance maturity must be >= 0".to_string(),
+                "outperformance maturity must be finite and >= 0".to_string(),
             ));
         }
         if self.lagger_weights.iter().any(|w| !w.is_finite()) {
@@ -163,6 +163,11 @@ impl QuantoBasketOption {
                 "quanto asset_fx_corr entries must be finite and in [-1, 1]".to_string(),
             ));
         }
+        if !self.domestic_rate.is_finite() || !self.foreign_rate.is_finite() {
+            return Err(PricingError::InvalidInput(
+                "quanto domestic and foreign rates must be finite".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -170,5 +175,227 @@ impl QuantoBasketOption {
 impl Instrument for QuantoBasketOption {
     fn instrument_type(&self) -> &str {
         "QuantoBasketOption"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn average_basket() -> BasketOption {
+        BasketOption {
+            weights: vec![0.4, 0.6],
+            strike: 100.0,
+            maturity: 1.0,
+            is_call: true,
+            basket_type: BasketType::Average,
+        }
+    }
+
+    #[test]
+    fn basket_variants_validate_and_report_instrument_types() {
+        let average = average_basket();
+        let best_of = BasketOption {
+            weights: vec![],
+            basket_type: BasketType::BestOf,
+            ..average.clone()
+        };
+        let worst_of = BasketOption {
+            basket_type: BasketType::WorstOf,
+            ..best_of.clone()
+        };
+        for basket in [&average, &best_of, &worst_of] {
+            assert!(basket.validate().is_ok());
+            assert_eq!(basket.instrument_type(), "BasketOption");
+        }
+
+        let outperformance = OutperformanceBasketOption {
+            leader_index: 0,
+            lagger_weights: vec![0.5, 0.5],
+            strike: 1.0,
+            maturity: 2.0,
+            option_type: OptionType::Call,
+        };
+        assert!(outperformance.validate().is_ok());
+        assert_eq!(
+            outperformance.instrument_type(),
+            "OutperformanceBasketOption"
+        );
+
+        let quanto = QuantoBasketOption {
+            basket: average,
+            fx_rate: 1.1,
+            fx_vol: 0.12,
+            asset_fx_corr: vec![-0.2, 0.3],
+            domestic_rate: 0.04,
+            foreign_rate: 0.02,
+        };
+        assert!(quanto.validate().is_ok());
+        assert_eq!(quanto.instrument_type(), "QuantoBasketOption");
+    }
+
+    #[test]
+    fn basket_validation_rejects_each_invalid_domain() {
+        let base = average_basket();
+        let invalid_baskets = [
+            BasketOption {
+                strike: -1.0,
+                ..base.clone()
+            },
+            BasketOption {
+                maturity: -1.0,
+                ..base.clone()
+            },
+            BasketOption {
+                weights: vec![f64::NAN],
+                ..base.clone()
+            },
+            BasketOption {
+                weights: vec![],
+                ..base.clone()
+            },
+        ];
+        for basket in invalid_baskets {
+            assert!(basket.validate().is_err(), "unexpectedly valid: {basket:?}");
+        }
+
+        let outperformance = OutperformanceBasketOption {
+            leader_index: 0,
+            lagger_weights: vec![0.5, 0.5],
+            strike: 1.0,
+            maturity: 1.0,
+            option_type: OptionType::Put,
+        };
+        for invalid in [
+            OutperformanceBasketOption {
+                lagger_weights: vec![],
+                ..outperformance.clone()
+            },
+            OutperformanceBasketOption {
+                strike: -1.0,
+                ..outperformance.clone()
+            },
+            OutperformanceBasketOption {
+                maturity: -1.0,
+                ..outperformance.clone()
+            },
+            OutperformanceBasketOption {
+                lagger_weights: vec![0.5, f64::INFINITY],
+                ..outperformance.clone()
+            },
+        ] {
+            assert!(
+                invalid.validate().is_err(),
+                "unexpectedly valid: {invalid:?}"
+            );
+        }
+
+        let quanto = QuantoBasketOption {
+            basket: base,
+            fx_rate: 1.1,
+            fx_vol: 0.12,
+            asset_fx_corr: vec![0.1, -0.2],
+            domestic_rate: 0.04,
+            foreign_rate: 0.02,
+        };
+        for invalid in [
+            QuantoBasketOption {
+                fx_rate: 0.0,
+                ..quanto.clone()
+            },
+            QuantoBasketOption {
+                fx_vol: -0.1,
+                ..quanto.clone()
+            },
+            QuantoBasketOption {
+                asset_fx_corr: vec![1.1],
+                ..quanto.clone()
+            },
+        ] {
+            assert!(
+                invalid.validate().is_err(),
+                "unexpectedly valid: {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn basket_validation_rejects_nonfinite_scalar_fields() {
+        let basket = average_basket();
+        let outperformance = OutperformanceBasketOption {
+            leader_index: 0,
+            lagger_weights: vec![0.5, 0.5],
+            strike: 1.0,
+            maturity: 1.0,
+            option_type: OptionType::Put,
+        };
+        let quanto = QuantoBasketOption {
+            basket: basket.clone(),
+            fx_rate: 1.1,
+            fx_vol: 0.12,
+            asset_fx_corr: vec![0.1, -0.2],
+            domestic_rate: 0.04,
+            foreign_rate: 0.02,
+        };
+
+        for invalid in [
+            BasketOption {
+                strike: f64::NAN,
+                ..basket.clone()
+            },
+            BasketOption {
+                maturity: f64::NAN,
+                ..basket
+            },
+        ] {
+            assert!(
+                invalid.validate().is_err(),
+                "unexpectedly valid: {invalid:?}"
+            );
+        }
+
+        for invalid in [
+            OutperformanceBasketOption {
+                strike: f64::NAN,
+                ..outperformance.clone()
+            },
+            OutperformanceBasketOption {
+                maturity: f64::NAN,
+                ..outperformance
+            },
+        ] {
+            assert!(
+                invalid.validate().is_err(),
+                "unexpectedly valid: {invalid:?}"
+            );
+        }
+
+        for invalid in [
+            QuantoBasketOption {
+                fx_rate: f64::NAN,
+                ..quanto.clone()
+            },
+            QuantoBasketOption {
+                fx_vol: f64::NAN,
+                ..quanto.clone()
+            },
+            QuantoBasketOption {
+                asset_fx_corr: vec![f64::NAN],
+                ..quanto.clone()
+            },
+            QuantoBasketOption {
+                domestic_rate: f64::NAN,
+                ..quanto.clone()
+            },
+            QuantoBasketOption {
+                foreign_rate: f64::NAN,
+                ..quanto
+            },
+        ] {
+            assert!(
+                invalid.validate().is_err(),
+                "unexpectedly valid: {invalid:?}"
+            );
+        }
     }
 }

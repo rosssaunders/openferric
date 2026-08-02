@@ -346,6 +346,442 @@ mod tests {
         }
     }
 
+    fn assert_invalid(asset: AssetMarketData, expected: &str) {
+        let error = market_with(asset).validate().unwrap_err().to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} in validation error, got {error:?}"
+        );
+    }
+
+    fn valid_equity() -> AssetMarketData {
+        AssetMarketData::Equity {
+            spot: 100.0,
+            vol: 0.2,
+            dividend_yield: 0.01,
+        }
+    }
+
+    fn valid_fx() -> AssetMarketData {
+        AssetMarketData::Fx {
+            spot: 1.1,
+            vol: 0.15,
+            domestic_rate: 0.03,
+            foreign_rate: 0.02,
+        }
+    }
+
+    fn valid_commodity() -> AssetMarketData {
+        AssetMarketData::Commodity {
+            spot: 75.0,
+            vol: 0.3,
+            convenience_yield: 0.01,
+            kappa: 0.4,
+            mu: 4.0,
+        }
+    }
+
+    fn valid_rate() -> AssetMarketData {
+        AssetMarketData::Rate {
+            initial_rate: -0.005,
+            vol: 0.01,
+            mean_reversion: 0.1,
+            long_run_mean: 0.04,
+        }
+    }
+
+    #[test]
+    fn accessors_and_bumps_cover_every_asset_variant_without_changing_other_fields() {
+        let equity = valid_equity();
+        assert_eq!(equity.initial_value(), 100.0);
+        assert_eq!(equity.vol(), 0.2);
+        match equity.with_spot_bump(2.5) {
+            AssetMarketData::Equity {
+                spot,
+                vol,
+                dividend_yield,
+            } => {
+                assert_eq!(spot, 102.5);
+                assert_eq!(vol, 0.2);
+                assert_eq!(dividend_yield, 0.01);
+            }
+            _ => panic!("spot bump changed equity variant"),
+        }
+        match equity.with_vol_bump(0.025) {
+            AssetMarketData::Equity {
+                spot,
+                vol,
+                dividend_yield,
+            } => {
+                assert_eq!(spot, 100.0);
+                assert_eq!(vol, 0.225);
+                assert_eq!(dividend_yield, 0.01);
+            }
+            _ => panic!("vol bump changed equity variant"),
+        }
+
+        let fx = valid_fx();
+        assert_eq!(fx.initial_value(), 1.1);
+        assert_eq!(fx.vol(), 0.15);
+        match fx.with_spot_bump(0.02) {
+            AssetMarketData::Fx {
+                spot,
+                vol,
+                domestic_rate,
+                foreign_rate,
+            } => {
+                assert_eq!(spot, 1.1 + 0.02);
+                assert_eq!(vol, 0.15);
+                assert_eq!(domestic_rate, 0.03);
+                assert_eq!(foreign_rate, 0.02);
+            }
+            _ => panic!("spot bump changed FX variant"),
+        }
+        match fx.with_vol_bump(-0.01) {
+            AssetMarketData::Fx {
+                spot,
+                vol,
+                domestic_rate,
+                foreign_rate,
+            } => {
+                assert_eq!(spot, 1.1);
+                assert_eq!(vol, 0.15 - 0.01);
+                assert_eq!(domestic_rate, 0.03);
+                assert_eq!(foreign_rate, 0.02);
+            }
+            _ => panic!("vol bump changed FX variant"),
+        }
+
+        let commodity = valid_commodity();
+        assert_eq!(commodity.initial_value(), 75.0);
+        assert_eq!(commodity.vol(), 0.3);
+        match commodity.with_spot_bump(-1.5) {
+            AssetMarketData::Commodity {
+                spot,
+                vol,
+                convenience_yield,
+                kappa,
+                mu,
+            } => {
+                assert_eq!(spot, 73.5);
+                assert_eq!(vol, 0.3);
+                assert_eq!(convenience_yield, 0.01);
+                assert_eq!(kappa, 0.4);
+                assert_eq!(mu, 4.0);
+            }
+            _ => panic!("spot bump changed commodity variant"),
+        }
+        match commodity.with_vol_bump(0.05) {
+            AssetMarketData::Commodity {
+                spot,
+                vol,
+                convenience_yield,
+                kappa,
+                mu,
+            } => {
+                assert_eq!(spot, 75.0);
+                assert_eq!(vol, 0.3 + 0.05);
+                assert_eq!(convenience_yield, 0.01);
+                assert_eq!(kappa, 0.4);
+                assert_eq!(mu, 4.0);
+            }
+            _ => panic!("vol bump changed commodity variant"),
+        }
+
+        let rate = valid_rate();
+        assert_eq!(rate.initial_value(), -0.005);
+        assert_eq!(rate.vol(), 0.01);
+        match rate.with_spot_bump(0.001) {
+            AssetMarketData::Rate {
+                initial_rate,
+                vol,
+                mean_reversion,
+                long_run_mean,
+            } => {
+                assert_eq!(initial_rate, -0.005 + 0.001);
+                assert_eq!(vol, 0.01);
+                assert_eq!(mean_reversion, 0.1);
+                assert_eq!(long_run_mean, 0.04);
+            }
+            _ => panic!("spot bump changed rate variant"),
+        }
+        match rate.with_vol_bump(0.0025) {
+            AssetMarketData::Rate {
+                initial_rate,
+                vol,
+                mean_reversion,
+                long_run_mean,
+            } => {
+                assert_eq!(initial_rate, -0.005);
+                assert_eq!(vol, 0.0125);
+                assert_eq!(mean_reversion, 0.1);
+                assert_eq!(long_run_mean, 0.04);
+            }
+            _ => panic!("vol bump changed rate variant"),
+        }
+    }
+
+    #[test]
+    fn mixed_asset_market_validates_and_returns_values_in_asset_order() {
+        let market = MultiAssetMarket {
+            assets: vec![valid_equity(), valid_fx(), valid_commodity(), valid_rate()],
+            correlation: vec![
+                vec![1.0, 0.1, -0.2, 0.0],
+                vec![0.1, 1.0, 0.25, -0.1],
+                vec![-0.2, 0.25, 1.0, 0.15],
+                vec![0.0, -0.1, 0.15, 1.0],
+            ],
+            rate: 0.03,
+        };
+
+        market.validate().unwrap();
+        assert_eq!(market.initial_spots(), [100.0, 1.1, 75.0, -0.005]);
+
+        let single = MultiAssetMarket::single(90.0, 0.25, 0.04, 0.015);
+        single.validate().unwrap();
+        assert_eq!(single.initial_spots(), [90.0]);
+        assert_eq!(single.correlation, [[1.0]]);
+        match &single.assets[0] {
+            AssetMarketData::Equity {
+                spot,
+                vol,
+                dividend_yield,
+            } => assert_eq!((*spot, *vol, *dividend_yield), (90.0, 0.25, 0.015)),
+            _ => panic!("single market must contain equity data"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_and_misshaped_correlation_matrices() {
+        let empty = MultiAssetMarket {
+            assets: vec![],
+            correlation: vec![],
+            rate: 0.03,
+        };
+        assert!(
+            empty
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("at least one asset")
+        );
+
+        let wrong_rows = MultiAssetMarket {
+            assets: vec![valid_equity(), valid_fx()],
+            correlation: vec![vec![1.0, 0.2]],
+            rate: 0.03,
+        };
+        assert!(
+            wrong_rows
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("rows (1) must match number of assets (2)")
+        );
+
+        let wrong_columns = MultiAssetMarket {
+            assets: vec![valid_equity(), valid_fx()],
+            correlation: vec![vec![1.0, 0.2], vec![0.2]],
+            rate: 0.03,
+        };
+        assert!(
+            wrong_columns
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("row 1 has 1 columns, expected 2")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_non_positive_spots_and_volatilities() {
+        for (asset, expected) in [
+            (
+                AssetMarketData::Equity {
+                    spot: 0.0,
+                    vol: 0.2,
+                    dividend_yield: 0.01,
+                },
+                "equity asset 0 spot must be > 0",
+            ),
+            (
+                AssetMarketData::Equity {
+                    spot: 100.0,
+                    vol: 0.0,
+                    dividend_yield: 0.01,
+                },
+                "equity asset 0 vol must be > 0",
+            ),
+            (
+                AssetMarketData::Fx {
+                    spot: -1.0,
+                    vol: 0.15,
+                    domestic_rate: 0.03,
+                    foreign_rate: 0.02,
+                },
+                "FX asset 0 spot must be > 0",
+            ),
+            (
+                AssetMarketData::Fx {
+                    spot: 1.1,
+                    vol: -0.15,
+                    domestic_rate: 0.03,
+                    foreign_rate: 0.02,
+                },
+                "FX asset 0 vol must be > 0",
+            ),
+            (
+                AssetMarketData::Commodity {
+                    spot: 0.0,
+                    vol: 0.3,
+                    convenience_yield: 0.01,
+                    kappa: 0.4,
+                    mu: 4.0,
+                },
+                "commodity asset 0 spot must be > 0",
+            ),
+            (
+                AssetMarketData::Commodity {
+                    spot: 75.0,
+                    vol: 0.0,
+                    convenience_yield: 0.01,
+                    kappa: 0.4,
+                    mu: 4.0,
+                },
+                "commodity asset 0 vol must be > 0",
+            ),
+            (
+                AssetMarketData::Rate {
+                    initial_rate: -0.01,
+                    vol: 0.0,
+                    mean_reversion: 0.1,
+                    long_run_mean: 0.04,
+                },
+                "rate asset 0 vol must be > 0",
+            ),
+        ] {
+            assert_invalid(asset, expected);
+        }
+    }
+
+    #[test]
+    fn validate_rejects_each_non_finite_asset_parameter() {
+        for (asset, expected) in [
+            (
+                AssetMarketData::Equity {
+                    spot: 100.0,
+                    vol: f64::INFINITY,
+                    dividend_yield: 0.01,
+                },
+                "equity asset 0 vol must be finite",
+            ),
+            (
+                AssetMarketData::Equity {
+                    spot: 100.0,
+                    vol: 0.2,
+                    dividend_yield: f64::NEG_INFINITY,
+                },
+                "equity asset 0 dividend yield must be finite",
+            ),
+            (
+                AssetMarketData::Fx {
+                    spot: f64::NAN,
+                    vol: 0.15,
+                    domestic_rate: 0.03,
+                    foreign_rate: 0.02,
+                },
+                "FX asset 0 spot must be finite",
+            ),
+            (
+                AssetMarketData::Fx {
+                    spot: 1.1,
+                    vol: f64::NAN,
+                    domestic_rate: 0.03,
+                    foreign_rate: 0.02,
+                },
+                "FX asset 0 vol must be finite",
+            ),
+            (
+                AssetMarketData::Fx {
+                    spot: 1.1,
+                    vol: 0.15,
+                    domestic_rate: 0.03,
+                    foreign_rate: f64::NAN,
+                },
+                "FX asset 0 foreign rate must be finite",
+            ),
+            (
+                AssetMarketData::Commodity {
+                    spot: f64::NAN,
+                    vol: 0.3,
+                    convenience_yield: 0.01,
+                    kappa: 0.4,
+                    mu: 4.0,
+                },
+                "commodity asset 0 spot must be finite",
+            ),
+            (
+                AssetMarketData::Commodity {
+                    spot: 75.0,
+                    vol: f64::INFINITY,
+                    convenience_yield: 0.01,
+                    kappa: 0.4,
+                    mu: 4.0,
+                },
+                "commodity asset 0 vol must be finite",
+            ),
+            (
+                AssetMarketData::Commodity {
+                    spot: 75.0,
+                    vol: 0.3,
+                    convenience_yield: f64::NAN,
+                    kappa: 0.4,
+                    mu: 4.0,
+                },
+                "commodity asset 0 convenience yield must be finite",
+            ),
+            (
+                AssetMarketData::Commodity {
+                    spot: 75.0,
+                    vol: 0.3,
+                    convenience_yield: 0.01,
+                    kappa: 0.4,
+                    mu: f64::NAN,
+                },
+                "commodity asset 0 mu must be finite",
+            ),
+            (
+                AssetMarketData::Rate {
+                    initial_rate: f64::NAN,
+                    vol: 0.01,
+                    mean_reversion: 0.1,
+                    long_run_mean: 0.04,
+                },
+                "rate asset 0 initial rate must be finite",
+            ),
+            (
+                AssetMarketData::Rate {
+                    initial_rate: 0.03,
+                    vol: f64::NAN,
+                    mean_reversion: 0.1,
+                    long_run_mean: 0.04,
+                },
+                "rate asset 0 vol must be finite",
+            ),
+            (
+                AssetMarketData::Rate {
+                    initial_rate: 0.03,
+                    vol: 0.01,
+                    mean_reversion: f64::NAN,
+                    long_run_mean: 0.04,
+                },
+                "rate asset 0 mean reversion must be finite",
+            ),
+        ] {
+            assert_invalid(asset, expected);
+        }
+    }
+
     #[test]
     fn validate_rejects_non_finite_top_level_market_values() {
         let mut market = MultiAssetMarket::single(100.0, 0.2, f64::NAN, 0.01);

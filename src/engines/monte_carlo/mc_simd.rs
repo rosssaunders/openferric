@@ -721,6 +721,41 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[test]
+    fn forced_avx2_terminal_and_full_path_kernels_match_on_avx512_hosts() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            eprintln!("skipping direct AVX2 coverage: AVX2+FMA unavailable");
+            return;
+        }
+
+        let args = (97.0, 0.03, 0.005, 0.31, 2.0, 19, 11, 7);
+        let terminal = unsafe {
+            simulate_gbm_terminal_soa_avx2(
+                args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7,
+            )
+        };
+        let paths = unsafe {
+            simulate_gbm_paths_soa_avx2(
+                args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7,
+            )
+        };
+
+        assert_eq!(terminal, paths.terminal());
+        assert_eq!(paths.num_paths, 19);
+        assert_eq!(paths.num_steps, 11);
+        assert!(terminal.iter().all(|spot| spot.is_finite() && *spot > 0.0));
+
+        // Reproducible streams must be stable when calling the forced backend
+        // directly, independently of the host's normal AVX-512 preference.
+        let repeated = unsafe {
+            simulate_gbm_terminal_soa_avx2(
+                args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7,
+            )
+        };
+        assert_eq!(terminal, repeated);
+    }
+
     #[cfg(all(feature = "simd", target_arch = "aarch64"))]
     #[test]
     fn neon_soa_matches_scalar_stream_and_tail() {

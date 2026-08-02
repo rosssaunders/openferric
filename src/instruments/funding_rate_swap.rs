@@ -193,6 +193,7 @@ mod tests {
     use chrono::{DateTime, NaiveDate, Utc};
 
     use super::FundingRateSwap;
+    use crate::core::Instrument;
     use crate::rates::{FundingRateCurve, YieldCurve};
 
     fn dt(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Utc> {
@@ -288,5 +289,76 @@ mod tests {
         let expected = expected_interval_pnl * 0.99 + expected_interval_pnl * 0.97;
 
         assert_relative_eq!(mtm, expected, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn constructor_and_standard_interval_pnl_match_eight_hour_convention() {
+        let swap = FundingRateSwap::new(
+            -2_500_000.0,
+            0.10,
+            dt(2026, 1, 1, 0),
+            dt(2026, 1, 2, 0),
+            "  Binance  ",
+            "BTCUSDT",
+        );
+        assert_eq!(swap.settlement_interval_hours, 8);
+        assert!(swap.validate().is_ok());
+        assert_eq!(swap.instrument_type(), "FundingRateSwap");
+        assert_relative_eq!(swap.interval_year_fraction(), 8.0 / 8_760.0, epsilon = 0.0);
+
+        let expected = (0.13 - 0.10) * (-2_500_000.0) * (8.0 / 8_760.0);
+        assert_relative_eq!(
+            FundingRateSwap::interval_pnl(0.10, 0.13, -2_500_000.0),
+            expected,
+            epsilon = 2.0e-15
+        );
+    }
+
+    #[test]
+    fn validation_and_schedule_cover_all_early_returns() {
+        let base = FundingRateSwap::new(
+            1_000.0,
+            0.10,
+            dt(2026, 1, 1, 0),
+            dt(2026, 1, 2, 0),
+            "Bybit",
+            "ETHUSDT",
+        );
+        let invalid = [
+            FundingRateSwap {
+                notional: 0.0,
+                ..base.clone()
+            },
+            FundingRateSwap {
+                fixed_rate: f64::NAN,
+                ..base.clone()
+            },
+            FundingRateSwap {
+                maturity: base.entry_time,
+                ..base.clone()
+            },
+            FundingRateSwap {
+                settlement_interval_hours: 0,
+                ..base.clone()
+            },
+            FundingRateSwap {
+                venue: "  ".to_string(),
+                ..base.clone()
+            },
+            FundingRateSwap {
+                asset: String::new(),
+                ..base.clone()
+            },
+        ];
+        for swap in invalid {
+            assert!(swap.validate().is_err(), "unexpectedly valid: {swap:?}");
+        }
+
+        let mut zero_interval = base.clone();
+        zero_interval.settlement_interval_hours = 0;
+        assert!(zero_interval.settlement_schedule().is_empty());
+        let mut reversed = base;
+        reversed.maturity = reversed.entry_time;
+        assert!(reversed.settlement_schedule().is_empty());
     }
 }

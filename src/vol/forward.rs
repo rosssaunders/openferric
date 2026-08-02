@@ -250,9 +250,15 @@ impl ForwardVarianceCurve {
         variance_notional: f64,
         risk_free_rate: f64,
     ) -> Result<f64, String> {
-        if strike_variance < 0.0 || variance_notional < 0.0 || !risk_free_rate.is_finite() {
+        if !strike_variance.is_finite()
+            || strike_variance < 0.0
+            || !variance_notional.is_finite()
+            || variance_notional < 0.0
+            || !risk_free_rate.is_finite()
+        {
             return Err(
-                "strike variance, notional, and rate must be finite and non-negative".to_string(),
+                "strike variance and notional must be finite and non-negative; rate must be finite"
+                    .to_string(),
             );
         }
 
@@ -517,6 +523,9 @@ pub fn vix_style_index_from_surface<S: ForwardVarianceSource>(
     if expiries.iter().any(|t| !t.is_finite() || *t <= 0.0) {
         return Err("surface expiries must be finite and > 0".to_string());
     }
+    if expiries.windows(2).any(|w| w[1] <= w[0]) {
+        return Err("surface expiries must be strictly increasing".to_string());
+    }
 
     let (near_idx, next_idx) = bracketing_expiry_indices(expiries, target_t)?;
     let t1 = expiries[near_idx];
@@ -591,12 +600,13 @@ fn model_free_variance_for_expiry<S: ForwardVarianceSource>(
     for i in 0..n {
         let k_log = -span + i as f64 * dk;
         let strike = fwd * k_log.exp();
-        let vol = surface.implied_vol(strike, expiry).max(1e-8);
-        if !vol.is_finite() {
+        let raw_vol = surface.implied_vol(strike, expiry);
+        if !raw_vol.is_finite() {
             return Err(format!(
                 "non-finite implied vol at expiry {expiry}, strike {strike}"
             ));
         }
+        let vol = raw_vol.max(1e-8);
 
         let call = black_76_price(OptionType::Call, fwd, strike, rate, vol, expiry).max(0.0);
         let put = black_76_price(OptionType::Put, fwd, strike, rate, vol, expiry).max(0.0);
@@ -658,7 +668,9 @@ fn interpolate_nodes<P>(
         return value(&points[0]);
     }
 
-    let x = if x.is_finite() { x } else { key(&points[0]) };
+    if x.is_nan() {
+        return f64::NAN;
+    }
     if x <= key(&points[0]) {
         return value(&points[0]);
     }
@@ -815,5 +827,375 @@ mod tests {
         let ts = SabrVolOfVolTermStructure::new(points).unwrap();
         assert_relative_eq!(ts.alpha(1.25), 0.18, epsilon = 1e-12);
         assert_relative_eq!(ts.nu(1.25), 0.5, epsilon = 1e-12);
+    }
+
+    #[derive(Debug, Clone)]
+    struct LogSmileSurface {
+        base_vol: f64,
+        log_moneyness_slope: f64,
+        expiries: Vec<f64>,
+        forward: f64,
+    }
+
+    impl ForwardVarianceSource for LogSmileSurface {
+        fn implied_vol(&self, strike: f64, _expiry: f64) -> f64 {
+            self.base_vol + self.log_moneyness_slope * (strike / self.forward).ln()
+        }
+
+        fn forward_price(&self, _expiry: f64) -> f64 {
+            self.forward
+        }
+
+        fn expiries(&self) -> &[f64] {
+            &self.expiries
+        }
+    }
+
+    #[test]
+    fn forward_variance_curve_interpolates_extrapolates_and_prices_swaps() {
+        let curve = ForwardVarianceCurve::new(vec![(2.0, 0.09), (0.5, 0.02), (1.0, 0.05)]).unwrap();
+
+        assert_eq!(curve.expiries(), vec![0.5, 1.0, 2.0]);
+        assert_eq!(curve.total_variance(-1.0), 0.0);
+        assert_relative_eq!(curve.total_variance(0.25), 0.01, epsilon = f64::EPSILON);
+        assert_relative_eq!(curve.total_variance(0.75), 0.035, epsilon = f64::EPSILON);
+        assert_relative_eq!(
+            curve.total_variance(1.5),
+            0.07,
+            epsilon = 2.0 * f64::EPSILON
+        );
+        assert_relative_eq!(
+            curve.total_variance(3.0),
+            0.13,
+            epsilon = 2.0 * f64::EPSILON
+        );
+
+        let fair_variance = curve.fair_forward_variance_swap(0.5, 1.5).unwrap();
+        assert_relative_eq!(fair_variance, 0.05, epsilon = 2.0 * f64::EPSILON);
+        assert_relative_eq!(
+            curve.fair_forward_vol_swap(0.5, 1.5).unwrap(),
+            0.05_f64.sqrt(),
+            epsilon = 2.0 * f64::EPSILON
+        );
+        assert_relative_eq!(
+            curve.forward_vol(0.5, 1.5).unwrap(),
+            0.05_f64.sqrt(),
+            epsilon = 2.0 * f64::EPSILON
+        );
+
+        let expected_pv = 1_000_000.0 * (0.05 - 0.04) * (-0.03_f64 * 1.5).exp();
+        assert_relative_eq!(
+            curve
+                .price_forward_variance_swap(0.5, 1.5, 0.04, 1_000_000.0, 0.03)
+                .unwrap(),
+            expected_pv,
+            epsilon = 8.0 * f64::EPSILON * expected_pv
+        );
+
+        let one_point = ForwardVarianceCurve::new(vec![(2.0, 0.08)]).unwrap();
+        assert_relative_eq!(one_point.total_variance(3.0), 0.12, epsilon = f64::EPSILON);
+
+        // A total-variance decrease within the constructor's numerical noise
+        // allowance is floored to a zero forward-variance interval.
+        let rounded = ForwardVarianceCurve::new(vec![(0.5, 0.02), (1.0, 0.02 - 1.0e-12)]).unwrap();
+        assert_eq!(rounded.points()[1].forward_variance, 0.0);
+        assert_eq!(rounded.forward_variance(0.5, 1.0).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn forward_variance_inputs_and_surface_data_are_validated() {
+        assert!(ForwardVarianceCurve::new(Vec::new()).is_err());
+        assert!(ForwardVarianceCurve::new(vec![(1.0, 0.02), (1.0, 0.03)]).is_err());
+        assert!(ForwardVarianceCurve::new(vec![(0.0, 0.02)]).is_err());
+        assert!(ForwardVarianceCurve::new(vec![(1.0, -0.02)]).is_err());
+        assert!(ForwardVarianceCurve::new(vec![(f64::NAN, 0.02)]).is_err());
+        assert!(ForwardVarianceCurve::new(vec![(1.0, 0.04), (2.0, 0.01)]).is_err());
+
+        let curve = ForwardVarianceCurve::new(vec![(1.0, 0.04)]).unwrap();
+        for (t1, t2) in [
+            (-1.0, 1.0),
+            (1.0, 1.0),
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+        ] {
+            assert!(curve.forward_variance(t1, t2).is_err());
+        }
+        for (strike, notional, rate) in [
+            (-0.01, 1.0, 0.0),
+            (f64::NAN, 1.0, 0.0),
+            (0.01, -1.0, 0.0),
+            (0.01, f64::INFINITY, 0.0),
+            (0.01, 1.0, f64::NAN),
+        ] {
+            assert!(
+                curve
+                    .price_forward_variance_swap(0.0, 1.0, strike, notional, rate)
+                    .is_err()
+            );
+        }
+
+        let valid = FlatSurface {
+            vol: 0.2,
+            expiries: vec![0.5, 1.0],
+            forward: 100.0,
+        };
+        assert!(ForwardVarianceCurve::from_surface(&valid, &[]).is_err());
+        assert!(ForwardVarianceCurve::from_surface(&valid, &[0.0]).is_err());
+        assert!(
+            ForwardVarianceCurve::from_surface(
+                &FlatSurface {
+                    forward: 0.0,
+                    ..valid.clone()
+                },
+                &[0.5]
+            )
+            .is_err()
+        );
+        assert!(
+            ForwardVarianceCurve::from_surface(&FlatSurface { vol: 0.0, ..valid }, &[0.5]).is_err()
+        );
+    }
+
+    #[test]
+    fn atm_skew_matches_log_moneyness_slope_and_interpolates() {
+        let surface = LogSmileSurface {
+            base_vol: 0.22,
+            log_moneyness_slope: -0.035,
+            expiries: vec![0.5, 1.0, 2.0],
+            forward: 100.0,
+        };
+        let skew = AtmSkewTermStructure::from_surface(&surface, &[2.0, 0.5, 1.0]).unwrap();
+        assert_eq!(
+            skew.points().iter().map(|p| p.expiry).collect::<Vec<_>>(),
+            vec![0.5, 1.0, 2.0]
+        );
+        for expiry in [0.1, 0.75, 3.0] {
+            assert_relative_eq!(skew.skew(expiry), -0.035, epsilon = 48.0 * f64::EPSILON);
+        }
+        assert!(skew.skew(f64::NAN).is_nan());
+
+        assert!(AtmSkewTermStructure::from_surface(&surface, &[]).is_err());
+        assert!(AtmSkewTermStructure::from_surface(&surface, &[0.0]).is_err());
+        assert!(AtmSkewTermStructure::from_surface(&surface, &[1.0, 1.0]).is_err());
+        assert!(
+            AtmSkewTermStructure::from_surface(
+                &LogSmileSurface {
+                    forward: 0.0,
+                    ..surface.clone()
+                },
+                &[1.0]
+            )
+            .is_err()
+        );
+        assert!(
+            AtmSkewTermStructure::from_surface(
+                &LogSmileSurface {
+                    base_vol: f64::NAN,
+                    ..surface
+                },
+                &[1.0]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn heston_and_sabr_term_structures_sort_interpolate_and_validate() {
+        let heston = HestonVolOfVolTermStructure::new(vec![
+            HestonVolOfVolPoint {
+                expiry: 2.0,
+                sigma_v: 0.30,
+            },
+            HestonVolOfVolPoint {
+                expiry: 0.5,
+                sigma_v: 0.60,
+            },
+        ])
+        .unwrap();
+        assert_eq!(heston.points()[0].expiry, 0.5);
+        assert_relative_eq!(heston.sigma_v(1.25), 0.45, epsilon = f64::EPSILON);
+        assert_eq!(heston.sigma_v(0.0), 0.60);
+        assert_eq!(heston.sigma_v(3.0), 0.30);
+        assert!(heston.sigma_v(f64::NAN).is_nan());
+        assert_eq!(heston.sigma_v(f64::NEG_INFINITY), 0.60);
+        assert_eq!(heston.sigma_v(f64::INFINITY), 0.30);
+
+        assert!(HestonVolOfVolTermStructure::new(Vec::new()).is_err());
+        assert!(
+            HestonVolOfVolTermStructure::new(vec![
+                HestonVolOfVolPoint {
+                    expiry: 1.0,
+                    sigma_v: 0.2,
+                },
+                HestonVolOfVolPoint {
+                    expiry: 1.0,
+                    sigma_v: 0.3,
+                },
+            ])
+            .is_err()
+        );
+        for point in [
+            HestonVolOfVolPoint {
+                expiry: 0.0,
+                sigma_v: 0.2,
+            },
+            HestonVolOfVolPoint {
+                expiry: 1.0,
+                sigma_v: -0.2,
+            },
+            HestonVolOfVolPoint {
+                expiry: 1.0,
+                sigma_v: f64::NAN,
+            },
+        ] {
+            assert!(HestonVolOfVolTermStructure::new(vec![point]).is_err());
+        }
+
+        let params = [
+            (
+                2.0,
+                SabrParams {
+                    alpha: 0.16,
+                    beta: 0.5,
+                    rho: -0.2,
+                    nu: 0.40,
+                },
+            ),
+            (
+                0.5,
+                SabrParams {
+                    alpha: 0.20,
+                    beta: 0.7,
+                    rho: -0.1,
+                    nu: 0.60,
+                },
+            ),
+        ];
+        let sabr = SabrVolOfVolTermStructure::from_sabr_params(&params).unwrap();
+        assert_eq!(sabr.points()[0].expiry, 0.5);
+        assert_relative_eq!(sabr.alpha(1.25), 0.18, epsilon = f64::EPSILON);
+        assert_relative_eq!(sabr.nu(1.25), 0.50, epsilon = f64::EPSILON);
+        assert_eq!(sabr.alpha(0.0), 0.20);
+        assert_eq!(sabr.nu(3.0), 0.40);
+
+        assert!(SabrVolOfVolTermStructure::new(Vec::new()).is_err());
+        for point in [
+            SabrVolOfVolPoint {
+                expiry: 0.0,
+                alpha: 0.2,
+                nu: 0.4,
+            },
+            SabrVolOfVolPoint {
+                expiry: 1.0,
+                alpha: 0.0,
+                nu: 0.4,
+            },
+            SabrVolOfVolPoint {
+                expiry: 1.0,
+                alpha: 0.2,
+                nu: -0.4,
+            },
+        ] {
+            assert!(SabrVolOfVolTermStructure::new(vec![point]).is_err());
+        }
+        assert!(
+            SabrVolOfVolTermStructure::new(vec![
+                SabrVolOfVolPoint {
+                    expiry: 1.0,
+                    alpha: 0.2,
+                    nu: 0.4,
+                },
+                SabrVolOfVolPoint {
+                    expiry: 1.0,
+                    alpha: 0.3,
+                    nu: 0.5,
+                },
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn vix_selects_boundary_expiries_and_rejects_invalid_surfaces() {
+        let surface = FlatSurface {
+            vol: 0.20,
+            expiries: vec![20.0 / 365.0, 45.0 / 365.0, 90.0 / 365.0],
+            forward: 100.0,
+        };
+        let compact_grid = |target_days| VixSettings {
+            target_days,
+            strike_count: 12,        // Normalized to the next odd count.
+            log_moneyness_span: 0.1, // Normalized to the minimum span.
+        };
+
+        let below = vix_style_index_from_surface(&surface, -0.01, compact_grid(1.0)).unwrap();
+        assert_eq!(below.near_expiry, 20.0 / 365.0);
+        assert_eq!(below.next_expiry, 45.0 / 365.0);
+        assert!(below.index.is_finite());
+
+        let above = vix_style_index_from_surface(&surface, 0.01, compact_grid(365.0)).unwrap();
+        assert_eq!(above.near_expiry, 45.0 / 365.0);
+        assert_eq!(above.next_expiry, 90.0 / 365.0);
+        assert!(above.target_variance >= 0.0);
+
+        assert!(vix_style_index_from_surface(&surface, f64::NAN, compact_grid(30.0)).is_err());
+        assert!(vix_style_index_from_surface(&surface, 0.0, compact_grid(0.0)).is_err());
+        assert!(
+            vix_style_index_from_surface(
+                &FlatSurface {
+                    expiries: vec![0.5],
+                    ..surface.clone()
+                },
+                0.0,
+                compact_grid(30.0)
+            )
+            .is_err()
+        );
+        assert!(
+            vix_style_index_from_surface(
+                &FlatSurface {
+                    expiries: vec![0.5, 0.0],
+                    ..surface.clone()
+                },
+                0.0,
+                compact_grid(30.0)
+            )
+            .is_err()
+        );
+        assert!(
+            vix_style_index_from_surface(
+                &FlatSurface {
+                    expiries: vec![1.0, 0.5],
+                    ..surface.clone()
+                },
+                0.0,
+                compact_grid(30.0)
+            )
+            .unwrap_err()
+            .contains("strictly increasing")
+        );
+        assert!(
+            vix_style_index_from_surface(
+                &FlatSurface {
+                    forward: 0.0,
+                    ..surface.clone()
+                },
+                0.0,
+                compact_grid(30.0)
+            )
+            .is_err()
+        );
+        assert!(
+            vix_style_index_from_surface(
+                &FlatSurface {
+                    vol: f64::NAN,
+                    ..surface
+                },
+                0.0,
+                compact_grid(30.0)
+            )
+            .unwrap_err()
+            .contains("non-finite implied vol")
+        );
     }
 }

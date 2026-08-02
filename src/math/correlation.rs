@@ -682,6 +682,7 @@ pub fn copula_uniforms_to_normals(uniforms: &[f64], out_normals: &mut [f64]) -> 
 mod tests {
     use super::*;
     use crate::math::fast_rng::{FastRng, FastRngKind};
+    use approx::assert_relative_eq;
 
     #[test]
     fn higham_projection_repairs_non_psd_matrix() {
@@ -795,5 +796,371 @@ mod tests {
         .expect("t-copula sample");
 
         assert!(u.iter().all(|x| x.is_finite() && *x > 0.0 && *x < 1.0));
+    }
+
+    #[test]
+    fn one_factor_matrix_and_sampling_match_theoretical_moments() {
+        let loadings = vec![0.75, -0.4, 1.0];
+        let model = FactorCorrelationModel::OneFactor {
+            loadings: loadings.clone(),
+        };
+        assert_eq!(model.n_assets(), 3);
+        assert_eq!(model.n_factors(), 1);
+        model.validate().unwrap();
+
+        let expected = vec![
+            vec![1.0, -0.3, 0.75],
+            vec![-0.3, 1.0, -0.4],
+            vec![0.75, -0.4, 1.0],
+        ];
+        let actual = model.correlation_matrix().unwrap();
+        for (actual_row, expected_row) in actual.iter().zip(&expected) {
+            for (actual_entry, expected_entry) in actual_row.iter().zip(expected_row) {
+                assert_relative_eq!(*actual_entry, *expected_entry, epsilon = 2.0 * f64::EPSILON);
+            }
+        }
+
+        let n = 120_000usize;
+        let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 0xC0FF_EE11);
+        let mut sums = [0.0; 3];
+        let mut cross = [[0.0; 3]; 3];
+        let mut sample = [0.0; 3];
+        for _ in 0..n {
+            model
+                .sample_correlated_normals(&mut rng, &mut sample)
+                .unwrap();
+            for i in 0..3 {
+                sums[i] += sample[i];
+                for j in 0..3 {
+                    cross[i][j] += sample[i] * sample[j];
+                }
+            }
+        }
+
+        let n_f64 = n as f64;
+        let means = sums.map(|sum| sum / n_f64);
+        let mean_band = 6.0 / n_f64.sqrt();
+        for (i, mean) in means.iter().enumerate() {
+            assert!(mean.abs() < mean_band, "asset {i}: mean={mean}");
+        }
+        for i in 0..3 {
+            for j in 0..3 {
+                let covariance = cross[i][j] / n_f64 - means[i] * means[j];
+                let rho = expected[i][j];
+                // For jointly normal unit-variance variables,
+                // Var(XY) = 1 + rho^2.  Six standard errors gives a
+                // distribution-derived sampling budget, not a flat band.
+                let covariance_band = 6.0 * ((1.0 + rho * rho) / n_f64).sqrt();
+                assert!(
+                    (covariance - rho).abs() < covariance_band,
+                    "({i},{j}): covariance={covariance}, rho={rho}, band={covariance_band}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn factor_models_reject_every_shape_and_parameter_error() {
+        for model in [
+            FactorCorrelationModel::OneFactor { loadings: vec![] },
+            FactorCorrelationModel::OneFactor {
+                loadings: vec![f64::NAN],
+            },
+            FactorCorrelationModel::OneFactor {
+                loadings: vec![1.001],
+            },
+            FactorCorrelationModel::MultiFactor { loadings: vec![] },
+            FactorCorrelationModel::MultiFactor {
+                loadings: vec![vec![]],
+            },
+            FactorCorrelationModel::MultiFactor {
+                loadings: vec![vec![0.2], vec![0.1, 0.2]],
+            },
+            FactorCorrelationModel::MultiFactor {
+                loadings: vec![vec![f64::INFINITY]],
+            },
+            FactorCorrelationModel::MultiFactor {
+                loadings: vec![vec![0.8, 0.8]],
+            },
+        ] {
+            assert!(model.validate().is_err(), "model should fail: {model:?}");
+            assert!(model.correlation_matrix().is_err());
+        }
+
+        let one_factor = FactorCorrelationModel::OneFactor {
+            loadings: vec![0.4, 0.6],
+        };
+        let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 9);
+        assert!(
+            one_factor
+                .sample_correlated_normals(&mut rng, &mut [0.0])
+                .is_err()
+        );
+
+        let multi_factor = FactorCorrelationModel::MultiFactor {
+            loadings: vec![vec![0.5, 0.1], vec![-0.2, 0.7]],
+        };
+        assert_eq!(multi_factor.n_assets(), 2);
+        assert_eq!(multi_factor.n_factors(), 2);
+        let corr = multi_factor.correlation_matrix().unwrap();
+        assert_relative_eq!(corr[0][0], 1.0, epsilon = f64::EPSILON);
+        assert_relative_eq!(corr[0][1], -0.03, epsilon = f64::EPSILON);
+        assert_relative_eq!(corr[1][0], -0.03, epsilon = f64::EPSILON);
+        assert_relative_eq!(corr[1][1], 1.0, epsilon = f64::EPSILON);
+        let mut out = [0.0; 2];
+        multi_factor
+            .sample_correlated_normals(&mut rng, &mut out)
+            .unwrap();
+        assert!(out.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn correlation_stress_scenarios_match_sequential_arithmetic() {
+        let base = vec![
+            vec![1.0, 0.2, -0.4],
+            vec![0.2, 1.0, 0.7],
+            vec![-0.4, 0.7, 1.0],
+        ];
+        let stressed = apply_correlation_stress(
+            &base,
+            &[
+                CorrelationStressScenario::ScaleOffDiagonal { factor: 2.0 },
+                CorrelationStressScenario::AdditiveShift { shift: 0.1 },
+                CorrelationStressScenario::FloorOffDiagonal { floor: -0.6 },
+                CorrelationStressScenario::CapOffDiagonal { cap: 0.8 },
+                CorrelationStressScenario::OverridePair {
+                    i: 0,
+                    j: 2,
+                    value: -0.25,
+                },
+            ],
+            false,
+            PsdProjectionConfig::default(),
+        )
+        .unwrap();
+        let expected = [[1.0, 0.5, -0.25], [0.5, 1.0, 0.8], [-0.25, 0.8, 1.0]];
+        for (actual_row, expected_row) in stressed.iter().zip(expected) {
+            for (actual, expected) in actual_row.iter().zip(expected_row) {
+                assert_relative_eq!(*actual, expected, epsilon = 2.0 * f64::EPSILON);
+            }
+        }
+
+        let bad = vec![
+            vec![1.0, 0.95, 0.95],
+            vec![0.95, 1.0, -0.95],
+            vec![0.95, -0.95, 1.0],
+        ];
+        let repaired =
+            apply_correlation_stress(&bad, &[], true, PsdProjectionConfig::default()).unwrap();
+        assert!(is_positive_semidefinite(&repaired, 1.0e-8));
+        validate_correlation_matrix(&repaired, 3).unwrap();
+    }
+
+    #[test]
+    fn correlation_stress_rejects_invalid_scenario_parameters() {
+        let base = vec![vec![1.0, 0.2], vec![0.2, 1.0]];
+        let invalid = vec![
+            CorrelationStressScenario::ScaleOffDiagonal { factor: f64::NAN },
+            CorrelationStressScenario::AdditiveShift {
+                shift: f64::INFINITY,
+            },
+            CorrelationStressScenario::FloorOffDiagonal { floor: -1.01 },
+            CorrelationStressScenario::CapOffDiagonal { cap: 1.01 },
+            CorrelationStressScenario::OverridePair {
+                i: 0,
+                j: 0,
+                value: 0.2,
+            },
+            CorrelationStressScenario::OverridePair {
+                i: 0,
+                j: 2,
+                value: 0.2,
+            },
+            CorrelationStressScenario::OverridePair {
+                i: 0,
+                j: 1,
+                value: f64::NAN,
+            },
+        ];
+        for scenario in invalid {
+            assert!(
+                apply_correlation_stress(
+                    &base,
+                    &[scenario],
+                    false,
+                    PsdProjectionConfig::default(),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn matrix_validation_repair_cholesky_and_multiplication_cover_boundaries() {
+        for (matrix, n_assets) in [
+            (vec![], 1),
+            (vec![vec![1.0], vec![0.0]], 2),
+            (vec![vec![0.9, 0.0], vec![0.0, 1.0]], 2),
+            (vec![vec![1.0, 1.1], vec![1.1, 1.0]], 2),
+            (vec![vec![1.0, 0.2], vec![0.3, 1.0]], 2),
+        ] {
+            assert!(validate_correlation_matrix(&matrix, n_assets).is_err());
+        }
+        assert_eq!(min_eigenvalue_symmetric(&[]), None);
+        assert_eq!(min_eigenvalue_symmetric(&[vec![1.0, 0.0]]), None);
+        assert!(!is_positive_semidefinite(&[], 1.0e-12));
+        assert!(nearest_correlation_matrix_higham(&[], PsdProjectionConfig::default()).is_err());
+        assert!(
+            nearest_correlation_matrix_higham(
+                &[vec![1.0, 1.0e7], vec![1.0e7, 1.0]],
+                PsdProjectionConfig::default(),
+            )
+            .is_err()
+        );
+
+        let valid = vec![vec![1.0, 0.25], vec![0.25, 1.0]];
+        let (unchanged, was_repaired) =
+            validate_or_repair_correlation_matrix(&valid, 2, PsdProjectionConfig::default())
+                .unwrap();
+        assert_eq!(unchanged, valid);
+        assert!(!was_repaired);
+
+        let bad = vec![
+            vec![1.0, 0.95, 0.95],
+            vec![0.95, 1.0, -0.95],
+            vec![0.95, -0.95, 1.0],
+        ];
+        let (_, was_repaired) =
+            validate_or_repair_correlation_matrix(&bad, 3, PsdProjectionConfig::default()).unwrap();
+        assert!(was_repaired);
+
+        assert!(cholesky_lower_psd(&[], 1.0e-12).is_none());
+        assert!(cholesky_lower_psd(&[vec![1.0, 0.0]], 1.0e-12).is_none());
+        assert!(cholesky_lower_psd(&[vec![1.0, 2.0], vec![2.0, 1.0]], 1.0e-12).is_none());
+
+        let lower = vec![
+            vec![2.0, 0.0, 0.0],
+            vec![3.0, 4.0, 0.0],
+            vec![-1.0, 2.0, 5.0],
+        ];
+        let mut product = [0.0; 3];
+        correlate_normals(&lower, &[0.5, -1.0, 2.0], &mut product);
+        assert_eq!(product, [1.0, -2.5, 7.5]);
+    }
+
+    #[test]
+    fn gaussian_and_student_t_copula_transforms_cover_success_and_errors() {
+        let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 73);
+        let normals = [-2.0, 0.0, 1.5];
+        let mut uniforms = [0.0; 3];
+        map_copula_normals_to_uniforms(&normals, CopulaFamily::Gaussian, &mut rng, &mut uniforms)
+            .unwrap();
+        let mut round_trip = [0.0; 3];
+        copula_uniforms_to_normals(&uniforms, &mut round_trip).unwrap();
+        for (actual, expected) in round_trip.iter().zip(normals) {
+            // The inverse uses the repository's documented BSM rational
+            // approximation, whose measured absolute error is below 5e-9.
+            assert_relative_eq!(*actual, expected, epsilon = 5.0e-9);
+        }
+
+        let mut extremes = [0.0; 2];
+        map_copula_normals_to_uniforms(
+            &[f64::NEG_INFINITY, f64::INFINITY],
+            CopulaFamily::Gaussian,
+            &mut rng,
+            &mut extremes,
+        )
+        .unwrap();
+        assert_eq!(extremes, [COPULA_UNIFORM_MIN, COPULA_UNIFORM_MAX]);
+        copula_uniforms_to_normals(&extremes, &mut [0.0; 2]).unwrap();
+
+        let mut t_uniforms = [0.0; 2];
+        map_copula_normals_to_uniforms(
+            &[0.0, 0.0],
+            CopulaFamily::StudentT {
+                degrees_of_freedom: 2,
+            },
+            &mut rng,
+            &mut t_uniforms,
+        )
+        .unwrap();
+        for uniform in t_uniforms {
+            assert_relative_eq!(uniform, 0.5, epsilon = 2.0 * f64::EPSILON);
+        }
+        assert!(
+            map_copula_normals_to_uniforms(
+                &[0.0],
+                CopulaFamily::StudentT {
+                    degrees_of_freedom: 1,
+                },
+                &mut rng,
+                &mut [0.0],
+            )
+            .is_err()
+        );
+        assert!(copula_uniforms_to_normals(&[0.5], &mut [0.0; 2]).is_err());
+
+        let identity = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert!(
+            sample_copula_uniforms_from_cholesky(
+                &identity,
+                CopulaFamily::Gaussian,
+                &mut rng,
+                &mut [0.0],
+            )
+            .is_err()
+        );
+        let mut sampled = [0.0; 2];
+        sample_copula_uniforms_from_cholesky(
+            &identity,
+            CopulaFamily::Gaussian,
+            &mut rng,
+            &mut sampled,
+        )
+        .unwrap();
+        assert!(sampled.iter().all(|u| *u > 0.0 && *u < 1.0));
+
+        let factor_model = FactorCorrelationModel::OneFactor {
+            loadings: vec![0.3, -0.6],
+        };
+        assert!(
+            sample_copula_uniforms_from_factor_model(
+                &factor_model,
+                CopulaFamily::Gaussian,
+                &mut rng,
+                &mut [0.0],
+            )
+            .is_err()
+        );
+        sample_copula_uniforms_from_factor_model(
+            &factor_model,
+            CopulaFamily::Gaussian,
+            &mut rng,
+            &mut sampled,
+        )
+        .unwrap();
+        assert!(sampled.iter().all(|u| *u > 0.0 && *u < 1.0));
+    }
+
+    #[test]
+    fn fractional_shape_gamma_boosting_matches_chi_square_moments() {
+        // nu < 2 exercises the Gamma(shape < 1) boosting identity used by the
+        // general chi-square sampler (the copula API itself restricts nu>=2).
+        let nu = 0.75_f64;
+        let n = 160_000usize;
+        let mut rng = FastRng::from_seed(FastRngKind::Xoshiro256PlusPlus, 0x51A9_E123);
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        for _ in 0..n {
+            let sample = sample_chi_square(nu, &mut rng);
+            sum += sample;
+            sum_sq += sample * sample;
+        }
+        let mean = sum / n as f64;
+        let variance = sum_sq / n as f64 - mean * mean;
+        let mean_band = 6.0 * (2.0 * nu / n as f64).sqrt();
+        let variance_band = 6.0 * ((8.0 * nu * nu + 48.0 * nu) / n as f64).sqrt();
+        assert!((mean - nu).abs() < mean_band);
+        assert!((variance - 2.0 * nu).abs() < variance_band);
     }
 }

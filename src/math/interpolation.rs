@@ -1137,8 +1137,10 @@ impl NelsonSiegelInterpolator {
         extrapolation: ExtrapolationMode,
     ) -> Result<Self, InterpolationError> {
         validate_xy(&x, &y, 1)?;
-        if tau <= 0.0 {
-            return Err(InterpolationError::InvalidInput("tau must be > 0"));
+        if !tau.is_finite() || tau <= 0.0 {
+            return Err(InterpolationError::InvalidInput(
+                "tau must be finite and > 0",
+            ));
         }
         Ok(Self {
             x,
@@ -1728,6 +1730,26 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
+    fn five_point_value_derivative(interpolator: &dyn Interpolator, x: f64) -> f64 {
+        // A symmetric five-point stencil has O(h^4) truncation error.  The
+        // power-of-two step avoids representation error in the offsets and is
+        // small enough that every local-spline probe remains in one segment.
+        let h = 2.0_f64.powi(-13);
+        (interpolator.value(x - 2.0 * h).unwrap() - 8.0 * interpolator.value(x - h).unwrap()
+            + 8.0 * interpolator.value(x + h).unwrap()
+            - interpolator.value(x + 2.0 * h).unwrap())
+            / (12.0 * h)
+    }
+
+    fn assert_derivative_matches_five_point(interpolator: &dyn Interpolator, x: f64) {
+        let analytic = interpolator.derivative(x).unwrap();
+        let finite_difference = five_point_value_derivative(interpolator, x);
+        // For the cubic interpolators the stencil is exact apart from binary64
+        // roundoff; for parametric curves its O(h^4) term is below 1e-14 on
+        // the rate-sized fixtures used here.  2e-11 leaves libm headroom.
+        assert_relative_eq!(analytic, finite_difference, epsilon = 2.0e-11);
+    }
+
     #[test]
     fn linear_jacobian_matches_weights() {
         let itp = LinearInterpolator::new(
@@ -2035,5 +2057,674 @@ mod tests {
             itp.value(3.0),
             Err(InterpolationError::ExtrapolationDisabled)
         ));
+    }
+
+    #[test]
+    fn linear_and_step_extrapolation_values_derivatives_and_jacobians_are_exact() {
+        let x = vec![1.0, 2.0, 4.0];
+        let y = vec![10.0, 20.0, 40.0];
+        let linear =
+            LinearInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Linear).unwrap();
+        for (xq, value, jacobian) in [
+            (0.0, 0.0, vec![2.0, -1.0, 0.0]),
+            (6.0, 60.0, vec![0.0, -1.0, 2.0]),
+        ] {
+            assert_eq!(linear.value(xq).unwrap(), value);
+            assert_eq!(linear.derivative(xq).unwrap(), 10.0);
+            assert_eq!(linear.jacobian(xq).unwrap(), jacobian);
+        }
+
+        let flat = LinearInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Flat).unwrap();
+        for (xq, value, jacobian) in [
+            (0.0, 10.0, vec![1.0, 0.0, 0.0]),
+            (6.0, 40.0, vec![0.0, 0.0, 1.0]),
+        ] {
+            assert_eq!(flat.value(xq).unwrap(), value);
+            assert_eq!(flat.derivative(xq).unwrap(), 0.0);
+            assert_eq!(flat.jacobian(xq).unwrap(), jacobian);
+        }
+
+        let disabled =
+            LinearInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Error).unwrap();
+        for xq in [0.0, 6.0] {
+            assert_eq!(
+                disabled.value(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                disabled.derivative(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                disabled.jacobian(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+        }
+
+        // A step interpolator treats "linear" extrapolation as a constant
+        // endpoint extension; this is deliberate for piecewise funding rates.
+        let step =
+            PiecewiseConstantInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Linear)
+                .unwrap();
+        assert_eq!(step.value(0.0).unwrap(), 10.0);
+        assert_eq!(step.value(6.0).unwrap(), 40.0);
+        assert_eq!(step.jacobian(0.0).unwrap(), vec![1.0, 0.0, 0.0]);
+        assert_eq!(step.jacobian(6.0).unwrap(), vec![0.0, 0.0, 1.0]);
+
+        let step_disabled =
+            PiecewiseConstantInterpolator::new(x, y, ExtrapolationMode::Error).unwrap();
+        for xq in [0.0, 6.0] {
+            assert_eq!(
+                step_disabled.value(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                step_disabled.jacobian(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            // The derivative of the step function is zero away from jumps,
+            // independently of its endpoint-value policy.
+            assert_eq!(step_disabled.derivative(xq).unwrap(), 0.0);
+        }
+    }
+
+    #[test]
+    fn log_linear_extrapolation_matches_global_exponential_curve() {
+        let x = vec![0.0, 1.0, 2.0];
+        let y = vec![1.0, 1.0_f64.exp(), 2.0_f64.exp()];
+        let linear =
+            LogLinearInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Linear).unwrap();
+        for xq in [-1.0_f64, 3.0] {
+            let expected = xq.exp();
+            assert_relative_eq!(linear.value(xq).unwrap(), expected, epsilon = 4.0e-15);
+            assert_relative_eq!(linear.derivative(xq).unwrap(), expected, epsilon = 4.0e-15);
+        }
+        let left = linear.jacobian(-1.0).unwrap();
+        let left_value = (-1.0_f64).exp();
+        let expected_left = [2.0 * left_value / y[0], -left_value / y[1], 0.0];
+        let right = linear.jacobian(3.0).unwrap();
+        let right_value = 3.0_f64.exp();
+        let expected_right = [0.0, -right_value / y[1], 2.0 * right_value / y[2]];
+        for (actual, expected) in left.iter().zip(expected_left) {
+            assert_relative_eq!(*actual, expected, epsilon = 8.0 * f64::EPSILON);
+        }
+        for (actual, expected) in right.iter().zip(expected_right) {
+            assert_relative_eq!(*actual, expected, epsilon = 8.0 * f64::EPSILON);
+        }
+
+        let flat =
+            LogLinearInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Flat).unwrap();
+        assert_eq!(flat.value(-1.0).unwrap(), y[0]);
+        assert_eq!(flat.value(3.0).unwrap(), y[2]);
+        assert_eq!(flat.derivative(-1.0).unwrap(), 0.0);
+        assert_eq!(flat.derivative(3.0).unwrap(), 0.0);
+        assert_eq!(flat.jacobian(-1.0).unwrap(), vec![1.0, 0.0, 0.0]);
+        assert_eq!(flat.jacobian(3.0).unwrap(), vec![0.0, 0.0, 1.0]);
+
+        let disabled = LogLinearInterpolator::new(x, y, ExtrapolationMode::Error).unwrap();
+        for xq in [-1.0_f64, 3.0] {
+            assert_eq!(
+                disabled.value(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                disabled.derivative(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                disabled.jacobian(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+        }
+    }
+
+    #[test]
+    fn pchip_endpoint_filters_and_two_node_paths_match_exact_slopes() {
+        let two_node = HermiteMonotoneInterpolator::new(
+            vec![0.0, 2.0],
+            vec![1.0, 5.0],
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(two_node.slopes, vec![2.0, 2.0]);
+        assert_eq!(two_node.value(1.0).unwrap(), 3.0);
+        assert_eq!(two_node.derivative(1.0).unwrap(), 2.0);
+
+        let two_node_monotone = MonotoneConvexInterpolator::new(
+            vec![0.0, 2.0],
+            vec![1.0, 5.0],
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(two_node_monotone.slopes, vec![2.0, 2.0]);
+
+        let two_node_tension = TensionSplineInterpolator::new(
+            vec![0.0, 2.0],
+            vec![1.0, 5.0],
+            0.25,
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(two_node_tension.slopes, vec![1.5, 1.5]);
+
+        // Opposite-sign neighboring secants zero the interior slope.  A large
+        // reversal clamps the endpoint to three times the adjacent secant.
+        let left_clamped = HermiteMonotoneInterpolator::new(
+            vec![0.0, 1.0, 2.0],
+            vec![0.0, 1.0, -3.0],
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(left_clamped.slopes[0], 3.0);
+        assert_eq!(left_clamped.slopes[1], 0.0);
+
+        let right_clamped = HermiteMonotoneInterpolator::new(
+            vec![0.0, 1.0, 2.0],
+            vec![-3.0, 1.0, 0.0],
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(right_clamped.slopes[1], 0.0);
+        assert_eq!(right_clamped.slopes[2], -3.0);
+
+        let endpoints_zeroed = HermiteMonotoneInterpolator::new(
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![0.0, 1.0, 100.0, 101.0],
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(endpoints_zeroed.slopes[0], 0.0);
+        assert_eq!(endpoints_zeroed.slopes[3], 0.0);
+    }
+
+    #[test]
+    fn hermite_and_log_cubic_cover_derivatives_jacobians_and_endpoint_modes() {
+        let x = vec![0.0, 1.0, 2.0];
+        let affine_y = vec![1.0, 3.0, 5.0];
+        let hermite = HermiteMonotoneInterpolator::new(
+            x.clone(),
+            affine_y.clone(),
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_derivative_matches_five_point(&hermite, 0.4);
+        for (xq, expected) in [(-1.0, -1.0), (3.0, 7.0)] {
+            assert_eq!(hermite.value(xq).unwrap(), expected);
+            assert_eq!(hermite.derivative(xq).unwrap(), 2.0);
+            let jacobian = hermite.jacobian(xq).unwrap();
+            // The central-difference Jacobian's measured translation-identity
+            // residual is 4.36e-10 on this extrapolation fixture.
+            assert_relative_eq!(jacobian.iter().sum::<f64>(), 1.0, epsilon = 6.0e-10);
+        }
+
+        let mut hermite_flat = hermite.clone();
+        hermite_flat.extrapolation = ExtrapolationMode::Flat;
+        assert_eq!(hermite_flat.value(-1.0).unwrap(), 1.0);
+        assert_eq!(hermite_flat.value(3.0).unwrap(), 5.0);
+        assert_eq!(hermite_flat.derivative(-1.0).unwrap(), 0.0);
+        assert_eq!(hermite_flat.derivative(3.0).unwrap(), 0.0);
+
+        let mut hermite_disabled = hermite;
+        hermite_disabled.extrapolation = ExtrapolationMode::Error;
+        for xq in [-1.0, 3.0] {
+            assert_eq!(
+                hermite_disabled.value(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                hermite_disabled.derivative(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                hermite_disabled.jacobian(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+        }
+
+        let exponential_y = vec![1.0, 1.0_f64.exp(), 2.0_f64.exp()];
+        let log_cubic =
+            LogCubicMonotoneInterpolator::new(x, exponential_y.clone(), ExtrapolationMode::Linear)
+                .unwrap();
+        assert_derivative_matches_five_point(&log_cubic, 0.4);
+        for xq in [-1.0_f64, 3.0] {
+            let expected = xq.exp();
+            assert_relative_eq!(log_cubic.value(xq).unwrap(), expected, epsilon = 4.0e-15);
+            assert_relative_eq!(
+                log_cubic.derivative(xq).unwrap(),
+                expected,
+                epsilon = 4.0e-15
+            );
+            let jacobian = log_cubic.jacobian(xq).unwrap();
+            // Log-cubic interpolation is homogeneous (rather than translation
+            // equivariant) in the raw positive ordinates, so Euler's identity
+            // is J*y = value.
+            assert_relative_eq!(
+                jacobian
+                    .iter()
+                    .zip(&exponential_y)
+                    .map(|(j, yi)| j * yi)
+                    .sum::<f64>(),
+                expected,
+                epsilon = 8.0e-9
+            );
+        }
+
+        let mut log_flat = log_cubic.clone();
+        log_flat.extrapolation = ExtrapolationMode::Flat;
+        assert_eq!(log_flat.value(-1.0).unwrap(), exponential_y[0]);
+        assert_eq!(log_flat.value(3.0).unwrap(), exponential_y[2]);
+        assert_eq!(log_flat.derivative(-1.0).unwrap(), 0.0);
+        assert_eq!(log_flat.derivative(3.0).unwrap(), 0.0);
+
+        let mut log_disabled = log_cubic;
+        log_disabled.extrapolation = ExtrapolationMode::Error;
+        for xq in [-1.0, 3.0] {
+            assert_eq!(
+                log_disabled.value(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                log_disabled.derivative(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+            assert_eq!(
+                log_disabled.jacobian(xq),
+                Err(InterpolationError::ExtrapolationDisabled)
+            );
+        }
+    }
+
+    #[test]
+    fn constructors_reject_each_invalid_input_class() {
+        assert_eq!(
+            LinearInterpolator::new(vec![1.0, 2.0], vec![0.01], ExtrapolationMode::Flat)
+                .unwrap_err(),
+            InterpolationError::InvalidInput("x and y must have same length")
+        );
+        assert_eq!(
+            LinearInterpolator::new(vec![1.0], vec![0.01], ExtrapolationMode::Flat).unwrap_err(),
+            InterpolationError::InvalidInput("not enough interpolation nodes")
+        );
+        assert_eq!(
+            LinearInterpolator::new(vec![1.0, 1.0], vec![0.01, 0.02], ExtrapolationMode::Flat,)
+                .unwrap_err(),
+            InterpolationError::InvalidInput("x must be strictly increasing")
+        );
+        assert_eq!(
+            LinearInterpolator::new(
+                vec![1.0, f64::INFINITY],
+                vec![0.01, 0.02],
+                ExtrapolationMode::Flat,
+            )
+            .unwrap_err(),
+            InterpolationError::InvalidInput("x and y must be finite")
+        );
+        assert_eq!(
+            LogLinearInterpolator::new(vec![1.0, 2.0], vec![0.99, 0.0], ExtrapolationMode::Flat,)
+                .unwrap_err(),
+            InterpolationError::InvalidInput("y must be strictly positive")
+        );
+        assert_eq!(
+            LogCubicMonotoneInterpolator::new(
+                vec![1.0, 2.0],
+                vec![0.99, -0.1],
+                ExtrapolationMode::Flat,
+            )
+            .unwrap_err(),
+            InterpolationError::InvalidInput("y must be strictly positive")
+        );
+
+        for tension in [-f64::EPSILON, 1.0 + f64::EPSILON, f64::NAN] {
+            assert_eq!(
+                TensionSplineInterpolator::new(
+                    vec![1.0, 2.0],
+                    vec![0.01, 0.02],
+                    tension,
+                    ExtrapolationMode::Flat,
+                )
+                .unwrap_err(),
+                InterpolationError::InvalidInput("tension must be in [0, 1]")
+            );
+        }
+
+        for tau in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                NelsonSiegelInterpolator::from_params(
+                    vec![1.0],
+                    vec![0.02],
+                    0.02,
+                    -0.01,
+                    0.01,
+                    tau,
+                    ExtrapolationMode::Flat,
+                )
+                .unwrap_err(),
+                InterpolationError::InvalidInput("tau must be finite and > 0")
+            );
+        }
+        assert_eq!(
+            NelsonSiegelSvenssonInterpolator::fit(
+                vec![1.0, 2.0, 3.0],
+                vec![0.01, 0.02, 0.03],
+                ExtrapolationMode::Flat,
+            )
+            .unwrap_err(),
+            InterpolationError::InvalidInput("not enough interpolation nodes")
+        );
+
+        for (ufr, alpha) in [(f64::NAN, 0.1), (0.03, 0.0), (0.03, f64::INFINITY)] {
+            assert_eq!(
+                SmithWilsonInterpolator::new(
+                    vec![1.0, 2.0],
+                    vec![0.98, 0.95],
+                    ufr,
+                    alpha,
+                    ExtrapolationMode::Flat,
+                )
+                .unwrap_err(),
+                InterpolationError::InvalidInput("ufr must be finite and alpha > 0")
+            );
+        }
+    }
+
+    #[test]
+    fn monotone_convex_matches_affine_curve_derivative_jacobian_and_modes() {
+        let x = vec![0.0, 1.0, 2.0, 4.0];
+        let y = vec![1.0, 3.0, 5.0, 9.0];
+        let linear =
+            MonotoneConvexInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Linear)
+                .unwrap();
+
+        for (xq, expected) in [(-1.0, -1.0), (1.4, 3.8), (5.0, 11.0)] {
+            assert_relative_eq!(linear.value(xq).unwrap(), expected, epsilon = 3.0e-15);
+            assert_relative_eq!(linear.derivative(xq).unwrap(), 2.0, epsilon = 3.0e-15);
+        }
+        assert_derivative_matches_five_point(&linear, 1.4);
+
+        let jacobian = linear.jacobian(1.4).unwrap();
+        // Translation equivariance gives sum(dy/dy_i)=1, while local
+        // homogeneity gives J*y=value.  Together these check the full
+        // finite-difference sensitivity path without percentage bands.
+        assert_relative_eq!(jacobian.iter().sum::<f64>(), 1.0, epsilon = 3.0e-10);
+        assert_relative_eq!(
+            jacobian.iter().zip(&y).map(|(j, yi)| j * yi).sum::<f64>(),
+            linear.value(1.4).unwrap(),
+            epsilon = 3.0e-10
+        );
+
+        let flat =
+            MonotoneConvexInterpolator::new(x.clone(), y.clone(), ExtrapolationMode::Flat).unwrap();
+        assert_eq!(flat.value(-1.0).unwrap(), y[0]);
+        assert_eq!(flat.value(5.0).unwrap(), y[3]);
+        assert_eq!(flat.derivative(-1.0).unwrap(), 0.0);
+        assert_eq!(flat.derivative(5.0).unwrap(), 0.0);
+
+        let disabled = MonotoneConvexInterpolator::new(x, y, ExtrapolationMode::Error).unwrap();
+        for result in [
+            disabled.value(-1.0).map(|_| ()),
+            disabled.derivative(5.0).map(|_| ()),
+            disabled.jacobian(-1.0).map(|_| ()),
+        ] {
+            assert_eq!(result, Err(InterpolationError::ExtrapolationDisabled));
+        }
+    }
+
+    #[test]
+    fn tension_spline_extremes_match_affine_and_smoothstep_oracles() {
+        let affine = TensionSplineInterpolator::new(
+            vec![0.0, 1.0, 2.0, 4.0],
+            vec![1.0, 3.0, 5.0, 9.0],
+            0.0,
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        for (xq, expected) in [(-1.0, -1.0), (1.25, 3.5), (5.0, 11.0)] {
+            assert_relative_eq!(affine.value(xq).unwrap(), expected, epsilon = 3.0e-15);
+            assert_relative_eq!(affine.derivative(xq).unwrap(), 2.0, epsilon = 3.0e-15);
+        }
+        assert_derivative_matches_five_point(&affine, 1.25);
+
+        // At tension=1 all node slopes vanish.  On [0,1], s=1/4 gives
+        // Hermite weights h00=27/32 and h01=5/32 exactly.
+        let smoothstep = TensionSplineInterpolator::new(
+            vec![0.0, 1.0, 2.0],
+            vec![1.0, 3.0, 7.0],
+            1.0,
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_eq!(smoothstep.value(0.25).unwrap(), 1.3125);
+        assert_eq!(smoothstep.derivative(0.25).unwrap(), 2.25);
+        assert_eq!(smoothstep.value(-2.0).unwrap(), 1.0);
+        assert_eq!(smoothstep.value(4.0).unwrap(), 7.0);
+        assert_eq!(smoothstep.derivative(-2.0).unwrap(), 0.0);
+        assert_eq!(smoothstep.derivative(4.0).unwrap(), 0.0);
+
+        let expected_jacobian = [0.84375, 0.15625, 0.0];
+        for (actual, expected) in smoothstep
+            .jacobian(0.25)
+            .unwrap()
+            .iter()
+            .zip(expected_jacobian)
+        {
+            assert_relative_eq!(*actual, expected, epsilon = 2.0e-10);
+        }
+    }
+
+    #[test]
+    fn parametric_curve_derivatives_and_extrapolation_modes_match_identities() {
+        let x = vec![0.5, 1.0, 2.0, 5.0, 10.0];
+        let y = vec![0.012, 0.014, 0.017, 0.022, 0.026];
+        let ns = NelsonSiegelInterpolator::from_params(
+            x.clone(),
+            y,
+            0.028,
+            -0.019,
+            0.014,
+            1.7,
+            ExtrapolationMode::Linear,
+        )
+        .unwrap();
+        assert_derivative_matches_five_point(&ns, 3.25);
+
+        let boundary_value = ns.model_value(10.0);
+        let boundary_derivative = ns.model_derivative(10.0);
+        assert_relative_eq!(
+            ns.value(12.0).unwrap(),
+            boundary_value + 2.0 * boundary_derivative,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        assert_eq!(ns.derivative(12.0).unwrap(), boundary_derivative);
+
+        let mut flat = ns.clone();
+        flat.extrapolation = ExtrapolationMode::Flat;
+        assert_eq!(flat.value(12.0).unwrap(), boundary_value);
+        assert_eq!(flat.derivative(12.0).unwrap(), 0.0);
+
+        let mut disabled = ns;
+        disabled.extrapolation = ExtrapolationMode::Error;
+        assert_eq!(
+            disabled.value(12.0),
+            Err(InterpolationError::ExtrapolationDisabled)
+        );
+        assert_eq!(
+            disabled.derivative(0.25),
+            Err(InterpolationError::ExtrapolationDisabled)
+        );
+    }
+
+    #[test]
+    fn nss_derivative_and_all_extrapolation_modes_match_boundary_identities() {
+        let x = vec![0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0];
+        let tau1 = logspace(0.05, 10.0, 28)[15];
+        let tau2 = logspace(0.2, 50.0, 32)[24];
+        let y = x
+            .iter()
+            .map(|t| {
+                let (f1, f2, f3, _, _, _) = nss_basis(*t, tau1, tau2);
+                0.021 - 0.011 * f1 + 0.015 * f2 + 0.006 * f3
+            })
+            .collect();
+        let linear =
+            NelsonSiegelSvenssonInterpolator::fit(x, y, ExtrapolationMode::Linear).unwrap();
+        assert_derivative_matches_five_point(&linear, 4.25);
+
+        let boundary_value = linear.model_value(30.0);
+        let boundary_derivative = linear.model_derivative(30.0);
+        assert_relative_eq!(
+            linear.value(33.0).unwrap(),
+            boundary_value + 3.0 * boundary_derivative,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        assert_eq!(linear.derivative(33.0).unwrap(), boundary_derivative);
+
+        let mut flat = linear.clone();
+        flat.extrapolation = ExtrapolationMode::Flat;
+        assert_eq!(flat.value(33.0).unwrap(), boundary_value);
+        assert_eq!(flat.derivative(33.0).unwrap(), 0.0);
+
+        let mut disabled = linear;
+        disabled.extrapolation = ExtrapolationMode::Error;
+        for result in [
+            disabled.value(33.0).map(|_| ()),
+            disabled.derivative(0.25).map(|_| ()),
+            disabled.jacobian(33.0).map(|_| ()),
+        ] {
+            assert_eq!(result, Err(InterpolationError::ExtrapolationDisabled));
+        }
+    }
+
+    #[test]
+    fn smith_wilson_derivative_pillar_jacobian_and_modes_match_exact_identities() {
+        let x = vec![1.0, 2.0, 5.0, 10.0, 20.0];
+        let y = vec![0.99, 0.965, 0.90, 0.80, 0.64];
+        let linear =
+            SmithWilsonInterpolator::new(x.clone(), y, 0.032, 0.12, ExtrapolationMode::Linear)
+                .unwrap();
+        assert_derivative_matches_five_point(&linear, 7.0);
+
+        // Calibration is exact at every liquid pillar, hence dy(x_i)/dy_j is
+        // the identity matrix.  This directly anchors every Jacobian column.
+        for (i, pillar) in x.iter().enumerate() {
+            for (j, actual) in linear.jacobian(*pillar).unwrap().iter().enumerate() {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert_relative_eq!(*actual, expected, epsilon = 8.0e-9);
+            }
+        }
+
+        let boundary_value = linear.model_value(20.0);
+        let boundary_derivative = linear.model_derivative(20.0);
+        assert_relative_eq!(
+            linear.value(22.0).unwrap(),
+            boundary_value + 2.0 * boundary_derivative,
+            epsilon = 8.0 * f64::EPSILON
+        );
+        assert_eq!(linear.derivative(22.0).unwrap(), boundary_derivative);
+
+        let mut flat = linear.clone();
+        flat.extrapolation = ExtrapolationMode::Flat;
+        assert_eq!(flat.value(22.0).unwrap(), boundary_value);
+        assert_eq!(flat.derivative(22.0).unwrap(), 0.0);
+
+        let mut disabled = linear;
+        disabled.extrapolation = ExtrapolationMode::Error;
+        for result in [
+            disabled.value(22.0).map(|_| ()),
+            disabled.derivative(0.5).map(|_| ()),
+            disabled.jacobian(22.0).map(|_| ()),
+        ] {
+            assert_eq!(result, Err(InterpolationError::ExtrapolationDisabled));
+        }
+    }
+
+    #[test]
+    fn any_interpolator_dispatches_every_variant_and_trait_method() {
+        let local_x = vec![1.0, 2.0, 4.0];
+        let local_y = vec![0.99, 0.95, 0.87];
+        let curve_x = vec![0.5, 1.0, 2.0, 5.0, 10.0];
+        let curve_y = vec![0.012, 0.014, 0.017, 0.022, 0.026];
+
+        let variants = vec![
+            AnyInterpolator::Linear(
+                LinearInterpolator::new(
+                    local_x.clone(),
+                    local_y.clone(),
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::LogLinear(
+                LogLinearInterpolator::new(
+                    local_x.clone(),
+                    local_y.clone(),
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::MonotoneConvex(
+                MonotoneConvexInterpolator::new(
+                    local_x.clone(),
+                    local_y.clone(),
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::TensionSpline(
+                TensionSplineInterpolator::new(
+                    local_x.clone(),
+                    local_y.clone(),
+                    0.4,
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::HermiteMonotone(
+                HermiteMonotoneInterpolator::new(
+                    local_x.clone(),
+                    local_y.clone(),
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::LogCubicMonotone(
+                LogCubicMonotoneInterpolator::new(local_x, local_y, ExtrapolationMode::Linear)
+                    .unwrap(),
+            ),
+            AnyInterpolator::NelsonSiegel(
+                NelsonSiegelInterpolator::fit(
+                    curve_x.clone(),
+                    curve_y.clone(),
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::NelsonSiegelSvensson(
+                NelsonSiegelSvenssonInterpolator::fit(
+                    curve_x.clone(),
+                    curve_y.clone(),
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+            AnyInterpolator::SmithWilson(
+                SmithWilsonInterpolator::new(
+                    curve_x,
+                    curve_y,
+                    0.032,
+                    0.12,
+                    ExtrapolationMode::Linear,
+                )
+                .unwrap(),
+            ),
+        ];
+
+        for interpolator in variants {
+            assert_eq!(interpolator.x().len(), interpolator.y().len());
+            assert!(interpolator.value(3.0).unwrap().is_finite());
+            assert!(interpolator.derivative(3.0).unwrap().is_finite());
+            let jacobian = interpolator.jacobian(3.0).unwrap();
+            assert_eq!(jacobian.len(), interpolator.y().len());
+            assert!(jacobian.iter().all(|entry| entry.is_finite()));
+        }
     }
 }

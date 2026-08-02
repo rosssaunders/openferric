@@ -210,8 +210,11 @@ impl VolSurfaceBuilder {
     }
 
     pub fn build(&self) -> Result<BuiltVolSurface, String> {
-        if self.spot <= 0.0 {
-            return Err("spot must be > 0".to_string());
+        if !self.spot.is_finite() || self.spot <= 0.0 {
+            return Err("spot must be finite and > 0".to_string());
+        }
+        if !self.rate.is_finite() {
+            return Err("rate must be finite".to_string());
         }
 
         if self.quotes.is_empty() {
@@ -228,14 +231,14 @@ impl VolSurfaceBuilder {
         let mut grouped: Vec<(f64, Vec<MarketOptionQuote>)> = Vec::new();
 
         for quote in sorted_quotes {
-            if quote.strike <= 0.0 {
-                return Err("quote strike must be > 0".to_string());
+            if !quote.strike.is_finite() || quote.strike <= 0.0 {
+                return Err("quote strike must be finite and > 0".to_string());
             }
-            if quote.expiry <= 0.0 {
-                return Err("quote expiry must be > 0".to_string());
+            if !quote.expiry.is_finite() || quote.expiry <= 0.0 {
+                return Err("quote expiry must be finite and > 0".to_string());
             }
-            if quote.price <= 0.0 {
-                return Err("quote price must be > 0".to_string());
+            if !quote.price.is_finite() || quote.price <= 0.0 {
+                return Err("quote price must be finite and > 0".to_string());
             }
 
             if let Some((t, bucket)) = grouped.last_mut()
@@ -318,7 +321,32 @@ impl VolSurfaceBuilder {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
+
+    fn independent_flat_quotes() -> Vec<MarketOptionQuote> {
+        // SciPy 1.17.1 `special.ndtr` Black-Scholes premiums for S=100,
+        // r=1%, q=0 and sigma=25% (same independently generated grid as the
+        // flagship recovery test below, reduced to two strikes per slice).
+        [
+            (80.0, 0.5, 21.129_603_912_480_505),
+            (120.0, 0.5, 1.595_979_359_423_136_4),
+            (80.0, 1.0, 22.890_064_143_625_56),
+            (120.0, 1.0, 3.947_154_079_494_567),
+        ]
+        .into_iter()
+        .map(|(strike, expiry, price)| {
+            MarketOptionQuote::new(strike, expiry, price, OptionType::Call)
+        })
+        .collect()
+    }
+
+    fn constant_slice(vol: f64) -> ExpirySlice {
+        ExpirySlice {
+            strike_spline: CubicSpline::new(vec![80.0, 120.0], vec![vol, vol]).unwrap(),
+        }
+    }
 
     #[test]
     fn builder_recovers_flat_surface_from_independent_scipy_prices() {
@@ -369,5 +397,173 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn built_surface_interpolates_total_variance_and_clamps_expiry_wings() {
+        let surface = BuiltVolSurface {
+            spot: 100.0,
+            rate: 0.03,
+            expiries: vec![0.5, 2.0],
+            slices: vec![constant_slice(0.20), constant_slice(0.30)],
+        };
+
+        assert_eq!(surface.implied_vol(100.0, -1.0), 0.20);
+        assert_eq!(surface.implied_vol(100.0, 0.5), 0.20);
+        assert_eq!(surface.implied_vol(100.0, 2.0), 0.30);
+        assert_eq!(surface.implied_vol(100.0, 3.0), 0.30);
+
+        // At 1.25y the interpolation weight is one half. Total variance is
+        // therefore (0.20^2*0.5 + 0.30^2*2.0)/2 = 0.10, and IV=sqrt(0.10/1.25).
+        assert_relative_eq!(
+            surface.implied_vol(100.0, 1.25),
+            0.08_f64.sqrt(),
+            epsilon = 4.0 * f64::EPSILON
+        );
+
+        let one_slice = BuiltVolSurface {
+            spot: 100.0,
+            rate: 0.0,
+            expiries: vec![1.0],
+            slices: vec![constant_slice(0.18)],
+        };
+        assert_eq!(one_slice.implied_vol(90.0, 10.0), 0.18);
+
+        let empty = BuiltVolSurface {
+            spot: 100.0,
+            rate: 0.0,
+            expiries: Vec::new(),
+            slices: Vec::new(),
+        };
+        assert!(empty.implied_vol(100.0, 1.0).is_nan());
+    }
+
+    #[test]
+    fn builder_chaining_and_analytics_bridges_cover_public_api() {
+        let quotes = independent_flat_quotes();
+        let builder = VolSurfaceBuilder::new(100.0, 0.01)
+            .with_solver_params(0.0, 0)
+            .add_quote(quotes[0])
+            .add_quotes(quotes[1..].to_vec());
+        assert_eq!(builder.tol, 1.0e-14);
+        assert_eq!(builder.max_iter, 1);
+
+        // One iteration is intentionally insufficient for the tight IV solve;
+        // rebuilding with production solver parameters exercises the same
+        // fluent API without weakening the reference tolerance.
+        let builder = builder.with_solver_params(1.0e-13, 100);
+        let (surface, curve) = builder
+            .build_with_forward_variance_curve(&[0.5, 1.0])
+            .unwrap();
+
+        assert_eq!(surface.spot(), 100.0);
+        assert_eq!(surface.rate(), 0.01);
+        assert_eq!(surface.expiries(), &[0.5, 1.0]);
+        assert_eq!(surface.forward_price(-1.0), 100.0);
+        assert_relative_eq!(
+            surface.forward_price(1.0),
+            100.0 * 0.01_f64.exp(),
+            epsilon = 8.0 * f64::EPSILON * 100.0
+        );
+
+        assert_relative_eq!(
+            curve.forward_variance(0.5, 1.0).unwrap(),
+            0.25_f64.powi(2),
+            epsilon = 3.0e-13
+        );
+        let direct_curve = surface.forward_variance_curve(&[0.5, 1.0]).unwrap();
+        assert_eq!(curve, direct_curve);
+
+        let skew = surface.atm_skew_term_structure(&[0.5, 1.0]).unwrap();
+        assert!(skew.points().iter().all(|p| p.skew.abs() <= 2.0e-13));
+
+        let vix = surface
+            .vix_style_index(VixSettings {
+                target_days: 30.0,
+                strike_count: 101,
+                log_moneyness_span: 2.0,
+            })
+            .unwrap();
+        assert!(vix.index.is_finite());
+        assert!(vix.target_variance >= 0.0);
+
+        let local = surface.local_vol(100.0, 0.75);
+        // DupireLocalVol uses finite differences on strike/time; the measured
+        // flat-surface differentiation residual is 2.0842e-7 in this grid.
+        // The remaining 4.16e-8 is cross-platform libm/roundoff headroom.
+        assert_relative_eq!(local, 0.25, epsilon = 2.5e-7);
+
+        // Lock both trait bridges explicitly; these are used by generic local-
+        // and forward-volatility consumers.
+        assert_relative_eq!(
+            LocalVolSurface::implied_vol(&surface, 100.0, 0.75),
+            0.25,
+            epsilon = 3.0e-13
+        );
+        assert_relative_eq!(
+            ForwardVarianceSource::implied_vol(&surface, 100.0, 0.75),
+            0.25,
+            epsilon = 3.0e-13
+        );
+        assert_eq!(ForwardVarianceSource::expiries(&surface), &[0.5, 1.0]);
+    }
+
+    #[test]
+    fn builder_rejects_nonfinite_and_structurally_invalid_inputs() {
+        let valid = independent_flat_quotes();
+
+        assert!(VolSurfaceBuilder::new(100.0, 0.01).build().is_err());
+        for spot in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                VolSurfaceBuilder::from_quotes(spot, 0.01, valid.clone())
+                    .build()
+                    .is_err()
+            );
+        }
+        assert!(
+            VolSurfaceBuilder::from_quotes(100.0, f64::NAN, valid.clone())
+                .build()
+                .is_err()
+        );
+
+        let invalid_fields = [
+            MarketOptionQuote::new(0.0, 1.0, 1.0, OptionType::Call),
+            MarketOptionQuote::new(f64::NAN, 1.0, 1.0, OptionType::Call),
+            MarketOptionQuote::new(100.0, 0.0, 1.0, OptionType::Call),
+            MarketOptionQuote::new(100.0, f64::INFINITY, 1.0, OptionType::Call),
+            MarketOptionQuote::new(100.0, 1.0, 0.0, OptionType::Call),
+            MarketOptionQuote::new(100.0, 1.0, f64::NAN, OptionType::Call),
+        ];
+        for quote in invalid_fields {
+            assert!(
+                VolSurfaceBuilder::from_quotes(100.0, 0.01, vec![quote])
+                    .build()
+                    .is_err()
+            );
+        }
+
+        assert!(
+            VolSurfaceBuilder::from_quotes(100.0, 0.01, vec![valid[0]])
+                .build()
+                .unwrap_err()
+                .contains("at least two strikes")
+        );
+        assert!(
+            VolSurfaceBuilder::from_quotes(100.0, 0.01, vec![valid[0], valid[0]])
+                .build()
+                .unwrap_err()
+                .contains("strictly increasing")
+        );
+
+        let impossible_premium = vec![
+            MarketOptionQuote::new(80.0, 1.0, 150.0, OptionType::Call),
+            MarketOptionQuote::new(120.0, 1.0, 150.0, OptionType::Call),
+        ];
+        assert!(
+            VolSurfaceBuilder::from_quotes(100.0, 0.01, impossible_premium)
+                .build()
+                .unwrap_err()
+                .contains("implied vol solve failed")
+        );
     }
 }

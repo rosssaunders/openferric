@@ -2000,4 +2000,200 @@ mod tests {
             2.0 * (-risk_free_rate * 0.5_f64).exp() + 5.0 * (-risk_free_rate * 0.75_f64).exp();
         assert_relative_eq!(value, expected, epsilon = 2.0e-14);
     }
+
+    #[test]
+    fn deterministic_schwartz_path_wrappers_match_exact_step_recurrences() {
+        let one_factor = SchwartzOneFactor {
+            kappa: 0.7,
+            mu: 4.4,
+            sigma: 0.0,
+        };
+        let initial_spot: f64 = 92.0;
+        let steps = 4;
+        let dt = 0.25;
+        let path = one_factor
+            .simulate_path(initial_spot, 1.0, steps, 123)
+            .unwrap();
+        assert_eq!(path.len(), steps + 1);
+        let mut expected_log = initial_spot.ln();
+        assert_eq!(path[0], initial_spot);
+        for actual in &path[1..] {
+            expected_log = one_factor.step_log_exact(expected_log, dt, 0.0).unwrap();
+            assert_relative_eq!(*actual, expected_log.exp(), epsilon = 3.0e-14);
+        }
+
+        let two_factor = SchwartzSmithTwoFactor {
+            kappa: 1.2,
+            sigma_chi: 0.0,
+            mu_xi: 0.03,
+            sigma_xi: 0.0,
+            rho: -0.4,
+        };
+        let mut chi = 0.12;
+        let mut xi = 4.25;
+        let path = two_factor.simulate_path(chi, xi, 1.0, steps, 987).unwrap();
+        assert_eq!(path.len(), steps + 1);
+        for actual in &path[1..] {
+            (chi, xi) = two_factor.step_exact(chi, xi, dt, 0.0, 0.0).unwrap();
+            assert_relative_eq!(actual.0, chi, epsilon = 2.0e-16);
+            assert_relative_eq!(actual.1, xi, epsilon = 2.0e-16);
+            assert_relative_eq!(actual.2, (chi + xi).exp(), epsilon = 3.0e-14);
+        }
+    }
+
+    #[test]
+    fn commodity_curve_helpers_recover_convenience_yield_and_structure() {
+        let spot: f64 = 100.0;
+        let rate: f64 = 0.04;
+        let storage: f64 = 0.01;
+        let convenience: f64 = 0.025;
+        let quotes: Vec<FuturesQuote> = [0.25_f64, 0.75, 1.5]
+            .into_iter()
+            .map(|maturity| FuturesQuote {
+                maturity,
+                price: spot * ((rate + storage - convenience) * maturity).exp(),
+            })
+            .collect();
+        let curve = CommodityForwardCurve::bootstrap_from_futures(&quotes).unwrap();
+
+        assert_eq!(curve.maturities(), &[0.25, 0.75, 1.5]);
+        assert_eq!(curve.forwards().len(), quotes.len());
+        assert_eq!(curve.interpolation(), ForwardInterpolation::Linear);
+        for (maturity, inferred) in curve.convenience_yield_curve(spot, rate, storage).unwrap() {
+            assert!(maturity > 0.0);
+            assert_relative_eq!(inferred, convenience, epsilon = 2.0e-16);
+        }
+
+        let flat_interp = curve.with_interpolation(ForwardInterpolation::PiecewiseFlat);
+        assert_eq!(
+            flat_interp.interpolation(),
+            ForwardInterpolation::PiecewiseFlat
+        );
+        assert_eq!(flat_interp.forward(0.5), quotes[0].price);
+
+        let flat = CommodityForwardCurve::from_futures_quotes(&[
+            FuturesQuote {
+                maturity: 0.5,
+                price: 100.0,
+            },
+            FuturesQuote {
+                maturity: 1.0,
+                price: 100.0 + 0.5e-10,
+            },
+        ])
+        .unwrap();
+        assert_eq!(flat.structure(), CurveStructure::Flat);
+
+        let mixed = CommodityForwardCurve::from_futures_quotes(&[
+            FuturesQuote {
+                maturity: 0.25,
+                price: 100.0,
+            },
+            FuturesQuote {
+                maturity: 0.5,
+                price: 103.0,
+            },
+            FuturesQuote {
+                maturity: 1.0,
+                price: 99.0,
+            },
+        ])
+        .unwrap();
+        assert_eq!(mixed.structure(), CurveStructure::Mixed);
+        assert!(!mixed.is_contango());
+        assert!(!mixed.is_backwardation());
+    }
+
+    #[test]
+    fn additive_seasonality_applies_and_removes_exact_monthly_adjustments() {
+        let factors = [
+            5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0,
+        ];
+        let seasonality = CommoditySeasonalityModel::additive(factors).unwrap();
+        assert_eq!(seasonality.mode(), SeasonalityMode::Additive);
+        assert_eq!(seasonality.monthly_factors(), &factors);
+        assert_eq!(seasonality.factor_for_month(1).unwrap(), 5.0);
+        assert_eq!(seasonality.apply(100.0, 1).unwrap(), 105.0);
+        assert_eq!(seasonality.apply(100.0, 12).unwrap(), 94.0);
+
+        let observations = [(1, 105.0), (2, 114.0), (3, 123.0)];
+        assert_eq!(
+            seasonality.deseasonalise(&observations).unwrap(),
+            vec![100.0, 110.0, 120.0]
+        );
+        let returns = seasonality
+            .deseasonalised_log_returns(&observations)
+            .unwrap();
+        assert_relative_eq!(returns[0], 1.1_f64.ln(), epsilon = 2.0e-16);
+        assert_relative_eq!(returns[1], (120.0_f64 / 110.0).ln(), epsilon = 2.0e-16);
+    }
+
+    #[test]
+    fn zero_volatility_spread_put_matches_discounted_intrinsic_value() {
+        let model = TwoFactorSpreadModel {
+            leg_1: TwoFactorCommodityProcess {
+                kappa_fast: 1.5,
+                sigma_fast: 0.0,
+                sigma_slow: 0.0,
+            },
+            leg_2: TwoFactorCommodityProcess {
+                kappa_fast: 2.0,
+                sigma_fast: 0.0,
+                sigma_slow: 0.0,
+            },
+            rho_fast: 0.25,
+            rho_slow: -0.50,
+        };
+        let rate: f64 = 0.03;
+        let maturity: f64 = 1.25;
+        let (price, stderr) = model
+            .price_spread_option_mc(
+                OptionType::Put,
+                90.0,
+                100.0,
+                5.0,
+                1.0,
+                1.0,
+                rate,
+                maturity,
+                8,
+                44,
+            )
+            .unwrap();
+        let expected = 15.0 * (-rate * maturity).exp();
+        assert_relative_eq!(price, expected, epsilon = 2.0e-15);
+        assert_eq!(stderr, 0.0);
+    }
+
+    #[test]
+    fn volume_constrained_put_swing_matches_enumerated_cashflows() {
+        let curve = CommodityForwardCurve::from_futures_quotes(&[
+            FuturesQuote {
+                maturity: 0.25,
+                price: 12.0,
+            },
+            FuturesQuote {
+                maturity: 0.5,
+                price: 8.0,
+            },
+            FuturesQuote {
+                maturity: 0.75,
+                price: 5.0,
+            },
+        ])
+        .unwrap();
+        let swing = VolumeConstrainedSwing {
+            exercise_times: vec![0.25, 0.5, 0.75],
+            strike: 10.0,
+            option_type: OptionType::Put,
+            min_period_volume: 0.0,
+            max_period_volume: 1.0,
+            min_total_volume: 1.0,
+            max_total_volume: 2.0,
+        };
+        let rate: f64 = 0.04;
+        let actual = swing.intrinsic_value(&curve, rate, 3).unwrap();
+        let expected = 2.0 * (-rate * 0.5_f64).exp() + 5.0 * (-rate * 0.75_f64).exp();
+        assert_relative_eq!(actual, expected, epsilon = 2.0e-14);
+    }
 }
