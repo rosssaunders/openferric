@@ -86,7 +86,7 @@ fn floating_lookback_put_haug() {
 // These should be purely time value
 // =======================================================================
 #[test]
-fn floating_lookback_call_at_inception() {
+fn floating_lookback_call_at_inception_matches_goldman_sosin_gatto() {
     let market = make_market(100.0, 0.05, 0.0, 0.20);
     let option = ExoticOption::LookbackFloating(LookbackFloatingOption {
         option_type: OptionType::Call,
@@ -94,7 +94,20 @@ fn floating_lookback_call_at_inception() {
         observed_extreme: None, // defaults to spot
     });
     let price = price_exotic(option, &market);
-    // Time value should be > vanilla ATM call (lookbacks are more expensive)
+
+    // Goldman-Sosin-Gatto floating-strike closed form, evaluated offline with
+    // SciPy 1.17.1 `ndtr` / NumPy 2.4.3 and cross-checked at 80 digits with
+    // mpmath 1.4.1 (17.2168022373608675867...).  The binary64 oracle differs
+    // from the high-precision value by 1.72e-15.
+    assert_close(
+        "floating lookback call at inception",
+        price,
+        17.216_802_237_360_866,
+        3.0e-12,
+    );
+
+    // Supplemental economic dominance: lookbacks are more valuable than the
+    // otherwise identical vanilla option.
     let bs_atm = openferric::pricing::european::black_scholes_price(
         openferric::pricing::OptionType::Call,
         100.0,
@@ -110,7 +123,7 @@ fn floating_lookback_call_at_inception() {
 }
 
 #[test]
-fn floating_lookback_put_at_inception() {
+fn floating_lookback_put_at_inception_matches_goldman_sosin_gatto() {
     let market = make_market(100.0, 0.05, 0.0, 0.20);
     let option = ExoticOption::LookbackFloating(LookbackFloatingOption {
         option_type: OptionType::Put,
@@ -118,6 +131,18 @@ fn floating_lookback_put_at_inception() {
         observed_extreme: None,
     });
     let price = price_exotic(option, &market);
+
+    // Same offline Goldman-Sosin-Gatto evaluation as the call above.  SciPy's
+    // binary64 result is 14.290567707403714; mpmath at 80 digits gives
+    // 14.2905677074037083528..., a 5.65e-15 oracle roundoff gap.
+    assert_close(
+        "floating lookback put at inception",
+        price,
+        14.290_567_707_403_714,
+        3.0e-12,
+    );
+
+    // Supplemental economic dominance.
     let bs_atm = openferric::pricing::european::black_scholes_price(
         openferric::pricing::OptionType::Put,
         100.0,

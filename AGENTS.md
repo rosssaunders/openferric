@@ -13,7 +13,9 @@ Project-level instructions for coding agents working in this repository. Keep th
 - Core crate: `openferric` in the repository root.
 - Workspace crates: `wasm/`, `python/`, `lsp/`, `mcp/`.
 - TypeScript workspaces: `excel-addin/`, `vscode-ext/` managed from the root `package.json`.
-- Reference data: `vendor/QuantLib/` is a git submodule used by validation tests.
+- Reference source: `vendor/QuantLib/` is a citation-only git submodule. Tests
+  use committed reference literals and never build, import, or read the
+  submodule at runtime.
 
 ## Toolchain
 
@@ -37,6 +39,10 @@ cargo test --test quantlib_reference
 cargo bench
 cargo bench --bench pricing_bench
 ```
+
+`quantlib_reference` is one of roughly 15 QuantLib-derived integration suites,
+not a complete QuantLib validation run; use the workspace test command for the
+full set.
 
 ### Coverage
 
@@ -151,7 +157,9 @@ PricingEngine::price(&self, instrument: &I, market: &Market) -> Result<PricingRe
 ## Testing Notes
 
 - Many integration tests are validated against external references rather than self-generated values.
-- QuantLib-based tests depend on `vendor/QuantLib/` being present.
+- QuantLib-derived values are generated offline and committed as literals with
+  provenance. Tests do not require `vendor/QuantLib/`, QuantLib libraries, or
+  Python packages to be present.
 - Keep tests close to the code when adding unit coverage; integration coverage lives in `tests/`.
 - Do not hardcode repository-wide test counts in docs unless you are updating them deliberately.
 

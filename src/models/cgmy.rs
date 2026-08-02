@@ -520,20 +520,55 @@ mod tests {
     }
 
     #[test]
-    fn cgmy_fft_prices_are_positive_and_bounded() {
+    fn cgmy_model_fft_calls_match_high_resolution_carr_madan_grid() {
         let cgmy = Cgmy {
             c: 1.0,
             g: 5.0,
             m: 10.0,
             y: 0.5,
         };
-        let strikes = vec![90.0, 95.0, 100.0, 105.0, 110.0];
+        let strikes = [90.0, 95.0, 100.0, 105.0, 110.0];
+
+        // Independent NumPy 2.4.3 Carr-Madan inversion using N=2^20,
+        // eta=2^-12, alpha=1.5, the analytic CGMY characteristic function,
+        // and the risk-neutral martingale correction.  A separate SciPy
+        // 1.17.1 Lewis-contour `quad` calculation returned respectively
+        // [15.293225902699064, 11.983428900938335, 9.128818730345728,
+        //  6.768454786543018, 4.905240411525213], agreeing within 6.6e-14.
+        let references: [f64; 5] = [
+            15.293_225_902_699_088,
+            11.983_428_900_938_383,
+            9.128_818_730_345_747,
+            6.768_454_786_543_084,
+            4.905_240_411_525_213,
+        ];
+
+        // Repeating the independent inversion on the production grid
+        // (N=4096, eta=0.25) measured these absolute discretization gaps.
+        // The Rust-vs-oracle gap measured on Linux was at most 9.77e-14 (from
+        // gamma, complex-power and exp evaluation order).  The remaining
+        // 512-epsilon allowance retains the suite's cross-libm headroom; it is
+        // not an economic or percentage price band.
+        let measured_default_grid_gaps = [3.6e-15_f64, 3.6e-15, 1.8e-15, 0.0, 3.6e-15];
         let prices = cgmy
             .european_calls_fft(100.0, &strikes, 0.03, 0.0, 0.5, CarrMadanParams::default())
             .unwrap();
-        for (k, p) in &prices {
-            assert!(*p > 0.0, "price at strike {k} should be > 0, got {p}");
-            assert!(*p < 100.0, "price at strike {k} should be < spot, got {p}");
+
+        for (((actual_strike, actual_price), expected_strike), (reference, grid_gap)) in prices
+            .iter()
+            .zip(strikes)
+            .zip(references.into_iter().zip(measured_default_grid_gaps))
+        {
+            assert_eq!(*actual_strike, expected_strike);
+            let binary64_roundoff = 512.0 * f64::EPSILON * reference.abs().max(1.0);
+            let tolerance = grid_gap + binary64_roundoff;
+            let error = (actual_price - reference).abs();
+            assert!(
+                error <= tolerance,
+                "CGMY call at K={expected_strike}: actual={actual_price:.17}, \
+                 high-resolution reference={reference:.17}, error={error:.3e}, \
+                 measured grid gap={grid_gap:.3e}, roundoff={binary64_roundoff:.3e}"
+            );
         }
     }
 

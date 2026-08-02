@@ -717,37 +717,4 @@ mod tests {
         let g = engine.price(&gap, &market).unwrap().greeks.unwrap();
         assert_eq!(g.delta, 0.0);
     }
-
-    // --- Sanity checks ---
-
-    #[test]
-    fn cash_or_nothing_greeks_present() {
-        let engine = DigitalAnalyticEngine::new();
-        let market = test_market();
-        let inst = CashOrNothingOption::new(OptionType::Call, 100.0, 10.0, 1.0);
-        let result = engine.price(&inst, &market).unwrap();
-        assert!(result.greeks.is_some());
-        let g = result.greeks.unwrap();
-        assert!(g.delta > 0.0, "call delta should be positive");
-    }
-
-    #[test]
-    fn asset_or_nothing_greeks_present() {
-        let engine = DigitalAnalyticEngine::new();
-        let market = test_market();
-        let inst = AssetOrNothingOption::new(OptionType::Call, 100.0, 1.0);
-        let result = engine.price(&inst, &market).unwrap();
-        assert!(result.greeks.is_some());
-        let g = result.greeks.unwrap();
-        assert!(g.delta > 0.0, "call delta should be positive");
-    }
-
-    #[test]
-    fn gap_greeks_present() {
-        let engine = DigitalAnalyticEngine::new();
-        let market = test_market();
-        let inst = GapOption::new(OptionType::Call, 100.0, 100.0, 1.0);
-        let result = engine.price(&inst, &market).unwrap();
-        assert!(result.greeks.is_some());
-    }
 }

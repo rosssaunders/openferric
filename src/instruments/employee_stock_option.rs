@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn dilution_and_attrition_reduce_value() {
+    fn diluted_attrition_eso_matches_independent_tree_recomputation() {
         let base = EmployeeStockOption::new(
             OptionType::Call,
             100.0,
@@ -277,6 +277,24 @@ mod tests {
         let v_base = base.price_binomial(100.0, 0.03, 0.0, 0.3, 600).unwrap();
         let v_diluted = diluted.price_binomial(100.0, 0.03, 0.0, 0.3, 600).unwrap();
 
+        // Independently generated with Python 3.11.15 `decimal` at 80-digit
+        // precision.  The generator built the complete 600-step CRR terminal
+        // slice for effective maturity min(5, 4) = 4, then rolled it back with
+        // vesting step ceil(600 / 4) = 150 and the strict forced-exercise rule
+        // S > 1.8 K.  Only after the recurrence did it apply dilution 1000/1200
+        // and survival exp(-0.08 * 4).  No OpenFerric output entered the
+        // calculation.
+        const DECIMAL_600_STEP_REFERENCE: f64 = 16.009_902_331_905_17;
+        const RELATIVE_ROUNDOFF_BUDGET: f64 = 2.0e-10;
+        let roundoff_budget = RELATIVE_ROUNDOFF_BUDGET * DECIMAL_600_STEP_REFERENCE.abs().max(1.0);
+        assert!(
+            (v_diluted - DECIMAL_600_STEP_REFERENCE).abs() <= roundoff_budget,
+            "diluted/attrition ESO finite-grid price: actual={v_diluted:.17e}, \
+             independent Decimal reference={DECIMAL_600_STEP_REFERENCE:.17e}, \
+             roundoff budget={roundoff_budget:.3e}"
+        );
+
+        // Supplemental economic invariant.
         assert!(v_diluted < v_base);
     }
 }
