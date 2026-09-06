@@ -198,7 +198,7 @@ impl SyntheticCdo {
             && self.pool_spread >= 0.0
             && (0.0..1.0).contains(&self.recovery_rate)
             && self.correlation >= 0.0
-            && self.correlation < 1.0
+            && self.correlation <= 1.0
             && self.maturity > 0.0
             && self.payment_freq > 0
     }
@@ -211,16 +211,25 @@ pub fn vasicek_portfolio_loss_cdf(
     recovery_rate: f64,
     correlation: f64,
 ) -> f64 {
-    if loss_fraction <= 0.0 {
+    if loss_fraction < 0.0 {
         return 0.0;
     }
 
     let lgd = (1.0 - recovery_rate).clamp(0.0, 1.0);
-    if lgd <= 0.0 {
+    if lgd <= 0.0 || default_probability <= 0.0 {
         return 1.0;
     }
     if loss_fraction >= lgd {
         return 1.0;
+    }
+    if default_probability >= 1.0 {
+        return 0.0;
+    }
+    if correlation >= 1.0 {
+        return 1.0 - default_probability;
+    }
+    if loss_fraction == 0.0 {
+        return 0.0;
     }
 
     let q = default_probability.clamp(1.0e-12, 1.0 - 1.0e-12);
@@ -260,6 +269,12 @@ fn expected_tranche_loss_pool_fraction(
     let lgd = (1.0 - recovery_rate).clamp(0.0, 1.0);
     if lgd <= 0.0 {
         return 0.0;
+    }
+    if q >= 1.0 {
+        return (lgd - attachment).clamp(0.0, width);
+    }
+    if correlation >= 1.0 {
+        return q * (lgd - attachment).clamp(0.0, width);
     }
 
     let rho = correlation.clamp(0.0, 0.999_999);

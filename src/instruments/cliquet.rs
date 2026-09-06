@@ -53,6 +53,22 @@ impl ForwardStartOption {
 
     /// Validates contract fields.
     pub fn validate(&self) -> Result<(), PricingError> {
+        if [
+            self.spot,
+            self.strike_ratio,
+            self.rate,
+            self.dividend_yield,
+            self.vol,
+            self.t_start,
+            self.expiry,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+        {
+            return Err(PricingError::InvalidInput(
+                "forward-start inputs must be finite".to_string(),
+            ));
+        }
         if self.spot <= 0.0 {
             return Err(PricingError::InvalidInput(
                 "forward-start spot must be > 0".to_string(),

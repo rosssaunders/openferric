@@ -16,8 +16,9 @@
 //! The callable pricer uses a recombining trinomial-style short-rate lattice
 //! based on local moments, consistent with the existing
 //! [`crate::engines::tree::bermudan_swaption`] implementation.
-//! Notice periods are handled by converting call dates into effective decision
-//! dates `max(0, call_date - notice_period)`.
+//! Fixed-coupon notice periods separate decision and settlement: the call claim
+//! includes intervening coupons and discounts redemption to the call date.
+//! Notice periods on rate-dependent coupons are not supported by this tree.
 //!
 //! Non-callable path-dependent notes (TARN and snowball) are exposed as
 //! deterministic pricers against projected rate paths.
@@ -104,6 +105,11 @@ impl CouponPeriod {
             || !self.payment_time.is_finite()
         {
             return Err("coupon period times must be finite".to_string());
+        }
+        if self.start_time < 0.0 {
+            return Err(
+                "seasoned coupons require historical fixings and are unsupported".to_string(),
+            );
         }
         if self.end_time <= self.start_time {
             return Err("coupon period end_time must be > start_time".to_string());
@@ -258,13 +264,19 @@ impl ExerciseSchedule {
 }
 
 /// Bermudan-callable rate note priced under Hull-White tree.
+///
+/// Rate-dependent coupons are earned at their reset: amounts fixed before a
+/// call decision remain payable and lie outside the call cap. The call price
+/// includes fixed coupons due at settlement. Cancelling previously fixed
+/// coupons or using notice with rate-dependent coupons requires a richer
+/// contract/state model and is not implemented by this tree.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CallableRateNote {
     /// Coupon notional.
     pub notional: f64,
     /// Redemption amount paid at maturity if not called.
     pub redemption: f64,
-    /// Call settlement amount paid when called.
+    /// All-in call settlement amount, including any fixed coupon due on that date.
     pub call_price: f64,
     /// Final maturity in years.
     pub maturity: f64,
@@ -323,8 +335,10 @@ impl CallableRateNote {
     /// Prices the callable note using a Hull-White short-rate tree.
     ///
     /// The value is from the note-holder perspective, with issuer call rights.
-    /// At each effective decision date, continuation value is floored by issuer
-    /// callability: `V = min(V_continuation, call_price)`.
+    /// At each decision date, continuation is capped by the conditional PV of
+    /// the call settlement claim. With zero notice the claim is `call_price`.
+    /// Grid-date zero bonds fit the supplied curve exactly; conditional coupon
+    /// bonds and off-grid event dates still require timestep convergence.
     pub fn price_hull_white_tree(
         &self,
         hw_model: &HullWhite,
@@ -334,6 +348,27 @@ impl CallableRateNote {
         self.validate()?;
         if steps == 0 {
             return Err("steps must be > 0".to_string());
+        }
+        if !hw_model.a.is_finite()
+            || hw_model.a < 0.0
+            || !hw_model.sigma.is_finite()
+            || hw_model.sigma < 0.0
+        {
+            return Err("Hull-White parameters must be finite and non-negative".to_string());
+        }
+        if self.exercise_schedule.notice_period > 0.0
+            && self
+                .coupon_schedule
+                .iter()
+                .any(|period| !matches!(period.coupon, CouponType::Fixed { .. }))
+        {
+            return Err(
+                "notice periods on rate-dependent coupons require an augmented-state engine"
+                    .to_string(),
+            );
+        }
+        if hw_model.sigma == 0.0 {
+            return self.price_deterministic(curve);
         }
 
         price_callable_note_tree(
@@ -360,6 +395,7 @@ impl CallableRateNote {
         projected_floating_rates: &[f64],
         projected_cms_rates: &[f64],
     ) -> Result<f64, String> {
+        self.validate()?;
         if projected_floating_rates.len() != self.coupon_schedule.len()
             || projected_cms_rates.len() != self.coupon_schedule.len()
         {
@@ -381,6 +417,67 @@ impl CallableRateNote {
         }
 
         Ok(pv + self.redemption * curve.discount_factor(self.maturity))
+    }
+
+    fn price_deterministic(&self, curve: &YieldCurve) -> Result<f64, String> {
+        let mut coupon_values = Vec::with_capacity(self.coupon_schedule.len());
+        let mut events = self.exercise_schedule.decision_times();
+        for period in &self.coupon_schedule {
+            let floating = if matches!(
+                period.coupon,
+                CouponType::Structured(StructuredCoupon::RangeAccrual { .. })
+            ) {
+                curve.instantaneous_forward_rate(period.start_time)
+            } else {
+                (curve.discount_factor(period.start_time) / curve.discount_factor(period.end_time)
+                    - 1.0)
+                    / period.accrual()
+            };
+            let cms = if let CouponType::Structured(StructuredCoupon::CmsLinked {
+                cms_tenor,
+                swap_payment_frequency,
+                ..
+            }) = period.coupon
+            {
+                forward_swap_rate(curve, period.start_time, cms_tenor, swap_payment_frequency)?
+            } else {
+                0.0
+            };
+            let coupon_rate = coupon_rate_deterministic(&period.coupon, floating, cms)?;
+            let present_value = self.notional
+                * period.accrual()
+                * coupon_rate
+                * curve.discount_factor(period.payment_time);
+            let observation = coupon_observation_time(period);
+            events.push(observation);
+            coupon_values.push((observation, period.payment_time, present_value));
+        }
+        events.sort_by(f64::total_cmp);
+        events.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-12);
+        let mut present_value = self.redemption * curve.discount_factor(self.maturity);
+        for time in events.into_iter().rev() {
+            present_value += coupon_values
+                .iter()
+                .filter(|(observation, _, _)| (*observation - time).abs() <= 1.0e-12)
+                .map(|(_, _, amount)| amount)
+                .sum::<f64>();
+            for &settlement in &self.exercise_schedule.bermudan_dates {
+                let decision = (settlement - self.exercise_schedule.notice_period).max(0.0);
+                if (decision - time).abs() <= 1.0e-12 {
+                    let notice_coupons: f64 = coupon_values
+                        .iter()
+                        .filter(|(_, payment, _)| {
+                            *payment >= time - 1.0e-12 && *payment < settlement - 1.0e-12
+                        })
+                        .map(|(_, _, amount)| amount)
+                        .sum();
+                    let call_value =
+                        self.call_price * curve.discount_factor(settlement) + notice_coupons;
+                    present_value = present_value.min(call_value);
+                }
+            }
+        }
+        Ok(present_value)
     }
 }
 
@@ -480,13 +577,11 @@ impl TargetRedemptionNote {
         if !self.target_coupon.is_finite() || self.target_coupon <= 0.0 {
             return Err("target_coupon must be finite and > 0".to_string());
         }
+        if !self.spread.is_finite() {
+            return Err("spread must be finite".to_string());
+        }
         validate_floor_cap(self.floor, self.cap)?;
-        if self.coupon_schedule.is_empty() {
-            return Err("coupon_schedule must be non-empty".to_string());
-        }
-        for p in &self.coupon_schedule {
-            p.validate()?;
-        }
+        validate_coupon_schedule(&self.coupon_schedule)?;
         Ok(())
     }
 
@@ -588,12 +683,7 @@ impl SnowballNote {
             return Err("spread must be finite".to_string());
         }
         validate_floor_cap(self.floor, self.cap)?;
-        if self.coupon_schedule.is_empty() {
-            return Err("coupon_schedule must be non-empty".to_string());
-        }
-        for p in &self.coupon_schedule {
-            p.validate()?;
-        }
+        validate_coupon_schedule(&self.coupon_schedule)?;
         Ok(())
     }
 
@@ -608,6 +698,12 @@ impl SnowballNote {
             return Err("projected_floating_rates length must match coupon_schedule".to_string());
         }
 
+        if projected_floating_rates
+            .iter()
+            .any(|rate| !rate.is_finite())
+        {
+            return Err("projected rates must be finite".to_string());
+        }
         let mut prev_coupon = self.initial_coupon;
         let mut pv = 0.0;
         let mut coupons = Vec::with_capacity(self.coupon_schedule.len());
@@ -806,6 +902,24 @@ impl CmsLinkedNote {
     }
 }
 
+fn validate_coupon_schedule(schedule: &[CouponPeriod]) -> Result<(), String> {
+    if schedule.is_empty() {
+        return Err("coupon_schedule must be non-empty".to_string());
+    }
+    for period in schedule {
+        period.validate()?;
+    }
+    if schedule.windows(2).any(|pair| {
+        pair[1].start_time < pair[0].end_time - 1.0e-12
+            || pair[1].payment_time <= pair[0].payment_time
+    }) {
+        return Err(
+            "coupon_schedule must be chronological with non-overlapping periods".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_coupon_type(coupon: &CouponType) -> Result<(), String> {
     match coupon {
         CouponType::Fixed { rate } => {
@@ -970,34 +1084,69 @@ fn price_callable_note_tree(
     steps: usize,
 ) -> Result<f64, String> {
     let dt = maturity / steps as f64;
-    let r0 = HullWhite::instantaneous_forward(curve, 0.0);
-
-    let mut model = hw_model.clone();
-    let time_grid = (0..=steps).map(|i| i as f64 * dt).collect::<Vec<_>>();
-    model.calibrate_theta(curve, &time_grid);
-
-    let dx = if model.sigma.abs() <= 1.0e-14 {
-        (3.0 * dt).sqrt() * 1.0e-6
-    } else {
-        model.sigma * (3.0 * dt).sqrt()
-    };
+    let model = hw_model;
+    let lattice = crate::engines::tree::hull_white_lattice::HullWhiteLattice::new(
+        model, curve, maturity, steps,
+    )?;
 
     let exercise_flags = map_exercise_steps(&exercise_schedule.decision_times(), maturity, steps);
     let coupon_map = map_coupon_steps(coupon_schedule, maturity, steps);
+    let mut call_dates = vec![Vec::new(); steps + 1];
+    for &settlement in &exercise_schedule.bermudan_dates {
+        let decision = (settlement - exercise_schedule.notice_period).max(0.0);
+        let index = ((decision / maturity) * steps as f64).round() as usize;
+        call_dates[index.min(steps)].push(settlement);
+    }
+    let call_value = |step: usize, rate: f64| -> f64 {
+        if exercise_schedule.notice_period == 0.0 {
+            return call_price;
+        }
+        let decision_time = step as f64 * dt;
+        call_dates[step]
+            .iter()
+            .map(|&settlement| {
+                let redemption_value =
+                    call_price * model.bond_price(decision_time, settlement, rate, curve);
+                let coupons: f64 = coupon_schedule
+                    .iter()
+                    .filter_map(|period| {
+                        if period.payment_time >= decision_time - 1.0e-12
+                            && period.payment_time < settlement - 1.0e-12
+                            && let CouponType::Fixed { rate: coupon_rate } = period.coupon
+                        {
+                            return Some(
+                                notional
+                                    * period.accrual()
+                                    * coupon_rate
+                                    * model.bond_price(
+                                        decision_time,
+                                        period.payment_time,
+                                        rate,
+                                        curve,
+                                    ),
+                            );
+                        }
+                        None
+                    })
+                    .sum();
+                redemption_value + coupons
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
 
     let mut values = vec![0.0_f64; 2 * steps + 1];
     for j in -(steps as isize)..=(steps as isize) {
         let idx = (j + steps as isize) as usize;
-        let r = r0 + j as f64 * dx;
+        let r = lattice.short_rate(steps, j);
 
         let mut node_value = redemption;
         for period_idx in &coupon_map[steps] {
             let p = &coupon_schedule[*period_idx];
-            node_value += coupon_cashflow_tree(notional, p, maturity, r, &model, curve)?;
+            node_value += coupon_cashflow_tree(notional, p, maturity, r, model, curve)?;
         }
 
         if exercise_flags[steps] {
-            node_value = node_value.min(call_price);
+            node_value = node_value.min(call_value(steps, r));
         }
 
         values[idx] = node_value;
@@ -1008,25 +1157,16 @@ fn price_callable_note_tree(
         let t = i as f64 * dt;
 
         for j in -(i as isize)..=(i as isize) {
-            let r = r0 + j as f64 * dx;
-            let (pu, pm, pd) = trinomial_probs(&model, t, r, dt, dx);
-            let disc = (-r * dt).exp();
-
-            let next_shift = i + 1;
-            let up_idx = (j + next_shift as isize + 1) as usize;
-            let mid_idx = (j + next_shift as isize) as usize;
-            let down_idx = (j + next_shift as isize - 1) as usize;
-
-            let mut node_value =
-                disc * (pu * values[up_idx] + pm * values[mid_idx] + pd * values[down_idx]);
+            let r = lattice.short_rate(i, j);
+            let mut node_value = lattice.continuation(i, j, &values);
 
             for period_idx in &coupon_map[i] {
                 let p = &coupon_schedule[*period_idx];
-                node_value += coupon_cashflow_tree(notional, p, t, r, &model, curve)?;
+                node_value += coupon_cashflow_tree(notional, p, t, r, model, curve)?;
             }
 
             if exercise_flags[i] {
-                node_value = node_value.min(call_price);
+                node_value = node_value.min(call_value(i, r));
             }
 
             let idx = (j + i as isize) as usize;
@@ -1078,36 +1218,11 @@ fn map_coupon_steps(
     map
 }
 
-fn trinomial_probs(model: &HullWhite, t: f64, rate: f64, dt: f64, dx: f64) -> (f64, f64, f64) {
-    if dx <= 0.0 {
-        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
-    }
-
-    let mu = model.theta_at(t) - model.a * rate;
-    let m1 = mu * dt;
-    let variance = model.sigma * model.sigma * dt;
-    let total = (variance + m1 * m1) / (dx * dx);
-
-    let mut pu = 0.5 * (total + m1 / dx);
-    let mut pd = 0.5 * (total - m1 / dx);
-    let mut pm = 1.0 - total;
-
-    pu = pu.max(0.0);
-    pm = pm.max(0.0);
-    pd = pd.max(0.0);
-
-    let norm = pu + pm + pd;
-    if norm <= 1.0e-14 {
-        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
-    } else {
-        (pu / norm, pm / norm, pd / norm)
-    }
-}
-
 /// Value of a coupon at the node where it is observed.
 ///
 /// Rate-dependent coupons are evaluated at the fixing-date node (`eval_time`,
-/// the period start slice) using the node short rate, then discounted from
+/// the period start slice) using the node's simple forward (floating and inverse),
+/// short rate (range), or projected swap rate (CMS), then discounted from
 /// payment date to the fixing node with the model's analytic bond price:
 /// `coupon(r_fix) * P(t_fix, t_pay; r_fix)`. Fixed coupons are added at the
 /// payment-date node and need no extra discounting.
@@ -1134,7 +1249,9 @@ fn coupon_cashflow_tree(
     let rate = match &period.coupon {
         CouponType::Fixed { rate } => *rate,
         CouponType::Floating { spread, floor, cap } => {
-            apply_floor_cap(short_rate + *spread, *floor, *cap)?
+            let period_discount = model.bond_price(eval_time, period.end_time, short_rate, curve);
+            let forward = (1.0 / period_discount - 1.0) / accrual;
+            apply_floor_cap(forward + *spread, *floor, *cap)?
         }
         CouponType::Structured(StructuredCoupon::RangeAccrual {
             in_range_coupon_rate,
@@ -1153,7 +1270,11 @@ fn coupon_cashflow_tree(
             leverage,
             floor,
             cap,
-        }) => apply_floor_cap(*fixed_rate - *leverage * short_rate, *floor, *cap)?,
+        }) => {
+            let period_discount = model.bond_price(eval_time, period.end_time, short_rate, curve);
+            let forward = (1.0 / period_discount - 1.0) / accrual;
+            apply_floor_cap(*fixed_rate - *leverage * forward, *floor, *cap)?
+        }
         CouponType::Structured(StructuredCoupon::CmsLinked {
             multiplier,
             spread,
@@ -1284,17 +1405,51 @@ mod tests {
         steps: usize,
     ) -> f64 {
         let dt = note.maturity / steps as f64;
-        let initial_rate = HullWhite::instantaneous_forward(curve, 0.0);
-        let mut calibrated = hw.clone();
-        calibrated.calibrate_theta(
-            curve,
-            &(0..=steps).map(|i| i as f64 * dt).collect::<Vec<_>>(),
-        );
-        let spacing = if calibrated.sigma.abs() <= 1.0e-14 {
-            (3.0 * dt).sqrt() * 1.0e-6
-        } else {
-            calibrated.sigma * (3.0 * dt).sqrt()
+        let calibrated = hw;
+        let persistence = (-hw.a * dt).exp();
+        let spacing = hw.sigma * (3.0 * -(-2.0 * hw.a * dt).exp_m1() / (2.0 * hw.a)).sqrt();
+        let rate_center = |time: f64| {
+            HullWhite::instantaneous_forward(curve, time)
+                + 0.5 * (hw.sigma * -(-hw.a * time).exp_m1() / hw.a).powi(2)
         };
+        let transition = |state: isize| {
+            let target = state as f64 * persistence;
+            let center = target.round() as isize;
+            let error = target - center as f64;
+            (
+                center,
+                [
+                    1.0 / 6.0 + 0.5 * error * (error - 1.0),
+                    2.0 / 3.0 - error * error,
+                    1.0 / 6.0 + 0.5 * error * (error + 1.0),
+                ],
+            )
+        };
+        let mut state_prices = vec![1.0];
+        let mut discount_centers = Vec::new();
+        for level in 0..steps {
+            let unshifted: f64 = state_prices
+                .iter()
+                .enumerate()
+                .map(|(index, probability)| {
+                    probability * (-((index as isize - level as isize) as f64 * spacing) * dt).exp()
+                })
+                .sum();
+            let center_rate =
+                (unshifted / curve.discount_factor((level + 1) as f64 * dt)).ln() / dt;
+            discount_centers.push(center_rate);
+            let mut next = vec![0.0; 2 * level + 3];
+            for (index, probability) in state_prices.iter().enumerate() {
+                let state = index as isize - level as isize;
+                let (center, weights) = transition(state);
+                let discount = (-(center_rate + state as f64 * spacing) * dt).exp();
+                for (offset, weight) in weights.iter().enumerate() {
+                    next[(center + level as isize + offset as isize) as usize] +=
+                        probability * discount * weight;
+                }
+            }
+            state_prices = next;
+        }
 
         let nearest_step =
             |time: f64| -> usize { (time / dt).round().clamp(0.0, steps as f64) as usize };
@@ -1319,6 +1474,10 @@ mod tests {
                         let fixing_time = level as f64 * dt;
                         let discount_from_fixing =
                             || calibrated.bond_price(fixing_time, period.payment_time, rate, curve);
+                        let projected_floating = (1.0
+                            / calibrated.bond_price(fixing_time, period.end_time, rate, curve)
+                            - 1.0)
+                            / (period.end_time - period.start_time);
                         let apply_contractual_bounds =
                             |mut coupon_rate: f64, floor: &Option<f64>, cap: &Option<f64>| {
                                 if let Some(floor_rate) = floor {
@@ -1333,7 +1492,7 @@ mod tests {
                         let (coupon_rate, fixing_discount) = match &period.coupon {
                             CouponType::Fixed { rate: fixed_rate } => (*fixed_rate, 1.0),
                             CouponType::Floating { spread, floor, cap } => (
-                                apply_contractual_bounds(rate + *spread, floor, cap),
+                                apply_contractual_bounds(projected_floating + *spread, floor, cap),
                                 discount_from_fixing(),
                             ),
                             CouponType::Structured(StructuredCoupon::RangeAccrual {
@@ -1356,7 +1515,7 @@ mod tests {
                                 cap,
                             }) => (
                                 apply_contractual_bounds(
-                                    *fixed_rate - *leverage * rate,
+                                    *fixed_rate - *leverage * projected_floating,
                                     floor,
                                     cap,
                                 ),
@@ -1413,7 +1572,7 @@ mod tests {
 
         let mut later = (-(steps as isize)..=steps as isize)
             .map(|state_index| {
-                let rate = initial_rate + state_index as f64 * spacing;
+                let rate = rate_center(note.maturity) + state_index as f64 * spacing;
                 let mut value = note.redemption + coupon_at_node(steps, rate);
                 if decision_steps.contains(&steps) {
                     value = value.min(note.call_price);
@@ -1426,24 +1585,18 @@ mod tests {
             let time = level as f64 * dt;
             let mut current = Vec::with_capacity(2 * level + 1);
             for state_index in -(level as isize)..=level as isize {
-                let rate = initial_rate + state_index as f64 * spacing;
-                let drift = (calibrated.theta_at(time) - calibrated.a * rate) * dt;
-                let scaled_second_moment = (calibrated.sigma * calibrated.sigma * dt
-                    + drift * drift)
-                    / (spacing * spacing);
-                let mut probability_up = 0.5 * (scaled_second_moment + drift / spacing).max(0.0);
-                let mut probability_down = 0.5 * (scaled_second_moment - drift / spacing).max(0.0);
-                let mut probability_middle = (1.0 - scaled_second_moment).max(0.0);
-                let probability_sum = probability_up + probability_middle + probability_down;
-                probability_up /= probability_sum;
-                probability_middle /= probability_sum;
-                probability_down /= probability_sum;
-
-                let later_offset = (state_index + level as isize + 1) as usize;
-                let mut value = (-rate * dt).exp()
-                    * (probability_down * later[later_offset - 1]
-                        + probability_middle * later[later_offset]
-                        + probability_up * later[later_offset + 1]);
+                let rate = rate_center(time) + state_index as f64 * spacing;
+                let (center, weights) = transition(state_index);
+                let discount =
+                    (-(discount_centers[level] + state_index as f64 * spacing) * dt).exp();
+                let mut value = discount
+                    * weights
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, weight)| {
+                            weight * later[(center + level as isize + offset as isize) as usize]
+                        })
+                        .sum::<f64>();
                 value += coupon_at_node(level, rate);
                 if decision_steps.contains(&level) {
                     value = value.min(note.call_price);
@@ -1843,11 +1996,7 @@ mod tests {
     }
 
     #[test]
-    fn floating_coupons_fix_in_advance_not_at_payment_date() {
-        // Upward-sloping curve: zero rate 1% + 1%/yr, so the instantaneous
-        // forward grows ~2%/yr. A floating coupon that fixes at the period
-        // START must therefore be worth LESS than one (incorrectly) fixed at
-        // the payment date.
+    fn floating_coupons_fix_in_advance_and_converge_to_par() {
         let curve = YieldCurve::new(
             (1..=200)
                 .map(|i| {
@@ -1874,35 +2023,25 @@ mod tests {
             exercise_schedule: ExerciseSchedule::new(vec![1.0], 0.0).unwrap(),
         };
 
-        let tree_price = note.price_hull_white_tree(&hw, &curve, 400).unwrap();
-
-        // Deterministic benchmarks: short-rate coupon fixed in advance
-        // (period start) vs incorrectly at the payment date.
-        let pv_with_fixing = |at_payment: bool| -> f64 {
-            let mut pv = 0.0;
-            for p in &coupons {
-                let fix_time = if at_payment {
-                    p.payment_time
-                } else {
-                    p.start_time
-                };
-                let r_fix = HullWhite::instantaneous_forward(&curve, fix_time);
-                pv += note.notional * p.accrual() * r_fix * curve.discount_factor(p.payment_time);
-            }
-            pv + note.redemption * curve.discount_factor(note.maturity)
-        };
-        let advance_value = pv_with_fixing(false);
-        let arrears_value = pv_with_fixing(true);
-
+        let deterministic = note
+            .price_hull_white_tree(&HullWhite::new(0.1, 0.0), &curve, 400)
+            .unwrap();
+        assert_binary64_close(
+            "non-flat deterministic par floater",
+            deterministic,
+            note.notional,
+        );
+        let coarse = note.price_hull_white_tree(&hw, &curve, 200).unwrap();
+        let fine = note.price_hull_white_tree(&hw, &curve, 400).unwrap();
+        let coarse_error = (coarse - note.notional).abs();
+        let fine_error = (fine - note.notional).abs();
         assert!(
-            tree_price < arrears_value,
-            "reset-in-advance must price below payment-date fixing on an upward curve: \
-             tree={tree_price} arrears={arrears_value}"
+            fine_error < coarse_error,
+            "floater refinement: coarse={coarse_error}, fine={fine_error}"
         );
         assert!(
-            (tree_price - advance_value).abs() < (tree_price - arrears_value).abs(),
-            "tree price {tree_price} should be closer to in-advance benchmark {advance_value} \
-             than to payment-date benchmark {arrears_value}"
+            fine_error < 0.25,
+            "400-step conditional-bond discretization: {fine_error}"
         );
     }
 

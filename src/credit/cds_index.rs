@@ -39,7 +39,8 @@ impl CdsIndex {
             .sum()
     }
 
-    /// Weighted average fair spread.
+    /// Common running spread that sets the weighted index NPV to zero.
+    /// Weights include each constituent's notional and risky annuity.
     pub fn fair_spread(
         &self,
         discount_curve: &YieldCurve,
@@ -49,12 +50,26 @@ impl CdsIndex {
             return 0.0;
         }
 
-        self.normalized_weights()
+        let mut protection = 0.0;
+        let mut annuity = 0.0;
+        for ((weight, cds), curve) in self
+            .normalized_weights()
             .iter()
-            .zip(self.constituents.iter())
-            .zip(survival_curves.iter())
-            .map(|((w, cds), curve)| w * cds.fair_spread(discount_curve, curve))
-            .sum()
+            .zip(&self.constituents)
+            .zip(survival_curves)
+        {
+            protection += weight * cds.protection_leg_pv(discount_curve, curve);
+            let unit_spread = Cds {
+                spread: 1.0,
+                ..cds.clone()
+            };
+            annuity += weight * unit_spread.premium_leg_pv(discount_curve, curve);
+        }
+        if annuity > 0.0 {
+            protection / annuity
+        } else {
+            0.0
+        }
     }
 
     fn normalized_weights(&self) -> Vec<f64> {
@@ -142,13 +157,16 @@ impl NthToDefaultBasket {
         discount_curve: &YieldCurve,
         survival_curves: &[SurvivalCurve],
     ) -> f64 {
-        let fair = self.fair_spread(discount_curve, survival_curves);
-        if fair <= 0.0 {
+        if !self.is_valid(survival_curves.len()) {
             return 0.0;
         }
+        if !running_spread.is_finite() || running_spread < 0.0 {
+            return f64::NAN;
+        }
+        let fair = self.fair_spread(discount_curve, survival_curves);
 
         let unit_annuity = self.premium_leg_annuity(discount_curve, survival_curves);
-        self.notional * (fair - running_spread.max(0.0)) * unit_annuity
+        self.notional * (fair - running_spread) * unit_annuity
     }
 
     fn premium_leg_annuity(

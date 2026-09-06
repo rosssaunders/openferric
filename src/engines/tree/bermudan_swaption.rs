@@ -9,10 +9,14 @@
 //! Numerical considerations: convergence is first- to second-order in time-step count depending on tree parameterization; deep ITM/OTM nodes may need larger depth.
 //!
 //! When to use: use trees for early-exercise intuition and lattice diagnostics; use analytic formulas for plain vanillas and Monte Carlo/PDE for richer dynamics.
+use super::hull_white_lattice::HullWhiteLattice;
 use crate::models::HullWhite;
 use crate::rates::{Swaption, YieldCurve};
 
 /// Trinomial-tree Bermudan swaption engine under one-factor Hull-White.
+///
+/// Each exercise starts a new swap of `swap_tenor`, not a co-terminal swap.
+/// The centered-OU lattice fits the input discount curve at every grid date.
 #[derive(Debug, Clone)]
 pub struct BermudanSwaptionEngine {
     /// Hull-White model parameters.
@@ -31,9 +35,19 @@ impl BermudanSwaptionEngine {
     pub fn price(&self, swaption: &Swaption, exercise_dates: &[f64], curve: &YieldCurve) -> f64 {
         if self.steps == 0
             || swaption.notional <= 0.0
-            || swaption.strike <= 0.0
+            || swaption.strike < 0.0
             || swaption.swap_tenor <= 0.0
             || exercise_dates.is_empty()
+            || !self.hw_model.a.is_finite()
+            || self.hw_model.a < 0.0
+            || !self.hw_model.sigma.is_finite()
+            || self.hw_model.sigma < 0.0
+            || [swaption.notional, swaption.strike, swaption.swap_tenor]
+                .iter()
+                .any(|value| !value.is_finite())
+            || exercise_dates
+                .iter()
+                .any(|time| !time.is_finite() || *time < 0.0)
         {
             return f64::NAN;
         }
@@ -44,21 +58,18 @@ impl BermudanSwaptionEngine {
             .filter(|t| *t >= 0.0 && t.is_finite())
             .fold(f64::NEG_INFINITY, f64::max);
 
-        if !horizon.is_finite() || horizon <= 0.0 {
+        if !horizon.is_finite() || horizon < 0.0 {
             return f64::NAN;
+        }
+        if horizon == 0.0 {
+            let cache = SliceBondCache::new(swaption, &self.hw_model, curve, 0.0);
+            return cache.exercise_value(swaption, HullWhite::instantaneous_forward(curve, 0.0));
         }
 
         let dt = horizon / self.steps as f64;
-        let r0 = HullWhite::instantaneous_forward(curve, 0.0);
-
-        let mut model = self.hw_model.clone();
-        let time_grid = (0..=self.steps).map(|i| i as f64 * dt).collect::<Vec<_>>();
-        model.calibrate_theta(curve, &time_grid);
-
-        let dx = if model.sigma.abs() <= 1.0e-14 {
-            (3.0 * dt).sqrt() * 1.0e-6
-        } else {
-            model.sigma * (3.0 * dt).sqrt()
+        let model = &self.hw_model;
+        let Ok(lattice) = HullWhiteLattice::new(model, curve, horizon, self.steps) else {
+            return f64::NAN;
         };
 
         let exercise_flags = map_exercise_steps(exercise_dates, horizon, self.steps);
@@ -70,41 +81,25 @@ impl BermudanSwaptionEngine {
         let mut scratch = vec![0.0_f64; max_width];
 
         if exercise_flags[self.steps] {
-            let cache = SliceBondCache::new(swaption, &model, curve, horizon);
+            let cache = SliceBondCache::new(swaption, model, curve, horizon);
             for j in -(self.steps as isize)..=(self.steps as isize) {
                 let idx = (j + self.steps as isize) as usize;
-                let rate = r0 + j as f64 * dx;
+                let rate = lattice.short_rate(self.steps, j);
                 values[idx] = cache.exercise_value(swaption, rate);
             }
         }
 
         for i in (0..self.steps).rev() {
             let t = i as f64 * dt;
-            // theta(t), and the (t, T)-dependent bond terms used by the
-            // exercise value, are constant on a time slice: hoist them out of
-            // the per-node loop.
-            let theta_t = model.theta_at(t);
             let slice_cache = if exercise_flags[i] {
-                Some(SliceBondCache::new(swaption, &model, curve, t))
+                Some(SliceBondCache::new(swaption, model, curve, t))
             } else {
                 None
             };
 
             for j in -(i as isize)..=(i as isize) {
-                let rate = r0 + j as f64 * dx;
-                // Branching offsets reachable inside the next slice [-(i+1), i+1].
-                let k_min = (-(i as isize) - j).max(-1);
-                let k_max = ((i as isize) - j).min(1);
-                let (k, pu, pm, pd) =
-                    trinomial_probs(theta_t, model.a, model.sigma, rate, dt, dx, k_min, k_max);
-                let disc = (-rate * dt).exp();
-
-                let next_shift = (i + 1) as isize;
-                let up_idx = (j + k + next_shift + 1) as usize;
-                let mid_idx = (j + k + next_shift) as usize;
-                let down_idx = (j + k + next_shift - 1) as usize;
-                let continuation =
-                    disc * (pu * values[up_idx] + pm * values[mid_idx] + pd * values[down_idx]);
+                let rate = lattice.short_rate(i, j);
+                let continuation = lattice.continuation(i, j, &values);
 
                 let idx = (j + i as isize) as usize;
                 scratch[idx] = match &slice_cache {
@@ -130,72 +125,6 @@ fn map_exercise_steps(dates: &[f64], horizon: f64, steps: usize) -> Vec<bool> {
         flags[idx.min(steps)] = true;
     }
     flags
-}
-
-/// Hull-White adaptive trinomial branching (Hull, ch. 32).
-///
-/// Returns `(k, pu, pm, pd)`: probabilities of branching from node `j` to
-/// nodes `j + k + 1`, `j + k`, `j + k - 1`, where `k` is the branching offset
-/// (`0` standard, `+1` upward branching at the low edge, `-1` downward
-/// branching at the high edge).
-///
-/// Derivation (first principles): with conditional mean `m1 = mu * dt`
-/// (`mu = theta(t) - a * r`) and variance `V = sigma^2 * dt`, write
-/// `eta = m1 / dx`, pick the central target `k = round(eta)` (clamped to the
-/// branching offsets reachable in the next slice), and let
-/// `alpha = eta - k` be the residual drift. Matching
-/// `pu - pd = alpha` (mean) and
-/// `pu (k+1)^2 + pm k^2 + pd (k-1)^2 = (V + m1^2) / dx^2` (second moment)
-/// with `pu + pm + pd = 1` gives
-/// `pu = (V/dx^2 + alpha^2 + alpha) / 2`, `pd = (V/dx^2 + alpha^2 - alpha) / 2`,
-/// `pm = 1 - V/dx^2 - alpha^2`. With `dx = sigma * sqrt(3 dt)` this is Hull's
-/// `p_u = 1/6 + (alpha^2 + alpha)/2` form, and all probabilities are
-/// non-negative whenever `|alpha| <= sqrt(2/3)` (guaranteed for
-/// `k = round(eta)` with `|eta| <= 1.5`).
-#[allow(clippy::too_many_arguments)]
-fn trinomial_probs(
-    theta_t: f64,
-    a: f64,
-    sigma: f64,
-    rate: f64,
-    dt: f64,
-    dx: f64,
-    k_min: isize,
-    k_max: isize,
-) -> (isize, f64, f64, f64) {
-    if dx <= 0.0 {
-        return (0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
-    }
-
-    let mu = theta_t - a * rate;
-    let m1 = mu * dt;
-    let eta = m1 / dx;
-    let k = (eta.round() as isize).clamp(k_min.max(-1), k_max.min(1));
-    let alpha = eta - k as f64;
-
-    let v_ratio = sigma * sigma * dt / (dx * dx);
-    let pu = 0.5 * (v_ratio + alpha * alpha + alpha);
-    let pd = 0.5 * (v_ratio + alpha * alpha - alpha);
-    let pm = 1.0 - pu - pd;
-
-    if pu >= 0.0 && pm >= 0.0 && pd >= 0.0 {
-        return (k, pu, pm, pd);
-    }
-
-    // Fallback for extreme drift (|alpha| > sqrt(2/3) even after adaptive
-    // branching, e.g. far grid wings under very strong mean reversion where
-    // the tree geometry caps |k| at 1): clamp and renormalize. This trades
-    // exact moment matching for stability and is only reachable outside the
-    // adaptive-branching regime.
-    let pu = pu.max(0.0);
-    let pm = pm.max(0.0);
-    let pd = pd.max(0.0);
-    let norm = pu + pm + pd;
-    if norm <= 1.0e-14 {
-        (k, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
-    } else {
-        (k, pu / norm, pm / norm, pd / norm)
-    }
 }
 
 /// Per-time-slice cache of the `(t, T)`-dependent affine bond terms
@@ -277,66 +206,6 @@ impl SliceBondCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn trinomial_probs_match_first_two_moments_at_every_node() {
-        // Strong mean reversion so outer grid nodes force adaptive branching
-        // (the old clamp-and-renormalize silently broke moment matching here).
-        let a = 0.5_f64;
-        let sigma = 0.01_f64;
-        let dt = 0.1_f64;
-        let dx = sigma * (3.0 * dt).sqrt();
-        let r0 = 0.05_f64;
-        // theta = a * r0 keeps the drift zero at the tree center and large at
-        // the wings.
-        let theta_t = a * r0;
-        let steps = 25_usize;
-
-        let mut saw_adaptive = false;
-        for i in 0..steps {
-            for j in -(i as isize)..=(i as isize) {
-                let rate = r0 + j as f64 * dx;
-                let k_min = (-(i as isize) - j).max(-1);
-                let k_max = ((i as isize) - j).min(1);
-                let (k, pu, pm, pd) =
-                    trinomial_probs(theta_t, a, sigma, rate, dt, dx, k_min, k_max);
-                if k != 0 {
-                    saw_adaptive = true;
-                }
-
-                assert!(
-                    pu >= 0.0 && pm >= 0.0 && pd >= 0.0,
-                    "node ({i},{j}): negative prob"
-                );
-                assert!(
-                    (pu + pm + pd - 1.0).abs() < 1.0e-12,
-                    "node ({i},{j}): probs sum to {}",
-                    pu + pm + pd
-                );
-
-                let m1 = (theta_t - a * rate) * dt;
-                let mean = dx * (k as f64 + pu - pd);
-                assert!(
-                    (mean - m1).abs() < 1.0e-12,
-                    "node ({i},{j}): mean {mean} vs target {m1}"
-                );
-
-                let kf = k as f64;
-                let second = dx
-                    * dx
-                    * (pu * (kf + 1.0) * (kf + 1.0) + pm * kf * kf + pd * (kf - 1.0) * (kf - 1.0));
-                let target = sigma * sigma * dt + m1 * m1;
-                assert!(
-                    (second - target).abs() < 1.0e-12,
-                    "node ({i},{j}): second moment {second} vs target {target}"
-                );
-            }
-        }
-        assert!(
-            saw_adaptive,
-            "test parameters should exercise adaptive (non-standard) branching"
-        );
-    }
 
     #[test]
     fn bermudan_swaption_has_early_exercise_premium_over_black_european() {

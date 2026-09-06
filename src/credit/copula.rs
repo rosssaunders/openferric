@@ -47,7 +47,7 @@ impl BasketDefaultSimulation {
 impl GaussianCopula {
     pub fn new(rho: f64) -> Self {
         Self {
-            rho: rho.clamp(-0.999_999, 0.999_999),
+            rho: rho.clamp(-1.0, 1.0),
         }
     }
 

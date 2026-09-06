@@ -1336,8 +1336,10 @@ fn extrinsic_storage_value_lsm(
         values_next = values_cur;
     }
 
-    let init_idx = nearest_inventory_index(contract.initial_inventory, &grid);
-    let path_values: Vec<f64> = values_next.iter().map(|row| row[init_idx]).collect();
+    let path_values: Vec<f64> = values_next
+        .iter()
+        .map(|row| interpolate_inventory_value(contract.initial_inventory, &grid, row))
+        .collect();
     let mean = path_values.iter().sum::<f64>() / lsm_config.num_paths as f64;
     let stderr = if lsm_config.num_paths > 1 {
         let var = path_values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
@@ -1462,19 +1464,6 @@ fn inventory_grid_values(min_inv: f64, max_inv: f64, grid: usize) -> Vec<f64> {
     (0..grid).map(|i| min_inv + i as f64 * step).collect()
 }
 
-fn nearest_inventory_index(value: f64, grid: &[f64]) -> usize {
-    let mut best_idx = 0;
-    let mut best_dist = f64::INFINITY;
-    for (i, &x) in grid.iter().enumerate() {
-        let d = (value - x).abs();
-        if d < best_dist {
-            best_dist = d;
-            best_idx = i;
-        }
-    }
-    best_idx
-}
-
 fn interpolate_inventory_value(value: f64, grid: &[f64], values: &[f64]) -> f64 {
     if value <= grid[0] {
         return values[0];
@@ -1565,6 +1554,7 @@ impl VolumeConstrainedSwing {
     }
 
     /// Intrinsic swing value with explicit volume constraints.
+    /// Returns an error if the chosen cumulative-volume grid has no feasible policy.
     pub fn intrinsic_value(
         &self,
         curve: &CommodityForwardCurve,
@@ -1636,7 +1626,14 @@ impl VolumeConstrainedSwing {
         // The recursion above is in first-exercise-date money.  Return a t=0
         // present value, consistently with the storage valuation routines.
         let disc_to_today = (-risk_free_rate * self.exercise_times[0]).exp();
-        Ok(disc_to_today * interpolate_inventory_value(0.0, &grid, &next))
+        let value = disc_to_today * interpolate_inventory_value(0.0, &grid, &next);
+        if !value.is_finite() {
+            return Err(
+                "volume grid has no finite feasible swing value; refine total_volume_grid"
+                    .to_string(),
+            );
+        }
+        Ok(value)
     }
 }
 

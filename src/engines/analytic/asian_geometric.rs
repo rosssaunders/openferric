@@ -11,10 +11,12 @@
 //! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 use crate::core::{Averaging, PricingEngine, PricingError, PricingResult, StrikeType};
 use crate::instruments::asian::AsianOption;
-use crate::market::Market;
-use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
+use crate::market::{DividendKind, Market};
+use crate::pricing::asian::geometric_asian_discrete_fixed_expected_payoff;
 
 /// Analytic engine for geometric-average fixed-strike Asian options.
+/// Proportional dividends enter at their actual fixing weights. Cash dividends
+/// on or before a fixing require a numerical engine instead of this lognormal formula.
 #[derive(Debug, Clone, Default)]
 pub struct GeometricAsianEngine;
 
@@ -48,15 +50,39 @@ impl PricingEngine<AsianOption> for GeometricAsianEngine {
 
         let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
 
-        let price = geometric_asian_discrete_fixed_closed_form(
+        let observations = &instrument.asian.observation_times;
+        let mut log_dividend_factor = 0.0;
+        for event in market.dividends().events() {
+            let affected = observations
+                .iter()
+                .filter(|&&time| time >= event.time)
+                .count();
+            if affected == 0 {
+                continue;
+            }
+            match event.kind {
+                DividendKind::Proportional(ratio) => {
+                    log_dividend_factor +=
+                        (-ratio).ln_1p() * affected as f64 / observations.len() as f64;
+                }
+                DividendKind::Cash(_) => {
+                    return Err(PricingError::InvalidInput(
+                        "GeometricAsianEngine does not support cash dividends on or before a fixing; use Monte Carlo".to_string(),
+                    ));
+                }
+            }
+        }
+
+        let expected_payoff = geometric_asian_discrete_fixed_expected_payoff(
             instrument.option_type,
-            market.spot,
+            market.spot * log_dividend_factor.exp(),
             instrument.strike,
             market.rate,
-            market.effective_dividend_yield(instrument.expiry),
+            market.dividend_yield,
             vol,
             &instrument.asian.observation_times,
         );
+        let price = (-market.rate * instrument.expiry).exp() * expected_payoff;
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("vol", vol);

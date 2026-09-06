@@ -31,7 +31,9 @@ use crate::mc::{
     ControlVariate, CpuExecutionPolicy, GbmPathGenerator, MonteCarloEngine, PathGenerator,
 };
 use crate::models::Gbm;
+#[cfg(test)]
 use crate::pricing::asian::geometric_asian_discrete_fixed_closed_form;
+use crate::pricing::asian::geometric_asian_discrete_fixed_expected_payoff;
 use crate::pricing::european::black_scholes_price;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -69,8 +71,15 @@ pub trait MonteCarloInstrument: Instrument {
     fn payoff_from_path_with_rate(&self, path: &[f64], _rate: f64) -> f64 {
         self.payoff_from_path(path)
     }
-    /// Optional control variate for this instrument.
-    fn control_variate(&self, _market: &Market, _vol: f64) -> Option<ControlVariate> {
+    /// Optional control variate for the supplied uniform simulation grid.
+    /// Its expectation must use the same rounded observation dates as its
+    /// evaluator, not the unrounded contractual schedule.
+    fn control_variate(
+        &self,
+        _market: &Market,
+        _vol: f64,
+        _steps: usize,
+    ) -> Option<ControlVariate> {
         None
     }
 }
@@ -173,6 +182,13 @@ fn first_barrier_hit_index(
     }
 }
 
+fn observation_index(time: f64, maturity: f64, steps: usize) -> usize {
+    if maturity <= 0.0 {
+        return 0;
+    }
+    (((time / maturity) * steps as f64).round() as usize).min(steps)
+}
+
 fn average_for_observations(
     path: &[f64],
     maturity: f64,
@@ -183,26 +199,20 @@ fn average_for_observations(
         return path[path.len() - 1];
     }
 
-    let last_idx = path.len().saturating_sub(1) as f64;
+    let steps = path.len().saturating_sub(1);
 
     match averaging {
         Averaging::Arithmetic => {
             let sum = observation_times
                 .iter()
-                .map(|&t| {
-                    let idx = ((t / maturity) * last_idx).round() as usize;
-                    path[idx.min(path.len() - 1)]
-                })
+                .map(|&t| path[observation_index(t, maturity, steps)])
                 .sum::<f64>();
             sum / observation_times.len() as f64
         }
         Averaging::Geometric => {
             let mean_log = observation_times
                 .iter()
-                .map(|&t| {
-                    let idx = ((t / maturity) * last_idx).round() as usize;
-                    path[idx.min(path.len() - 1)].max(1e-12).ln()
-                })
+                .map(|&t| path[observation_index(t, maturity, steps)].max(1e-12).ln())
                 .sum::<f64>()
                 / observation_times.len() as f64;
             mean_log.exp()
@@ -872,7 +882,7 @@ impl MonteCarloInstrument for VanillaOption {
         vanilla_payoff(self.option_type, path[path.len() - 1], self.strike)
     }
 
-    fn control_variate(&self, market: &Market, vol: f64) -> Option<ControlVariate> {
+    fn control_variate(&self, market: &Market, vol: f64, _steps: usize) -> Option<ControlVariate> {
         if !matches!(self.exercise, ExerciseStyle::European) {
             return None;
         }
@@ -990,33 +1000,40 @@ impl MonteCarloInstrument for AsianOption {
         }
     }
 
-    fn control_variate(&self, market: &Market, vol: f64) -> Option<ControlVariate> {
+    fn control_variate(&self, market: &Market, vol: f64, steps: usize) -> Option<ControlVariate> {
         if self.asian.averaging != Averaging::Arithmetic
             || self.asian.strike_type != StrikeType::Fixed
         {
             return None;
         }
-        if market.has_discrete_dividends() {
+        if market.has_discrete_dividends() || steps == 0 {
             return None;
         }
 
-        let expected_discounted = geometric_asian_discrete_fixed_closed_form(
+        let sampled_times: Vec<f64> = self
+            .asian
+            .observation_times
+            .iter()
+            .map(|&time| {
+                observation_index(time, self.expiry, steps) as f64 * (self.expiry / steps as f64)
+            })
+            .collect();
+        let expected = geometric_asian_discrete_fixed_expected_payoff(
             self.option_type,
             market.spot,
             self.strike,
             market.rate,
             market.dividend_yield,
             vol,
-            &self.asian.observation_times,
+            &sampled_times,
         );
-        let discount_factor = (-market.rate * self.expiry).exp();
         let option_type = self.option_type;
         let strike = self.strike;
         let expiry = self.expiry;
         let observation_times = self.asian.observation_times.clone();
 
         Some(ControlVariate {
-            expected: expected_discounted / discount_factor,
+            expected,
             evaluator: Arc::new(move |path: &[f64]| {
                 let geometric_avg = average_for_observations(
                     path,
@@ -1420,6 +1437,8 @@ fn execution_threads(backend: ExecutionBackend) -> usize {
 }
 
 /// Dedicated Monte Carlo engine for arithmetic-average fixed-strike Asian options.
+/// Fixings are rounded to the nearest uniform path step. Reported standard
+/// errors measure sampling uncertainty, not this time-grid approximation.
 #[derive(Debug, Clone, Copy)]
 pub struct ArithmeticAsianMC {
     /// Number of simulated paths.
@@ -1544,34 +1563,9 @@ impl PricingEngine<AsianOption> for ArithmeticAsianMC {
         if !self.reproducible {
             engine = engine.with_randomized_streams();
         }
-        if self.control_variate && !market.has_discrete_dividends() {
-            let expected_discounted = geometric_asian_discrete_fixed_closed_form(
-                instrument.option_type,
-                market.spot,
-                instrument.strike,
-                market.rate,
-                market.dividend_yield,
-                vol,
-                &instrument.asian.observation_times,
-            );
-            let discount_factor = (-market.rate * maturity).exp();
-            let option_type = instrument.option_type;
-            let strike = instrument.strike;
-            let expiry = instrument.expiry;
-            let observation_times = instrument.asian.observation_times.clone();
-
-            let cv = ControlVariate {
-                expected: expected_discounted / discount_factor,
-                evaluator: Arc::new(move |path: &[f64]| {
-                    let geometric_avg = average_for_observations(
-                        path,
-                        expiry,
-                        &observation_times,
-                        Averaging::Geometric,
-                    );
-                    vanilla_payoff(option_type, geometric_avg, strike)
-                }),
-            };
+        if self.control_variate
+            && let Some(cv) = instrument.control_variate(market, vol, self.steps)
+        {
             engine = engine.with_control_variate(cv);
         }
 
@@ -1745,7 +1739,7 @@ where
 
         let engine = match &self.variance_reduction {
             VarianceReduction::ControlVariate => {
-                if let Some(cv) = instrument.control_variate(market, vol) {
+                if let Some(cv) = instrument.control_variate(market, vol, self.num_steps) {
                     base.with_control_variate(cv)
                 } else {
                     base
@@ -2864,6 +2858,7 @@ mod tests {
                         .build()
                         .unwrap(),
                     0.2,
+                    2,
                 )
                 .is_none()
         );

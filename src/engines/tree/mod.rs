@@ -14,6 +14,7 @@ pub mod bermudan_swaption;
 pub mod binomial;
 pub mod convertible;
 pub mod generalized_binomial;
+pub(crate) mod hull_white_lattice;
 pub mod swing;
 pub mod trinomial;
 pub mod two_asset_tree;

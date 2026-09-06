@@ -332,6 +332,7 @@ fn fra_price(args: &Value) -> ToolCallResult {
         start_date: base + Duration::days((start * 365.0).round() as i64),
         end_date: base + Duration::days((end * 365.0).round() as i64),
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     Ok(json!({ "price": fra.npv(&curve) }))
@@ -356,6 +357,7 @@ fn cap_floor_price(args: &Value) -> ToolCallResult {
         end_date: end,
         frequency: freq,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
         is_cap,
     };
 

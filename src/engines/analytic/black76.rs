@@ -34,6 +34,34 @@ fn intrinsic(option_type: OptionType, forward: f64, strike: f64) -> f64 {
 }
 
 #[inline]
+fn deterministic_greeks(option: &FuturesOption) -> Greeks {
+    let discount = (-option.r * option.t).exp();
+    let price = discount * intrinsic(option.option_type, option.forward, option.strike);
+    let at_boundary = option.forward == option.strike;
+    let delta = if at_boundary {
+        f64::NAN
+    } else if price == 0.0 {
+        0.0
+    } else {
+        match option.option_type {
+            OptionType::Call => discount,
+            OptionType::Put => -discount,
+        }
+    };
+    Greeks {
+        delta,
+        gamma: if at_boundary { f64::NAN } else { 0.0 },
+        vega: if at_boundary {
+            discount * option.forward * option.t.sqrt() * normal_pdf(0.0)
+        } else {
+            0.0
+        },
+        theta: option.r * price,
+        rho: -option.t * price,
+    }
+}
+
+#[inline]
 fn black76_price_greeks(option: &FuturesOption) -> (f64, Greeks, f64, f64) {
     let sqrt_t = option.t.sqrt();
     let (d1, d2) = super::bs_inline::stable_d1_d2(
@@ -123,6 +151,8 @@ pub fn black76_price(
 }
 
 /// Closed-form Black-76 Greeks for European options on forwards/futures.
+/// At zero volatility, ATM delta/gamma are undefined (`NaN`), and vega is
+/// the right derivative. Theta rolls expiry with the forward held fixed.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn black76_greeks(
@@ -136,7 +166,7 @@ pub fn black76_greeks(
     let option = FuturesOption::new(forward, strike, vol, r, t, option_type);
     option.validate()?;
 
-    if option.t <= 0.0 || option.vol <= 0.0 {
+    if option.t <= 0.0 {
         return Ok(Greeks {
             delta: 0.0,
             gamma: 0.0,
@@ -144,6 +174,10 @@ pub fn black76_greeks(
             theta: 0.0,
             rho: 0.0,
         });
+    }
+
+    if option.vol == 0.0 {
+        return Ok(deterministic_greeks(&option));
     }
 
     Ok(black76_price_greeks(&option).1)
@@ -185,13 +219,7 @@ impl PricingEngine<FuturesOption> for Black76Engine {
                         instrument.strike,
                     ),
                 stderr: None,
-                greeks: Some(Greeks {
-                    delta: 0.0,
-                    gamma: 0.0,
-                    vega: 0.0,
-                    theta: 0.0,
-                    rho: 0.0,
-                }),
+                greeks: Some(deterministic_greeks(instrument)),
                 diagnostics: crate::core::Diagnostics::new(),
             });
         }

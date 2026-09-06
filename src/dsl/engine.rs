@@ -1513,6 +1513,7 @@ impl PricingEngine<DslProduct> for DslMonteCarloEngine {
     ) -> Result<PricingResult, PricingError> {
         market.validate()?;
         let vol = market.checked_vol_for(market.spot, instrument.product.maturity)?;
+        market.require_continuous_dividends(instrument.product.maturity)?;
         let multi_market =
             MultiAssetMarket::single(market.spot, vol, market.rate, market.dividend_yield);
         self.price_multi_asset(&instrument.product, &multi_market)

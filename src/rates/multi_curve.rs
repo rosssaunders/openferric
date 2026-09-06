@@ -9,6 +9,7 @@
 //! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
 //!
 //! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
+use crate::rates::schedule::year_fraction_periods;
 /// Multi-curve framework for post-2008 interest rate modeling.
 ///
 /// Separates discounting (OIS) from forwarding (IBOR/SOFR tenor curves).
@@ -39,6 +40,14 @@ impl MultiCurveEnvironment {
 
     /// Add a forwarding curve for a specific tenor.
     pub fn add_forward_curve(&mut self, tenor_name: &str, curve: YieldCurve) {
+        if let Some((_, existing)) = self
+            .forward_curves
+            .iter_mut()
+            .find(|(name, _)| name == tenor_name)
+        {
+            *existing = curve;
+            return;
+        }
         self.forward_curves.push((tenor_name.to_string(), curve));
     }
 
@@ -90,7 +99,6 @@ pub fn dual_curve_bootstrap(
     let mut sorted = swap_rates.to_vec();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    let dt = 1.0 / frequency as f64;
     let mut fwd_points: Vec<(f64, f64)> = Vec::new();
 
     for &(tenor, par_rate) in &sorted {
@@ -101,19 +109,18 @@ pub fn dual_curve_bootstrap(
         // The pillar DF_fwd(T) is solved with a 1-D root-finder so the swap
         // reprices exactly: intermediate coupon DFs between the last pillar and
         // T interpolate against the candidate pillar value.
-        let n_periods = (tenor * frequency as f64).round() as usize;
-        if n_periods == 0 {
+        let periods = year_fraction_periods(tenor, frequency);
+        if periods.is_empty() || !par_rate.is_finite() {
             continue;
         }
-        let t_n = n_periods as f64 * dt;
 
         // OIS annuity is independent of the candidate forward curve.
         let mut fixed_pv = 0.0;
-        let mut ois_dfs = Vec::with_capacity(n_periods);
-        for i in 1..=n_periods {
-            let ois_df = ois_curve.discount_factor(i as f64 * dt);
+        let mut ois_dfs = Vec::with_capacity(periods.len());
+        for &(start, end) in &periods {
+            let ois_df = ois_curve.discount_factor(end);
             ois_dfs.push(ois_df);
-            fixed_pv += par_rate * ois_df * dt;
+            fixed_pv += par_rate * ois_df * (end - start);
         }
 
         // Residual of the par equation as a function of the candidate pillar
@@ -122,16 +129,14 @@ pub fn dual_curve_bootstrap(
         // residual is monotone in the candidate value.
         let residual = |df_n: f64| {
             let mut candidate = fwd_points.clone();
-            candidate.push((t_n, df_n));
+            candidate.push((tenor, df_n));
             let fwd_curve = YieldCurve::new(candidate);
 
             let mut float_pv = 0.0;
             let mut fwd_df_prev = 1.0;
-            for (i, ois_df) in ois_dfs.iter().enumerate() {
-                let t_i = (i + 1) as f64 * dt;
-                let fwd_df_curr = fwd_curve.discount_factor(t_i);
-                let fwd_rate = (fwd_df_prev / fwd_df_curr - 1.0) / dt;
-                float_pv += fwd_rate * ois_df * dt;
+            for ((_, end), ois_df) in periods.iter().zip(&ois_dfs) {
+                let fwd_df_curr = fwd_curve.discount_factor(*end);
+                float_pv += (fwd_df_prev / fwd_df_curr - 1.0) * ois_df;
                 fwd_df_prev = fwd_df_curr;
             }
             Ok(fixed_pv - float_pv)
@@ -144,7 +149,7 @@ pub fn dual_curve_bootstrap(
             && fwd_df_n > 0.0
             && fwd_df_n.is_finite()
         {
-            fwd_points.push((t_n, fwd_df_n));
+            fwd_points.push((tenor, fwd_df_n));
         }
     }
 
@@ -162,21 +167,29 @@ pub fn price_irs_multi_curve(
     tenor: f64,
     frequency: usize,
 ) -> Option<f64> {
-    let dt = 1.0 / frequency as f64;
-    let n_periods = (tenor * frequency as f64).round() as usize;
+    if frequency == 0
+        || !tenor.is_finite()
+        || tenor < 0.0
+        || !notional.is_finite()
+        || !fixed_rate.is_finite()
+    {
+        return None;
+    }
+    env.forward_curves
+        .iter()
+        .find(|(name, _)| name == forward_tenor)?;
 
     let mut fixed_pv = 0.0;
     let mut float_pv = 0.0;
 
-    for i in 1..=n_periods {
-        let t_prev = (i - 1) as f64 * dt;
-        let t_i = i as f64 * dt;
-        let ois_df = env.discount_factor(t_i);
+    for (start, end) in year_fraction_periods(tenor, frequency) {
+        let accrual = end - start;
+        let ois_df = env.discount_factor(end);
 
-        fixed_pv += fixed_rate * notional * dt * ois_df;
+        fixed_pv += fixed_rate * notional * accrual * ois_df;
 
-        let fwd = env.forward_rate(forward_tenor, t_prev, t_i)?;
-        float_pv += fwd * notional * dt * ois_df;
+        let forward = env.forward_rate(forward_tenor, start, end)?;
+        float_pv += forward * notional * accrual * ois_df;
     }
 
     Some(float_pv - fixed_pv)

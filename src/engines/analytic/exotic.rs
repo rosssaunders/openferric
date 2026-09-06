@@ -36,6 +36,14 @@ impl PricingEngine<ExoticOption> for ExoticAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         market.validate()?;
         instrument.validate()?;
+        let expiry = match instrument {
+            ExoticOption::LookbackFloating(spec) => spec.expiry,
+            ExoticOption::LookbackFixed(spec) => spec.expiry,
+            ExoticOption::Chooser(spec) => spec.expiry,
+            ExoticOption::Quanto(spec) => spec.expiry,
+            ExoticOption::Compound(spec) => spec.underlying_expiry,
+        };
+        market.require_continuous_dividends(expiry)?;
 
         let mut diagnostics = crate::core::Diagnostics::new();
 
@@ -87,39 +95,15 @@ fn bs_price_with_dividend(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 {
-        return match option_type {
-            OptionType::Call => (spot - strike).max(0.0),
-            OptionType::Put => (strike - spot).max(0.0),
-        };
-    }
-
-    if vol <= 0.0 {
-        let terminal_spot = spot * ((rate - dividend_yield) * expiry).exp();
-        let payoff = match option_type {
-            OptionType::Call => (terminal_spot - strike).max(0.0),
-            OptionType::Put => (strike - terminal_spot).max(0.0),
-        };
-        return (-rate * expiry).exp() * payoff;
-    }
-
-    let sqrt_t = expiry.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-        / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-
-    let df_r = (-rate * expiry).exp();
-    let df_q = (-dividend_yield * expiry).exp();
-
-    // Compute call price, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let call = spot.mul_add(df_q * nd1, -(strike * df_r * nd2));
-    match option_type {
-        OptionType::Call => call,
-        OptionType::Put => call - spot * df_q + strike * df_r,
-    }
+    crate::engines::analytic::black_scholes::bs_price(
+        option_type,
+        spot,
+        strike,
+        rate,
+        dividend_yield,
+        vol,
+        expiry,
+    )
 }
 
 #[inline]
@@ -517,7 +501,6 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
     let df_dom = (-market.rate * spec.expiry).exp();
     let carry_discounted = ((mu_adj - market.rate) * spec.expiry).exp();
 
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
     let nd1 = normal_cdf(d1);
     let nd2 = normal_cdf(d2);
     let call = market
@@ -525,7 +508,10 @@ fn quanto_price(spec: &QuantoOption, market: &Market, vol: f64) -> f64 {
         .mul_add(carry_discounted * nd1, -(spec.strike * df_dom * nd2));
     let foreign_price = match spec.option_type {
         OptionType::Call => call,
-        OptionType::Put => call - market.spot * carry_discounted + spec.strike * df_dom,
+        OptionType::Put => (spec.strike * df_dom).mul_add(
+            normal_cdf(-d2),
+            -(market.spot * carry_discounted * normal_cdf(-d1)),
+        ),
     };
 
     spec.fx_rate * foreign_price

@@ -107,9 +107,9 @@ pub struct CommodityFutures {
 
 impl CommodityFutures {
     pub fn validate(&self) -> Result<(), PricingError> {
-        if !self.contract_price.is_finite() || self.contract_price <= 0.0 {
+        if !self.contract_price.is_finite() {
             return Err(PricingError::InvalidInput(
-                "commodity futures contract_price must be finite and > 0".to_string(),
+                "commodity futures contract_price must be finite".to_string(),
             ));
         }
         if !self.contract_size.is_finite() || self.contract_size <= 0.0 {
@@ -123,9 +123,9 @@ impl CommodityFutures {
     /// PnL for a given mark price.
     pub fn value(&self, mark_price: f64) -> Result<f64, PricingError> {
         self.validate()?;
-        if !mark_price.is_finite() || mark_price <= 0.0 {
+        if !mark_price.is_finite() {
             return Err(PricingError::InvalidInput(
-                "mark_price must be finite and > 0".to_string(),
+                "mark_price must be finite".to_string(),
             ));
         }
 

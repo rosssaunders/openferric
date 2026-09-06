@@ -17,3 +17,20 @@ pub use crate::rates::calendar::{
     is_cds_standard_date, is_imm_date, next_cds_date, next_imm_date, previous_cds_date,
     previous_imm_date, subtract_business_days, third_wednesday, year_fraction_business_252,
 };
+
+pub(crate) fn year_fraction_periods(tenor: f64, frequency: usize) -> Vec<(f64, f64)> {
+    if !tenor.is_finite() || tenor <= 0.0 || frequency == 0 {
+        return Vec::new();
+    }
+    let frequency = frequency as f64;
+    let count = (tenor * frequency).ceil() as usize;
+    (1..=count)
+        .map(|index| {
+            (
+                (index - 1) as f64 / frequency,
+                (index as f64 / frequency).min(tenor),
+            )
+        })
+        .filter(|(start, end)| end > start)
+        .collect()
+}

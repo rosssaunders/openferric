@@ -60,11 +60,14 @@ pub fn tarf_mc_price(
     seed: u64,
 ) -> Result<TarfPricingResult, String> {
     tarf.validate()?;
+    if !rate.is_finite() || !dividend_yield.is_finite() {
+        return Err("rates must be finite".to_string());
+    }
     if !spot.is_finite() || spot <= 0.0 {
         return Err("spot must be finite and > 0".to_string());
     }
-    if !vol.is_finite() || vol <= 0.0 {
-        return Err("vol must be finite and > 0".to_string());
+    if !vol.is_finite() || vol < 0.0 {
+        return Err("vol must be finite and >= 0".to_string());
     }
     if num_paths == 0 {
         return Err("num_paths must be > 0".to_string());

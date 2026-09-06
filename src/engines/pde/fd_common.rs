@@ -1,6 +1,15 @@
 use crate::core::{OptionType, PricingError};
 use crate::market::Market;
 
+pub(super) fn ensure_spot_inside_grid(spot: f64, upper: f64) -> Result<(), PricingError> {
+    if !upper.is_finite() || upper <= spot {
+        return Err(PricingError::InvalidInput(
+            "spot grid upper bound must be finite and exceed the pricing spot; increase s_max_multiplier".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[inline]
 pub(super) fn intrinsic(option_type: OptionType, spot: f64, strike: f64) -> f64 {
     match option_type {
@@ -45,19 +54,19 @@ impl EscrowedStep {
 
     /// American put Dirichlet value at `S* = 0`.
     ///
-    /// The spot path at `S* = 0` is the deterministic dividend stream, so the
-    /// holder either exercises now (`K - A/P`) or waits until just after the
-    /// last remaining ex-date and receives `~K` discounted. Without remaining
-    /// events this degenerates to `K`, the standard American put boundary.
+    /// Compares immediate exercise with waiting until the last remaining
+    /// ex-date or maturity. Waiting until maturity is essential at negative
+    /// rates; without remaining dividends the boundary is `K * max(1, DF)`.
     #[inline]
-    pub fn put_floor_at_zero(&self, strike: f64, rate: f64, time: f64) -> f64 {
+    pub fn put_floor_at_zero(&self, strike: f64, rate: f64, time: f64, maturity: f64) -> f64 {
         let exercise_now = self.adjusted_strike(strike).max(0.0) / self.prop;
-        match self.last_event_time {
+        let exercise_before_maturity = match self.last_event_time {
             Some(t_last) if t_last > time => {
                 exercise_now.max(strike * (-rate * (t_last - time)).exp())
             }
             _ => exercise_now,
-        }
+        };
+        exercise_before_maturity.max(strike * (-rate * (maturity - time)).exp())
     }
 }
 
@@ -139,8 +148,21 @@ pub(super) fn boundary_values(
             let lower = strike * (-rate * tau).exp();
             (lower, 0.0)
         }
-        (OptionType::Call, true) => (0.0, (s_max - strike).max(0.0)),
-        (OptionType::Put, true) => (strike, 0.0),
+        (OptionType::Call, true) => {
+            let discounted_exercise = |time: f64| {
+                (s_max * (-dividend_yield * time).exp() - strike * (-rate * time).exp()).max(0.0)
+            };
+            let mut upper = discounted_exercise(0.0).max(discounted_exercise(tau));
+            if rate * dividend_yield > 0.0 && rate != dividend_yield {
+                let stationary_time =
+                    ((rate / dividend_yield) * (strike / s_max)).ln() / (rate - dividend_yield);
+                if stationary_time > 0.0 && stationary_time < tau {
+                    upper = upper.max(discounted_exercise(stationary_time));
+                }
+            }
+            (0.0, upper)
+        }
+        (OptionType::Put, true) => (strike * (-rate * tau).exp().max(1.0), 0.0),
     }
 }
 

@@ -352,6 +352,21 @@ impl Market {
         !self.dividend_schedule.is_empty()
     }
 
+    pub(crate) fn require_continuous_dividends(&self, maturity: f64) -> Result<(), PricingError> {
+        if self
+            .dividend_schedule
+            .events_until(maturity)
+            .next()
+            .is_some()
+        {
+            return Err(PricingError::InvalidInput(
+                "selected pricing engine does not support discrete dividends before maturity"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Forward price at maturity under continuous yield + discrete schedule.
     #[inline]
     pub fn forward_price(&self, maturity: f64) -> f64 {

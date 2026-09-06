@@ -9,7 +9,8 @@
 //! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
 //!
 //! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
-use crate::math::normal_cdf;
+use crate::core::OptionType;
+use crate::engines::analytic::black_scholes::bs_price;
 use crate::rates::YieldCurve;
 
 /// European swaption on a forward-starting fixed-for-floating swap.
@@ -25,7 +26,11 @@ pub struct Swaption {
 impl Swaption {
     /// Swap annuity factor `A = sum(DF_i * delta_i)` for annual fixed payments.
     pub fn annuity_factor(&self, curve: &YieldCurve) -> f64 {
-        if self.option_expiry < 0.0 || self.swap_tenor <= 0.0 {
+        if !self.option_expiry.is_finite()
+            || !self.swap_tenor.is_finite()
+            || self.option_expiry < 0.0
+            || self.swap_tenor <= 0.0
+        {
             return 0.0;
         }
 
@@ -72,7 +77,13 @@ impl Swaption {
 
     /// Black-76 payer/receiver swaption price.
     pub fn price(&self, curve: &YieldCurve, vol: f64) -> f64 {
-        if self.notional <= 0.0 || self.strike <= 0.0 {
+        if !self.notional.is_finite()
+            || self.notional < 0.0
+            || !self.strike.is_finite()
+            || self.strike < 0.0
+            || !vol.is_finite()
+            || vol < 0.0
+        {
             return f64::NAN;
         }
 
@@ -82,36 +93,34 @@ impl Swaption {
         }
 
         let forward = self.forward_swap_rate(curve);
-        if !forward.is_finite() || forward <= 0.0 {
+        if !forward.is_finite() || forward < 0.0 {
             return f64::NAN;
         }
 
-        let scale = self.notional * annuity;
-        if vol <= 0.0 || self.option_expiry <= 0.0 {
-            let intrinsic = if self.is_payer {
-                (forward - self.strike).max(0.0)
-            } else {
-                (self.strike - forward).max(0.0)
-            };
-            return scale * intrinsic;
+        if self.notional == 0.0 || (forward == 0.0 && self.strike == 0.0) {
+            return 0.0;
         }
-
-        let sig_sqrt_t = vol * self.option_expiry.sqrt();
-        let d1 = ((forward / self.strike).ln() + 0.5 * vol * vol * self.option_expiry) / sig_sqrt_t;
-        let d2 = d1 - sig_sqrt_t;
-
-        let option_value = if self.is_payer {
-            forward * normal_cdf(d1) - self.strike * normal_cdf(d2)
+        let option_type = if self.is_payer {
+            OptionType::Call
         } else {
-            self.strike * normal_cdf(-d2) - forward * normal_cdf(-d1)
+            OptionType::Put
         };
-
-        scale * option_value
+        self.notional
+            * annuity
+            * bs_price(
+                option_type,
+                forward,
+                self.strike,
+                0.0,
+                0.0,
+                vol,
+                self.option_expiry,
+            )
     }
 
     /// Implied Black volatility from market swaption price.
     pub fn implied_vol(&self, market_price: f64, curve: &YieldCurve) -> f64 {
-        if market_price < 0.0 {
+        if !market_price.is_finite() || market_price < 0.0 {
             return f64::NAN;
         }
 
@@ -119,11 +128,14 @@ impl Swaption {
         if !intrinsic.is_finite() {
             return f64::NAN;
         }
-        if (market_price - intrinsic).abs() <= 1.0e-12 || market_price < intrinsic {
+        if market_price < intrinsic {
+            return f64::NAN;
+        }
+        if market_price == intrinsic {
             return 0.0;
         }
 
-        let mut lo = 1.0e-6;
+        let mut lo = 0.0;
         let mut hi = 5.0;
         let mut flo = self.price(curve, lo) - market_price;
         let fhi = self.price(curve, hi) - market_price;

@@ -327,6 +327,39 @@ fn vector_return_values_remain_independent_across_calls() {
 }
 
 #[wasm_bindgen_test]
+fn black76_zero_volatility_greeks_cross_the_wasm_boundary() {
+    let discount = (-0.05_f64 * 1.5).exp();
+    let price = 20.0 * discount;
+    let greeks = pricing::black76_greeks_batch_wasm(
+        &[120.0, 80.0],
+        &[100.0, 100.0],
+        &[0.05, 0.05],
+        &[0.0, 0.0],
+        &[1.5, 1.5],
+        &[1, 0],
+    )
+    .unwrap();
+    for (index, sign) in [1.0, -1.0].into_iter().enumerate() {
+        let expected = [
+            sign * discount,
+            0.0,
+            0.0,
+            0.05 * price,
+            -1.5 * price,
+            0.0,
+            0.0,
+        ];
+        for (actual, expected) in greeks[index * 7..(index + 1) * 7].iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1.0e-13);
+        }
+    }
+    let error =
+        pricing::black76_greeks_batch_wasm(&[100.0], &[100.0], &[0.05], &[0.0], &[1.5], &[1])
+            .unwrap_err();
+    assert!(error.as_string().unwrap().contains("greeks[0].delta"));
+}
+
+#[wasm_bindgen_test]
 fn uniform_analytic_batches_match_scalar_exports_and_cover_f64x2_tail() {
     // Five values exercise two complete f64x2 vectors and the scalar tail in
     // the opt-in SIMD128 package. The same ABI test also covers the portable

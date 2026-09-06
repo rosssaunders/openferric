@@ -369,11 +369,12 @@ impl YieldCurveBuilder {
 
     /// Bootstraps discount factors from par swap rates with explicit interpolation.
     ///
-    /// Each input swap is modeled single-curve: fixed leg pays `swap_rate / freq`
-    /// at `t_i = i / freq`, the float leg is worth `1 - DF(T)`, so the par
+    /// Each input swap is modeled single-curve: fixed leg pays `swap_rate * accrual`
+    /// at `t_i = min(i / freq, T)`, including a prorated final stub.
+    /// The float leg is worth `1 - DF(T)`, so the par
     /// condition is
     ///
-    /// `coupon * sum_{i=1..N} DF(t_i) + DF(T) = 1`  (with `t_N = T`).
+    /// `swap_rate * sum_{i=1..N} accrual_i * DF(t_i) + DF(T) = 1`.
     ///
     /// Each pillar DF is solved with a 1-D bisection; every cashflow,
     /// including the final one at the pillar tenor, is priced off the
@@ -398,13 +399,13 @@ impl YieldCurveBuilder {
         let freq = frequency as f64;
         let dt = 1.0 / freq;
 
-        // (tenor, fixed periods, per-period coupon), aligned with `points`.
+        // (tenor, fixed periods, annual fixed rate), aligned with `points`.
         let instruments: Vec<(f64, usize, f64)> = sorted
             .iter()
-            .filter(|(tenor, _)| *tenor > 0.0)
+            .filter(|(tenor, rate)| tenor.is_finite() && *tenor > 0.0 && rate.is_finite())
             .filter_map(|&(tenor, swap_rate)| {
-                let periods = (tenor * freq).round() as usize;
-                (periods > 0).then_some((tenor, periods, swap_rate / freq))
+                let periods = (tenor * freq).ceil() as usize;
+                (periods > 0).then_some((tenor, periods, swap_rate))
             })
             .collect();
 
@@ -416,7 +417,7 @@ impl YieldCurveBuilder {
         let par_residual = |base: &[(f64, f64)],
                             tenor: f64,
                             periods: usize,
-                            coupon: f64,
+                            swap_rate: f64,
                             df: f64|
          -> Result<f64, InterpolationError> {
             let mut candidate = base.to_vec();
@@ -424,8 +425,8 @@ impl YieldCurveBuilder {
             let curve = YieldCurve::new_with_settings(candidate, settings)?;
 
             let mut annuity = 0.0;
-            for i in 1..periods {
-                annuity += curve.try_discount_factor(i as f64 * dt)?;
+            for payment_index in 1..periods {
+                annuity += dt * curve.try_discount_factor(payment_index as f64 * dt)?;
             }
             // Final fixed payment and notional both occur at the pillar tenor;
             // price them off the candidate curve itself rather than the raw
@@ -433,7 +434,8 @@ impl YieldCurveBuilder {
             // al.) that do not interpolate their nodes still reprice at the
             // solved root. For interpolating methods the two coincide.
             let df_final = curve.try_discount_factor(tenor)?;
-            Ok(coupon * (annuity + df_final) + df_final - 1.0)
+            let final_accrual = tenor - (periods - 1) as f64 * dt;
+            Ok(swap_rate * (annuity + final_accrual * df_final) + df_final - 1.0)
         };
 
         // Sequential pass: solve each pillar against the pillars known so far.

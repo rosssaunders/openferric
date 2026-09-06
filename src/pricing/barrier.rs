@@ -50,29 +50,11 @@ fn bs_price_with_dividend(
     sigma: f64,
     t: f64,
 ) -> f64 {
-    if t <= 0.0 {
-        return vanilla_payoff(option_type, s, k);
-    }
-
-    if sigma <= 0.0 {
+    if t > 0.0 && sigma == 0.0 {
         let terminal = s * ((r - q) * t).exp();
         return (-r * t).exp() * vanilla_payoff(option_type, terminal, k);
     }
-
-    let st = sigma * t.sqrt();
-    let d1 = ((s / k).ln() + (0.5 * sigma).mul_add(sigma, r - q) * t) / st;
-    let d2 = d1 - st;
-    let df_r = (-r * t).exp();
-    let df_q = (-q * t).exp();
-
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let call = s.mul_add(df_q * nd1, -(k * df_r * nd2));
-    match option_type {
-        OptionType::Call => call,
-        OptionType::Put => call - s * df_q + k * df_r,
-    }
+    crate::engines::analytic::black_scholes::bs_price(option_type, s, k, r, q, sigma, t)
 }
 
 #[allow(clippy::too_many_arguments)]

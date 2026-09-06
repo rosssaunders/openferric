@@ -32,6 +32,7 @@ fn swap_npv_near_zero_at_simple_par_rate_on_flat_curve() {
         .float_freq(Frequency::Annual)
         .fixed_day_count(DayCountConvention::Thirty360)
         .float_day_count(DayCountConvention::Thirty360)
+        .curve_day_count(DayCountConvention::Thirty360)
         .build();
     let par = probe.par_rate(&curve);
 
@@ -45,6 +46,7 @@ fn swap_npv_near_zero_at_simple_par_rate_on_flat_curve() {
         .float_freq(Frequency::Annual)
         .fixed_day_count(DayCountConvention::Thirty360)
         .float_day_count(DayCountConvention::Thirty360)
+        .curve_day_count(DayCountConvention::Thirty360)
         .build();
 
     assert_relative_eq!(swap.npv(&curve), 0.0, epsilon = 1.0e-10);
@@ -64,6 +66,7 @@ fn swap_par_rate_is_simple_annual_rate_on_flat_curve() {
         .float_freq(Frequency::Annual)
         .fixed_day_count(DayCountConvention::Thirty360)
         .float_day_count(DayCountConvention::Thirty360)
+        .curve_day_count(DayCountConvention::Thirty360)
         .build();
 
     // Independent explicit schedule reference. Jan 1, 2028 is a Saturday and
@@ -103,6 +106,7 @@ fn swap_dv01_matches_cached_parallel_bump_value() {
         .float_freq(Frequency::Annual)
         .fixed_day_count(DayCountConvention::Thirty360)
         .float_day_count(DayCountConvention::Thirty360)
+        .curve_day_count(DayCountConvention::Thirty360)
         .build();
 
     let dv01 = swap.dv01(&curve);
@@ -127,6 +131,7 @@ fn fra_forward_rate_matches_curve_forward_rate() {
         start_date: start,
         end_date: end,
         day_count,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     // Simple forward over the period: (DF(0)/DF(tau) - 1)/tau.
@@ -154,6 +159,7 @@ fn swap_builder_accepts_calendar_stub_and_roll_conventions() {
         .roll_convention(RollConvention::EndOfMonth)
         .fixed_day_count(DayCountConvention::Act360)
         .float_day_count(DayCountConvention::Act360)
+        .curve_day_count(DayCountConvention::Act360)
         .build();
 
     let npv = swap.npv(&curve);

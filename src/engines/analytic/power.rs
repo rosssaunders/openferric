@@ -10,9 +10,9 @@
 //!
 //! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 use crate::core::{OptionType, PricingEngine, PricingError, PricingResult};
+use crate::engines::analytic::black_scholes::bs_price;
 use crate::instruments::power::PowerOption;
 use crate::market::Market;
-use crate::math::normal_cdf;
 
 /// Analytic power option engine based on Haug-style transformed Black pricing.
 #[derive(Debug, Clone, Default)]
@@ -99,19 +99,15 @@ pub fn power_option_price(
         });
     }
 
-    let sig_sqrt_t = vol_adj * expiry.sqrt();
-    let d1 =
-        ((pv_forward / discounted_strike).ln() + 0.5 * vol_adj * vol_adj * expiry) / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let call = pv_forward.mul_add(nd1, -(discounted_strike * nd2));
-    Ok(match option_type {
-        OptionType::Call => call,
-        OptionType::Put => call - pv_forward + discounted_strike,
-    })
+    Ok(bs_price(
+        option_type,
+        pv_forward,
+        discounted_strike,
+        0.0,
+        0.0,
+        vol_adj,
+        expiry,
+    ))
 }
 
 impl PricingEngine<PowerOption> for PowerOptionEngine {

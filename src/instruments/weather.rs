@@ -357,17 +357,14 @@ impl CatastropheBond {
     pub fn price(&self) -> Result<f64, PricingError> {
         self.validate()?;
 
-        let freq = self.coupon_frequency as f64;
-        let dt = 1.0 / freq;
-        let n_coupons = (self.maturity * freq).round() as usize;
-
         let mut pv = 0.0;
-        for i in 1..=n_coupons {
-            let t = (i as f64 * dt).min(self.maturity);
-            let survival = self.expected_survival_fraction(t);
+        for (start, end) in
+            crate::rates::schedule::year_fraction_periods(self.maturity, self.coupon_frequency)
+        {
+            let survival = self.expected_survival_fraction(end);
             let expected_principal = self.principal * survival;
-            let coupon = expected_principal * self.coupon_rate * dt;
-            let df = (-self.risk_free_rate * t).exp();
+            let coupon = expected_principal * self.coupon_rate * (end - start);
+            let df = (-self.risk_free_rate * end).exp();
             pv += df * coupon;
         }
 

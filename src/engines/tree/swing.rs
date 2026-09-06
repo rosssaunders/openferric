@@ -92,6 +92,7 @@ impl PricingEngine<SwingOption> for SwingTreeEngine {
         }
 
         let vol = market.checked_vol_for(instrument.strike, maturity)?;
+        market.require_continuous_dividends(maturity)?;
 
         let dt = maturity / self.steps as f64;
         let u = (vol * dt.sqrt()).exp();

@@ -71,6 +71,7 @@ fn cap_floor_parity_matches_swap_npv() {
         end_date: end,
         frequency: Frequency::SemiAnnual,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
         is_cap: true,
     };
 

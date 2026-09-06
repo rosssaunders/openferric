@@ -23,9 +23,8 @@ use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 ///
 /// Valuation assumes `start_date >= valuation_date`. Seasoned FRAs (periods
 /// whose rate has already fixed, i.e. `start_date < valuation_date`) are out
-/// of scope: the start time is clamped to 0 while the full accrual `tau` is
-/// kept, so a full-period forward is projected from today instead of using
-/// the historical fixing. Fully expired FRAs (`end_date <= valuation_date`)
+/// of scope and return `NaN` instead of inventing a historical fixing.
+/// Fully expired FRAs (`end_date <= valuation_date`)
 /// return an NPV of 0.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForwardRateAgreement {
@@ -35,17 +34,23 @@ pub struct ForwardRateAgreement {
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
     pub day_count: DayCountConvention,
+    /// Day count of the curve time axis, independent of coupon accrual.
+    pub curve_day_count: DayCountConvention,
 }
 
 impl ForwardRateAgreement {
     fn period_times(&self) -> (f64, f64, f64) {
         let tau = year_fraction(self.start_date, self.end_date, self.day_count);
-        let t1 = year_fraction(self.valuation_date, self.start_date, self.day_count).max(0.0);
-        (t1, t1 + tau, tau)
+        let start_time = year_fraction(self.valuation_date, self.start_date, self.curve_day_count);
+        let end_time = year_fraction(self.valuation_date, self.end_date, self.curve_day_count);
+        (start_time, end_time, tau)
     }
 
     /// Simple (money-market) forward rate over `[start, end]` implied by the curve.
     pub fn forward_rate(&self, curve: &YieldCurve) -> f64 {
+        if self.start_date < self.valuation_date {
+            return f64::NAN;
+        }
         let (t1, t2, tau) = self.period_times();
         if tau <= 0.0 {
             return 0.0;

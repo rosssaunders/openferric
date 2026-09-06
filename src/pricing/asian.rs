@@ -92,6 +92,7 @@ pub fn geometric_asian_fixed_closed_form(
 }
 
 #[inline]
+/// Prices a geometric Asian paid at its last observation time.
 pub fn geometric_asian_discrete_fixed_closed_form(
     option_type: OptionType,
     s0: f64,
@@ -101,8 +102,31 @@ pub fn geometric_asian_discrete_fixed_closed_form(
     sigma: f64,
     observation_times: &[f64],
 ) -> f64 {
+    let payment_time = observation_times.iter().copied().fold(0.0, f64::max);
+    (-r * payment_time).exp()
+        * geometric_asian_discrete_fixed_expected_payoff(
+            option_type,
+            s0,
+            k,
+            r,
+            q,
+            sigma,
+            observation_times,
+        )
+}
+
+#[inline]
+pub(crate) fn geometric_asian_discrete_fixed_expected_payoff(
+    option_type: OptionType,
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    dividend_yield: f64,
+    volatility: f64,
+    observation_times: &[f64],
+) -> f64 {
     if observation_times.is_empty() {
-        return vanilla_payoff(option_type, s0, k);
+        return vanilla_payoff(option_type, spot, strike);
     }
 
     let maturity = observation_times
@@ -111,17 +135,17 @@ pub fn geometric_asian_discrete_fixed_closed_form(
         .fold(f64::NEG_INFINITY, f64::max)
         .max(0.0);
     if maturity <= 0.0 {
-        return (-r * maturity).exp() * vanilla_payoff(option_type, s0, k);
+        return vanilla_payoff(option_type, spot, strike);
     }
 
-    let n = observation_times.len() as f64;
-    let mean_t = observation_times.iter().sum::<f64>() / n;
+    let count = observation_times.len() as f64;
+    let mean_time = observation_times.iter().sum::<f64>() / count;
 
-    if sigma <= 0.0 {
+    if volatility <= 0.0 {
         // Each fixing is S(t_i)=S0*exp((r-q)t_i), so the geometric
         // average is known exactly from the mean observation time.
-        let geometric_average = s0 * ((r - q) * mean_t).exp();
-        return (-r * maturity).exp() * vanilla_payoff(option_type, geometric_average, k);
+        let geometric_average = spot * ((rate - dividend_yield) * mean_time).exp();
+        return vanilla_payoff(option_type, geometric_average, strike);
     }
 
     let mut cov_sum = 0.0;
@@ -130,24 +154,22 @@ pub fn geometric_asian_discrete_fixed_closed_form(
             cov_sum += ti.min(tj);
         }
     }
-    let sigma_sq = sigma * sigma;
-    let var = sigma_sq * cov_sum / (n * n);
-    let m = s0.ln() + (-0.5 * sigma).mul_add(sigma, r - q) * mean_t;
-    let df = (-r * maturity).exp();
+    let variance = volatility * volatility * cov_sum / (count * count);
+    let log_mean =
+        spot.ln() + (-0.5 * volatility).mul_add(volatility, rate - dividend_yield) * mean_time;
 
-    if var <= 0.0 {
-        let g = m.exp();
-        return df * vanilla_payoff(option_type, g, k);
+    if variance <= 0.0 {
+        return vanilla_payoff(option_type, log_mean.exp(), strike);
     }
 
-    let sqrt_v = var.sqrt();
-    let d1 = (m - k.ln() + var) / sqrt_v;
-    let d2 = d1 - sqrt_v;
-    let eg = (m + 0.5 * var).exp();
+    let standard_deviation = variance.sqrt();
+    let d1 = (log_mean - strike.ln() + variance) / standard_deviation;
+    let d2 = d1 - standard_deviation;
+    let expected_average = (log_mean + 0.5 * variance).exp();
 
     match option_type {
-        OptionType::Call => df * (eg * normal_cdf(d1) - k * normal_cdf(d2)),
-        OptionType::Put => df * (k * normal_cdf(-d2) - eg * normal_cdf(-d1)),
+        OptionType::Call => expected_average * normal_cdf(d1) - strike * normal_cdf(d2),
+        OptionType::Put => strike * normal_cdf(-d2) - expected_average * normal_cdf(-d1),
     }
 }
 

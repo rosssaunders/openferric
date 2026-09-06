@@ -3136,6 +3136,8 @@ pub struct RangeAccrual {
     #[pyo3(get, set)]
     pub coupon_rate: f64,
     #[pyo3(get, set)]
+    pub accrual_factor: f64,
+    #[pyo3(get, set)]
     pub lower_bound: f64,
     #[pyo3(get, set)]
     pub upper_bound: f64,
@@ -3150,6 +3152,7 @@ impl RangeAccrual {
         CoreRangeAccrual {
             notional: self.notional,
             coupon_rate: self.coupon_rate,
+            accrual_factor: self.accrual_factor,
             lower_bound: self.lower_bound,
             upper_bound: self.upper_bound,
             fixing_times: self.fixing_times.clone(),
@@ -3168,6 +3171,7 @@ impl RangeAccrual {
         upper_bound: f64,
         fixing_times: Vec<f64>,
         payment_time: f64,
+        accrual_factor: f64,
     ) -> PyResult<Self> {
         let out = Self {
             notional,
@@ -3176,6 +3180,7 @@ impl RangeAccrual {
             upper_bound,
             fixing_times,
             payment_time,
+            accrual_factor,
         };
         out.validate()?;
         Ok(out)
@@ -3194,6 +3199,8 @@ pub struct DualRangeAccrual {
     #[pyo3(get, set)]
     pub coupon_rate: f64,
     #[pyo3(get, set)]
+    pub accrual_factor: f64,
+    #[pyo3(get, set)]
     pub lower_bound: f64,
     #[pyo3(get, set)]
     pub upper_bound: f64,
@@ -3208,6 +3215,7 @@ impl DualRangeAccrual {
         CoreDualRangeAccrual {
             notional: self.notional,
             coupon_rate: self.coupon_rate,
+            accrual_factor: self.accrual_factor,
             lower_bound: self.lower_bound,
             upper_bound: self.upper_bound,
             fixing_times: self.fixing_times.clone(),
@@ -3541,6 +3549,7 @@ impl DualRangeAccrual {
         upper_bound: f64,
         fixing_times: Vec<f64>,
         payment_time: f64,
+        accrual_factor: f64,
     ) -> PyResult<Self> {
         let out = Self {
             notional,
@@ -3549,6 +3558,7 @@ impl DualRangeAccrual {
             upper_bound,
             fixing_times,
             payment_time,
+            accrual_factor,
         };
         out.validate()?;
         Ok(out)

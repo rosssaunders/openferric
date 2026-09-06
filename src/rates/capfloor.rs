@@ -11,7 +11,8 @@
 //! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
 use chrono::NaiveDate;
 
-use crate::math::normal_cdf;
+use crate::core::OptionType;
+use crate::engines::analytic::black_scholes::bs_price;
 use crate::rates::schedule::generate_schedule;
 use crate::rates::{DayCountConvention, Frequency, YieldCurve, year_fraction};
 
@@ -24,11 +25,15 @@ pub struct CapFloor {
     pub end_date: NaiveDate,
     pub frequency: Frequency,
     pub day_count: DayCountConvention,
+    /// Curve and volatility expiry clock, independent of coupon accrual.
+    pub curve_day_count: DayCountConvention,
     pub is_cap: bool,
 }
 
 impl CapFloor {
     /// Black caplet price for one accrual period.
+    /// Supports zero forward/strike limits; returns `NaN` outside the
+    /// non-negative lognormal domain or for invalid inputs.
     pub fn black_caplet(
         notional: f64,
         discount_factor: f64,
@@ -51,6 +56,8 @@ impl CapFloor {
     }
 
     /// Black floorlet price for one accrual period.
+    /// Supports zero forward/strike limits; returns `NaN` outside the
+    /// non-negative lognormal domain or for invalid inputs.
     pub fn black_floorlet(
         notional: f64,
         discount_factor: f64,
@@ -85,8 +92,8 @@ impl CapFloor {
             return 0.0;
         }
 
-        let t1 = year_fraction(self.start_date, period_start, self.day_count).max(0.0);
-        let t2 = year_fraction(self.start_date, period_end, self.day_count).max(0.0);
+        let t1 = year_fraction(self.start_date, period_start, self.curve_day_count).max(0.0);
+        let t2 = year_fraction(self.start_date, period_end, self.curve_day_count).max(0.0);
         if t2 <= t1 {
             return 0.0;
         }
@@ -134,8 +141,8 @@ impl CapFloor {
                     return 0.0;
                 }
 
-                let t1 = year_fraction(self.start_date, period[0], self.day_count).max(0.0);
-                let t2 = year_fraction(self.start_date, period[1], self.day_count).max(0.0);
+                let t1 = year_fraction(self.start_date, period[0], self.curve_day_count).max(0.0);
+                let t2 = year_fraction(self.start_date, period[1], self.curve_day_count).max(0.0);
                 if t2 <= t1 {
                     return 0.0;
                 }
@@ -154,27 +161,33 @@ impl CapFloor {
 
     /// Implied Black volatility from market cap/floor price.
     pub fn implied_vol(&self, market_price: f64, curve: &YieldCurve) -> f64 {
-        if market_price < 0.0 {
+        if !market_price.is_finite() || market_price < 0.0 {
             return f64::NAN;
         }
 
         let intrinsic = self.price(curve, 0.0);
-        if (market_price - intrinsic).abs() <= 1.0e-12 || market_price < intrinsic {
+        if !intrinsic.is_finite() || market_price < intrinsic {
+            return f64::NAN;
+        }
+        if market_price == intrinsic {
             return 0.0;
         }
 
-        let mut lo = 1.0e-6;
+        let mut lo = 0.0;
         let mut hi = 5.0;
         let mut flo = self.price(curve, lo) - market_price;
         let fhi = self.price(curve, hi) - market_price;
 
-        if flo * fhi > 0.0 {
+        if !flo.is_finite() || !fhi.is_finite() || flo * fhi > 0.0 {
             return f64::NAN;
         }
 
         for _ in 0..100 {
             let mid = 0.5 * (lo + hi);
             let fm = self.price(curve, mid) - market_price;
+            if !fm.is_finite() {
+                return f64::NAN;
+            }
             if fm.abs() <= 1.0e-10 {
                 return mid;
             }
@@ -202,34 +215,32 @@ fn black_optionlet(
     expiry: f64,
     is_cap: bool,
 ) -> f64 {
-    if notional <= 0.0
+    if !notional.is_finite()
+        || notional < 0.0
+        || !discount_factor.is_finite()
         || discount_factor <= 0.0
-        || accrual <= 0.0
-        || forward_rate <= 0.0
-        || strike <= 0.0
+        || !accrual.is_finite()
+        || accrual < 0.0
+        || !forward_rate.is_finite()
+        || forward_rate < 0.0
+        || !strike.is_finite()
+        || strike < 0.0
+        || !vol.is_finite()
+        || vol < 0.0
+        || !expiry.is_finite()
+        || expiry < 0.0
     {
+        return f64::NAN;
+    }
+    if notional == 0.0 || accrual == 0.0 || (forward_rate == 0.0 && strike == 0.0) {
         return 0.0;
     }
 
     let scale = notional * discount_factor * accrual;
-    if vol <= 0.0 || expiry <= 0.0 {
-        let intrinsic = if is_cap {
-            (forward_rate - strike).max(0.0)
-        } else {
-            (strike - forward_rate).max(0.0)
-        };
-        return scale * intrinsic;
-    }
-
-    let sig_sqrt_t = vol * expiry.sqrt();
-    let d1 = ((forward_rate / strike).ln() + 0.5 * vol * vol * expiry) / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-
-    let option_value = if is_cap {
-        forward_rate * normal_cdf(d1) - strike * normal_cdf(d2)
+    let option_type = if is_cap {
+        OptionType::Call
     } else {
-        strike * normal_cdf(-d2) - forward_rate * normal_cdf(-d1)
+        OptionType::Put
     };
-
-    scale * option_value
+    scale * bs_price(option_type, forward_rate, strike, 0.0, 0.0, vol, expiry)
 }
