@@ -102,14 +102,14 @@ three-scalar adjustment; `rates.cms_convexity_adjustment` takes `CmsConvexityPar
 ```python
 import openferric as of
 
-source = '''product "Redemption"
+source = """product "Redemption"
     notional: 100
     maturity: 1
     underlyings
         SPX = asset(0)
     schedule annual from 1 to 1
         redeem notional
-'''
+"""
 product = of.dsl.CompiledProduct(source)
 restored = of.dsl.CompiledProduct.from_json(product.to_json())
 result = of.dsl.DslMonteCarloEngine(256, 4, 42).price_multi_asset(
