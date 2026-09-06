@@ -57,7 +57,7 @@ pub struct Cds {
 }
 
 impl Cds {
-    fn to_core(self) -> CoreCds {
+    pub(crate) fn to_core(self) -> CoreCds {
         CoreCds {
             notional: self.notional,
             spread: self.spread,
@@ -233,7 +233,7 @@ pub struct CdoTranche {
 }
 
 impl CdoTranche {
-    fn to_core(self) -> CoreCdoTranche {
+    pub(crate) fn to_core(self) -> CoreCdoTranche {
         CoreCdoTranche {
             attachment: self.attachment,
             detachment: self.detachment,
@@ -297,7 +297,7 @@ pub struct SyntheticCdo {
 }
 
 impl SyntheticCdo {
-    fn to_core(self) -> CoreSyntheticCdo {
+    pub(crate) fn to_core(self) -> CoreSyntheticCdo {
         CoreSyntheticCdo {
             num_names: self.num_names,
             pool_spread: self.pool_spread,
@@ -324,7 +324,7 @@ pub struct CdoReferenceName {
 }
 
 impl CdoReferenceName {
-    fn to_core(&self) -> CoreCdoReferenceName {
+    pub(crate) fn to_core(&self) -> CoreCdoReferenceName {
         CoreCdoReferenceName {
             notional: self.notional,
             recovery_rate: self.recovery_rate,
@@ -372,7 +372,7 @@ pub struct BaseCorrelationPair {
 }
 
 impl BaseCorrelationPair {
-    fn to_core(self) -> CoreBaseCorrelationPair {
+    pub(crate) fn to_core(self) -> CoreBaseCorrelationPair {
         CoreBaseCorrelationPair {
             attachment_correlation: self.attachment_correlation,
             detachment_correlation: self.detachment_correlation,
@@ -416,7 +416,7 @@ pub struct HeterogeneousSyntheticCdo {
 }
 
 impl HeterogeneousSyntheticCdo {
-    fn to_core(&self) -> CoreHeterogeneousSyntheticCdo {
+    pub(crate) fn to_core(&self) -> CoreHeterogeneousSyntheticCdo {
         CoreHeterogeneousSyntheticCdo {
             names: self.names.iter().map(CdoReferenceName::to_core).collect(),
             risk_free_rate: self.risk_free_rate,
@@ -649,7 +649,7 @@ pub struct CdsOption {
 }
 
 impl CdsOption {
-    fn to_core(self) -> CoreCdsOption {
+    pub(crate) fn to_core(self) -> CoreCdsOption {
         CoreCdsOption {
             notional: self.notional,
             strike_spread: self.strike_spread,
@@ -710,7 +710,7 @@ pub struct CdsIndex {
 }
 
 impl CdsIndex {
-    fn to_core(&self) -> CoreCdsIndex {
+    pub(crate) fn to_core(&self) -> CoreCdsIndex {
         CoreCdsIndex {
             constituents: self
                 .constituents
@@ -784,7 +784,7 @@ pub struct NthToDefaultBasket {
 }
 
 impl NthToDefaultBasket {
-    fn to_core(self) -> CoreNthToDefaultBasket {
+    pub(crate) fn to_core(self) -> CoreNthToDefaultBasket {
         CoreNthToDefaultBasket {
             n: self.n,
             notional: self.notional,
@@ -797,6 +797,22 @@ impl NthToDefaultBasket {
 
 #[pymethods]
 impl NthToDefaultBasket {
+    fn npv(
+        &self,
+        running_spread: f64,
+        discount_curve_nodes: Vec<(f64, f64)>,
+        survival_curves: Vec<SurvivalCurve>,
+    ) -> f64 {
+        let curves = survival_curves
+            .iter()
+            .map(SurvivalCurve::to_core)
+            .collect::<Vec<_>>();
+        self.to_core().npv(
+            running_spread,
+            &yield_curve_from_nodes(&discount_curve_nodes),
+            &curves,
+        )
+    }
     #[new]
     fn new(
         n: usize,
@@ -890,7 +906,7 @@ pub struct GaussianCopula {
 }
 
 impl GaussianCopula {
-    fn to_core(self) -> CoreGaussianCopula {
+    pub(crate) fn to_core(self) -> CoreGaussianCopula {
         CoreGaussianCopula::new(self.rho)
     }
 }
@@ -943,7 +959,7 @@ pub enum ProtectionSide {
 }
 
 impl ProtectionSide {
-    fn to_core(self) -> CoreProtectionSide {
+    pub(crate) fn to_core(self) -> CoreProtectionSide {
         match self {
             Self::Buyer => CoreProtectionSide::Buyer,
             Self::Seller => CoreProtectionSide::Seller,
@@ -976,7 +992,7 @@ pub enum CdsDateRule {
 }
 
 impl CdsDateRule {
-    fn to_core(self) -> CoreCdsDateRule {
+    pub(crate) fn to_core(self) -> CoreCdsDateRule {
         match self {
             Self::TwentiethImm => CoreCdsDateRule::TwentiethImm,
             Self::QuarterlyImm => CoreCdsDateRule::QuarterlyImm,
@@ -1023,7 +1039,7 @@ pub struct DatedCds {
 }
 
 impl DatedCds {
-    fn to_core(&self) -> PyResult<CoreDatedCds> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreDatedCds> {
         Ok(CoreDatedCds {
             side: self.side.to_core(),
             notional: self.notional,
@@ -1245,7 +1261,7 @@ pub struct IsdaConventions {
 }
 
 impl IsdaConventions {
-    fn to_core(self) -> CoreIsdaConventions {
+    pub(crate) fn to_core(self) -> CoreIsdaConventions {
         CoreIsdaConventions {
             step_in_days: self.step_in_days,
             cash_settle_days: self.cash_settle_days,

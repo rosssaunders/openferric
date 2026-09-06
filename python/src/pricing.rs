@@ -624,7 +624,7 @@ pub struct DeferInvestmentOption {
 }
 
 impl DeferInvestmentOption {
-    fn to_core(&self) -> CoreDeferInvestmentOption {
+    pub(crate) fn to_core(&self) -> CoreDeferInvestmentOption {
         CoreDeferInvestmentOption {
             model: self.model.to_core(),
             investment_cost: self.investment_cost,
@@ -669,7 +669,7 @@ pub struct ExpandOption {
 }
 
 impl ExpandOption {
-    fn to_core(&self) -> CoreExpandOption {
+    pub(crate) fn to_core(&self) -> CoreExpandOption {
         CoreExpandOption {
             model: self.model.to_core(),
             expansion_multiplier: self.expansion_multiplier,
@@ -714,7 +714,7 @@ pub struct AbandonmentOption {
 }
 
 impl AbandonmentOption {
-    fn to_core(&self) -> CoreAbandonmentOption {
+    pub(crate) fn to_core(&self) -> CoreAbandonmentOption {
         CoreAbandonmentOption {
             model: self.model.to_core(),
             salvage_value: self.salvage_value,

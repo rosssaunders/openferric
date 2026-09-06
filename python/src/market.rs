@@ -186,6 +186,33 @@ impl DividendSchedule {
 
 #[pymethods]
 impl DividendSchedule {
+    fn events_until(&self, maturity: f64) -> Vec<DividendEvent> {
+        self.to_core()
+            .events_until(maturity)
+            .cloned()
+            .map(DividendEvent::from_core)
+            .collect()
+    }
+    fn escrowed_spot(
+        &self,
+        spot: f64,
+        rate: f64,
+        continuous_dividend_yield: f64,
+        maturity: f64,
+    ) -> f64 {
+        self.to_core()
+            .escrowed_spot(spot, rate, continuous_dividend_yield, maturity)
+    }
+    fn escrowed_reconstruction(
+        &self,
+        time: f64,
+        rate: f64,
+        continuous_dividend_yield: f64,
+        maturity: f64,
+    ) -> (f64, f64) {
+        self.to_core()
+            .escrowed_reconstruction(time, rate, continuous_dividend_yield, maturity)
+    }
     #[new]
     fn new(events: Vec<DividendEvent>) -> PyResult<Self> {
         let events = events.into_iter().map(|event| event.to_core()).collect();
@@ -448,7 +475,7 @@ pub enum PremiumCurrency {
 }
 
 impl PremiumCurrency {
-    fn to_core(self) -> CorePremiumCurrency {
+    pub(crate) fn to_core(self) -> CorePremiumCurrency {
         match self {
             Self::Domestic => CorePremiumCurrency::Domestic,
             Self::Foreign => CorePremiumCurrency::Foreign,
@@ -473,7 +500,7 @@ pub enum FxDeltaConvention {
 }
 
 impl FxDeltaConvention {
-    fn to_core(self) -> CoreFxDeltaConvention {
+    pub(crate) fn to_core(self) -> CoreFxDeltaConvention {
         match self {
             Self::Spot => CoreFxDeltaConvention::Spot,
             Self::Forward => CoreFxDeltaConvention::Forward,
@@ -501,7 +528,7 @@ pub enum FxAtmConvention {
 }
 
 impl FxAtmConvention {
-    fn to_core(self) -> CoreFxAtmConvention {
+    pub(crate) fn to_core(self) -> CoreFxAtmConvention {
         match self {
             Self::Spot => CoreFxAtmConvention::Spot,
             Self::Forward => CoreFxAtmConvention::Forward,
@@ -526,7 +553,7 @@ pub enum NdfSettlementCurrency {
 }
 
 impl NdfSettlementCurrency {
-    fn to_core(self) -> CoreNdfSettlementCurrency {
+    pub(crate) fn to_core(self) -> CoreNdfSettlementCurrency {
         match self {
             Self::Domestic => CoreNdfSettlementCurrency::Domestic,
             Self::Foreign => CoreNdfSettlementCurrency::Foreign,
@@ -557,7 +584,7 @@ pub struct FxPair {
 }
 
 impl FxPair {
-    fn to_core(&self) -> CoreFxPair {
+    pub(crate) fn to_core(&self) -> CoreFxPair {
         CoreFxPair {
             base: self.base.clone(),
             quote: self.quote.clone(),
@@ -653,6 +680,15 @@ impl FxForwardCurve {
 
 #[pymethods]
 impl FxForwardCurve {
+    #[staticmethod]
+    fn from_deposit_rates(
+        tenors: Vec<f64>,
+        domestic_rates: Vec<f64>,
+        foreign_rates: Vec<f64>,
+        basis_spreads: Vec<f64>,
+    ) -> PyResult<Self> {
+        Self::new(tenors, domestic_rates, foreign_rates, basis_spreads)
+    }
     #[new]
     fn new(
         tenors: Vec<f64>,
@@ -703,7 +739,7 @@ pub struct FxRrBfPillar {
 }
 
 impl FxRrBfPillar {
-    fn to_core(self) -> CoreFxRrBfPillar {
+    pub(crate) fn to_core(self) -> CoreFxRrBfPillar {
         CoreFxRrBfPillar {
             delta: self.delta,
             risk_reversal: self.risk_reversal,
@@ -752,7 +788,7 @@ pub struct FxSmileMarketQuote {
 }
 
 impl FxSmileMarketQuote {
-    fn to_core(&self) -> CoreFxSmileMarketQuote {
+    pub(crate) fn to_core(&self) -> CoreFxSmileMarketQuote {
         CoreFxSmileMarketQuote {
             atm_vol: self.atm_vol,
             pillars: self
@@ -824,7 +860,7 @@ pub struct FxVolExpiryQuote {
 }
 
 impl FxVolExpiryQuote {
-    fn to_core(&self) -> CoreFxVolExpiryQuote {
+    pub(crate) fn to_core(&self) -> CoreFxVolExpiryQuote {
         CoreFxVolExpiryQuote {
             expiry: self.expiry,
             smile: self.smile.to_core(),
@@ -973,6 +1009,8 @@ impl FxSmileSlice {
 #[derive(Clone)]
 pub struct FxVolSurface {
     inner: CoreFxVolSurface,
+    #[pyo3(get)]
+    forward_curve: FxForwardCurve,
 }
 
 impl FxVolSurface {
@@ -992,7 +1030,10 @@ impl FxVolSurface {
     ) -> PyResult<Self> {
         let quotes = quotes.into_iter().map(|quote| quote.to_core()).collect();
         CoreFxVolSurface::from_market_quotes(spot, forward_curve.to_core()?, quotes)
-            .map(|inner| Self { inner })
+            .map(|inner| Self {
+                inner,
+                forward_curve: forward_curve.clone(),
+            })
             .map_err(map_string_err)
     }
 
@@ -1049,7 +1090,7 @@ pub struct NdfContract {
 }
 
 impl NdfContract {
-    fn to_core(&self) -> CoreNdfContract {
+    pub(crate) fn to_core(&self) -> CoreNdfContract {
         CoreNdfContract {
             pair: self.pair.to_core(),
             notional_base: self.notional_base,
@@ -1139,6 +1180,33 @@ impl SampledVolSurface {
 
 #[pymethods]
 impl SampledVolSurface {
+    #[staticmethod]
+    fn from_surface(surface: &Bound<'_, PyAny>, spot: f64) -> PyResult<Self> {
+        if !spot.is_finite() || spot <= 0.0 {
+            return Err(PyValueError::new_err("spot must be finite and positive"));
+        }
+        if let Ok(surface) = surface.extract::<PyRef<crate::vol::VolSurface>>() {
+            return Ok(Self::from_core(CoreSampledVolSurface::from_surface(
+                &surface.inner,
+                spot,
+            )));
+        }
+        let callback = PythonVolSurface::new(surface)?;
+        let sampled = CoreSampledVolSurface::from_surface(&callback, spot);
+        if let Some(error) = callback
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            return Err(error);
+        }
+        sampled.validate().map_err(map_string_err)?;
+        Ok(Self::from_core(sampled))
+    }
+    fn validate(&self) -> PyResult<()> {
+        self.to_core()?.validate().map_err(map_string_err)
+    }
     #[new]
     fn new(strikes: Vec<f64>, expiries: Vec<f64>, vols: Vec<Vec<f64>>) -> PyResult<Self> {
         let this = Self {
@@ -1197,10 +1265,88 @@ impl VolSource {
         };
         Self { inner }
     }
+
+    fn convert_surface(surface: &Bound<'_, PyAny>, spot: f64) -> PyResult<Self> {
+        if let Ok(surface) = surface.extract::<PyRef<Self>>() {
+            return Ok(surface.clone());
+        }
+        if let Ok(surface) = surface.extract::<PyRef<SampledVolSurface>>() {
+            return Ok(Self::sampled(&surface));
+        }
+        if let Ok(surface) = surface.extract::<PyRef<crate::vol::VolSurface>>() {
+            return Ok(Self::from_core(
+                CoreVolSource::Parametric(surface.inner.clone()),
+                spot,
+            ));
+        }
+        Ok(Self::sampled(&SampledVolSurface::from_surface(
+            surface, spot,
+        )?))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PythonVolSurface {
+    callback: std::sync::Arc<Py<PyAny>>,
+    failure: std::sync::Arc<std::sync::Mutex<Option<PyErr>>>,
+}
+impl PythonVolSurface {
+    fn new(callback: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if !callback.is_callable() && !callback.hasattr("vol")? {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "expected a volatility surface or callable",
+            ));
+        }
+        Ok(Self {
+            callback: std::sync::Arc::new(callback.clone().unbind()),
+            failure: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        })
+    }
+}
+impl openferric_core::market::VolSurface for PythonVolSurface {
+    fn vol(&self, strike: f64, expiry: f64) -> f64 {
+        if self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+        {
+            return f64::NAN;
+        }
+        let result = Python::attach(|py| {
+            let callback = self.callback.bind(py);
+            let value = if callback.hasattr("vol")? {
+                callback.call_method1("vol", (strike, expiry))?
+            } else {
+                callback.call1((strike, expiry))?
+            };
+            let value: f64 = value.extract()?;
+            if !value.is_finite() || value <= 0.0 {
+                return Err(PyValueError::new_err(
+                    "surface must return finite positive volatility",
+                ));
+            }
+            Ok(value)
+        });
+        match result {
+            Ok(value) => value,
+            Err(error) => {
+                *self
+                    .failure
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+                f64::NAN
+            }
+        }
+    }
 }
 
 #[pymethods]
 impl VolSource {
+    #[staticmethod]
+    fn from_surface(surface: &Bound<'_, PyAny>, spot: f64) -> PyResult<Self> {
+        Self::convert_surface(surface, spot)
+    }
     #[staticmethod]
     fn flat(vol: f64) -> Self {
         Self {
@@ -1266,12 +1412,38 @@ impl VolSource {
         }
     }
 
-    fn parametric_spec(&self) -> Option<(Vec<(f64, (f64, f64, f64, f64, f64))>, f64)> {
+    fn parametric_spec(&self) -> PyResult<Option<(Vec<(f64, (f64, f64, f64, f64, f64))>, f64)>> {
         match &self.inner {
             VolSourceInner::Parametric {
-                slices, forward, ..
-            } => Some((slices.clone(), *forward)),
-            _ => None,
+                surface,
+                slices,
+                forward,
+            } => {
+                if !slices.is_empty() {
+                    return Ok(Some((slices.clone(), *forward)));
+                }
+                #[derive(serde::Deserialize)]
+                struct ParameterSlices {
+                    slices: Vec<SviParams>,
+                }
+                let serialized = serde_json::to_value(surface)
+                    .map_err(|error| map_string_err(error.to_string()))?;
+                let parameters: ParameterSlices = serde_json::from_value(serialized)
+                    .map_err(|error| map_string_err(error.to_string()))?;
+                let slices = surface
+                    .expiries()
+                    .iter()
+                    .copied()
+                    .zip(
+                        parameters
+                            .slices
+                            .into_iter()
+                            .map(|value| (value.a, value.b, value.rho, value.m, value.sigma)),
+                    )
+                    .collect();
+                Ok(Some((slices, surface.forward())))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1318,6 +1490,22 @@ impl Market {
 
 #[pymethods]
 impl Market {
+    fn validate(&self) -> PyResult<()> {
+        self.to_core()?
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+    fn checked_vol_for(&self, strike: f64, expiry: f64) -> PyResult<f64> {
+        self.to_core()?
+            .checked_vol_for(strike, expiry)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+    fn escrowed_spot(&self, maturity: f64) -> PyResult<f64> {
+        Ok(self.to_core()?.escrowed_spot(maturity))
+    }
+    fn escrowed_reconstruction(&self, time: f64, maturity: f64) -> PyResult<(f64, f64)> {
+        Ok(self.to_core()?.escrowed_reconstruction(time, maturity))
+    }
     #[new]
     fn new(
         spot: f64,
@@ -1454,46 +1642,66 @@ pub struct MarketBuilder {
 
 #[pymethods]
 impl MarketBuilder {
+    fn vol_surface<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        surface: &Bound<'_, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.vol = Some(VolSource::from_surface(surface, slf.spot.unwrap_or(100.0))?);
+        Ok(slf)
+    }
     #[new]
     fn new() -> Self {
         Self::default()
     }
 
-    fn spot(&mut self, spot: f64) {
-        self.spot = Some(spot);
+    fn spot(mut slf: PyRefMut<'_, Self>, spot: f64) -> PyRefMut<'_, Self> {
+        slf.spot = Some(spot);
+        slf
     }
 
-    fn rate(&mut self, rate: f64) {
-        self.rate = Some(rate);
+    fn rate(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
+        slf.rate = Some(rate);
+        slf
     }
 
-    fn dividend_yield(&mut self, dividend_yield: f64) {
-        self.dividend_yield = Some(dividend_yield);
+    fn dividend_yield(mut slf: PyRefMut<'_, Self>, dividend_yield: f64) -> PyRefMut<'_, Self> {
+        slf.dividend_yield = Some(dividend_yield);
+        slf
     }
 
-    fn dividend_schedule(&mut self, dividend_schedule: &DividendSchedule) {
-        self.dividend_schedule = Some(dividend_schedule.clone());
+    fn dividend_schedule<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        dividend_schedule: &DividendSchedule,
+    ) -> PyRefMut<'py, Self> {
+        slf.dividend_schedule = Some(dividend_schedule.clone());
+        slf
     }
 
-    fn flat_vol(&mut self, vol: f64) {
-        self.vol = Some(VolSource::flat(vol));
+    fn flat_vol(mut slf: PyRefMut<'_, Self>, vol: f64) -> PyRefMut<'_, Self> {
+        slf.vol = Some(VolSource::flat(vol));
+        slf
     }
 
-    fn sampled_vol_surface(&mut self, surface: &SampledVolSurface) {
-        self.vol = Some(VolSource::sampled(surface));
+    fn sampled_vol_surface<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        surface: &SampledVolSurface,
+    ) -> PyRefMut<'py, Self> {
+        slf.vol = Some(VolSource::sampled(surface));
+        slf
     }
 
     fn parametric_vol_surface(
-        &mut self,
+        mut slf: PyRefMut<'_, Self>,
         slices: Vec<(f64, (f64, f64, f64, f64, f64))>,
         forward: f64,
-    ) -> PyResult<()> {
-        self.vol = Some(VolSource::parametric(slices, forward)?);
-        Ok(())
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        slf.vol = Some(VolSource::parametric(slices, forward)?);
+        Ok(slf)
     }
 
-    fn reference_date(&mut self, reference_date: String) {
-        self.reference_date = Some(reference_date);
+    fn reference_date(mut slf: PyRefMut<'_, Self>, reference_date: String) -> PyRefMut<'_, Self> {
+        slf.reference_date = Some(reference_date);
+        slf
     }
 
     fn build(&self) -> PyResult<Market> {

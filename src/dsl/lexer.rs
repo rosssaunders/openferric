@@ -6,14 +6,14 @@
 use crate::dsl::error::{DslError, Span};
 
 /// Token produced by the lexer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
 }
 
 /// Token types.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TokenKind {
     // Literals
     Number(f64),

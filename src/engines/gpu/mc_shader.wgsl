@@ -8,6 +8,8 @@ struct Params {
     strike: f32,
     terminal_drift: f32, // (r - 0.5*vol^2) * expiry
     terminal_vol: f32,   // vol * sqrt(expiry)
+    centered_spot: f32,
+    centered_intrinsic: f32,
     num_paths: u32,
     seed_low: u32,
     seed_high: u32,
@@ -68,12 +70,28 @@ fn box_muller(random_words: vec2<u32>) -> vec2<f32> {
     return vec2<f32>(r * cos(theta), r * sin(theta));
 }
 
+fn expm1_small(value: f32) -> f32 {
+    var polynomial = 1.0 / 720.0;
+    polynomial = fma(value, polynomial, 1.0 / 120.0);
+    polynomial = fma(value, polynomial, 1.0 / 24.0);
+    polynomial = fma(value, polynomial, 1.0 / 6.0);
+    polynomial = fma(value, polynomial, 0.5);
+    return fma(value * value, polynomial, value);
+}
+
 fn payoff_for_normal(z: f32) -> f32 {
-    let terminal_spot = params.spot * exp(fma(params.terminal_vol, z, params.terminal_drift));
-    if params.is_call != 0u {
-        return max(terminal_spot - params.strike, 0.0);
+    let log_shock = params.terminal_vol * z;
+    var signed_payoff: f32;
+    if abs(log_shock) <= 0.125 && params.centered_spot > 0.0 {
+        signed_payoff = fma(params.centered_spot, expm1_small(log_shock), params.centered_intrinsic);
+    } else {
+        let terminal_spot = params.spot * exp(fma(params.terminal_vol, z, params.terminal_drift));
+        signed_payoff = terminal_spot - params.strike;
     }
-    return max(params.strike - terminal_spot, 0.0);
+    if params.is_call != 0u {
+        return max(signed_payoff, 0.0);
+    }
+    return max(-signed_payoff, 0.0);
 }
 
 @compute @workgroup_size(256)

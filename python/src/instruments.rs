@@ -29,6 +29,10 @@ use openferric_core::instruments::{
 use openferric_core::rates::Frequency as CoreFrequency;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+
+#[path = "instruments_extra.rs"]
+mod extra;
+pub(crate) use extra::*;
 use pyo3::types::PyAny;
 
 use crate::core::{AsianSpec, BarrierSpec, ExerciseStyle};
@@ -211,7 +215,7 @@ pub struct VanillaOption {
 }
 
 impl VanillaOption {
-    fn to_core(&self) -> PyResult<CoreVanillaOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreVanillaOption> {
         Ok(CoreVanillaOption {
             option_type: parse_option_type_str(&self.option_type)?,
             strike: self.strike,
@@ -298,7 +302,7 @@ pub struct AsianOption {
 }
 
 impl AsianOption {
-    fn to_core(&self) -> PyResult<CoreAsianOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreAsianOption> {
         Ok(CoreAsianOption {
             option_type: parse_option_type_str(&self.option_type)?,
             strike: self.strike,
@@ -351,7 +355,7 @@ pub struct BarrierOption {
 }
 
 impl BarrierOption {
-    fn to_core(&self) -> PyResult<CoreBarrierOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreBarrierOption> {
         Ok(CoreBarrierOption {
             option_type: parse_option_type_str(&self.option_type)?,
             strike: self.strike,
@@ -498,7 +502,7 @@ pub struct BermudanOption {
 }
 
 impl BermudanOption {
-    fn to_core(&self) -> PyResult<CoreBermudanOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreBermudanOption> {
         Ok(CoreBermudanOption::new(
             parse_option_type_str(&self.option_type)?,
             self.expiry,
@@ -587,7 +591,7 @@ pub struct FuturesOption {
 }
 
 impl FuturesOption {
-    fn to_core(&self) -> PyResult<CoreFuturesOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreFuturesOption> {
         Ok(CoreFuturesOption::new(
             self.forward,
             self.strike,
@@ -670,7 +674,7 @@ pub struct ForwardStartOption {
 }
 
 impl ForwardStartOption {
-    fn to_core(&self) -> PyResult<CoreForwardStartOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreForwardStartOption> {
         Ok(CoreForwardStartOption {
             option_type: parse_option_type_str(&self.option_type)?,
             spot: self.spot,
@@ -872,7 +876,7 @@ pub struct CommodityForward {
 }
 
 impl CommodityForward {
-    fn to_core(self) -> CoreCommodityForward {
+    pub(crate) fn to_core(self) -> CoreCommodityForward {
         CoreCommodityForward {
             spot: self.spot,
             strike: self.strike,
@@ -946,7 +950,7 @@ pub struct CommodityFutures {
 }
 
 impl CommodityFutures {
-    fn to_core(self) -> CoreCommodityFutures {
+    pub(crate) fn to_core(self) -> CoreCommodityFutures {
         CoreCommodityFutures {
             contract_price: self.contract_price,
             contract_size: self.contract_size,
@@ -997,7 +1001,7 @@ pub struct CommodityOption {
 }
 
 impl CommodityOption {
-    fn to_core(&self) -> PyResult<CoreCommodityOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreCommodityOption> {
         Ok(CoreCommodityOption {
             forward: self.forward,
             strike: self.strike,
@@ -1040,7 +1044,7 @@ pub struct CommoditySpreadOption {
 }
 
 impl CommoditySpreadOption {
-    fn to_core(&self) -> PyResult<CoreCommoditySpreadOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreCommoditySpreadOption> {
         Ok(CoreCommoditySpreadOption {
             option_type: parse_option_type_str(&self.option_type)?,
             forward_1: self.forward_1,
@@ -1060,6 +1064,54 @@ impl CommoditySpreadOption {
 
 #[pymethods]
 impl CommoditySpreadOption {
+    #[staticmethod]
+    fn crush_spread(
+        option_type: String,
+        soymeal_forward: f64,
+        soybean_oil_forward: f64,
+        soybean_forward: f64,
+        strike: f64,
+        soymeal_ratio: f64,
+        oil_ratio: f64,
+        bean_ratio: f64,
+        vol_products: f64,
+        vol_beans: f64,
+        rho: f64,
+        risk_free_rate: f64,
+        maturity: f64,
+        notional: f64,
+    ) -> PyResult<Self> {
+        let inner = CoreCommoditySpreadOption::crush_spread(
+            parse_option_type_str(&option_type)?,
+            soymeal_forward,
+            soybean_oil_forward,
+            soybean_forward,
+            strike,
+            soymeal_ratio,
+            oil_ratio,
+            bean_ratio,
+            vol_products,
+            vol_beans,
+            rho,
+            risk_free_rate,
+            maturity,
+            notional,
+        );
+        Self::new(
+            option_type,
+            inner.forward_1,
+            inner.forward_2,
+            inner.strike,
+            inner.quantity_1,
+            inner.quantity_2,
+            inner.vol_1,
+            inner.vol_2,
+            inner.rho,
+            inner.risk_free_rate,
+            inner.maturity,
+            inner.notional,
+        )
+    }
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1222,7 +1274,7 @@ pub struct ConvertibleBond {
 }
 
 impl ConvertibleBond {
-    fn to_core(&self) -> CoreConvertibleBond {
+    pub(crate) fn to_core(&self) -> CoreConvertibleBond {
         CoreConvertibleBond::new(
             self.face_value,
             self.coupon_rate,
@@ -1276,7 +1328,7 @@ pub struct CashOrNothingOption {
 }
 
 impl CashOrNothingOption {
-    fn to_core(&self) -> PyResult<CoreCashOrNothingOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreCashOrNothingOption> {
         Ok(CoreCashOrNothingOption::new(
             parse_option_type_str(&self.option_type)?,
             self.strike,
@@ -1317,7 +1369,7 @@ pub struct AssetOrNothingOption {
 }
 
 impl AssetOrNothingOption {
-    fn to_core(&self) -> PyResult<CoreAssetOrNothingOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreAssetOrNothingOption> {
         Ok(CoreAssetOrNothingOption::new(
             parse_option_type_str(&self.option_type)?,
             self.strike,
@@ -1358,7 +1410,7 @@ pub struct GapOption {
 }
 
 impl GapOption {
-    fn to_core(&self) -> PyResult<CoreGapOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreGapOption> {
         Ok(CoreGapOption::new(
             parse_option_type_str(&self.option_type)?,
             self.payoff_strike,
@@ -1412,7 +1464,7 @@ pub struct DoubleBarrierOption {
 }
 
 impl DoubleBarrierOption {
-    fn to_core(&self) -> PyResult<CoreDoubleBarrierOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreDoubleBarrierOption> {
         Ok(CoreDoubleBarrierOption::new(
             parse_option_type_str(&self.option_type)?,
             self.strike,
@@ -1480,7 +1532,7 @@ pub struct EmployeeStockOption {
 }
 
 impl EmployeeStockOption {
-    fn to_core(&self) -> PyResult<CoreEmployeeStockOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreEmployeeStockOption> {
         Ok(CoreEmployeeStockOption::new(
             parse_option_type_str(&self.option_type)?,
             self.strike,
@@ -1575,7 +1627,7 @@ pub struct FxOption {
 }
 
 impl FxOption {
-    fn to_core(&self) -> PyResult<CoreFxOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreFxOption> {
         Ok(CoreFxOption::new(
             parse_option_type_str(&self.option_type)?,
             self.domestic_rate,
@@ -1633,7 +1685,7 @@ pub struct PowerOption {
 }
 
 impl PowerOption {
-    fn to_core(&self) -> PyResult<CorePowerOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CorePowerOption> {
         Ok(CorePowerOption::new(
             parse_option_type_str(&self.option_type)?,
             self.strike,
@@ -1708,7 +1760,7 @@ pub struct SpreadOption {
 }
 
 impl SpreadOption {
-    fn to_core(self) -> CoreSpreadOption {
+    pub(crate) fn to_core(self) -> CoreSpreadOption {
         CoreSpreadOption {
             s1: self.s1,
             s2: self.s2,
@@ -1784,7 +1836,7 @@ pub struct SwingOption {
 }
 
 impl SwingOption {
-    fn to_core(&self) -> CoreSwingOption {
+    pub(crate) fn to_core(&self) -> CoreSwingOption {
         CoreSwingOption::new(
             self.min_exercises,
             self.max_exercises,
@@ -1803,7 +1855,7 @@ pub struct PsaModel {
 }
 
 impl PsaModel {
-    fn to_core(&self) -> CorePsaModel {
+    pub(crate) fn to_core(&self) -> CorePsaModel {
         CorePsaModel {
             psa_speed: self.psa_speed,
         }
@@ -1844,7 +1896,7 @@ pub struct ConstantCpr {
 }
 
 impl ConstantCpr {
-    fn to_core(&self) -> CoreConstantCpr {
+    pub(crate) fn to_core(&self) -> CoreConstantCpr {
         CoreConstantCpr {
             annual_cpr: self.annual_cpr,
         }
@@ -1859,7 +1911,7 @@ pub struct RateIncentivePrepayment {
 }
 
 impl RateIncentivePrepayment {
-    fn to_core(&self) -> CoreRateIncentivePrepayment {
+    pub(crate) fn to_core(&self) -> CoreRateIncentivePrepayment {
         CoreRateIncentivePrepayment {
             first_payment_month: self.first_payment_month,
         }
@@ -1868,6 +1920,9 @@ impl RateIncentivePrepayment {
 
 #[pymethods]
 impl RateIncentivePrepayment {
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
+    }
     #[new]
     #[pyo3(signature = (first_payment_month=1))]
     fn new(first_payment_month: u8) -> PyResult<Self> {
@@ -1925,7 +1980,7 @@ pub struct PrepaymentModel {
 }
 
 impl PrepaymentModel {
-    fn to_core(&self) -> CorePrepaymentModel {
+    pub(crate) fn to_core(&self) -> CorePrepaymentModel {
         self.inner.clone()
     }
 }
@@ -2037,7 +2092,7 @@ pub struct MbsPassThrough {
 }
 
 impl MbsPassThrough {
-    fn to_core(&self) -> CoreMbsPassThrough {
+    pub(crate) fn to_core(&self) -> CoreMbsPassThrough {
         CoreMbsPassThrough {
             original_balance: self.original_balance,
             coupon_rate: self.coupon_rate,
@@ -2051,6 +2106,9 @@ impl MbsPassThrough {
 
 #[pymethods]
 impl MbsPassThrough {
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
+    }
     #[new]
     fn new(
         original_balance: f64,
@@ -2234,7 +2292,7 @@ pub struct BestOfTwoCallOption {
 }
 
 impl BestOfTwoCallOption {
-    fn to_core(self) -> CoreBestOfTwoCallOption {
+    pub(crate) fn to_core(self) -> CoreBestOfTwoCallOption {
         CoreBestOfTwoCallOption {
             s1: self.s1,
             s2: self.s2,
@@ -2313,7 +2371,7 @@ pub struct WorstOfTwoCallOption {
 }
 
 impl WorstOfTwoCallOption {
-    fn to_core(self) -> CoreWorstOfTwoCallOption {
+    pub(crate) fn to_core(self) -> CoreWorstOfTwoCallOption {
         CoreWorstOfTwoCallOption {
             s1: self.s1,
             s2: self.s2,
@@ -2396,7 +2454,7 @@ pub struct TwoAssetCorrelationOption {
 }
 
 impl TwoAssetCorrelationOption {
-    fn to_core(&self) -> PyResult<CoreTwoAssetCorrelationOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreTwoAssetCorrelationOption> {
         Ok(CoreTwoAssetCorrelationOption {
             option_type: parse_option_type_str(&self.option_type)?,
             s1: self.s1,
@@ -2467,7 +2525,7 @@ pub struct VarianceOptionQuote {
 }
 
 impl VarianceOptionQuote {
-    fn to_core(self) -> CoreVarianceOptionQuote {
+    pub(crate) fn to_core(self) -> CoreVarianceOptionQuote {
         CoreVarianceOptionQuote::new(self.strike, self.call_price, self.put_price)
     }
 }
@@ -2543,7 +2601,7 @@ pub struct WeatherSwap {
 }
 
 impl WeatherSwap {
-    fn to_core(&self) -> PyResult<CoreWeatherSwap> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreWeatherSwap> {
         Ok(CoreWeatherSwap {
             index_type: parse_degree_day_type(&self.index_type)?,
             strike: self.strike,
@@ -2576,7 +2634,7 @@ pub struct WeatherOption {
 }
 
 impl WeatherOption {
-    fn to_core(&self) -> PyResult<CoreWeatherOption> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreWeatherOption> {
         Ok(CoreWeatherOption {
             index_type: parse_degree_day_type(&self.index_type)?,
             option_type: parse_option_type_str(&self.option_type)?,
@@ -2591,6 +2649,20 @@ impl WeatherOption {
 
 #[pymethods]
 impl WeatherOption {
+    fn price_burn_analysis(&self, historical_indices: Vec<f64>) -> PyResult<f64> {
+        self.to_core()?
+            .price_burn_analysis(&historical_indices)
+            .map_err(map_err_string)
+    }
+    fn price_burn_from_temperature_history(
+        &self,
+        historical_temperature_paths: Vec<Vec<f64>>,
+        base_temperature: f64,
+    ) -> PyResult<f64> {
+        self.to_core()?
+            .price_burn_from_temperature_history(&historical_temperature_paths, base_temperature)
+            .map_err(map_err_string)
+    }
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2646,7 +2718,7 @@ pub struct CatastropheBond {
 }
 
 impl CatastropheBond {
-    fn to_core(self) -> CoreCatastropheBond {
+    pub(crate) fn to_core(self) -> CoreCatastropheBond {
         CoreCatastropheBond {
             principal: self.principal,
             coupon_rate: self.coupon_rate,
@@ -2694,47 +2766,6 @@ impl CatastropheBond {
     }
 }
 
-macro_rules! simple_payload_enum {
-    ($name:ident) => {
-        #[pyclass(module = "openferric", skip_from_py_object)]
-        pub struct $name {
-            kind: String,
-            payload: Py<PyAny>,
-        }
-
-        #[pymethods]
-        impl $name {
-            #[new]
-            fn new(kind: String, payload: Py<PyAny>) -> Self {
-                Self { kind, payload }
-            }
-
-            fn clone_ref(&self, py: Python<'_>) -> Self {
-                Self {
-                    kind: self.kind.clone(),
-                    payload: self.payload.clone_ref(py),
-                }
-            }
-
-            #[getter]
-            fn kind(&self) -> String {
-                self.kind.clone()
-            }
-
-            #[getter]
-            fn payload(&self, py: Python<'_>) -> Py<PyAny> {
-                self.payload.clone_ref(py)
-            }
-        }
-    };
-}
-
-simple_payload_enum!(RealOptionInstrument);
-simple_payload_enum!(ExoticOption);
-simple_payload_enum!(StructuredCoupon);
-simple_payload_enum!(CouponType);
-simple_payload_enum!(TradeInstrument);
-
 #[pyclass(module = "openferric", skip_from_py_object)]
 pub struct CouponPeriod {
     #[pyo3(get, set)]
@@ -2768,6 +2799,38 @@ impl CouponPeriod {
     }
 }
 
+impl CouponPeriod {
+    pub(crate) fn to_core(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<openferric_core::instruments::CouponPeriod> {
+        Ok(openferric_core::instruments::CouponPeriod {
+            start_time: self.start_time,
+            end_time: self.end_time,
+            payment_time: self.payment_time,
+            coupon: self.coupon.extract::<PyRef<CouponType>>(py)?.to_core(),
+        })
+    }
+
+    pub(crate) fn from_core(
+        py: Python<'_>,
+        value: openferric_core::instruments::CouponPeriod,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            start_time: value.start_time,
+            end_time: value.end_time,
+            payment_time: value.payment_time,
+            coupon: Py::new(
+                py,
+                CouponType {
+                    inner: value.coupon,
+                },
+            )?
+            .into_any(),
+        })
+    }
+}
+
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct ExerciseSchedule {
@@ -2780,21 +2843,34 @@ pub struct ExerciseSchedule {
 #[pymethods]
 impl ExerciseSchedule {
     #[new]
-    fn new(bermudan_dates: Vec<f64>, notice_period: f64) -> Self {
-        Self {
-            bermudan_dates,
-            notice_period,
-        }
+    fn new(bermudan_dates: Vec<f64>, notice_period: f64) -> PyResult<Self> {
+        openferric_core::instruments::ExerciseSchedule::new(bermudan_dates, notice_period)
+            .map(Self::from_core)
+            .map_err(map_err_string)
     }
 
     fn decision_times(&self) -> Vec<f64> {
-        let mut dates = self
-            .bermudan_dates
-            .iter()
-            .map(|t| (t - self.notice_period).max(0.0))
-            .collect::<Vec<_>>();
-        dates.sort_by(|a, b| a.total_cmp(b));
-        dates
+        self.to_core().decision_times()
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.to_core().validate().map_err(map_err_string)
+    }
+}
+
+impl ExerciseSchedule {
+    pub(crate) fn to_core(&self) -> openferric_core::instruments::ExerciseSchedule {
+        openferric_core::instruments::ExerciseSchedule {
+            bermudan_dates: self.bermudan_dates.clone(),
+            notice_period: self.notice_period,
+        }
+    }
+
+    fn from_core(value: openferric_core::instruments::ExerciseSchedule) -> Self {
+        Self {
+            bermudan_dates: value.bermudan_dates,
+            notice_period: value.notice_period,
+        }
     }
 }
 
@@ -2830,6 +2906,13 @@ pub struct Trade {
 
 #[pymethods]
 impl Trade {
+    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        crate::helpers::to_python(py, &self.to_core(py)?)
+    }
+    #[staticmethod]
+    fn from_dict(data: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Self::from_core(data.py(), crate::helpers::from_python(data)?)
+    }
     #[new]
     fn new(metadata: TradeMetadata, instrument: Py<PyAny>) -> Self {
         Self {
@@ -2841,6 +2924,38 @@ impl Trade {
     #[getter]
     fn instrument(&self, py: Python<'_>) -> Py<PyAny> {
         self.instrument.clone_ref(py)
+    }
+}
+
+impl Trade {
+    pub(crate) fn to_core(&self, py: Python<'_>) -> PyResult<openferric_core::instruments::Trade> {
+        Ok(openferric_core::instruments::Trade {
+            metadata: openferric_core::instruments::TradeMetadata {
+                trade_id: self.metadata.trade_id.clone(),
+                version: self.metadata.version,
+                timestamp_unix_ms: self.metadata.timestamp_unix_ms,
+            },
+            instrument: extra::trade_instrument(self.instrument.bind(py))?,
+        })
+    }
+    pub(crate) fn from_core(
+        py: Python<'_>,
+        value: openferric_core::instruments::Trade,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            metadata: TradeMetadata {
+                trade_id: value.metadata.trade_id,
+                version: value.metadata.version,
+                timestamp_unix_ms: value.metadata.timestamp_unix_ms,
+            },
+            instrument: Py::new(
+                py,
+                TradeInstrument {
+                    inner: value.instrument,
+                },
+            )?
+            .into_any(),
+        })
     }
 }
 
@@ -3420,6 +3535,7 @@ impl RealOptionBinomialSpec {
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    extra::register(module)?;
     module.add_function(wrap_pyfunction!(hdd_day, module)?)?;
     module.add_function(wrap_pyfunction!(cdd_day, module)?)?;
     module.add_function(wrap_pyfunction!(cumulative_hdd, module)?)?;

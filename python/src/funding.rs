@@ -17,6 +17,22 @@ use pyo3::types::PyDict;
 use crate::helpers::{format_datetime, parse_datetime};
 use crate::rates::YieldCurve;
 
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FundingRateInterpolation {
+    Linear,
+    PiecewiseConstant,
+}
+impl FundingRateInterpolation {
+    fn to_core(self) -> openferric_core::rates::funding_rate::FundingRateInterpolation {
+        use openferric_core::rates::funding_rate::FundingRateInterpolation as Mode;
+        match self {
+            Self::Linear => Mode::Linear,
+            Self::PiecewiseConstant => Mode::PiecewiseConstant,
+        }
+    }
+}
+
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct FundingRateSnapshot {
@@ -138,11 +154,40 @@ impl FundingRateStats {
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct FundingRateCurve {
-    inner: CoreFundingRateCurve,
+    pub(crate) inner: CoreFundingRateCurve,
 }
 
 #[pymethods]
 impl FundingRateCurve {
+    #[staticmethod]
+    fn new_with_interpolation(
+        snapshots: Vec<FundingRateSnapshot>,
+        mode: FundingRateInterpolation,
+    ) -> PyResult<Self> {
+        let snapshots = snapshots
+            .iter()
+            .map(FundingRateSnapshot::to_core)
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Self {
+            inner: CoreFundingRateCurve::new_with_interpolation(snapshots, mode.to_core()),
+        })
+    }
+    fn interpolation_mode(&self) -> FundingRateInterpolation {
+        use openferric_core::rates::funding_rate::FundingRateInterpolation as Mode;
+        match self.inner.interpolation_mode() {
+            Mode::Linear => FundingRateInterpolation::Linear,
+            Mode::PiecewiseConstant => FundingRateInterpolation::PiecewiseConstant,
+        }
+    }
+    #[staticmethod]
+    fn settlement_interval_years() -> f64 {
+        CoreFundingRateCurve::settlement_interval_years()
+    }
+    fn volatility_shifted(&self, bump: f64) -> Self {
+        Self {
+            inner: self.inner.volatility_shifted(bump),
+        }
+    }
     #[new]
     fn new(py: Python<'_>, snapshots: Vec<Py<FundingRateSnapshot>>) -> PyResult<Self> {
         let snapshots = snapshots
@@ -247,6 +292,23 @@ pub struct MultiVenueFundingCurve {
 
 #[pymethods]
 impl MultiVenueFundingCurve {
+    fn curves(&self) -> Vec<(FundingRateCurve, f64)> {
+        self.inner
+            .curves()
+            .iter()
+            .map(|(curve, weight)| {
+                (
+                    FundingRateCurve {
+                        inner: curve.clone(),
+                    },
+                    *weight,
+                )
+            })
+            .collect()
+    }
+    fn discount_factor(&self, time: f64) -> f64 {
+        self.inner.discount_factor(time)
+    }
     #[new]
     fn new(py: Python<'_>, curves: Vec<(Py<FundingRateCurve>, f64)>) -> PyResult<Self> {
         let curves = curves
@@ -294,7 +356,7 @@ pub struct FundingRateSwap {
 }
 
 impl FundingRateSwap {
-    fn to_core(&self) -> PyResult<CoreFundingRateSwap> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreFundingRateSwap> {
         let mut swap = CoreFundingRateSwap::new(
             self.notional,
             self.fixed_rate,
@@ -310,6 +372,23 @@ impl FundingRateSwap {
 
 #[pymethods]
 impl FundingRateSwap {
+    fn interval_year_fraction(&self) -> PyResult<f64> {
+        Ok(self.to_core()?.interval_year_fraction())
+    }
+    #[pyo3(signature = (curve, as_of, discount_curve=None))]
+    fn mark_to_market(
+        &self,
+        curve: &FundingRateCurve,
+        as_of: &str,
+        discount_curve: Option<&YieldCurve>,
+    ) -> PyResult<f64> {
+        let discount_curve = discount_curve.map(YieldCurve::to_core);
+        Ok(self.to_core()?.mark_to_market(
+            &curve.inner,
+            discount_curve.as_ref(),
+            parse_datetime(as_of)?,
+        ))
+    }
     #[new]
     fn new(
         notional: f64,
@@ -525,6 +604,7 @@ pub fn funding_rate_swap_risks(
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<FundingRateInterpolation>()?;
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_mtm, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(funding_rate_swap_dv01, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(

@@ -323,6 +323,31 @@ cannot recover precision already lost on the device.
 `GpuMcResult::stderr` is sampling uncertainty only; it does **not** include
 floating-point roundoff.
 
+For small random log returns, the host computes the drifted spot and its
+difference from the strike in `f64` before converting either to `f32`. The
+shader evaluates the payoff as that centered difference plus the drifted
+spot times `expm1(vol * sqrt(T) * Z)`. A degree-six Taylor polynomial evaluates
+`expm1` on `[-1/8, 1/8]`; its truncation error is bounded by
+`exp(1/8) * (1/8)^7 / 7! < 1.1e-10`, before `f32` rounding. Larger random log
+returns, or drifted spots outside the positive finite `f32` range, retain the
+original log-space terminal calculation. This avoids subtracting two large
+rounded prices and preserves small stochastic increments beside the drift.
+It does not require correctly rounded shader `exp` or a fused `fma`, neither
+of which is guaranteed by the
+[WGSL floating-point accuracy rules](https://www.w3.org/TR/WGSL/#floating-point-accuracy).
+
+GPU regression tests retain the original `2e-6` absolute price and `0.2%`
+relative standard-error budgets for the near-deterministic cases. Additional
+call/put tests cover expiry, positive and negative carry, almost-equal spot
+and strike, odd path counts, and volatilities down to `1e-9`. Deterministic
+price literals were evaluated offline as `max(S - K * exp(-r*T), 0)` and its
+put counterpart using Python Decimal with 80-digit precision and exact
+binary64 input conversion (`Decimal.from_float`). At-the-money, zero-rate
+references use the independent identity `S * erf(vol * sqrt(T) / (2*sqrt(2)))`.
+`python/tests/test_gpu.py` also checks the public Python GPU binding against
+these references. Adapter-dependent tests skip only when no adapter exists
+(or, for Python, when the GPU feature is not compiled).
+
 For tight tolerances, risk reports, or validation, compare GPU output with an
 `f64` CPU backend. GPU normals come from keyed, counter-based Threefry2x32-20:
 the invocation id is the counter and both halves of the public `u64` seed are

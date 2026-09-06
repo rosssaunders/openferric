@@ -12,6 +12,10 @@ use openferric_core::calibration::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+#[path = "calibration_extra.rs"]
+mod extra;
+pub(crate) use extra::*;
+
 fn string_err(err: impl ToString) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
@@ -534,6 +538,8 @@ impl SwaptionVolQuote {
 enum CalibrationParamsKind {
     Heston(CoreHestonCalibrationParams),
     HullWhite(CoreHullWhiteCalibrationParams),
+    Sabr(openferric_core::calibration::SabrCalibrationParams),
+    Svi(openferric_core::calibration::SviCalibrationParams),
 }
 
 #[pyclass(module = "openferric", from_py_object)]
@@ -595,22 +601,62 @@ impl CalibrationResult {
         match self.params {
             CalibrationParamsKind::Heston(_) => "heston",
             CalibrationParamsKind::HullWhite(_) => "hull_white",
+            CalibrationParamsKind::Sabr(_) => "sabr",
+            CalibrationParamsKind::Svi(_) => "svi",
         }
     }
 
     fn heston_params(&self) -> Option<HestonCalibrationParams> {
         match self.params {
             CalibrationParamsKind::Heston(value) => Some(HestonCalibrationParams::from_core(value)),
-            CalibrationParamsKind::HullWhite(_) => None,
+            _ => None,
         }
     }
 
     fn hull_white_params(&self) -> Option<HullWhiteCalibrationParams> {
         match self.params {
-            CalibrationParamsKind::Heston(_) => None,
             CalibrationParamsKind::HullWhite(value) => {
                 Some(HullWhiteCalibrationParams::from_core(value))
             }
+            _ => None,
+        }
+    }
+
+    fn sabr_params(&self) -> Option<SabrCalibrationParams> {
+        match self.params {
+            CalibrationParamsKind::Sabr(value) => Some(value.into()),
+            _ => None,
+        }
+    }
+
+    fn svi_params(&self) -> Option<SviCalibrationParams> {
+        match &self.params {
+            CalibrationParamsKind::Svi(value) => Some(SviCalibrationParams {
+                inner: value.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn params(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.params {
+            CalibrationParamsKind::Heston(value) => {
+                Ok(Py::new(py, HestonCalibrationParams::from_core(*value))?.into_any())
+            }
+            CalibrationParamsKind::HullWhite(value) => {
+                Ok(Py::new(py, HullWhiteCalibrationParams::from_core(*value))?.into_any())
+            }
+            CalibrationParamsKind::Sabr(value) => {
+                Ok(Py::new(py, SabrCalibrationParams::from(*value))?.into_any())
+            }
+            CalibrationParamsKind::Svi(value) => Ok(Py::new(
+                py,
+                SviCalibrationParams {
+                    inner: value.clone(),
+                },
+            )?
+            .into_any()),
         }
     }
 }
@@ -681,10 +727,30 @@ impl HestonCalibrator {
         Ok(())
     }
 
-    fn calibrate(&self, quotes: Vec<OptionVolQuote>) -> PyResult<CalibrationResult> {
+    #[getter]
+    fn lm_options(&self) -> LmOptions {
+        self.inner.lm_options.into()
+    }
+    #[setter]
+    fn set_lm_options(&mut self, value: LmOptions) {
+        self.inner.lm_options = value.to_core();
+    }
+    #[getter]
+    fn fft_params(&self) -> crate::fft_extra::CarrMadanParams {
+        crate::fft_extra::CarrMadanParams::from_core(self.inner.fft_params)
+    }
+    #[setter]
+    fn set_fft_params(&mut self, value: crate::fft_extra::CarrMadanParams) {
+        self.inner.fft_params = value.to_core();
+    }
+
+    fn calibrate(
+        &self,
+        py: Python<'_>,
+        quotes: Vec<OptionVolQuote>,
+    ) -> PyResult<CalibrationResult> {
         let quotes: Vec<_> = quotes.into_iter().map(|quote| quote.to_core()).collect();
-        self.inner
-            .calibrate(&quotes)
+        py.detach(|| self.inner.calibrate(&quotes))
             .map(CalibrationResult::from_heston)
             .map_err(string_err)
     }
@@ -731,16 +797,37 @@ impl HullWhiteCalibrator {
         self.inner.use_nelder_mead_fallback = value;
     }
 
-    fn calibrate(&self, quotes: Vec<SwaptionVolQuote>) -> PyResult<CalibrationResult> {
+    #[getter]
+    fn lm_options(&self) -> LmOptions {
+        self.inner.lm_options.into()
+    }
+    #[setter]
+    fn set_lm_options(&mut self, value: LmOptions) {
+        self.inner.lm_options = value.to_core();
+    }
+    #[getter]
+    fn nm_options(&self) -> NelderMeadOptions {
+        self.inner.nm_options.into()
+    }
+    #[setter]
+    fn set_nm_options(&mut self, value: NelderMeadOptions) {
+        self.inner.nm_options = value.to_core();
+    }
+
+    fn calibrate(
+        &self,
+        py: Python<'_>,
+        quotes: Vec<SwaptionVolQuote>,
+    ) -> PyResult<CalibrationResult> {
         let quotes: Vec<_> = quotes.into_iter().map(|quote| quote.to_core()).collect();
-        self.inner
-            .calibrate(&quotes)
+        py.detach(|| self.inner.calibrate(&quotes))
             .map(CalibrationResult::from_hull_white)
             .map_err(string_err)
     }
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    extra::register(module)?;
     module.add_class::<BoxConstraints>()?;
     module.add_class::<InstrumentError>()?;
     module.add_class::<ConvergenceInfo>()?;

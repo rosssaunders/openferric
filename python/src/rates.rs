@@ -105,7 +105,7 @@ pub struct DayCountConvention {
 }
 
 impl DayCountConvention {
-    fn to_core(self) -> CoreDayCountConvention {
+    pub(crate) fn to_core(self) -> CoreDayCountConvention {
         self.inner
     }
 
@@ -164,7 +164,7 @@ pub struct Frequency {
 }
 
 impl Frequency {
-    fn to_core(self) -> CoreFrequency {
+    pub(crate) fn to_core(self) -> CoreFrequency {
         self.inner
     }
 
@@ -221,7 +221,7 @@ pub struct WeekendConvention {
 }
 
 impl WeekendConvention {
-    fn to_core(self) -> CoreWeekendConvention {
+    pub(crate) fn to_core(self) -> CoreWeekendConvention {
         self.inner
     }
 
@@ -262,7 +262,7 @@ pub struct BusinessDayConvention {
 }
 
 impl BusinessDayConvention {
-    fn to_core(self) -> CoreBusinessDayConvention {
+    pub(crate) fn to_core(self) -> CoreBusinessDayConvention {
         self.inner
     }
 
@@ -327,7 +327,7 @@ pub struct StubConvention {
 }
 
 impl StubConvention {
-    fn to_core(self) -> CoreStubConvention {
+    pub(crate) fn to_core(self) -> CoreStubConvention {
         self.inner
     }
 
@@ -380,7 +380,7 @@ pub struct RollConvention {
 }
 
 impl RollConvention {
-    fn to_core(self) -> CoreRollConvention {
+    pub(crate) fn to_core(self) -> CoreRollConvention {
         self.inner
     }
 
@@ -517,7 +517,7 @@ pub struct YieldCurveInterpolationMethod {
 }
 
 impl YieldCurveInterpolationMethod {
-    fn to_core(self) -> CoreYieldCurveInterpolationMethod {
+    pub(crate) fn to_core(self) -> CoreYieldCurveInterpolationMethod {
         self.inner
     }
 
@@ -632,7 +632,7 @@ pub struct YieldCurveInterpolationSettings {
 }
 
 impl YieldCurveInterpolationSettings {
-    fn to_core(self) -> CoreYieldCurveInterpolationSettings {
+    pub(crate) fn to_core(self) -> CoreYieldCurveInterpolationSettings {
         self.inner
     }
 
@@ -840,7 +840,7 @@ pub struct CustomCalendar {
 }
 
 impl CustomCalendar {
-    fn to_core(&self) -> CoreCustomCalendar {
+    pub(crate) fn to_core(&self) -> CoreCustomCalendar {
         self.inner.clone()
     }
 
@@ -999,7 +999,7 @@ pub struct ScheduleConfig {
 }
 
 impl ScheduleConfig {
-    fn to_core(&self) -> CoreScheduleConfig {
+    pub(crate) fn to_core(&self) -> CoreScheduleConfig {
         self.inner.clone()
     }
 
@@ -1072,7 +1072,7 @@ pub struct FixedRateBond {
 }
 
 impl FixedRateBond {
-    fn to_core(self) -> CoreFixedRateBond {
+    pub(crate) fn to_core(self) -> CoreFixedRateBond {
         self.inner
     }
 }
@@ -1331,7 +1331,7 @@ pub struct CmsConvexityParams {
 }
 
 impl CmsConvexityParams {
-    fn to_core(self) -> CoreCmsConvexityParams {
+    pub(crate) fn to_core(self) -> CoreCmsConvexityParams {
         self.inner
     }
 
@@ -1397,7 +1397,7 @@ pub struct CmsSpreadOptionType {
 }
 
 impl CmsSpreadOptionType {
-    fn to_core(self) -> CoreCmsSpreadOptionType {
+    pub(crate) fn to_core(self) -> CoreCmsSpreadOptionType {
         self.inner
     }
 
@@ -1438,7 +1438,7 @@ pub struct CmsSpreadOption {
 }
 
 impl CmsSpreadOption {
-    fn to_core(self) -> CoreCmsSpreadOption {
+    pub(crate) fn to_core(self) -> CoreCmsSpreadOption {
         self.inner
     }
 }
@@ -1550,7 +1550,7 @@ pub struct ForwardRateAgreement {
 }
 
 impl ForwardRateAgreement {
-    fn to_core(self) -> CoreForwardRateAgreement {
+    pub(crate) fn to_core(self) -> CoreForwardRateAgreement {
         self.inner
     }
 }
@@ -1664,6 +1664,30 @@ impl InterestRateSwap {
 
 #[pymethods]
 impl InterestRateSwap {
+    #[getter]
+    fn calendar(&self) -> Calendar {
+        Calendar::from_core(self.inner.calendar.clone())
+    }
+    #[getter]
+    fn business_day_convention(&self) -> BusinessDayConvention {
+        BusinessDayConvention::from_core(self.inner.business_day_convention)
+    }
+    #[getter]
+    fn stub_convention(&self) -> StubConvention {
+        StubConvention::from_core(self.inner.stub_convention)
+    }
+    #[getter]
+    fn roll_convention(&self) -> RollConvention {
+        RollConvention::from_core(self.inner.roll_convention)
+    }
+    #[getter]
+    fn fixed_day_count(&self) -> DayCountConvention {
+        DayCountConvention::from_core(self.inner.fixed_day_count)
+    }
+    #[getter]
+    fn float_day_count(&self) -> DayCountConvention {
+        DayCountConvention::from_core(self.inner.float_day_count)
+    }
     #[new]
     #[pyo3(signature = (notional, fixed_rate, float_spread, start_date, end_date, fixed_freq, float_freq, calendar, business_day_convention, stub_convention, roll_convention, fixed_day_count, float_day_count, curve_day_count=None))]
     fn new(
@@ -1915,7 +1939,7 @@ pub struct Future {
 }
 
 impl Future {
-    fn to_core(self) -> CoreFuture {
+    pub(crate) fn to_core(self) -> CoreFuture {
         self.inner
     }
 }
@@ -2105,7 +2129,7 @@ pub struct ZeroCouponInflationSwap {
 }
 
 impl ZeroCouponInflationSwap {
-    fn to_core(self) -> CoreZeroCouponInflationSwap {
+    pub(crate) fn to_core(self) -> CoreZeroCouponInflationSwap {
         self.inner
     }
 }
@@ -2198,7 +2222,7 @@ pub struct YearOnYearInflationSwap {
 }
 
 impl YearOnYearInflationSwap {
-    fn to_core(self) -> CoreYearOnYearInflationSwap {
+    pub(crate) fn to_core(self) -> CoreYearOnYearInflationSwap {
         self.inner
     }
 }
@@ -2265,7 +2289,7 @@ pub struct InflationIndexedBond {
 }
 
 impl InflationIndexedBond {
-    fn to_core(self) -> CoreInflationIndexedBond {
+    pub(crate) fn to_core(self) -> CoreInflationIndexedBond {
         self.inner
     }
 }
@@ -2340,7 +2364,7 @@ pub struct OvernightIndexSwap {
 }
 
 impl OvernightIndexSwap {
-    fn to_core(self) -> CoreOvernightIndexSwap {
+    pub(crate) fn to_core(self) -> CoreOvernightIndexSwap {
         self.inner
     }
 }
@@ -2429,7 +2453,7 @@ pub struct BasisSwap {
 }
 
 impl BasisSwap {
-    fn to_core(self) -> CoreBasisSwap {
+    pub(crate) fn to_core(self) -> CoreBasisSwap {
         self.inner
     }
 }
@@ -2582,7 +2606,7 @@ pub struct XccySwap {
 }
 
 impl XccySwap {
-    fn to_core(self) -> CoreXccySwap {
+    pub(crate) fn to_core(self) -> CoreXccySwap {
         self.inner
     }
 }
@@ -2810,7 +2834,7 @@ pub struct Swaption {
 }
 
 impl Swaption {
-    fn to_core(self) -> CoreSwaption {
+    pub(crate) fn to_core(self) -> CoreSwaption {
         self.inner
     }
 }

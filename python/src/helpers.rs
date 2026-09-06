@@ -161,3 +161,47 @@ where
 {
     panic::catch_unwind(f).map_err(panic_to_pyerr)
 }
+
+pub(crate) fn to_python<T: serde::Serialize>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>> {
+    let serialized =
+        serde_json::to_string(value).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(py
+        .import("json")?
+        .call_method1("loads", (serialized,))?
+        .unbind())
+}
+
+pub(crate) fn from_python<T: serde::de::DeserializeOwned>(value: &Bound<'_, PyAny>) -> PyResult<T> {
+    let value = python_data(value, 0)?;
+    let serialized: String = value
+        .py()
+        .import("json")?
+        .call_method1("dumps", (value,))?
+        .extract()?;
+    serde_json::from_str(&serialized).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+fn python_data<'py>(value: &Bound<'py, PyAny>, depth: usize) -> PyResult<Bound<'py, PyAny>> {
+    use pyo3::types::{PyDict, PyList, PyTuple};
+    if depth > 96 {
+        return Err(PyValueError::new_err("data nesting exceeds 96 levels"));
+    }
+    if value.hasattr("to_dict")? {
+        return python_data(&value.call_method0("to_dict")?, depth + 1);
+    }
+    if let Ok(mapping) = value.cast::<PyDict>() {
+        let result = PyDict::new(value.py());
+        for (key, item) in mapping.iter() {
+            result.set_item(key, python_data(&item, depth + 1)?)?;
+        }
+        return Ok(result.into_any());
+    }
+    if value.is_instance_of::<PyList>() || value.is_instance_of::<PyTuple>() {
+        let result = PyList::empty(value.py());
+        for item in value.try_iter()? {
+            result.append(python_data(&item?, depth + 1)?)?;
+        }
+        return Ok(result.into_any());
+    }
+    Ok(value.clone())
+}

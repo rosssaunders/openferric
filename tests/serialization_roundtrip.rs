@@ -100,6 +100,16 @@ fn sample_vol_surface() -> ParametricVolSurface {
     .expect("valid vol surface")
 }
 
+#[test]
+fn python_trade_fixtures_match_native_serialization() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../python/tests/data/trade_instruments.json")).unwrap();
+    assert_eq!(
+        fixture,
+        serde_json::to_value(sample_trade_instruments()).unwrap()
+    );
+}
+
 fn sample_trade_instruments() -> Vec<TradeInstrument> {
     let asian_spec = AsianSpec {
         averaging: Averaging::Arithmetic,
@@ -131,6 +141,19 @@ fn sample_trade_instruments() -> Vec<TradeInstrument> {
     };
 
     vec![
+        TradeInstrument::OutperformanceBasketOption(openferric::instruments::OutperformanceBasketOption {
+            leader_index: 0, lagger_weights: vec![0.0, 1.0], strike: 1.0, maturity: 1.0, option_type: OptionType::Call,
+        }),
+        TradeInstrument::QuantoBasketOption(openferric::instruments::QuantoBasketOption {
+            basket: BasketOption { weights: vec![0.6, 0.4], strike: 100.0, maturity: 1.0, is_call: true, basket_type: BasketType::Average },
+            fx_rate: 1.2, fx_vol: 0.1, asset_fx_corr: vec![0.1, -0.2], domestic_rate: 0.03, foreign_rate: 0.02,
+        }),
+        TradeInstrument::FundingRateSwap(openferric::instruments::FundingRateSwap::new(
+            1_000.0, 0.10, "2026-01-01T00:00:00Z".parse().unwrap(), "2026-01-02T00:00:00Z".parse().unwrap(), "Boros", "BTCUSDT",
+        )),
+        TradeInstrument::DslProduct(openferric::dsl::DslProduct::new(openferric::dsl::parse_and_compile(
+            "product \"Redemption\"\n    notional: 100\n    maturity: 1\n    underlyings\n        SPX = asset(0)\n    schedule annual from 1 to 1\n        redeem notional\n"
+        ).unwrap())),
         TradeInstrument::AsianOption(AsianOption::new(OptionType::Call, 100.0, 1.0, asian_spec)),
         TradeInstrument::Autocallable(Autocallable {
             underlyings: vec![0, 1],

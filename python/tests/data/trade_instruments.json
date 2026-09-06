@@ -1,0 +1,1124 @@
+[
+  {
+    "type": "OutperformanceBasketOption",
+    "data": {
+      "leader_index": 0,
+      "lagger_weights": [
+        0.0,
+        1.0
+      ],
+      "strike": 1.0,
+      "maturity": 1.0,
+      "option_type": "Call"
+    }
+  },
+  {
+    "type": "QuantoBasketOption",
+    "data": {
+      "basket": {
+        "weights": [
+          0.6,
+          0.4
+        ],
+        "strike": 100.0,
+        "maturity": 1.0,
+        "is_call": true,
+        "basket_type": "Average"
+      },
+      "fx_rate": 1.2,
+      "fx_vol": 0.1,
+      "asset_fx_corr": [
+        0.1,
+        -0.2
+      ],
+      "domestic_rate": 0.03,
+      "foreign_rate": 0.02
+    }
+  },
+  {
+    "type": "FundingRateSwap",
+    "data": {
+      "notional": 1000.0,
+      "fixed_rate": 0.1,
+      "entry_time": "2026-01-01T00:00:00Z",
+      "maturity": "2026-01-02T00:00:00Z",
+      "settlement_interval_hours": 8,
+      "venue": "Boros",
+      "asset": "BTCUSDT"
+    }
+  },
+  {
+    "type": "DslProduct",
+    "data": {
+      "product": {
+        "name": "Redemption",
+        "notional": 100.0,
+        "maturity": 1.0,
+        "num_underlyings": 1,
+        "underlyings": [
+          {
+            "name": "SPX",
+            "asset_index": 0,
+            "underlying_type": "Equity"
+          }
+        ],
+        "state_vars": [],
+        "constants": [],
+        "schedules": [
+          {
+            "dates": [
+              1.0
+            ],
+            "body": [
+              {
+                "Redeem": {
+                  "amount": "Notional"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "AsianOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "expiry": 1.0,
+      "asian": {
+        "averaging": "Arithmetic",
+        "strike_type": "Fixed",
+        "observation_times": [
+          0.25,
+          0.5,
+          0.75,
+          1.0
+        ]
+      }
+    }
+  },
+  {
+    "type": "Autocallable",
+    "data": {
+      "underlyings": [
+        0,
+        1
+      ],
+      "notional": 1000000.0,
+      "autocall_dates": [
+        0.5,
+        1.0
+      ],
+      "autocall_barrier": 1.0,
+      "coupon_rate": 0.08,
+      "ki_barrier": 0.7,
+      "ki_strike": 1.0,
+      "maturity": 1.0
+    }
+  },
+  {
+    "type": "PhoenixAutocallable",
+    "data": {
+      "underlyings": [
+        0,
+        1
+      ],
+      "notional": 1000000.0,
+      "autocall_dates": [
+        0.5,
+        1.0
+      ],
+      "autocall_barrier": 1.0,
+      "coupon_barrier": 0.8,
+      "coupon_rate": 0.1,
+      "memory": true,
+      "ki_barrier": 0.6,
+      "ki_strike": 1.0,
+      "maturity": 1.0
+    }
+  },
+  {
+    "type": "BarrierOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "expiry": 1.0,
+      "barrier": {
+        "direction": "Down",
+        "style": "Out",
+        "level": 80.0,
+        "rebate": 1.0
+      }
+    }
+  },
+  {
+    "type": "BasketOption",
+    "data": {
+      "weights": [
+        0.6,
+        0.4
+      ],
+      "strike": 100.0,
+      "maturity": 1.0,
+      "is_call": true,
+      "basket_type": "Average"
+    }
+  },
+  {
+    "type": "FuturesOption",
+    "data": {
+      "forward": 100.0,
+      "strike": 102.0,
+      "vol": 0.25,
+      "r": 0.03,
+      "t": 1.0,
+      "option_type": "Call"
+    }
+  },
+  {
+    "type": "CliquetOption",
+    "data": {
+      "option_type": "Put",
+      "spot": 100.0,
+      "strike_ratio": 1.0,
+      "rate": 0.02,
+      "dividend_yield": 0.01,
+      "vol": 0.2,
+      "t_start": 0.5,
+      "expiry": 1.0
+    }
+  },
+  {
+    "type": "ForwardStartOption",
+    "data": {
+      "option_type": "Call",
+      "spot": 100.0,
+      "strike_ratio": 1.0,
+      "rate": 0.02,
+      "dividend_yield": 0.01,
+      "vol": 0.2,
+      "t_start": 0.5,
+      "expiry": 1.0
+    }
+  },
+  {
+    "type": "CommodityForward",
+    "data": {
+      "spot": 70.0,
+      "strike": 72.0,
+      "notional": 1000.0,
+      "risk_free_rate": 0.02,
+      "storage_cost": 0.01,
+      "convenience_yield": 0.005,
+      "maturity": 1.0,
+      "is_long": true
+    }
+  },
+  {
+    "type": "CommodityFutures",
+    "data": {
+      "contract_price": 75.0,
+      "contract_size": 1000.0,
+      "is_long": false
+    }
+  },
+  {
+    "type": "CommodityOption",
+    "data": {
+      "forward": 75.0,
+      "strike": 74.0,
+      "vol": 0.3,
+      "risk_free_rate": 0.02,
+      "maturity": 1.0,
+      "notional": 500.0,
+      "option_type": "Put"
+    }
+  },
+  {
+    "type": "CommoditySpreadOption",
+    "data": {
+      "option_type": "Call",
+      "forward_1": 80.0,
+      "forward_2": 70.0,
+      "strike": 5.0,
+      "quantity_1": 1.0,
+      "quantity_2": 1.0,
+      "vol_1": 0.25,
+      "vol_2": 0.2,
+      "rho": 0.4,
+      "risk_free_rate": 0.02,
+      "maturity": 1.0,
+      "notional": 100.0
+    }
+  },
+  {
+    "type": "ConvertibleBond",
+    "data": {
+      "face_value": 1000.0,
+      "coupon_rate": 0.04,
+      "maturity": 5.0,
+      "conversion_ratio": 10.0,
+      "call_price": 1050.0,
+      "put_price": 950.0
+    }
+  },
+  {
+    "type": "CashOrNothingOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "cash": 10.0,
+      "expiry": 1.0
+    }
+  },
+  {
+    "type": "AssetOrNothingOption",
+    "data": {
+      "option_type": "Put",
+      "strike": 95.0,
+      "expiry": 1.0
+    }
+  },
+  {
+    "type": "GapOption",
+    "data": {
+      "option_type": "Call",
+      "payoff_strike": 100.0,
+      "trigger_strike": 105.0,
+      "expiry": 1.0
+    }
+  },
+  {
+    "type": "DoubleBarrierOption",
+    "data": {
+      "option_type": "Put",
+      "strike": 100.0,
+      "expiry": 1.0,
+      "lower_barrier": 80.0,
+      "upper_barrier": 120.0,
+      "barrier_type": "KnockOut",
+      "rebate": 0.5
+    }
+  },
+  {
+    "type": "EmployeeStockOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "maturity": 5.0,
+      "vesting_period": 1.0,
+      "expected_life": 3.0,
+      "early_exercise_multiple": 2.0,
+      "forfeiture_rate": 0.02,
+      "shares_outstanding": 1000000.0,
+      "options_granted": 50000.0
+    }
+  },
+  {
+    "type": "LookbackFloatingOption",
+    "data": {
+      "option_type": "Call",
+      "expiry": 1.0,
+      "observed_extreme": 95.0
+    }
+  },
+  {
+    "type": "LookbackFixedOption",
+    "data": {
+      "option_type": "Put",
+      "strike": 100.0,
+      "expiry": 1.0,
+      "observed_extreme": 80.0
+    }
+  },
+  {
+    "type": "ChooserOption",
+    "data": {
+      "strike": 100.0,
+      "expiry": 1.0,
+      "choose_time": 0.5
+    }
+  },
+  {
+    "type": "QuantoOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "expiry": 1.0,
+      "fx_rate": 1.1,
+      "foreign_rate": 0.02,
+      "fx_vol": 0.15,
+      "asset_fx_corr": -0.3
+    }
+  },
+  {
+    "type": "CompoundOption",
+    "data": {
+      "option_type": "Call",
+      "underlying_option_type": "Put",
+      "compound_strike": 4.0,
+      "underlying_strike": 100.0,
+      "compound_expiry": 0.5,
+      "underlying_expiry": 1.0
+    }
+  },
+  {
+    "type": "ExoticOption",
+    "data": {
+      "Chooser": {
+        "strike": 95.0,
+        "expiry": 1.0,
+        "choose_time": 0.25
+      }
+    }
+  },
+  {
+    "type": "FxOption",
+    "data": {
+      "option_type": "Call",
+      "domestic_rate": 0.03,
+      "foreign_rate": 0.01,
+      "spot_fx": 1.1,
+      "strike_fx": 1.05,
+      "vol": 0.2,
+      "maturity": 1.0
+    }
+  },
+  {
+    "type": "PowerOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "alpha": 1.2,
+      "expiry": 1.0
+    }
+  },
+  {
+    "type": "BestOfTwoCallOption",
+    "data": {
+      "s1": 100.0,
+      "s2": 110.0,
+      "k": 100.0,
+      "vol1": 0.25,
+      "vol2": 0.3,
+      "rho": 0.4,
+      "q1": 0.01,
+      "q2": 0.01,
+      "r": 0.03,
+      "t": 1.0
+    }
+  },
+  {
+    "type": "WorstOfTwoCallOption",
+    "data": {
+      "s1": 100.0,
+      "s2": 90.0,
+      "k": 85.0,
+      "vol1": 0.2,
+      "vol2": 0.28,
+      "rho": 0.35,
+      "q1": 0.01,
+      "q2": 0.02,
+      "r": 0.03,
+      "t": 1.0
+    }
+  },
+  {
+    "type": "TwoAssetCorrelationOption",
+    "data": {
+      "option_type": "Put",
+      "s1": 100.0,
+      "s2": 95.0,
+      "k1": 100.0,
+      "k2": 90.0,
+      "vol1": 0.22,
+      "vol2": 0.25,
+      "rho": 0.5,
+      "q1": 0.01,
+      "q2": 0.02,
+      "r": 0.03,
+      "t": 1.0
+    }
+  },
+  {
+    "type": "RangeAccrual",
+    "data": {
+      "notional": 1000000.0,
+      "coupon_rate": 0.05,
+      "accrual_factor": 1.0,
+      "lower_bound": 0.01,
+      "upper_bound": 0.04,
+      "fixing_times": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "payment_time": 1.0
+    }
+  },
+  {
+    "type": "DualRangeAccrual",
+    "data": {
+      "notional": 1000000.0,
+      "coupon_rate": 0.04,
+      "accrual_factor": 1.0,
+      "lower_bound": -0.01,
+      "upper_bound": 0.01,
+      "fixing_times": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "payment_time": 1.0
+    }
+  },
+  {
+    "type": "CallableRateNote",
+    "data": {
+      "notional": 1000000.0,
+      "redemption": 1000000.0,
+      "call_price": 1000000.0,
+      "maturity": 2.0,
+      "coupon_schedule": [
+        {
+          "start_time": 0.0,
+          "end_time": 0.5,
+          "payment_time": 0.5,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.045
+            }
+          }
+        },
+        {
+          "start_time": 0.5,
+          "end_time": 1.0,
+          "payment_time": 1.0,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.045
+            }
+          }
+        },
+        {
+          "start_time": 1.0,
+          "end_time": 1.5,
+          "payment_time": 1.5,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.045
+            }
+          }
+        },
+        {
+          "start_time": 1.5,
+          "end_time": 2.0,
+          "payment_time": 2.0,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.045
+            }
+          }
+        }
+      ],
+      "exercise_schedule": {
+        "bermudan_dates": [
+          1.0,
+          1.5
+        ],
+        "notice_period": 0.0
+      }
+    }
+  },
+  {
+    "type": "CallableRangeAccrualNote",
+    "data": {
+      "note": {
+        "notional": 1000000.0,
+        "redemption": 1000000.0,
+        "call_price": 1000000.0,
+        "maturity": 2.0,
+        "coupon_schedule": [
+          {
+            "start_time": 0.0,
+            "end_time": 0.5,
+            "payment_time": 0.5,
+            "coupon": {
+              "Structured": {
+                "RangeAccrual": {
+                  "in_range_coupon_rate": 0.05,
+                  "out_of_range_coupon_rate": 0.0,
+                  "lower_bound": 0.01,
+                  "upper_bound": 0.05
+                }
+              }
+            }
+          },
+          {
+            "start_time": 0.5,
+            "end_time": 1.0,
+            "payment_time": 1.0,
+            "coupon": {
+              "Structured": {
+                "RangeAccrual": {
+                  "in_range_coupon_rate": 0.05,
+                  "out_of_range_coupon_rate": 0.0,
+                  "lower_bound": 0.01,
+                  "upper_bound": 0.05
+                }
+              }
+            }
+          },
+          {
+            "start_time": 1.0,
+            "end_time": 1.5,
+            "payment_time": 1.5,
+            "coupon": {
+              "Structured": {
+                "RangeAccrual": {
+                  "in_range_coupon_rate": 0.05,
+                  "out_of_range_coupon_rate": 0.0,
+                  "lower_bound": 0.01,
+                  "upper_bound": 0.05
+                }
+              }
+            }
+          },
+          {
+            "start_time": 1.5,
+            "end_time": 2.0,
+            "payment_time": 2.0,
+            "coupon": {
+              "Structured": {
+                "RangeAccrual": {
+                  "in_range_coupon_rate": 0.05,
+                  "out_of_range_coupon_rate": 0.0,
+                  "lower_bound": 0.01,
+                  "upper_bound": 0.05
+                }
+              }
+            }
+          }
+        ],
+        "exercise_schedule": {
+          "bermudan_dates": [
+            1.0,
+            1.5
+          ],
+          "notice_period": 0.0
+        }
+      }
+    }
+  },
+  {
+    "type": "TargetRedemptionNote",
+    "data": {
+      "notional": 1000000.0,
+      "redemption": 1000000.0,
+      "target_coupon": 30000.0,
+      "coupon_schedule": [
+        {
+          "start_time": 0.0,
+          "end_time": 0.5,
+          "payment_time": 0.5,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        },
+        {
+          "start_time": 0.5,
+          "end_time": 1.0,
+          "payment_time": 1.0,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        },
+        {
+          "start_time": 1.0,
+          "end_time": 1.5,
+          "payment_time": 1.5,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        },
+        {
+          "start_time": 1.5,
+          "end_time": 2.0,
+          "payment_time": 2.0,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        }
+      ],
+      "spread": 0.02,
+      "floor": 0.0,
+      "cap": 0.08
+    }
+  },
+  {
+    "type": "SnowballNote",
+    "data": {
+      "notional": 1000000.0,
+      "redemption": 1000000.0,
+      "initial_coupon": 0.02,
+      "spread": 0.01,
+      "floor": 0.0,
+      "cap": 0.1,
+      "coupon_schedule": [
+        {
+          "start_time": 0.0,
+          "end_time": 0.25,
+          "payment_time": 0.25,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        },
+        {
+          "start_time": 0.25,
+          "end_time": 0.5,
+          "payment_time": 0.5,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        },
+        {
+          "start_time": 0.5,
+          "end_time": 0.75,
+          "payment_time": 0.75,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        },
+        {
+          "start_time": 0.75,
+          "end_time": 1.0,
+          "payment_time": 1.0,
+          "coupon": {
+            "Fixed": {
+              "rate": 0.0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "InverseFloaterNote",
+    "data": {
+      "notional": 1000000.0,
+      "redemption": 1000000.0,
+      "fixed_rate": 0.07,
+      "leverage": 2.0,
+      "floor": 0.0,
+      "cap": 0.12,
+      "coupon_schedule": [
+        {
+          "start_time": 0.0,
+          "end_time": 0.5,
+          "payment_time": 0.5,
+          "coupon": {
+            "Structured": {
+              "InverseFloater": {
+                "fixed_rate": 0.07,
+                "leverage": 2.0,
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        },
+        {
+          "start_time": 0.5,
+          "end_time": 1.0,
+          "payment_time": 1.0,
+          "coupon": {
+            "Structured": {
+              "InverseFloater": {
+                "fixed_rate": 0.07,
+                "leverage": 2.0,
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        },
+        {
+          "start_time": 1.0,
+          "end_time": 1.5,
+          "payment_time": 1.5,
+          "coupon": {
+            "Structured": {
+              "InverseFloater": {
+                "fixed_rate": 0.07,
+                "leverage": 2.0,
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        },
+        {
+          "start_time": 1.5,
+          "end_time": 2.0,
+          "payment_time": 2.0,
+          "coupon": {
+            "Structured": {
+              "InverseFloater": {
+                "fixed_rate": 0.07,
+                "leverage": 2.0,
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "CmsLinkedNote",
+    "data": {
+      "notional": 1000000.0,
+      "redemption": 1000000.0,
+      "multiplier": 1.0,
+      "spread": 0.001,
+      "cms_tenor": 5.0,
+      "swap_payment_frequency": "Annual",
+      "floor": 0.0,
+      "cap": 0.12,
+      "coupon_schedule": [
+        {
+          "start_time": 0.0,
+          "end_time": 0.5,
+          "payment_time": 0.5,
+          "coupon": {
+            "Structured": {
+              "CmsLinked": {
+                "multiplier": 1.0,
+                "spread": 0.001,
+                "cms_tenor": 5.0,
+                "swap_payment_frequency": "Annual",
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        },
+        {
+          "start_time": 0.5,
+          "end_time": 1.0,
+          "payment_time": 1.0,
+          "coupon": {
+            "Structured": {
+              "CmsLinked": {
+                "multiplier": 1.0,
+                "spread": 0.001,
+                "cms_tenor": 5.0,
+                "swap_payment_frequency": "Annual",
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        },
+        {
+          "start_time": 1.0,
+          "end_time": 1.5,
+          "payment_time": 1.5,
+          "coupon": {
+            "Structured": {
+              "CmsLinked": {
+                "multiplier": 1.0,
+                "spread": 0.001,
+                "cms_tenor": 5.0,
+                "swap_payment_frequency": "Annual",
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        },
+        {
+          "start_time": 1.5,
+          "end_time": 2.0,
+          "payment_time": 2.0,
+          "coupon": {
+            "Structured": {
+              "CmsLinked": {
+                "multiplier": 1.0,
+                "spread": 0.001,
+                "cms_tenor": 5.0,
+                "swap_payment_frequency": "Annual",
+                "floor": 0.0,
+                "cap": 0.12
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "DeferInvestmentOption",
+    "data": {
+      "model": {
+        "project_value": 120.0,
+        "volatility": 0.25,
+        "risk_free_rate": 0.03,
+        "maturity": 2.0,
+        "steps": 50,
+        "cash_flows": [
+          {
+            "time": 1.0,
+            "amount": 5.0
+          }
+        ]
+      },
+      "investment_cost": 80.0
+    }
+  },
+  {
+    "type": "ExpandOption",
+    "data": {
+      "model": {
+        "project_value": 120.0,
+        "volatility": 0.25,
+        "risk_free_rate": 0.03,
+        "maturity": 2.0,
+        "steps": 50,
+        "cash_flows": [
+          {
+            "time": 1.0,
+            "amount": 5.0
+          }
+        ]
+      },
+      "expansion_multiplier": 1.25,
+      "expansion_cost": 20.0
+    }
+  },
+  {
+    "type": "AbandonmentOption",
+    "data": {
+      "model": {
+        "project_value": 120.0,
+        "volatility": 0.25,
+        "risk_free_rate": 0.03,
+        "maturity": 2.0,
+        "steps": 50,
+        "cash_flows": [
+          {
+            "time": 1.0,
+            "amount": 5.0
+          }
+        ]
+      },
+      "salvage_value": 30.0
+    }
+  },
+  {
+    "type": "RealOptionInstrument",
+    "data": {
+      "Defer": {
+        "model": {
+          "project_value": 120.0,
+          "volatility": 0.25,
+          "risk_free_rate": 0.03,
+          "maturity": 2.0,
+          "steps": 50,
+          "cash_flows": [
+            {
+              "time": 1.0,
+              "amount": 5.0
+            }
+          ]
+        },
+        "investment_cost": 75.0
+      }
+    }
+  },
+  {
+    "type": "SpreadOption",
+    "data": {
+      "s1": 100.0,
+      "s2": 105.0,
+      "k": 3.0,
+      "vol1": 0.2,
+      "vol2": 0.18,
+      "rho": 0.4,
+      "q1": 0.01,
+      "q2": 0.02,
+      "r": 0.03,
+      "t": 1.0
+    }
+  },
+  {
+    "type": "SwingOption",
+    "data": {
+      "min_exercises": 1,
+      "max_exercises": 3,
+      "exercise_dates": [
+        0.25,
+        0.5,
+        0.75
+      ],
+      "strike": 100.0,
+      "payoff_per_exercise": 10.0
+    }
+  },
+  {
+    "type": "Tarf",
+    "data": {
+      "strike": 1.1,
+      "notional_per_fixing": 100000.0,
+      "ko_barrier": 1.25,
+      "target_profit": 15000.0,
+      "downside_leverage": 2.0,
+      "fixing_times": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "tarf_type": "Standard"
+    }
+  },
+  {
+    "type": "VanillaOption",
+    "data": {
+      "option_type": "Call",
+      "strike": 100.0,
+      "expiry": 1.0,
+      "exercise": {
+        "Bermudan": {
+          "dates": [
+            0.5,
+            0.75,
+            1.0
+          ]
+        }
+      }
+    }
+  },
+  {
+    "type": "BermudanOption",
+    "data": {
+      "option_type": "Put",
+      "expiry": 1.0,
+      "exercise_dates": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "strike_schedule": [
+        105.0,
+        102.5,
+        100.0,
+        97.5
+      ]
+    }
+  },
+  {
+    "type": "VarianceSwap",
+    "data": {
+      "notional_vega": 100000.0,
+      "strike_vol": 0.2,
+      "expiry": 1.0,
+      "observed_realized_var": null,
+      "option_quotes": [
+        {
+          "strike": 90.0,
+          "call_price": 12.0,
+          "put_price": 2.0
+        }
+      ]
+    }
+  },
+  {
+    "type": "VolatilitySwap",
+    "data": {
+      "notional_vega": 100000.0,
+      "strike_vol": 0.22,
+      "expiry": 1.0,
+      "observed_realized_var": null,
+      "option_quotes": [
+        {
+          "strike": 100.0,
+          "call_price": 8.0,
+          "put_price": 7.5
+        }
+      ],
+      "var_of_var": 0.06
+    }
+  },
+  {
+    "type": "WeatherSwap",
+    "data": {
+      "index_type": "CDD",
+      "strike": 250.0,
+      "tick_size": 10.0,
+      "notional": 200000.0,
+      "is_payer": true,
+      "discount_rate": 0.03,
+      "maturity": 1.0
+    }
+  },
+  {
+    "type": "WeatherOption",
+    "data": {
+      "index_type": "HDD",
+      "option_type": "Put",
+      "strike": 500.0,
+      "tick_size": 15.0,
+      "notional": 250000.0,
+      "discount_rate": 0.03,
+      "maturity": 1.0
+    }
+  },
+  {
+    "type": "CatastropheBond",
+    "data": {
+      "principal": 1000000.0,
+      "coupon_rate": 0.08,
+      "risk_free_rate": 0.03,
+      "maturity": 3.0,
+      "coupon_frequency": 2,
+      "loss_intensity": 0.15,
+      "expected_loss_per_event": 0.25
+    }
+  },
+  {
+    "type": "MbsPassThrough",
+    "data": {
+      "original_balance": 100000.0,
+      "coupon_rate": 0.05,
+      "servicing_fee": 0.0025,
+      "original_term": 360,
+      "age": 24,
+      "prepayment": {
+        "ConstantCpr": {
+          "annual_cpr": 0.08
+        }
+      }
+    }
+  }
+]

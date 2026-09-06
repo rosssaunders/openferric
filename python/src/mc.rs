@@ -32,6 +32,26 @@ fn rng_kind_name(kind: FastRngKind) -> &'static str {
     }
 }
 
+#[pyclass(eq, eq_int, module = "openferric", from_py_object)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CpuExecutionPolicy {
+    Auto,
+    Scalar,
+    Parallel,
+}
+impl CpuExecutionPolicy {
+    fn to_core(self) -> PyResult<core_mc::CpuExecutionPolicy> {
+        match self {
+            Self::Auto => Ok(core_mc::CpuExecutionPolicy::Auto),
+            Self::Scalar => Ok(core_mc::CpuExecutionPolicy::Scalar),
+            #[cfg(feature = "parallel")]
+            Self::Parallel => Ok(core_mc::CpuExecutionPolicy::Parallel),
+            #[cfg(not(feature = "parallel"))]
+            Self::Parallel => Err(py_value_error("parallel support is not enabled")),
+        }
+    }
+}
+
 fn python_path_evaluator(
     callable: Py<PyAny>,
     callback_name: &'static str,
@@ -61,6 +81,10 @@ pub struct GbmPathGenerator {
 
 #[pymethods]
 impl GbmPathGenerator {
+    #[getter]
+    fn model(&self) -> crate::models::Gbm {
+        crate::models::Gbm::from_core(self.inner.model)
+    }
     #[new]
     fn new(mu: f64, sigma: f64, s0: f64, maturity: f64, steps: usize) -> Self {
         Self {
@@ -127,6 +151,10 @@ pub struct HestonPathGenerator {
 
 #[pymethods]
 impl HestonPathGenerator {
+    #[getter]
+    fn model(&self) -> crate::models::Heston {
+        crate::models::Heston::from_core(self.inner.model)
+    }
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -218,6 +246,10 @@ impl Clone for ControlVariate {
 
 #[pymethods]
 impl ControlVariate {
+    #[getter]
+    fn evaluator(&self, py: Python<'_>) -> Py<PyAny> {
+        self.evaluator.clone_ref(py)
+    }
     #[new]
     fn new(py: Python<'_>, expected: f64, evaluator: Py<PyAny>) -> PyResult<Self> {
         if !expected.is_finite() {
@@ -257,18 +289,20 @@ pub struct MonteCarloEngine {
     seed: u64,
     rng_kind: FastRngKind,
     reproducible: bool,
+    execution_policy: CpuExecutionPolicy,
 }
 
 impl MonteCarloEngine {
     fn to_core(
         &self,
-    ) -> (
+    ) -> PyResult<(
         core_mc::MonteCarloEngine,
         Option<core_mc::FallibleControlVariate<PyErr>>,
-    ) {
+    )> {
         let mut inner = core_mc::MonteCarloEngine::new(self.num_paths, self.seed)
             .with_antithetic(self.antithetic)
-            .with_rng_kind(self.rng_kind);
+            .with_rng_kind(self.rng_kind)
+            .with_execution_policy(self.execution_policy.to_core()?);
 
         if !self.reproducible {
             inner = inner.with_randomized_streams();
@@ -282,12 +316,55 @@ impl MonteCarloEngine {
             }
         });
 
-        (inner, control_variate)
+        Ok((inner, control_variate))
     }
 }
 
 #[pymethods]
 impl MonteCarloEngine {
+    #[getter]
+    fn control_variate(&self) -> Option<ControlVariate> {
+        self.control_variate.clone()
+    }
+    #[getter]
+    fn execution_policy(&self) -> CpuExecutionPolicy {
+        self.execution_policy
+    }
+    fn is_reproducible(&self) -> bool {
+        self.reproducible
+    }
+    fn with_execution_policy(&self, policy: CpuExecutionPolicy) -> PyResult<Self> {
+        policy.to_core()?;
+        let mut result = self.clone();
+        result.execution_policy = policy;
+        Ok(result)
+    }
+    fn run(
+        &self,
+        py: Python<'_>,
+        generator: &Bound<'_, PyAny>,
+        payoff: Py<PyAny>,
+        discount_factor: f64,
+    ) -> PyResult<(f64, f64)> {
+        if let Ok(generator) = generator.extract::<PyRef<GbmPathGenerator>>() {
+            return self.run_gbm(py, &generator, payoff, discount_factor);
+        }
+        if let Ok(generator) = generator.extract::<PyRef<HestonPathGenerator>>() {
+            return self.run_heston(py, &generator, payoff, discount_factor);
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected a GBM or Heston path generator",
+        ))
+    }
+    fn run_fallible(
+        &self,
+        py: Python<'_>,
+        generator: &Bound<'_, PyAny>,
+        payoff: Py<PyAny>,
+        discount_factor: f64,
+    ) -> PyResult<(f64, f64)> {
+        self.run(py, generator, payoff, discount_factor)
+    }
     #[new]
     fn new(num_paths: usize, seed: u64) -> PyResult<Self> {
         if num_paths == 0 {
@@ -300,6 +377,7 @@ impl MonteCarloEngine {
             seed,
             rng_kind: FastRngKind::Xoshiro256PlusPlus,
             reproducible: true,
+            execution_policy: CpuExecutionPolicy::Scalar,
         })
     }
 
@@ -384,11 +462,7 @@ impl MonteCarloEngine {
                 "discount_factor must be finite and non-negative",
             ));
         }
-        let (core_engine, control_variate) = self.to_core();
-        // Python callbacks serialize on the GIL and may carry observable
-        // side effects, so preserve deterministic callback order rather than
-        // dispatching them from Rayon workers.
-        let core_engine = core_engine.with_execution_policy(core_mc::CpuExecutionPolicy::Scalar);
+        let (core_engine, control_variate) = self.to_core()?;
         let payoff_fn = python_path_evaluator(payoff, "payoff callback");
         // The Rust simulation owns the hot loop. Release the GIL while it is
         // running; Python callbacks briefly re-attach only when invoked.
@@ -417,8 +491,7 @@ impl MonteCarloEngine {
                 "discount_factor must be finite and non-negative",
             ));
         }
-        let (core_engine, control_variate) = self.to_core();
-        let core_engine = core_engine.with_execution_policy(core_mc::CpuExecutionPolicy::Scalar);
+        let (core_engine, control_variate) = self.to_core()?;
         let payoff_fn = python_path_evaluator(payoff, "payoff callback");
         // The Rust simulation owns the hot loop. Release the GIL while it is
         // running; Python callbacks briefly re-attach only when invoked.
@@ -445,6 +518,11 @@ impl MonteCarloEngine {
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<CpuExecutionPolicy>()?;
+    module.add(
+        "FallibleControlVariate",
+        module.py().get_type::<ControlVariate>(),
+    )?;
     module.add_class::<GbmPathGenerator>()?;
     module.add_class::<HestonPathGenerator>()?;
     module.add_class::<ControlVariate>()?;
