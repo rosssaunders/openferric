@@ -627,6 +627,19 @@ impl Diagnostics {
 
 #[pymethods]
 impl Diagnostics {
+    fn insert(&mut self, key: &str, value: f64) -> PyResult<Option<f64>> {
+        let key = key
+            .parse::<CoreDiagKey>()
+            .map_err(|()| pyo3::exceptions::PyValueError::new_err("unknown diagnostics key"))?;
+        crate::helpers::catch_unwind_py(std::panic::AssertUnwindSafe(|| {
+            self.inner.insert_key(key, value)
+        }))
+    }
+    fn iter(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(pyo3::types::PyList::new(py, self.items())?
+            .call_method0("__iter__")?
+            .unbind())
+    }
     #[new]
     fn new() -> Self {
         Self::default()
@@ -645,8 +658,10 @@ impl Diagnostics {
         self.inner.is_empty()
     }
 
-    fn insert_key(&mut self, key: &DiagKey, value: f64) -> Option<f64> {
-        self.inner.insert_key(key.to_core(), value)
+    fn insert_key(&mut self, key: &DiagKey, value: f64) -> PyResult<Option<f64>> {
+        crate::helpers::catch_unwind_py(std::panic::AssertUnwindSafe(|| {
+            self.inner.insert_key(key.to_core(), value)
+        }))
     }
 
     fn contains_key(&self, key: &str) -> bool {

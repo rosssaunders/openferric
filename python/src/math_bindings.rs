@@ -1,6 +1,10 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+#[path = "math_extra.rs"]
+mod extra;
+pub(crate) use extra::PricingArena;
+
 use openferric_core::math as core_math;
 use openferric_core::math::Interpolator;
 use openferric_core::math::fast_rng::{fill_standard_normals, sample_standard_normal};
@@ -54,6 +58,11 @@ pub struct Dual {
 
 #[pymethods]
 impl Dual {
+    fn ln_1p(&self) -> Self {
+        Self {
+            inner: self.inner.ln_1p(),
+        }
+    }
     #[new]
     fn new(value: f64, derivative: f64) -> Self {
         Self {
@@ -183,6 +192,11 @@ pub struct Dual2 {
 
 #[pymethods]
 impl Dual2 {
+    fn ln_1p(&self) -> Self {
+        Self {
+            inner: self.inner.ln_1p(),
+        }
+    }
     #[new]
     fn new(value: f64, first: f64, second: f64) -> Self {
         Self {
@@ -346,6 +360,14 @@ pub struct AadTape {
 
 #[pymethods]
 impl AadTape {
+    fn ln_1p(&mut self, value: &AadVar) -> AadVar {
+        AadVar {
+            inner: self.inner.ln_1p(value.inner),
+        }
+    }
+    fn gradient_vec(&mut self, output: &AadVar, inputs: Vec<PyRef<'_, AadVar>>) -> Vec<f64> {
+        self.gradient(output, inputs)
+    }
     #[new]
     fn new(nodes: Option<usize>) -> Self {
         Self {
@@ -1092,7 +1114,7 @@ impl FactorCorrelationModel {
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct FastRngKind {
-    inner: core_math::FastRngKind,
+    pub(crate) inner: core_math::FastRngKind,
 }
 
 #[pymethods]
@@ -1162,6 +1184,11 @@ impl FastRng {
             inner: core_math::FastRng::from_seed(kind.inner, seed),
             kind: kind.inner,
         }
+    }
+
+    #[staticmethod]
+    fn from_seed(kind: &FastRngKind, seed: u64) -> Self {
+        Self::from_kind(kind, seed)
     }
 
     #[getter]
@@ -1290,6 +1317,7 @@ pub fn py_copula_uniforms_to_normals(uniforms: Vec<f64>) -> PyResult<Vec<f64>> {
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    extra::register(module)?;
     module.add_function(wrap_pyfunction!(py_black_scholes_price_greeks_aad, module)?)?;
     module.add_function(wrap_pyfunction!(py_validate_correlation_matrix, module)?)?;
     module.add_function(wrap_pyfunction!(py_min_eigenvalue_symmetric, module)?)?;

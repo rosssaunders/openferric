@@ -61,7 +61,7 @@ pub struct KupiecBacktestResult {
 }
 
 impl KupiecBacktestResult {
-    fn from_core(result: openferric_core::math::KupiecBacktestResult) -> Self {
+    pub(crate) fn from_core(result: openferric_core::math::KupiecBacktestResult) -> Self {
         Self {
             exceptions: result.exceptions,
             expected_exceptions: result.expected_exceptions,
@@ -106,7 +106,7 @@ pub struct ChristoffersenBacktestResult {
 }
 
 impl ChristoffersenBacktestResult {
-    fn from_core(result: openferric_core::math::ChristoffersenBacktestResult) -> Self {
+    pub(crate) fn from_core(result: openferric_core::math::ChristoffersenBacktestResult) -> Self {
         Self {
             n00: result.n00,
             n01: result.n01,
@@ -156,7 +156,7 @@ pub struct VarBacktestResult {
 }
 
 impl VarBacktestResult {
-    fn from_core(result: CoreVarBacktestResult) -> Self {
+    pub(crate) fn from_core(result: CoreVarBacktestResult) -> Self {
         Self {
             kupiec: KupiecBacktestResult::from_core(result.kupiec),
             christoffersen: ChristoffersenBacktestResult::from_core(result.christoffersen),
@@ -265,6 +265,10 @@ pub struct MarginCalculator;
 
 #[pymethods]
 impl MarginCalculator {
+    #[staticmethod]
+    fn is_liquidatable(health_ratio: f64) -> bool {
+        CoreMarginCalculator::is_liquidatable(health_ratio)
+    }
     #[new]
     fn new() -> Self {
         Self
@@ -360,6 +364,9 @@ impl Vasicek {
 
 #[pymethods]
 impl Vasicek {
+    fn bond_price(&self, time: f64, maturity: f64, short_rate: f64) -> f64 {
+        self.to_core().bond_price(time, maturity, short_rate)
+    }
     #[new]
     fn new(a: f64, b: f64, sigma: f64) -> Self {
         Self { a, b, sigma }
@@ -670,6 +677,17 @@ pub struct LiquidationSimulator {
 
 #[pymethods]
 impl LiquidationSimulator {
+    #[getter]
+    fn rng_kind(&self) -> crate::math_bindings::FastRngKind {
+        crate::math_bindings::FastRngKind {
+            inner: self.inner.rng_kind,
+        }
+    }
+    fn with_rng_kind(&self, rng_kind: crate::math_bindings::FastRngKind) -> Self {
+        Self {
+            inner: self.inner.with_rng_kind(rng_kind.inner),
+        }
+    }
     #[new]
     fn new(
         position: &LiquidationPosition,

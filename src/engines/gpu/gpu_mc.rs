@@ -8,8 +8,8 @@
 //! to the host — eliminating the main bandwidth bottleneck.
 //!
 //! WebGPU's portable numerical baseline is `f32`. Path generation and the
-//! workgroup reductions therefore use `f32`; only the final reduction and
-//! statistics are evaluated in `f64` on the host. The reported standard error
+//! workgroup reductions therefore use `f32`; payoff centering, final reduction,
+//! and statistics are evaluated in `f64` on the host. The reported standard error
 //! measures Monte Carlo sampling error, not floating-point error. Applications
 //! with tight accuracy requirements should compare against a `f64` CPU backend.
 //!
@@ -32,6 +32,8 @@ struct GpuParams {
     strike: f32,
     terminal_drift: f32,
     terminal_vol: f32,
+    centered_spot: f32,
+    centered_intrinsic: f32,
     num_paths: u32,
     seed_low: u32,
     seed_high: u32,
@@ -204,6 +206,19 @@ fn build_params(
         return Err("discount factor is not finite".to_string());
     }
 
+    let terminal_spot = spot * terminal_drift.exp();
+    let terminal_intrinsic = if terminal_drift.abs() <= 0.5 {
+        spot.mul_add(terminal_drift.exp_m1(), spot - strike)
+    } else {
+        terminal_spot - strike
+    };
+    let (centered_spot, centered_intrinsic) =
+        if (terminal_spot as f32).is_finite() && (terminal_intrinsic as f32).is_finite() {
+            (terminal_spot as f32, terminal_intrinsic as f32)
+        } else {
+            (0.0, 0.0)
+        };
+
     let invocations = num_paths_u32.div_ceil(PATHS_PER_INVOCATION);
     let num_workgroups = invocations.div_ceil(WORKGROUP_SIZE);
     let output_size = u64::from(num_workgroups)
@@ -216,6 +231,8 @@ fn build_params(
             strike: checked_f32("strike", strike)?,
             terminal_drift: checked_f32("terminal drift", terminal_drift)?,
             terminal_vol: checked_f32("terminal volatility", terminal_vol)?,
+            centered_spot,
+            centered_intrinsic,
             num_paths: num_paths_u32,
             seed_low: seed as u32,
             seed_high: (seed >> 32) as u32,
@@ -853,13 +870,7 @@ mod tests {
 
     const VALID_ARGS: (f64, f64, f64, f64, f64, usize, usize, u64, bool) =
         (100.0, 105.0, 0.03, 0.20, 1.5, 10_001, 252, 42, true);
-    // Measured against the exact deterministic zero-volatility price below:
-    // the f32 shader path differs by 1.4654e-6 on the available WebGPU
-    // implementation.  Keep this separate from Monte Carlo sampling error.
     const GPU_F32_PRICE_ABS_BUDGET: f64 = 2.0e-6;
-    // The fixed-seed near-deterministic stderr differs from its analytic
-    // target by 0.171%; this explicit budget supplements the sampling
-    // uncertainty of a sample standard deviation.
     const GPU_F32_STDERR_RELATIVE_BUDGET: f64 = 2.0e-3;
 
     fn valid_request() -> ValidatedGpuRequest {
@@ -893,8 +904,50 @@ mod tests {
 
     #[test]
     fn gpu_params_match_wgsl_layout() {
-        assert_eq!(std::mem::size_of::<GpuParams>(), 32);
+        assert_eq!(std::mem::size_of::<GpuParams>(), 40);
         assert_eq!(std::mem::align_of::<GpuParams>(), 4);
+
+        let module = naga::front::wgsl::parse_str(include_str!("mc_shader.wgsl"))
+            .expect("GPU MC shader should parse");
+        let (_, params) = module
+            .types
+            .iter()
+            .find(|(_, definition)| definition.name.as_deref() == Some("Params"))
+            .expect("WGSL should define Params");
+        let naga::TypeInner::Struct { members, span } = &params.inner else {
+            panic!("WGSL Params should be a struct");
+        };
+        assert_eq!(*span as usize, std::mem::size_of::<GpuParams>());
+
+        let offsets = [
+            ("spot", std::mem::offset_of!(GpuParams, spot)),
+            ("strike", std::mem::offset_of!(GpuParams, strike)),
+            (
+                "terminal_drift",
+                std::mem::offset_of!(GpuParams, terminal_drift),
+            ),
+            (
+                "terminal_vol",
+                std::mem::offset_of!(GpuParams, terminal_vol),
+            ),
+            (
+                "centered_spot",
+                std::mem::offset_of!(GpuParams, centered_spot),
+            ),
+            (
+                "centered_intrinsic",
+                std::mem::offset_of!(GpuParams, centered_intrinsic),
+            ),
+            ("num_paths", std::mem::offset_of!(GpuParams, num_paths)),
+            ("seed_low", std::mem::offset_of!(GpuParams, seed_low)),
+            ("seed_high", std::mem::offset_of!(GpuParams, seed_high)),
+            ("is_call", std::mem::offset_of!(GpuParams, is_call)),
+        ];
+        assert_eq!(members.len(), offsets.len());
+        for (member, (name, offset)) in members.iter().zip(offsets) {
+            assert_eq!(member.name.as_deref(), Some(name));
+            assert_eq!(member.offset as usize, offset, "offset for {name}");
+        }
     }
 
     #[test]
@@ -938,6 +991,39 @@ mod tests {
         assert_eq!(request.params.seed_high, 0x1122_3344);
         assert_eq!(request.params.is_call, 0);
         assert_eq!(request.num_workgroups, 1);
+    }
+
+    #[test]
+    fn build_params_centers_payoffs_before_rounding_to_f32() {
+        let close_strike = build_params(100.000001, 100.0, 0.0, 0.0, 1.0, 1, 1, 0, true)
+            .expect("nearly equal spot and strike should validate");
+        assert_eq!(close_strike.params.spot, close_strike.params.strike);
+        assert_eq!(close_strike.params.centered_spot, 100.0);
+        assert_eq!(
+            close_strike.params.centered_intrinsic,
+            9.999_999_974_752_427e-7_f64 as f32
+        );
+
+        let small_carry = build_params(100.0, 100.0, 1.0e-10, 0.0, 1.0, 1, 1, 0, true)
+            .expect("small carry should validate");
+        assert_eq!(small_carry.params.centered_spot, 100.0);
+        assert_eq!(
+            small_carry.params.centered_intrinsic,
+            1.000_000_000_05e-8_f64 as f32
+        );
+    }
+
+    #[test]
+    fn build_params_preserves_uncentered_fallback_for_extreme_drifts() {
+        for (rate, vol) in [(700.0, 0.0), (0.0, 20.0)] {
+            let request = build_params(100.0, 100.0, rate, vol, 1.0, 1, 1, 0, true)
+                .expect("finite original shader parameters should remain valid");
+            assert_eq!(request.params.centered_spot, 0.0);
+            assert!(request.params.centered_intrinsic.is_finite());
+            assert!(request.params.terminal_drift.is_finite());
+            assert_eq!(request.params.spot, 100.0);
+            assert_eq!(request.params.strike, 100.0);
+        }
     }
 
     #[test]
@@ -1095,9 +1181,6 @@ mod tests {
             }
             Err(error) => panic!("GPU adapter was found but pricing failed: {error}"),
         };
-        // Black--Scholes is an independent analytic reference. Four reported
-        // standard errors cover sampling; the separately measured constant
-        // above covers only the shader's f32 numerical path.
         let tolerance = 4.0 * result.stderr + GPU_F32_PRICE_ABS_BUDGET;
         assert!(
             (result.price - 10.450_583_572_185_565).abs() <= tolerance,
@@ -1133,6 +1216,86 @@ mod tests {
             expected
         );
         assert_eq!(odd.stderr, 0.0);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn gpu_deterministic_payoffs_preserve_small_intrinsic_values_when_adapter_available() {
+        if let Err(error) = super::prewarm_gpu() {
+            if error.starts_with("No GPU adapter found:") {
+                eprintln!("skipping GPU deterministic payoff assertion: {error}");
+                return;
+            }
+            panic!("GPU adapter was found but initialization failed: {error}");
+        }
+
+        let references = [
+            (100.0, 100.0, 0.05, 1.0, 4.877_057_549_928_599, 0.0),
+            (100.0, 100.0, -0.05, 1.0, 0.0, 5.127_109_637_602_405),
+            (100.0, 100.0, 0.75, 1.0, 52.763_344_725_898_53, 0.0),
+            (100.0, 100.0, -0.75, 1.0, 0.0, 111.700_001_661_267_46),
+            (100.000001, 100.0, 0.0, 1.0, 9.999_999_974_752_427e-7, 0.0),
+            (100.0, 100.000001, 0.0, 1.0, 0.0, 9.999_999_974_752_427e-7),
+            (100.0, 100.0, 1.0e-10, 1.0, 9.999_999_999_500_001e-9, 0.0),
+            (100.0, 100.0, -1.0e-10, 1.0, 0.0, 1.000_000_000_050_000_1e-8),
+            (100.000001, 100.0, 0.05, 0.0, 9.999_999_974_752_427e-7, 0.0),
+            (100.0, 100.000001, 0.05, 0.0, 0.0, 9.999_999_974_752_427e-7),
+            (100.0, 0.0, 0.05, 1.0, 100.0, 0.0),
+            (100.0, 110.0, -0.05, 1.0, 0.0, 15.639_820_601_362_645),
+            (100.0, 100.0, 0.05, 30.0, 77.686_983_985_157_01, 0.0),
+        ];
+        for (spot, strike, rate, expiry, call_price, put_price) in references {
+            for (is_call, expected) in [(true, call_price), (false, put_price)] {
+                for paths in [1, 2, 513] {
+                    let result = super::mc_european_gpu(
+                        spot, strike, rate, 0.0, expiry, paths, 1, 42, is_call,
+                    )
+                    .expect("deterministic GPU pricing should succeed");
+                    assert!(
+                        (result.price - expected).abs() <= f64::from(f32::EPSILON) * expected,
+                        "spot={spot}, strike={strike}, rate={rate}, expiry={expiry}, \
+                         paths={paths}, call={is_call}: price={} reference={expected}",
+                        result.price
+                    );
+                    assert_eq!(result.stderr, 0.0);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn gpu_atm_payoffs_preserve_small_volatility_when_adapter_available() {
+        if let Err(error) = super::prewarm_gpu() {
+            if error.starts_with("No GPU adapter found:") {
+                eprintln!("skipping GPU small-volatility assertion: {error}");
+                return;
+            }
+            panic!("GPU adapter was found but initialization failed: {error}");
+        }
+
+        let references = [
+            (1.0e-9, 3.989_422_804_014_327e-8),
+            (1.0e-6, 3.989_422_804_014_16e-5),
+            (0.001, 0.039_894_226_377_883_826),
+            (0.02, 0.797_871_262_926_320_6),
+            (0.1, 3.987_761_167_674_492_4),
+            (0.2, 7.965_567_455_405_796),
+        ];
+        for (vol, expected) in references {
+            for is_call in [true, false] {
+                let result =
+                    super::mc_european_gpu(100.0, 100.0, 0.0, vol, 1.0, 131_072, 1, 42, is_call)
+                        .expect("small-volatility GPU pricing should succeed");
+                assert!(result.stderr.is_finite() && result.stderr > 0.0);
+                let tolerance = 4.0 * result.stderr + 8.0 * f64::from(f32::EPSILON) * expected;
+                assert!(
+                    (result.price - expected).abs() <= tolerance,
+                    "vol={vol}, call={is_call}: price={} reference={expected}, tolerance={tolerance}",
+                    result.price
+                );
+            }
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]

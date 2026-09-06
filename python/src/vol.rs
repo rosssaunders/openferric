@@ -99,7 +99,7 @@ pub struct SabrParams {
 }
 
 impl SabrParams {
-    fn to_core(self) -> CoreSabrParams {
+    pub(crate) fn to_core(self) -> CoreSabrParams {
         CoreSabrParams {
             alpha: self.alpha,
             beta: self.beta,
@@ -158,7 +158,7 @@ pub struct SviParams {
 }
 
 impl SviParams {
-    fn to_core(self) -> CoreSviParams {
+    pub(crate) fn to_core(self) -> CoreSviParams {
         CoreSviParams {
             a: self.a,
             b: self.b,
@@ -222,7 +222,7 @@ pub struct MarketOptionQuote {
 }
 
 impl MarketOptionQuote {
-    fn to_core(&self) -> PyResult<CoreMarketOptionQuote> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreMarketOptionQuote> {
         Ok(CoreMarketOptionQuote::new(
             self.strike,
             self.expiry,
@@ -468,7 +468,7 @@ pub struct HestonVolOfVolPoint {
 }
 
 impl HestonVolOfVolPoint {
-    fn to_core(self) -> CoreHestonVolOfVolPoint {
+    pub(crate) fn to_core(self) -> CoreHestonVolOfVolPoint {
         CoreHestonVolOfVolPoint {
             expiry: self.expiry,
             sigma_v: self.sigma_v,
@@ -537,7 +537,7 @@ pub struct SabrVolOfVolPoint {
 }
 
 impl SabrVolOfVolPoint {
-    fn to_core(self) -> CoreSabrVolOfVolPoint {
+    pub(crate) fn to_core(self) -> CoreSabrVolOfVolPoint {
         CoreSabrVolOfVolPoint {
             expiry: self.expiry,
             alpha: self.alpha,
@@ -624,7 +624,7 @@ pub struct VixSettings {
 }
 
 impl VixSettings {
-    fn to_core(self) -> CoreVixSettings {
+    pub(crate) fn to_core(self) -> CoreVixSettings {
         CoreVixSettings {
             target_days: self.target_days,
             strike_count: self.strike_count,
@@ -876,7 +876,7 @@ pub struct SmileDynamics {
 }
 
 impl SmileDynamics {
-    fn to_core(&self) -> PyResult<CoreSmileDynamics> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreSmileDynamics> {
         smile_dynamics_from_str(&self.kind)
     }
 }
@@ -1055,7 +1055,7 @@ pub struct VannaVolgaQuote {
 }
 
 impl VannaVolgaQuote {
-    fn to_core(self) -> CoreVannaVolgaQuote {
+    pub(crate) fn to_core(self) -> CoreVannaVolgaQuote {
         CoreVannaVolgaQuote::new(self.atm_vol, self.rr_25d, self.bf_25d)
     }
 }
@@ -1266,11 +1266,14 @@ impl AndreasenHugeInterpolation {
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct VolSurface {
-    inner: CoreVolSurface,
+    pub(crate) inner: CoreVolSurface,
 }
 
 #[pymethods]
 impl VolSurface {
+    fn validate(&self) -> PyResult<()> {
+        self.inner.validate().map_err(value_err)
+    }
     #[new]
     fn new(py: Python<'_>, slices: Vec<(f64, Py<SviParams>)>, forward: f64) -> PyResult<Self> {
         let slices = slices
@@ -1342,6 +1345,11 @@ pub struct DupireLocalVol {
 
 #[pymethods]
 impl DupireLocalVol {
+    fn with_rates(&self, rate: f64, dividend: f64) -> Self {
+        Self {
+            inner: self.inner.clone().with_rates(rate, dividend),
+        }
+    }
     #[new]
     fn new(surface: &VolSurface, forward: f64) -> Self {
         Self {

@@ -138,7 +138,14 @@ pub struct Gbm {
 }
 
 impl Gbm {
-    fn to_core(self) -> CoreGbm {
+    pub(crate) fn from_core(value: CoreGbm) -> Self {
+        Self {
+            mu: value.mu,
+            sigma: value.sigma,
+        }
+    }
+
+    pub(crate) fn to_core(self) -> CoreGbm {
         CoreGbm {
             mu: self.mu,
             sigma: self.sigma,
@@ -192,7 +199,18 @@ pub struct Heston {
 }
 
 impl Heston {
-    fn to_core(self) -> CoreHeston {
+    pub(crate) fn from_core(value: CoreHeston) -> Self {
+        Self {
+            mu: value.mu,
+            kappa: value.kappa,
+            theta: value.theta,
+            xi: value.xi,
+            rho: value.rho,
+            v0: value.v0,
+        }
+    }
+
+    pub(crate) fn to_core(self) -> CoreHeston {
         CoreHeston {
             mu: self.mu,
             kappa: self.kappa,
@@ -248,7 +266,7 @@ pub struct Sabr {
 }
 
 impl Sabr {
-    fn to_core(self) -> CoreSabr {
+    pub(crate) fn to_core(self) -> CoreSabr {
         CoreSabr {
             alpha: self.alpha,
             beta: self.beta,
@@ -299,7 +317,7 @@ pub struct CIR {
 }
 
 impl CIR {
-    fn to_core(self) -> CoreCIR {
+    pub(crate) fn to_core(self) -> CoreCIR {
         CoreCIR {
             a: self.a,
             b: self.b,
@@ -336,6 +354,14 @@ pub struct HullWhite {
 }
 
 impl HullWhite {
+    pub(crate) fn from_core(value: CoreHullWhite) -> Self {
+        Self {
+            a: value.a,
+            sigma: value.sigma,
+            theta: value.theta,
+        }
+    }
+
     pub(crate) fn to_core(&self) -> CoreHullWhite {
         CoreHullWhite {
             a: self.a,
@@ -433,7 +459,7 @@ pub struct LmmParams {
 }
 
 impl LmmParams {
-    fn to_core(&self) -> CoreLmmParams {
+    pub(crate) fn to_core(&self) -> CoreLmmParams {
         CoreLmmParams {
             volatilities: self.volatilities.clone(),
             correlation: self.correlation.clone(),
@@ -482,6 +508,36 @@ pub struct LmmModel {
 
 #[pymethods]
 impl LmmModel {
+    fn price_european_swaption_mc_with_stderr(
+        &self,
+        py: Python<'_>,
+        initial_forwards: Vec<f64>,
+        strike: f64,
+        expiry: f64,
+        swap_start: f64,
+        swap_end: f64,
+        is_payer: bool,
+        notional: f64,
+        num_paths: usize,
+        num_steps: usize,
+        seed: u64,
+    ) -> PyResult<(f64, f64)> {
+        py.detach(|| {
+            self.inner.price_european_swaption_mc_with_stderr(
+                &initial_forwards,
+                strike,
+                expiry,
+                swap_start,
+                swap_end,
+                is_payer,
+                notional,
+                num_paths,
+                num_steps,
+                seed,
+            )
+        })
+        .map_err(string_err)
+    }
     #[new]
     fn new(params: &LmmParams) -> PyResult<Self> {
         Ok(Self {
@@ -558,7 +614,7 @@ pub struct SlvParams {
 }
 
 impl SlvParams {
-    fn to_core(self) -> CoreSlvParams {
+    pub(crate) fn to_core(self) -> CoreSlvParams {
         CoreSlvParams {
             v0: self.v0,
             kappa: self.kappa,
@@ -606,7 +662,7 @@ pub struct LeverageSlice {
 }
 
 impl LeverageSlice {
-    fn to_core(&self) -> CoreLeverageSlice {
+    pub(crate) fn to_core(&self) -> CoreLeverageSlice {
         CoreLeverageSlice {
             time: self.time,
             spots: self.spots.clone(),
@@ -642,7 +698,7 @@ impl LeverageSlice {
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct LeverageSurface {
-    inner: CoreLeverageSurface,
+    pub(crate) inner: CoreLeverageSurface,
 }
 
 #[pymethods]
@@ -693,7 +749,7 @@ pub struct FuturesQuote {
 }
 
 impl FuturesQuote {
-    fn to_core(self) -> CoreFuturesQuote {
+    pub(crate) fn to_core(self) -> CoreFuturesQuote {
         CoreFuturesQuote {
             maturity: self.maturity,
             price: self.price,
@@ -721,7 +777,7 @@ pub struct SchwartzOneFactor {
 }
 
 impl SchwartzOneFactor {
-    fn to_core(self) -> CoreSchwartzOneFactor {
+    pub(crate) fn to_core(self) -> CoreSchwartzOneFactor {
         CoreSchwartzOneFactor {
             kappa: self.kappa,
             mu: self.mu,
@@ -797,7 +853,7 @@ pub struct SchwartzSmithTwoFactor {
 }
 
 impl SchwartzSmithTwoFactor {
-    fn to_core(self) -> CoreSchwartzSmithTwoFactor {
+    pub(crate) fn to_core(self) -> CoreSchwartzSmithTwoFactor {
         CoreSchwartzSmithTwoFactor {
             kappa: self.kappa,
             sigma_chi: self.sigma_chi,
@@ -967,6 +1023,10 @@ pub struct CommoditySeasonalityModel {
 
 #[pymethods]
 impl CommoditySeasonalityModel {
+    #[staticmethod]
+    fn from_monthly_factors(mode: &str, monthly_factors: Vec<f64>) -> PyResult<Self> {
+        Self::new(mode, monthly_factors)
+    }
     #[new]
     fn new(mode: &str, monthly_factors: Vec<f64>) -> PyResult<Self> {
         Ok(Self {
@@ -1196,7 +1256,7 @@ pub struct CommodityStorageContract {
 }
 
 impl CommodityStorageContract {
-    fn to_core(&self) -> CoreCommodityStorageContract {
+    pub(crate) fn to_core(&self) -> CoreCommodityStorageContract {
         CoreCommodityStorageContract {
             decision_times: self.decision_times.clone(),
             min_inventory: self.min_inventory,
@@ -1255,7 +1315,7 @@ pub struct StorageLsmConfig {
 }
 
 impl StorageLsmConfig {
-    fn to_core(self) -> CoreStorageLsmConfig {
+    pub(crate) fn to_core(self) -> CoreStorageLsmConfig {
         CoreStorageLsmConfig {
             num_paths: self.num_paths,
             kappa: self.kappa,
@@ -1339,7 +1399,7 @@ pub struct VolumeConstrainedSwing {
 }
 
 impl VolumeConstrainedSwing {
-    fn to_core(&self) -> PyResult<CoreVolumeConstrainedSwing> {
+    pub(crate) fn to_core(&self) -> PyResult<CoreVolumeConstrainedSwing> {
         Ok(CoreVolumeConstrainedSwing {
             exercise_times: self.exercise_times.clone(),
             strike: self.strike,

@@ -6,7 +6,7 @@ use crate::dsl::error::Span;
 use crate::dsl::ir::UnderlyingType;
 
 /// Top-level product definition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProductDef {
     pub name: String,
     pub span: Span,
@@ -14,7 +14,7 @@ pub struct ProductDef {
 }
 
 /// Items that can appear inside a `product { ... }` block.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProductItem {
     Notional(f64, Span),
     Maturity(f64, Span),
@@ -24,7 +24,7 @@ pub enum ProductItem {
 }
 
 /// Underlying declaration: `NAME = asset(index)` or `NAME = equity(index)`, etc.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UnderlyingDecl {
     pub name: String,
     pub asset_index: usize,
@@ -33,7 +33,7 @@ pub struct UnderlyingDecl {
 }
 
 /// State variable declaration: `name: type = initial_value`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StateDecl {
     pub name: String,
     pub type_name: String,
@@ -42,7 +42,7 @@ pub struct StateDecl {
 }
 
 /// Schedule definition: `schedule <freq> from <start> to <end> { ... }`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScheduleDef {
     pub frequency: ScheduleFreq,
     pub start: f64,
@@ -52,7 +52,7 @@ pub struct ScheduleDef {
 }
 
 /// Schedule frequency.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ScheduleFreq {
     /// Every N years.
     Custom(f64),
@@ -112,14 +112,14 @@ impl ScheduleFreq {
 pub const MAX_SCHEDULE_DATES: usize = 100_000;
 
 /// Expression in the AST.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AstExpr {
     pub kind: AstExprKind,
     pub span: Span,
 }
 
 /// Expression variants.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AstExprKind {
     /// Numeric literal (e.g., `0.08`, `1_000_000`).
     NumberLit(f64),
@@ -143,7 +143,7 @@ pub enum AstExprKind {
 }
 
 /// Binary operators in the AST.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AstBinOp {
     Add,
     Sub,
@@ -160,21 +160,21 @@ pub enum AstBinOp {
 }
 
 /// Unary operators in the AST.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AstUnaryOp {
     Neg,
     Not,
 }
 
 /// Statement in the AST.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AstStatement {
     pub kind: AstStatementKind,
     pub span: Span,
 }
 
 /// Statement variants.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AstStatementKind {
     /// `let name = expr`.
     Let { name: String, expr: AstExpr },

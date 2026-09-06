@@ -11,9 +11,21 @@ workspace = true
 name = "openferric"
 crate-type = ["cdylib"]
 
+[features]
+default = ["accelerated-native", "jit", "gpu"]
+parallel = ["openferric_core/parallel"]
+simd = ["openferric_core/simd"]
+accelerated-native = ["parallel", "simd"]
+jit = ["openferric_core/jit"]
+gpu = ["openferric_core/gpu"]
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-openferric_core = { path = "..", package = "openferric", features = ["accelerated-native"] }
-pyo3 = { version = "0.28", features = ["extension-module"] }
+openferric_core = { path = "..", package = "openferric" }
+pyo3 = { version = "0.28", features = ["extension-module", "num-complex"] }
 numpy = "0.28"
 rand = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+num-complex = "0.4"
+nalgebra = "0.34"
