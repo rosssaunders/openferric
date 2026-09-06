@@ -60,6 +60,7 @@ fn fra_forward_rate_from_deposit_curve() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     let tau = openferric::rates::year_fraction(start, end, fra.day_count);
@@ -86,6 +87,7 @@ fn fra_npv_at_par_is_zero() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
     let fwd = fra_probe.forward_rate(&curve);
 
@@ -122,6 +124,7 @@ fn fra_npv_sign_consistency() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
     let fwd = fra_probe.forward_rate(&curve);
 
@@ -165,6 +168,7 @@ fn fra_npv_formula_verification() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     let fwd = fra.forward_rate(&curve);
@@ -198,6 +202,7 @@ fn fra_npv_scales_with_notional() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     let fra2 = ForwardRateAgreement {
@@ -226,6 +231,7 @@ fn fra_day_count_convention_matters() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act360,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     let fra_act365 = ForwardRateAgreement {
@@ -235,6 +241,7 @@ fn fra_day_count_convention_matters() {
         start_date: start,
         end_date: end,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     // Different conventions → different tau → different NPV
@@ -262,6 +269,7 @@ fn fra_zero_period_returns_zero() {
         start_date: date,
         end_date: date,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     assert_eq!(fra.forward_rate(&curve), 0.0);
@@ -289,6 +297,7 @@ fn fra_multiple_conventions_positive_forward() {
             start_date: start,
             end_date: end,
             day_count: conv,
+            curve_day_count: DayCountConvention::Act365Fixed,
         };
 
         let fwd = fra.forward_rate(&curve);
@@ -332,6 +341,7 @@ fn fra_forward_rate_increases_on_upward_sloping_curve() {
             start_date: *start,
             end_date: *end,
             day_count: DayCountConvention::Act365Fixed,
+            curve_day_count: DayCountConvention::Act365Fixed,
         };
         let fwd = fra.forward_rate(&curve);
         assert!(
@@ -364,6 +374,7 @@ fn fra_forward_starting_projects_period_forward() {
         start_date: start,
         end_date: end,
         day_count,
+        curve_day_count: DayCountConvention::Act365Fixed,
     };
 
     let tau = openferric::rates::year_fraction(start, end, day_count);

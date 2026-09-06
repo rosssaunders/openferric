@@ -122,6 +122,7 @@ impl ZeroCouponInflationSwap {
     }
 
     /// Mark-to-market NPV at valuation time with realized CPI to date.
+    /// Both curves use the original time-zero axis, not rebased remaining tenors.
     pub fn mtm(
         &self,
         valuation_time: f64,
@@ -149,7 +150,8 @@ impl ZeroCouponInflationSwap {
             -payoff
         };
 
-        signed * discount_curve.discount_factor((self.tenor - valuation_time).max(0.0))
+        signed * discount_curve.discount_factor(self.tenor)
+            / discount_curve.discount_factor(valuation_time.max(0.0))
     }
 }
 
@@ -246,7 +248,9 @@ impl InflationIndexedBond {
         self.face_value * cpi_level / self.cpi_base
     }
 
-    /// Bond PV under nominal discounting and inflation-index projection.
+    /// Bond PV under nominal discounting and deterministic inflation-index projection.
+    /// Redemption is floored at face value; interim coupons are not floored.
+    /// Stochastic inflation-option time value and CPI publication lags are not modeled.
     pub fn price(&self, nominal_curve: &YieldCurve, inflation_curve: &InflationCurve) -> f64 {
         if self.face_value <= 0.0
             || self.coupon_frequency == 0
@@ -275,7 +279,7 @@ impl InflationIndexedBond {
         let mut cf = principal * self.coupon_rate / self.coupon_frequency as f64;
 
         if (t - self.maturity_years as f64).abs() <= 1.0e-10 {
-            cf += principal;
+            cf += principal.max(self.face_value);
         }
 
         cf

@@ -13,7 +13,9 @@ use crate::core::{ExerciseStyle, OptionType, PricingEngine, PricingError, Pricin
 use crate::instruments::{BermudanOption, vanilla::VanillaOption};
 use crate::market::Market;
 
-use super::fd_common::{EscrowedStep, escrowed_root_spot, escrowed_steps};
+use super::fd_common::{
+    EscrowedStep, boundary_values, ensure_spot_inside_grid, escrowed_root_spot, escrowed_steps,
+};
 
 /// Exercise-boundary estimate at a Bermudan decision time from Crank-Nicolson.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -43,6 +45,7 @@ pub struct CrankNicolsonEngine {
     /// Number of space steps.
     pub space_steps: usize,
     /// Spot grid upper bound multiplier, `S_max = s_max_multiplier * K`.
+    /// The pricing spot must lie strictly below this bound.
     pub s_max_multiplier: f64,
 }
 
@@ -92,40 +95,6 @@ fn bermudan_exercise_steps(dates: &[f64], expiry: f64, steps: usize) -> Vec<bool
     }
     flags[steps] = true;
     flags
-}
-
-fn boundary_values(
-    option_type: OptionType,
-    is_american: bool,
-    strike: f64,
-    rate: f64,
-    dividend_yield: f64,
-    s_max: f64,
-    tau: f64,
-) -> (f64, f64) {
-    match (option_type, is_american) {
-        (OptionType::Call, false) => {
-            let lower = 0.0;
-            let upper =
-                (s_max * (-dividend_yield * tau).exp() - strike * (-rate * tau).exp()).max(0.0);
-            (lower, upper)
-        }
-        (OptionType::Put, false) => {
-            let lower = strike * (-rate * tau).exp();
-            let upper = 0.0;
-            (lower, upper)
-        }
-        (OptionType::Call, true) => {
-            let lower = 0.0;
-            let upper = (s_max - strike).max(0.0);
-            (lower, upper)
-        }
-        (OptionType::Put, true) => {
-            let lower = strike;
-            let upper = 0.0;
-            (lower, upper)
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -314,6 +283,7 @@ impl CrankNicolsonEngine {
         let max_strike = schedule.iter().map(|(_, k)| *k).fold(0.0_f64, f64::max);
         let s_anchor = spot0.max(max_strike).max(1.0e-8);
         let s_max = self.s_max_multiplier * s_anchor;
+        ensure_spot_inside_grid(spot0, s_max)?;
         let ds = s_max / n_s as f64;
 
         let mut step_schedule = vec![None::<(f64, f64)>; n_t + 1];
@@ -515,7 +485,9 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         let n_t = self.time_steps;
         let n_s = self.space_steps;
         let dt = instrument.expiry / n_t as f64;
+        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
         let s_max = self.s_max_multiplier * instrument.strike;
+        ensure_spot_inside_grid(spot0, s_max)?;
         let ds = s_max / n_s as f64;
 
         let is_american = matches!(instrument.exercise, ExerciseStyle::American);
@@ -551,7 +523,6 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
         // Escrowed discrete-dividend model: the grid carries S*, diffused
         // with the true continuous yield only; exercise obstacles are
         // reconstructed per step below.
-        let spot0 = escrowed_root_spot(market, instrument.expiry)?;
         let div_steps = escrowed_steps(market, instrument.expiry, n_t);
         let dividend_yield = market.dividend_yield;
         let drift = market.rate - dividend_yield;
@@ -609,8 +580,12 @@ impl PricingEngine<VanillaOption> for CrankNicolsonEngine {
                 let sa = &adj[n];
                 match instrument.option_type {
                     OptionType::Put => {
-                        lower_new =
-                            sa.put_floor_at_zero(instrument.strike, market.rate, n as f64 * dt);
+                        lower_new = sa.put_floor_at_zero(
+                            instrument.strike,
+                            market.rate,
+                            n as f64 * dt,
+                            instrument.expiry,
+                        );
                     }
                     OptionType::Call => {
                         upper_new = upper_new.max(sa.exercise_value(

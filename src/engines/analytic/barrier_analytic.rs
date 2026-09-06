@@ -33,6 +33,7 @@ impl PricingEngine<BarrierOption> for BarrierAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         market.validate()?;
         instrument.validate()?;
+        market.require_continuous_dividends(instrument.expiry)?;
 
         let vol = market.checked_vol_for(instrument.strike, instrument.expiry)?;
         let effective_dividend_yield = market.effective_dividend_yield(instrument.expiry);

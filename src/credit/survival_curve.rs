@@ -23,8 +23,12 @@ pub struct SurvivalCurve {
 
 impl SurvivalCurve {
     /// Creates a survival curve from unsorted nodes.
+    /// Zero/underflowed probabilities retain their tenor at the log-interpolation
+    /// floor of `1e-12`; they must not disappear and imply zero default risk.
     pub fn new(mut tenors: Vec<(f64, f64)>) -> Self {
-        tenors.retain(|(t, p)| *t > 0.0 && *p > 0.0);
+        tenors.retain(|(time, probability)| {
+            time.is_finite() && *time > 0.0 && probability.is_finite() && *probability >= 0.0
+        });
         tenors.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         // Keep nodes monotone non-increasing in probability.

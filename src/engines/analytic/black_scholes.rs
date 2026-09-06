@@ -11,7 +11,7 @@
 //! When to use: prefer this module for fast closed-form pricing/Greeks; use tree/PDE/Monte Carlo modules when payoffs, exercise rules, or dynamics break closed-form assumptions.
 use crate::core::{ExerciseStyle, Greeks, OptionType, PricingEngine, PricingError, PricingResult};
 use crate::instruments::vanilla::VanillaOption;
-use crate::market::Market;
+use crate::market::{DividendKind, Market};
 use crate::math::{black_scholes_price_greeks_aad, normal_cdf, normal_pdf};
 
 #[inline]
@@ -66,6 +66,9 @@ fn deterministic_delta_theta_rho(
 }
 
 /// Analytic Black-Scholes engine for European vanilla options.
+/// With discrete dividends, Greeks differentiate the original market spot
+/// and rate. Calendar theta rolls expiry and ex-dividend times together,
+/// holding volatility fixed and assuming no ex-date is crossed.
 #[derive(Debug, Clone, Default)]
 pub struct BlackScholesEngine;
 
@@ -181,15 +184,11 @@ pub fn bs_price(
         );
     }
 
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = norm_cdf(d1);
-    let nd2 = norm_cdf(d2);
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
-    let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
     match option_type {
-        OptionType::Call => call,
-        OptionType::Put => call - s_df_q + k_df_r,
+        OptionType::Call => s_df_q.mul_add(norm_cdf(d1), -(k_df_r * norm_cdf(d2))),
+        OptionType::Put => k_df_r.mul_add(norm_cdf(-d2), -(s_df_q * norm_cdf(-d1))),
     }
 }
 
@@ -446,8 +445,6 @@ fn bs_price_greeks_with_dividend(
     let nd2 = norm_cdf(d2);
     let pdf_d1 = norm_pdf(d1);
 
-    // Price: compute call, derive put via put-call parity except where that
-    // subtraction would erase tiny but representable time value.
     let s_df_q = spot * df_q;
     let k_df_r = strike * df_r;
     let call = s_df_q.mul_add(nd1, -(k_df_r * nd2));
@@ -473,7 +470,7 @@ fn bs_price_greeks_with_dividend(
         OptionType::Put => {
             let nmd1 = norm_cdf(-d1);
             let nmd2 = norm_cdf(-d2);
-            let p = call - s_df_q + k_df_r;
+            let p = k_df_r.mul_add(nmd2, -(s_df_q * nmd1));
             let d = -df_q * nmd1;
             let th = theta_common - dividend_yield * s_df_q * nmd1 + rate * k_df_r * nmd2;
             (sensitive_price.unwrap_or(p), d, th)
@@ -507,6 +504,44 @@ fn bs_price_greeks_with_dividend(
         d1,
         d2,
     )
+}
+
+fn original_market_greeks(market: &Market, expiry: f64, spot: f64, mut greeks: Greeks) -> Greeks {
+    if !market.has_discrete_dividends() {
+        return greeks;
+    }
+    if spot == 0.0 {
+        greeks.delta = 0.0;
+        greeks.gamma = 0.0;
+        return greeks;
+    }
+
+    let mut proportional_factor = 1.0;
+    let mut cash_pv = 0.0;
+    let mut spot_rho = 0.0;
+    for event in market.dividends().events().iter().rev() {
+        if event.time > expiry {
+            continue;
+        }
+        match event.kind {
+            DividendKind::Cash(amount) => {
+                let contribution = amount
+                    * proportional_factor
+                    * (-market.rate * event.time - market.dividend_yield * (expiry - event.time))
+                        .exp();
+                cash_pv += contribution;
+                spot_rho += event.time * contribution;
+            }
+            DividendKind::Proportional(ratio) => proportional_factor *= 1.0 - ratio,
+        }
+    }
+    let spot_delta = proportional_factor * (-market.dividend_yield * expiry).exp();
+    let spot_theta = market.dividend_yield * spot - (market.rate - market.dividend_yield) * cash_pv;
+    greeks.rho += greeks.delta * spot_rho;
+    greeks.theta += greeks.delta * spot_theta;
+    greeks.delta *= spot_delta;
+    greeks.gamma *= spot_delta * spot_delta;
+    greeks
 }
 
 impl PricingEngine<VanillaOption> for BlackScholesEngine {
@@ -556,6 +591,7 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             vol,
             instrument.expiry,
         );
+        let greeks = original_market_greeks(market, instrument.expiry, spot, greeks);
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::Vol, vol);
@@ -619,6 +655,7 @@ impl PricingEngine<VanillaOption> for BlackScholesEngine {
             vol,
             instrument.expiry,
         );
+        let greeks = original_market_greeks(market, instrument.expiry, spot, greeks);
         let (d1, d2) = if instrument.expiry > 0.0 && vol > 0.0 {
             d1_d2(
                 spot,

@@ -23,6 +23,12 @@ Here, "exact" means the target price is exact for the stated contract and model.
 Stochastic and discretized methods necessarily compare to that target with an
 explicit statistical or numerical error budget rather than bitwise equality.
 
+The [September 2026 pricing-boundary review](reviews/2026-09-05-pricing-review.md)
+records additional defects found despite a passing workspace suite, their
+regressions in `tests/audit_pricing_boundaries.rs`, and remaining validation
+limits. Its cached SciPy oracles can be regenerated independently with
+`python3 tests/fixtures/pricing_boundary_references.py`.
+
 Reference values in this audit were regenerated with Python 3.11.15,
 [QuantLib-Python 1.43](https://pypi.org/project/QuantLib/) and
 [SciPy 1.17.1](https://docs.scipy.org/doc/scipy/reference/), with
@@ -69,14 +75,37 @@ package value, or stated finite-grid regression target.
 
 ## Known Model Scope
 
+The [all-instrument review](reviews/2026-09-05-all-instruments-review.md)
+enumerates every instrument family, the additional rates/credit/commodity/note
+findings, API migrations, independent regression evidence and validation limits.
+
 The following are implementation boundaries, not tolerance concessions. Tests pin
 the stated model exactly and use reductions or invariants where no like-for-like
 external engine exists:
 
-- Discrete cash and proportional dividends use escrowed spot/strike adjustments
-  in analytic, tree, and PDE engines and explicit ex-dividend path jumps in
-  Monte Carlo engines. References align the dividend dates and cashflows with
-  QuantLib's escrowed model before comparing prices.
+- Supported vanilla engines use escrowed dividend adjustments; jump-aware MC
+  applies ex-dividend events explicitly. Analytic single/double barriers and
+  exotics, swing/convertible trees and the single-market DSL bridge reject active
+  discrete dividends rather than silently smear or discard them. References
+  must match the particular engine's dividend model and dates.
+- Dated FRA, IRS and cap/floor contracts separate `curve_day_count` from coupon
+  accrual conventions. Single/dual range coupons require `accrual_factor`
+  independently of payment time. See the all-instrument review for migrations.
+- Callable notes and Bermudan swaptions share a centered-OU Hull–White lattice
+  with exact grid-date curve fitting. Conditional coupon bonds and off-grid
+  events still require convergence checks; rate-dependent call notice is
+  explicitly unsupported.
+- Geometric Asian analytic pricing discounts to contractual expiry, which may
+  follow the final fixing. Proportional dividends are weighted by the fixings
+  they affect; cash dividends on or before a fixing are explicitly unsupported
+  by that lognormal closed form. Use Monte Carlo for those contracts. Generic
+  and dedicated Asian MC round fixings to their uniform simulation grid;
+  their geometric controls use that same grid and the correct payment date.
+  Reported standard errors exclude observation-date discretization error.
+- Black-76 zero-volatility Greeks retain deterministic delta, theta and rho.
+  At the ATM kink, delta and gamma are undefined (`NaN`) and vega is the
+  right derivative. WASM's finite-output wrapper reports an error at that
+  kink rather than returning misleading zero sensitivities.
 - CDO pricing includes both the legacy large-homogeneous-portfolio model and a
   finite heterogeneous one-factor Gaussian-copula recursion with per-name
   exposures, recoveries, survival curves and factor loadings. The finite engine

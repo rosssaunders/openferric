@@ -9,8 +9,6 @@
 //! Numerical considerations: validate edge-domain inputs, preserve finite values where possible, and cross-check with reference implementations for production use.
 //!
 //! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
-use std::collections::BTreeMap;
-
 use crate::core::{DiagKey, Greeks, PricingError, PricingResult};
 use crate::instruments::{Autocallable, PhoenixAutocallable};
 use crate::math::fast_rng::{FastRng, FastRngKind, sample_standard_normal};
@@ -489,8 +487,12 @@ fn simulate_autocallable_paths(
             "autocallable n_steps must be > 0".to_string(),
         ));
     }
-
     let n_assets = prepared.pricing_spots.len();
+    if !r.is_finite() || !q.is_finite() {
+        return Err(PricingError::InvalidInput(
+            "autocallable rates must be finite".to_string(),
+        ));
+    }
     let dt = prepared.maturity / n_steps as f64;
     let sqrt_dt = dt.sqrt();
 
@@ -518,7 +520,8 @@ fn simulate_autocallable_paths(
 
         let mut obs_idx = 0usize;
         let mut called = false;
-        let mut ki_breached = false;
+        let mut ki_breached =
+            worst_of_ratio(&state, &prepared.initial_fixings) <= prepared.ki_barrier;
         let mut worst_final = 1.0_f64;
         let mut pv = 0.0_f64;
 
@@ -617,15 +620,14 @@ fn simulate_autocallable_paths(
 }
 
 fn observation_schedule(dates: &[f64], maturity: f64, n_steps: usize) -> Vec<(usize, f64)> {
-    let mut map = BTreeMap::<usize, f64>::new();
-    for &t in dates {
-        let raw = ((t / maturity) * n_steps as f64).round();
-        let step = (raw as usize).clamp(1, n_steps);
-        map.entry(step)
-            .and_modify(|existing| *existing = existing.max(t))
-            .or_insert(t);
-    }
-    map.into_iter().collect()
+    dates
+        .iter()
+        .map(|&time| {
+            let raw = ((time / maturity) * n_steps as f64).round();
+            let step = (raw as usize).clamp(1, n_steps);
+            (step, time)
+        })
+        .collect()
 }
 
 fn worst_of_ratio(state: &[f64], initial: &[f64]) -> f64 {
@@ -651,12 +653,15 @@ fn validate_market_inputs(
             "autocallable spots and vols lengths must match".to_string(),
         ));
     }
-    if spots.iter().any(|s| *s <= 0.0) {
+    if spots.iter().any(|spot| !spot.is_finite() || *spot <= 0.0) {
         return Err(PricingError::InvalidInput(
             "autocallable spots must be > 0".to_string(),
         ));
     }
-    if vols.iter().any(|v| *v < 0.0) {
+    if vols
+        .iter()
+        .any(|volatility| !volatility.is_finite() || *volatility < 0.0)
+    {
         return Err(PricingError::InvalidInput(
             "autocallable vols must be >= 0".to_string(),
         ));

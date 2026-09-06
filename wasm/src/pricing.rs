@@ -994,6 +994,31 @@ mod tests {
         assert!(greeks.contains("`vols[7]`"));
     }
 
+    #[test]
+    fn checked_black76_zero_volatility_retains_greeks_and_rejects_atm_kinks() {
+        let discount = (-0.05_f64 * 1.5).exp();
+        let price = 20.0 * discount;
+        for (forward, is_call, sign) in [(120.0, true, 1.0), (80.0, false, -1.0)] {
+            let greeks =
+                checked_black76_greeks(forward, 100.0, 0.05, 0.0, 1.5, is_call, Some(2)).unwrap();
+            let expected = [
+                sign * discount,
+                0.0,
+                0.0,
+                0.05 * price,
+                -1.5 * price,
+                0.0,
+                0.0,
+            ];
+            for (actual, expected) in greeks.into_iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1.0e-13);
+            }
+        }
+        let error =
+            checked_black76_greeks(100.0, 100.0, 0.05, 0.0, 1.5, true, Some(3)).unwrap_err();
+        assert!(error.contains("greeks[3].delta"));
+    }
+
     // -- black76_greeks_batch_wasm --
 
     #[test]

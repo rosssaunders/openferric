@@ -1177,6 +1177,7 @@ impl CapFloor {
 #[pymethods]
 impl CapFloor {
     #[new]
+    #[pyo3(signature = (notional, strike, start_date, end_date, frequency, day_count, is_cap, curve_day_count=None))]
     fn new(
         notional: f64,
         strike: f64,
@@ -1185,6 +1186,7 @@ impl CapFloor {
         frequency: &Frequency,
         day_count: &DayCountConvention,
         is_cap: bool,
+        curve_day_count: Option<&DayCountConvention>,
     ) -> PyResult<Self> {
         Ok(Self::from_core(CoreCapFloor {
             notional,
@@ -1194,6 +1196,10 @@ impl CapFloor {
             frequency: frequency.to_core(),
             day_count: day_count.to_core(),
             is_cap,
+            curve_day_count: curve_day_count
+                .map_or(CoreDayCountConvention::Act365Fixed, |convention| {
+                    convention.to_core()
+                }),
         }))
     }
 
@@ -1230,6 +1236,11 @@ impl CapFloor {
     #[getter]
     fn is_cap(&self) -> bool {
         self.inner.is_cap
+    }
+
+    #[getter]
+    fn curve_day_count(&self) -> DayCountConvention {
+        DayCountConvention::from_core(self.inner.curve_day_count)
     }
 
     #[staticmethod]
@@ -1554,7 +1565,7 @@ impl ForwardRateAgreement {
     /// is treated as spot-started: valuation is anchored at the accrual start
     /// and the forward period begins at time zero on the curve.
     #[new]
-    #[pyo3(signature = (notional, fixed_rate, start_date, end_date, day_count, valuation_date=None))]
+    #[pyo3(signature = (notional, fixed_rate, start_date, end_date, day_count, valuation_date=None, curve_day_count=None))]
     fn new(
         notional: f64,
         fixed_rate: f64,
@@ -1562,6 +1573,7 @@ impl ForwardRateAgreement {
         end_date: &str,
         day_count: &DayCountConvention,
         valuation_date: Option<&str>,
+        curve_day_count: Option<&DayCountConvention>,
     ) -> PyResult<Self> {
         let start = parse_date(start_date)?;
         Ok(Self {
@@ -1575,6 +1587,10 @@ impl ForwardRateAgreement {
                 start_date: start,
                 end_date: parse_date(end_date)?,
                 day_count: day_count.to_core(),
+                curve_day_count: curve_day_count
+                    .map_or(CoreDayCountConvention::Act365Fixed, |convention| {
+                        convention.to_core()
+                    }),
             },
         })
     }
@@ -1582,6 +1598,11 @@ impl ForwardRateAgreement {
     #[getter]
     fn valuation_date(&self) -> String {
         format_date(self.inner.valuation_date)
+    }
+
+    #[getter]
+    fn curve_day_count(&self) -> DayCountConvention {
+        DayCountConvention::from_core(self.inner.curve_day_count)
     }
 
     #[getter]
@@ -1644,6 +1665,7 @@ impl InterestRateSwap {
 #[pymethods]
 impl InterestRateSwap {
     #[new]
+    #[pyo3(signature = (notional, fixed_rate, float_spread, start_date, end_date, fixed_freq, float_freq, calendar, business_day_convention, stub_convention, roll_convention, fixed_day_count, float_day_count, curve_day_count=None))]
     fn new(
         notional: f64,
         fixed_rate: f64,
@@ -1658,6 +1680,7 @@ impl InterestRateSwap {
         roll_convention: &RollConvention,
         fixed_day_count: &DayCountConvention,
         float_day_count: &DayCountConvention,
+        curve_day_count: Option<&DayCountConvention>,
     ) -> PyResult<Self> {
         Ok(Self::from_core(CoreInterestRateSwap {
             notional,
@@ -1673,6 +1696,10 @@ impl InterestRateSwap {
             roll_convention: roll_convention.to_core(),
             fixed_day_count: fixed_day_count.to_core(),
             float_day_count: float_day_count.to_core(),
+            curve_day_count: curve_day_count
+                .map_or(CoreDayCountConvention::Act365Fixed, |convention| {
+                    convention.to_core()
+                }),
         }))
     }
 
@@ -1681,6 +1708,11 @@ impl InterestRateSwap {
         SwapBuilder {
             inner: CoreInterestRateSwap::builder(),
         }
+    }
+
+    #[getter]
+    fn curve_day_count(&self) -> DayCountConvention {
+        DayCountConvention::from_core(self.inner.curve_day_count)
     }
 
     #[getter]
@@ -1855,6 +1887,15 @@ impl SwapBuilder {
                 .inner
                 .clone()
                 .float_day_count(float_day_count.to_core()),
+        }
+    }
+
+    fn curve_day_count(&self, curve_day_count: &DayCountConvention) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .curve_day_count(curve_day_count.to_core()),
         }
     }
 

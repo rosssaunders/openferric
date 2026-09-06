@@ -29,8 +29,8 @@ impl RainbowAnalyticEngine {
 
 #[inline]
 fn effective_volatility(vol1: f64, vol2: f64, rho: f64) -> Result<f64, PricingError> {
-    // variance = vol1^2 - 2*rho*vol1*vol2 + vol2^2  via FMA
-    let variance = vol1.mul_add(vol1, (-2.0 * rho * vol1).mul_add(vol2, vol2 * vol2));
+    let difference = vol1 - vol2;
+    let variance = difference.mul_add(difference, 2.0 * vol1 * vol2 * (1.0 - rho));
     if variance < -1.0e-14 {
         return Err(PricingError::InvalidInput(
             "rainbow effective variance is negative".to_string(),
@@ -80,9 +80,23 @@ pub fn best_of_two_call_price(option: &BestOfTwoCallOption) -> Result<f64, Prici
 
     let sigma = effective_volatility(option.vol1, option.vol2, option.rho)?;
     if sigma <= 0.0 {
-        return Err(PricingError::InvalidInput(
-            "rainbow effective volatility must be > 0".to_string(),
-        ));
+        let first_call = black_scholes_call_with_dividend(
+            option.s1,
+            option.k,
+            option.r,
+            option.q1,
+            option.vol1,
+            option.t,
+        );
+        let second_call = black_scholes_call_with_dividend(
+            option.s2,
+            option.k,
+            option.r,
+            option.q2,
+            option.vol2,
+            option.t,
+        );
+        return Ok(first_call.max(second_call));
     }
 
     let sqrt_t = option.t.sqrt();

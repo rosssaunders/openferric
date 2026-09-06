@@ -426,11 +426,11 @@ impl MbsPassThrough {
             .sum()
     }
 
-    /// Price given a constant discount rate (yield), as a fraction of current balance.
+    /// Dollar price given an annual nominal yield compounded monthly.
     ///
     /// Returns `NaN` for invalid instrument definitions (see [`Self::validate`]).
     pub fn price(&self, yield_rate: f64) -> f64 {
-        if self.validate().is_err() {
+        if self.validate().is_err() || !yield_rate.is_finite() || yield_rate <= -12.0 {
             return f64::NAN;
         }
         Self::pv_of_cashflows(&self.cashflows(), yield_rate)
@@ -496,49 +496,73 @@ impl MbsPassThrough {
         weighted / total_principal
     }
 
-    /// Option-Adjusted Spread via Newton's method.
-    /// `market_price` is the dollar price, `base_yields` is a flat or term-structure
-    /// of monthly discount rates. For simplicity we use `base_yields[0]` as the flat rate.
+    /// Constant yield spread over a flat or monthly spot-yield term structure.
+    /// `market_price` is a dollar price. `base_yields` contains one annual nominal
+    /// yield or one per remaining payment, compounded monthly; an empty slice
+    /// denotes a zero base curve. Every supplied curve point is used.
+    /// Cashflows use the deterministic prepayment assumption, so this is a
+    /// deterministic spread solve, not a stochastic option-adjusted valuation.
     ///
     /// Returns `NaN` for invalid instrument definitions.
     pub fn oas(&self, market_price: f64, base_yields: &[f64]) -> f64 {
-        if self.validate().is_err() {
+        if self.validate().is_err() || !market_price.is_finite() || market_price <= 0.0 {
             return f64::NAN;
         }
-        let base_rate = if base_yields.is_empty() {
-            0.0
+        let base_yields = if base_yields.is_empty() {
+            &[0.0]
         } else {
-            base_yields[0]
+            base_yields
         };
-
-        // The schedule is rate-independent: compute it once and re-discount
-        // inside the Newton iteration instead of rebuilding it per evaluation.
-        let cfs = self.cashflows();
-
-        // Find spread s such that price(base_rate + s) = market_price
-        let mut spread = 0.01; // initial guess
-        for _ in 0..200 {
-            let p = Self::pv_of_cashflows(&cfs, base_rate + spread);
-            let dp = Self::pv_of_cashflows(&cfs, base_rate + spread + 0.0001);
-            let deriv = (dp - p) / 0.0001;
-            if deriv.abs() < 1e-20 {
-                break;
-            }
-            let new_spread = spread - (p - market_price) / deriv;
-            if (new_spread - spread).abs() < 1e-10 {
-                spread = new_spread;
-                break;
-            }
-            spread = new_spread;
+        let remaining_term = self.original_term.saturating_sub(self.age) as usize;
+        if Self::validate_rate_curve(base_yields, remaining_term, "base_yields", false).is_err() {
+            return f64::NAN;
         }
-        spread
+        let cashflows = self.cashflows();
+        if cashflows.is_empty() {
+            return f64::NAN;
+        }
+        let price = |spread: f64| -> f64 {
+            cashflows
+                .iter()
+                .enumerate()
+                .map(|(index, cashflow)| {
+                    let yield_rate = Self::curve_value(base_yields, index) + spread;
+                    cashflow.total_cashflow
+                        * (1.0 + yield_rate / 12.0).powi(-(cashflow.month as i32))
+                })
+                .sum()
+        };
+        let minimum_yield = base_yields.iter().copied().fold(f64::INFINITY, f64::min);
+        let mut lower = -12.0 - minimum_yield + 1.0e-12;
+        let mut upper = 1.0;
+        for _ in 0..64 {
+            if price(upper) <= market_price {
+                break;
+            }
+            upper *= 2.0;
+        }
+        if price(lower) < market_price || price(upper) > market_price {
+            return f64::NAN;
+        }
+        for _ in 0..200 {
+            let middle = 0.5 * (lower + upper);
+            if middle == lower || middle == upper {
+                break;
+            }
+            if price(middle) > market_price {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
+        }
+        0.5 * (lower + upper)
     }
 
     /// Effective duration via numerical bump (parallel shift).
     ///
     /// Returns `NaN` for invalid instrument definitions.
     pub fn effective_duration(&self, yield_rate: f64) -> f64 {
-        if self.validate().is_err() {
+        if self.validate().is_err() || !yield_rate.is_finite() || yield_rate - 0.0001 <= -12.0 {
             return f64::NAN;
         }
         let cfs = self.cashflows();
@@ -596,6 +620,9 @@ impl<'a> IoStrip<'a> {
     }
 
     pub fn price(&self, yield_rate: f64) -> f64 {
+        if self.mbs.validate().is_err() || !yield_rate.is_finite() || yield_rate <= -12.0 {
+            return f64::NAN;
+        }
         let monthly_yield = yield_rate / 12.0;
         self.cashflows()
             .iter()
@@ -619,6 +646,9 @@ impl<'a> PoStrip<'a> {
     }
 
     pub fn price(&self, yield_rate: f64) -> f64 {
+        if self.mbs.validate().is_err() || !yield_rate.is_finite() || yield_rate <= -12.0 {
+            return f64::NAN;
+        }
         let monthly_yield = yield_rate / 12.0;
         self.cashflows()
             .iter()

@@ -61,6 +61,25 @@ impl EmployeeStockOption {
     }
 
     pub fn validate(&self) -> Result<(), PricingError> {
+        if [
+            self.strike,
+            self.maturity,
+            self.vesting_period,
+            self.expected_life,
+            self.forfeiture_rate,
+            self.shares_outstanding,
+            self.options_granted,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+            || self
+                .early_exercise_multiple
+                .is_some_and(|value| !value.is_finite())
+        {
+            return Err(PricingError::InvalidInput(
+                "employee option inputs must be finite".to_string(),
+            ));
+        }
         if self.strike <= 0.0 {
             return Err(PricingError::InvalidInput(
                 "eso strike must be > 0".to_string(),
@@ -137,7 +156,14 @@ impl EmployeeStockOption {
         steps: usize,
     ) -> Result<f64, PricingError> {
         self.validate()?;
-
+        if [spot, rate, dividend_yield, vol]
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(PricingError::InvalidInput(
+                "employee option market inputs must be finite".to_string(),
+            ));
+        }
         if spot <= 0.0 {
             return Err(PricingError::InvalidInput("spot must be > 0".to_string()));
         }

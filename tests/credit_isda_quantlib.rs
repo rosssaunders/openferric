@@ -1791,17 +1791,42 @@ fn heterogeneous_index_npv_and_spread_match_decimal_cashflows() {
         .zip(&weights)
         .map(|((npv, _), weight)| npv * weight / weight_sum)
         .sum::<f64>();
-    let expected_spread = references
-        .iter()
-        .zip(&weights)
-        .map(|((_, spread), weight)| spread * weight / weight_sum)
-        .sum::<f64>();
+    let (protection, annuity) = constituents.iter().zip(hazards).zip(&weights).fold(
+        (0.0, 0.0),
+        |(protection, annuity), ((cds, hazard), weight)| {
+            let protection_leg = independent_flat_cds_reference(
+                cds.notional,
+                0.0,
+                cds.maturity,
+                cds.recovery_rate,
+                cds.payment_freq,
+                0.03,
+                hazard,
+            )
+            .0;
+            let unit_spread_npv = independent_flat_cds_reference(
+                cds.notional,
+                1.0,
+                cds.maturity,
+                cds.recovery_rate,
+                cds.payment_freq,
+                0.03,
+                hazard,
+            )
+            .0;
+            (
+                protection + weight * protection_leg,
+                annuity + weight * (protection_leg - unit_spread_npv),
+            )
+        },
+    );
+    let expected_spread = protection / annuity;
 
     assert_relative_eq!(index_npv, expected_npv, epsilon = 2.0e-9);
     assert_relative_eq!(index_spread, expected_spread, epsilon = 3.0e-15);
     // Python Decimal, precision=80, independent midpoint cashflow sums.
     assert_relative_eq!(index_npv, -17_022.726_352_288_623, epsilon = 2.0e-9);
-    assert_relative_eq!(index_spread, 0.013_901_783_400_369_618, epsilon = 3.0e-15);
+    assert_relative_eq!(index_spread, 0.014_634_420_075_851_375, epsilon = 3.0e-15);
 }
 
 // ===========================================================================

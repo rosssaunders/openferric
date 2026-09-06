@@ -9,8 +9,8 @@ use crate::market::Market;
 
 use super::fd_common::{
     bermudan_exercise_steps, boundary_values, build_operator_coefficients,
-    build_stretched_spot_grid, escrowed_root_spot, escrowed_steps, interpolate_on_grid, intrinsic,
-    solve_tridiagonal_inplace,
+    build_stretched_spot_grid, ensure_spot_inside_grid, escrowed_root_spot, escrowed_steps,
+    interpolate_on_grid, intrinsic, solve_tridiagonal_inplace,
 };
 use crate::core::OptionType;
 
@@ -114,6 +114,7 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
 
         let s_anchor = spot0.max(instrument.strike).max(1.0e-8);
         let s_max = self.s_max_multiplier * s_anchor;
+        ensure_spot_inside_grid(spot0, s_max)?;
         let grid = build_stretched_spot_grid(n_s, s_max, instrument.strike, self.grid_stretch)?;
 
         let dividend_yield = market.dividend_yield;
@@ -168,8 +169,12 @@ impl PricingEngine<VanillaOption> for ImplicitFdEngine {
                 let sa = &adj[n];
                 match instrument.option_type {
                     OptionType::Put => {
-                        lower_bv =
-                            sa.put_floor_at_zero(instrument.strike, market.rate, n as f64 * dt);
+                        lower_bv = sa.put_floor_at_zero(
+                            instrument.strike,
+                            market.rate,
+                            n as f64 * dt,
+                            instrument.expiry,
+                        );
                     }
                     OptionType::Call => {
                         upper_bv = upper_bv.max(sa.exercise_value(

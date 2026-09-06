@@ -9,6 +9,7 @@
 //! Numerical considerations: interpolation/extrapolation and day-count conventions materially affect PVs; handle near-zero rates/hazards to avoid cancellation.
 //!
 //! When to use: use this module for curve, accrual, and vanilla rates analytics; move to HJM/LMM or full XVA stacks for stochastic-rate or counterparty-intensive use cases.
+use crate::rates::schedule::year_fraction_periods;
 use crate::rates::{DayCountConvention, YieldCurve};
 
 /// Plain fixed-rate bond.
@@ -20,7 +21,7 @@ pub struct FixedRateBond {
     pub coupon_rate: f64,
     /// Coupon payments per year.
     pub frequency: u32,
-    /// Maturity in years.
+    /// Maturity in years, with a prorated short final coupon when off-grid.
     pub maturity: f64,
     /// Informational day-count convention metadata.
     ///
@@ -57,9 +58,8 @@ impl FixedRateBond {
             return self.dirty_price(curve);
         }
 
-        // Cashflow times accumulate via repeated `+= period`, so use the same
-        // 1.0e-12 tolerance as `cashflows()` when excluding a coupon that
-        // falls exactly on the settlement date.
+        // Allow small floating-point differences when excluding a coupon
+        // that falls exactly on the settlement date.
         let pv_at_zero: f64 = self
             .cashflows()
             .iter()
@@ -93,14 +93,11 @@ impl FixedRateBond {
 
         let period = 1.0 / self.frequency as f64;
         let last_coupon = (settlement / period).floor() * period;
-        let next_coupon = (last_coupon + period).min(self.maturity);
-        if next_coupon <= last_coupon {
+        let elapsed = settlement - last_coupon;
+        if elapsed <= 1.0e-12 || period - elapsed <= 1.0e-12 {
             return 0.0;
         }
-
-        let coupon = self.face_value * self.coupon_rate / self.frequency as f64;
-        let accrual = (settlement - last_coupon) / (next_coupon - last_coupon);
-        coupon * accrual.clamp(0.0, 1.0)
+        self.face_value * self.coupon_rate * elapsed
     }
 
     /// Macaulay duration in years under the supplied curve.
@@ -131,14 +128,21 @@ impl FixedRateBond {
             / price
     }
 
-    /// Yield-to-maturity solved by Newton-Raphson.
+    /// Yield-to-maturity solved by bracketed bisection in log-compounding space.
     ///
     /// This is the quoted-yield path: the solved yield `y` is compounded
     /// `frequency` times per year, i.e. cashflows discount as
     /// `(1 + y/m)^(-m t)`. It is intentionally distinct from curve-based
     /// pricing, which uses `YieldCurve::discount_factor` directly.
     pub fn ytm(&self, market_price: f64) -> f64 {
-        if self.frequency == 0 || market_price <= 0.0 {
+        if self.frequency == 0
+            || !market_price.is_finite()
+            || market_price <= 0.0
+            || !self.face_value.is_finite()
+            || self.face_value <= 0.0
+            || !self.coupon_rate.is_finite()
+            || self.coupon_rate < 0.0
+        {
             return f64::NAN;
         }
 
@@ -147,37 +151,41 @@ impl FixedRateBond {
             return f64::NAN;
         }
 
-        let m = self.frequency as f64;
-        let mut y = self.coupon_rate.max(1.0e-6);
-
-        for _ in 0..100 {
-            let base = (1.0 + y / m).max(1.0e-12);
-            let mut f = -market_price;
-            let mut fp = 0.0;
-
-            for (t, cf) in &cashflows {
-                let n = m * *t;
-                let discount = base.powf(-n);
-                f += cf * discount;
-                fp += cf * discount * (-n) / (m * base);
-            }
-
-            if fp.abs() <= 1.0e-14 {
+        let frequency = self.frequency as f64;
+        let price = |log_base: f64| -> f64 {
+            cashflows
+                .iter()
+                .map(|(time, amount)| amount * (-frequency * time * log_base).exp())
+                .sum()
+        };
+        let mut lower = -1.0;
+        let mut upper = 1.0;
+        for _ in 0..64 {
+            if price(lower) >= market_price && price(upper) <= market_price {
                 break;
             }
-
-            let step = f / fp;
-            y -= step;
-            if step.abs() <= 1.0e-12 {
-                break;
+            if price(lower) < market_price {
+                lower *= 2.0;
             }
-
-            if y <= -0.99 * m {
-                y = -0.99 * m;
+            if price(upper) > market_price {
+                upper *= 2.0;
             }
         }
-
-        y
+        if price(lower) < market_price || price(upper) > market_price {
+            return f64::NAN;
+        }
+        for _ in 0..200 {
+            let middle = 0.5 * (lower + upper);
+            if middle == lower || middle == upper {
+                break;
+            }
+            if price(middle) > market_price {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
+        }
+        frequency * (0.5 * (lower + upper)).exp_m1()
     }
 
     /// Discounts a cashflow at time `t` using the curve's own discount factor.
@@ -197,18 +205,21 @@ impl FixedRateBond {
             return Vec::new();
         }
 
-        let period = 1.0 / self.frequency as f64;
-        let coupon = self.face_value * self.coupon_rate / self.frequency as f64;
-
-        let mut out = Vec::new();
-        let mut t = period;
-        while t < self.maturity - 1.0e-12 {
-            out.push((t, coupon));
-            t += period;
-        }
-        out.push((self.maturity, coupon + self.face_value));
-
-        out
+        year_fraction_periods(self.maturity, self.frequency as usize)
+            .into_iter()
+            .map(|(start, end)| {
+                let coupon = self.face_value * self.coupon_rate * (end - start);
+                (
+                    end,
+                    coupon
+                        + if end == self.maturity {
+                            self.face_value
+                        } else {
+                            0.0
+                        },
+                )
+            })
+            .collect()
     }
 }
 

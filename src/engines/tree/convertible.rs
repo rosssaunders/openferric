@@ -95,6 +95,7 @@ impl PricingEngine<ConvertibleBond> for ConvertibleBinomialEngine {
     ) -> Result<PricingResult, PricingError> {
         market.validate()?;
         instrument.validate()?;
+        market.require_continuous_dividends(instrument.maturity)?;
 
         if self.steps == 0 {
             return Err(PricingError::InvalidInput(

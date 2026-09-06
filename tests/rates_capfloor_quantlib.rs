@@ -242,6 +242,7 @@ fn caps_and_floors_match_quantlib_black_cap_floor_engine_grid() {
             end_date: case.end_date,
             frequency: case.frequency,
             day_count: DayCountConvention::Act365Fixed,
+            curve_day_count: DayCountConvention::Act365Fixed,
             is_cap: true,
         };
         let floor = CapFloor {
@@ -295,6 +296,7 @@ fn caplets_match_quantlib_black_cap_floor_engine_optionlets_price() {
         end_date,
         frequency,
         day_count: DayCountConvention::Act365Fixed,
+        curve_day_count: DayCountConvention::Act365Fixed,
         is_cap: true,
     };
     let schedule = generate_schedule(start_date(), end_date, frequency);
@@ -387,6 +389,7 @@ fn capfloor_implied_vol_round_trip_uses_quantlib_market_prices() {
             end_date,
             frequency,
             day_count: DayCountConvention::Act365Fixed,
+            curve_day_count: DayCountConvention::Act365Fixed,
             is_cap,
         };
         let recovered = instrument.implied_vol(quantlib_price, &curve);

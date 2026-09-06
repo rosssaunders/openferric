@@ -30,6 +30,9 @@ pub struct RangeAccrualResult {
 ///
 /// Simulates a short rate (or reference rate) as mean-reverting OU process:
 ///   dr = kappa * (theta - r) * dt + sigma * dW
+/// using Euler steps at fixing dates. Fixings have equal weight. The coupon
+/// is `notional * annual_coupon * accrual_factor * fraction_in_range`;
+/// Monte Carlo standard errors exclude Euler and observation-grid bias.
 ///
 /// # Arguments
 /// * `ra` - Range accrual instrument
@@ -51,6 +54,17 @@ pub fn range_accrual_mc_price(
     seed: u64,
 ) -> Result<RangeAccrualResult, String> {
     ra.validate()?;
+    if [r0, kappa, theta, sigma, discount_rate]
+        .iter()
+        .any(|value| !value.is_finite())
+        || kappa < 0.0
+        || sigma < 0.0
+    {
+        return Err(
+            "range-accrual model inputs must be finite, with non-negative kappa and sigma"
+                .to_string(),
+        );
+    }
     if num_paths == 0 {
         return Err("num_paths must be > 0".to_string());
     }
@@ -86,7 +100,7 @@ pub fn range_accrual_mc_price(
         }
 
         let accrual_fraction = days_in_range as f64 / n_fix as f64;
-        let coupon = ra.notional * ra.coupon_rate * accrual_fraction;
+        let coupon = ra.notional * ra.coupon_rate * ra.accrual_factor * accrual_fraction;
         let pv = coupon * df;
 
         sum_pv += pv;
@@ -125,6 +139,30 @@ pub fn dual_range_accrual_mc_price(
     seed: u64,
 ) -> Result<RangeAccrualResult, String> {
     dra.validate()?;
+    if [
+        r1_0,
+        r2_0,
+        kappa1,
+        theta1,
+        sigma1,
+        kappa2,
+        theta2,
+        sigma2,
+        rho,
+        discount_rate,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+        || kappa1 < 0.0
+        || kappa2 < 0.0
+        || sigma1 < 0.0
+        || sigma2 < 0.0
+    {
+        return Err(
+            "dual range-accrual model inputs must be finite, with non-negative kappa and sigma"
+                .to_string(),
+        );
+    }
     if num_paths == 0 {
         return Err("num_paths must be > 0".to_string());
     }
@@ -169,7 +207,7 @@ pub fn dual_range_accrual_mc_price(
         }
 
         let accrual_fraction = days_in_range as f64 / n_fix as f64;
-        let coupon = dra.notional * dra.coupon_rate * accrual_fraction;
+        let coupon = dra.notional * dra.coupon_rate * dra.accrual_factor * accrual_fraction;
         let pv = coupon * df;
 
         sum_pv += pv;
@@ -234,6 +272,7 @@ mod tests {
         RangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.02,
             upper_bound: 0.06,
             fixing_times,
@@ -278,7 +317,11 @@ mod tests {
             previous = time;
         }
         let expected_fraction = expected_fixings / ra.fixing_times.len() as f64;
-        ra.notional * ra.coupon_rate * expected_fraction * (-discount_rate * ra.payment_time).exp()
+        ra.notional
+            * ra.coupon_rate
+            * ra.accrual_factor
+            * expected_fraction
+            * (-discount_rate * ra.payment_time).exp()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -323,6 +366,7 @@ mod tests {
         let expected_fraction = expected_fixings / dra.fixing_times.len() as f64;
         dra.notional
             * dra.coupon_rate
+            * dra.accrual_factor
             * expected_fraction
             * (-discount_rate * dra.payment_time).exp()
     }
@@ -361,6 +405,7 @@ mod tests {
         let ra = RangeAccrual {
             notional: 1_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.04,
             upper_bound: 0.06,
             fixing_times: vec![1.0],
@@ -387,6 +432,7 @@ mod tests {
         let ra = RangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 2.0,
             lower_bound: 0.035,
             upper_bound: 0.055,
             fixing_times: (1..=24).map(|month| month as f64 / 12.0).collect(),
@@ -404,7 +450,7 @@ mod tests {
             / (2.0 * bump);
         // Independently evaluated with SciPy 1.17.1 normal CDFs at the exact
         // Euler marginal means and variances.
-        let scipy_reference = 489_499.986_626_609_8;
+        let scipy_reference = 2.0 * 489_499.986_626_609_8;
         assert!((exact - scipy_reference).abs() <= 2.0e-7);
 
         let mut estimates = [0.0_f64; N_REPLICATES];
@@ -453,6 +499,7 @@ mod tests {
         let dra = DualRangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.0,
             upper_bound: 0.02,
             fixing_times,
@@ -489,6 +536,7 @@ mod tests {
         let dra = DualRangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.0,
             upper_bound: 0.03,
             fixing_times,

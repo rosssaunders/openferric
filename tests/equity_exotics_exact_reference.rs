@@ -1185,6 +1185,7 @@ fn zero_vol_range_accruals_equal_discounted_contractual_coupon() {
     let single = RangeAccrual {
         notional: 1_000_000.0,
         coupon_rate: 0.05,
+        accrual_factor: 1.0,
         lower_bound: 0.02,
         upper_bound: 0.06,
         fixing_times: fixing_times.clone(),
@@ -1204,6 +1205,7 @@ fn zero_vol_range_accruals_equal_discounted_contractual_coupon() {
     let dual = DualRangeAccrual {
         notional: 1_000_000.0,
         coupon_rate: 0.05,
+        accrual_factor: 1.0,
         lower_bound: 0.01,
         upper_bound: 0.03,
         fixing_times,

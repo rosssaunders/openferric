@@ -17,7 +17,9 @@ use crate::rates::schedule::{
 };
 use crate::rates::{DayCountConvention, YieldCurve, year_fraction};
 
-/// Plain-vanilla fixed-for-floating interest-rate swap.
+/// Plain-vanilla fixed-for-floating interest-rate swap valued at `start_date`.
+/// Both legs use `curve_day_count` for curve times; coupon day counts only
+/// determine accrual amounts. Historical fixings are not modeled.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterestRateSwap {
     pub notional: f64,
@@ -33,6 +35,7 @@ pub struct InterestRateSwap {
     pub roll_convention: RollConvention,
     pub fixed_day_count: DayCountConvention,
     pub float_day_count: DayCountConvention,
+    pub curve_day_count: DayCountConvention,
 }
 
 impl InterestRateSwap {
@@ -56,7 +59,7 @@ impl InterestRateSwap {
                     return 0.0;
                 }
 
-                let pay_time = year_fraction(self.start_date, period[1], self.fixed_day_count);
+                let pay_time = year_fraction(self.start_date, period[1], self.curve_day_count);
                 let df = curve.discount_factor(pay_time.max(0.0));
                 self.notional * self.fixed_rate * accrual * df
             })
@@ -78,8 +81,8 @@ impl InterestRateSwap {
                     return 0.0;
                 }
 
-                let t1 = year_fraction(self.start_date, period[0], self.float_day_count).max(0.0);
-                let t2 = year_fraction(self.start_date, period[1], self.float_day_count).max(0.0);
+                let t1 = year_fraction(self.start_date, period[0], self.curve_day_count).max(0.0);
+                let t2 = year_fraction(self.start_date, period[1], self.curve_day_count).max(0.0);
                 if t2 <= t1 {
                     return 0.0;
                 }
@@ -131,7 +134,7 @@ impl InterestRateSwap {
                     }
 
                     let pay_time =
-                        year_fraction(self.start_date, period[1], self.fixed_day_count).max(0.0);
+                        year_fraction(self.start_date, period[1], self.curve_day_count).max(0.0);
                     accrual * curve.discount_factor(pay_time)
                 })
                 .sum::<f64>()
@@ -158,7 +161,8 @@ fn bump_curve_parallel(curve: &YieldCurve, bump: f64) -> YieldCurve {
             (*t, bumped_df)
         })
         .collect();
-    YieldCurve::new(bumped_nodes)
+    YieldCurve::new_with_settings(bumped_nodes, curve.interpolation_settings())
+        .expect("a parallel shift preserves valid curve nodes")
 }
 
 /// Builder for [`InterestRateSwap`].
@@ -177,6 +181,7 @@ pub struct SwapBuilder {
     roll_convention: RollConvention,
     fixed_day_count: DayCountConvention,
     float_day_count: DayCountConvention,
+    curve_day_count: DayCountConvention,
 }
 
 impl Default for SwapBuilder {
@@ -195,6 +200,7 @@ impl Default for SwapBuilder {
             roll_convention: RollConvention::None,
             fixed_day_count: DayCountConvention::Act365Fixed,
             float_day_count: DayCountConvention::Act360,
+            curve_day_count: DayCountConvention::Act365Fixed,
         }
     }
 }
@@ -268,6 +274,11 @@ impl SwapBuilder {
         self
     }
 
+    pub fn curve_day_count(mut self, curve_day_count: DayCountConvention) -> Self {
+        self.curve_day_count = curve_day_count;
+        self
+    }
+
     pub fn build(self) -> InterestRateSwap {
         InterestRateSwap {
             notional: self.notional,
@@ -283,6 +294,7 @@ impl SwapBuilder {
             roll_convention: self.roll_convention,
             fixed_day_count: self.fixed_day_count,
             float_day_count: self.float_day_count,
+            curve_day_count: self.curve_day_count,
         }
     }
 }

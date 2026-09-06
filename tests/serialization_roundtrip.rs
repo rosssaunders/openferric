@@ -351,6 +351,7 @@ fn sample_trade_instruments() -> Vec<TradeInstrument> {
         TradeInstrument::RangeAccrual(RangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.01,
             upper_bound: 0.04,
             fixing_times: vec![0.25, 0.5, 0.75, 1.0],
@@ -359,6 +360,7 @@ fn sample_trade_instruments() -> Vec<TradeInstrument> {
         TradeInstrument::DualRangeAccrual(DualRangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.04,
+            accrual_factor: 1.0,
             lower_bound: -0.01,
             upper_bound: 0.01,
             fixing_times: vec![0.25, 0.5, 0.75, 1.0],

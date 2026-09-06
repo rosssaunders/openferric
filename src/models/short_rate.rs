@@ -31,20 +31,36 @@ impl Vasicek {
         let tau = maturity - t;
         let b = self.bond_b(t, maturity);
         let sigma2 = self.sigma * self.sigma;
-        let a = ((self.b - sigma2 / (2.0 * self.a * self.a)) * (b - tau)
-            - sigma2 * b * b / (4.0 * self.a))
-            .exp();
-        a * (-b * short_rate).exp()
+        let scaled_time = self.a * tau;
+        let integrated_variance = if scaled_time.abs() < 0.01 {
+            let coefficient = 1.0 / 3.0
+                + scaled_time
+                    * (-1.0 / 4.0
+                        + scaled_time
+                            * (7.0 / 60.0
+                                + scaled_time
+                                    * (-1.0 / 24.0
+                                        + scaled_time
+                                            * (31.0 / 2520.0
+                                                + scaled_time
+                                                    * (-1.0 / 320.0
+                                                        + scaled_time * 127.0 / 181440.0)))));
+            sigma2 * tau.powi(3) * coefficient
+        } else {
+            sigma2 / (self.a * self.a)
+                * (tau - 2.0 * b - (-2.0 * scaled_time).exp_m1() / (2.0 * self.a))
+        };
+        (-short_rate * b - self.b * (tau - b) + 0.5 * integrated_variance).exp()
     }
 
     fn bond_b(&self, t: f64, maturity: f64) -> f64 {
         let tau = maturity - t;
         if tau <= 0.0 {
             0.0
-        } else if self.a.abs() <= 1.0e-12 {
+        } else if self.a == 0.0 {
             tau
         } else {
-            (1.0 - (-self.a * tau).exp()) / self.a
+            -(-self.a * tau).exp_m1() / self.a
         }
     }
 }
@@ -68,16 +84,25 @@ impl CIR {
         }
 
         let tau = maturity - t;
+        if self.sigma == 0.0 {
+            let response = if self.a == 0.0 {
+                tau
+            } else {
+                -(-self.a * tau).exp_m1() / self.a
+            };
+            return (-short_rate * response - self.b * (tau - response)).exp();
+        }
         let gamma = (self.a * self.a + 2.0 * self.sigma * self.sigma).sqrt();
-        let exp_gamma_tau = (gamma * tau).exp();
-
-        let denominator = (gamma + self.a) * (exp_gamma_tau - 1.0) + 2.0 * gamma;
-        let b = 2.0 * (exp_gamma_tau - 1.0) / denominator;
-
-        let a = (2.0 * gamma * ((self.a + gamma) * tau * 0.5).exp() / denominator)
-            .powf(2.0 * self.a * self.b / (self.sigma * self.sigma));
-
-        a * (-b * short_rate).exp()
+        let variance = self.sigma * self.sigma;
+        let decay = (-gamma * tau).exp();
+        let one_minus_decay = -(-gamma * tau).exp_m1();
+        let denominator = (gamma + self.a) * one_minus_decay + 2.0 * gamma * decay;
+        let response = 2.0 * one_minus_decay / denominator;
+        let gamma_minus_reversion = 2.0 * variance / (gamma + self.a);
+        let log_prefactor = 2.0 * self.a * self.b / variance
+            * ((gamma_minus_reversion * one_minus_decay / denominator).ln_1p()
+                - 0.5 * gamma_minus_reversion * tau);
+        (log_prefactor - response * short_rate).exp()
     }
 }
 
@@ -102,7 +127,10 @@ impl HullWhite {
         }
     }
 
-    /// Calibrates `theta(t)` on the provided time grid to fit an initial yield curve.
+    /// Samples `theta(t)` on a grid from a differentiable initial forward curve.
+    /// Forward jumps at interpolation pillars have distributional derivatives
+    /// that point samples cannot represent. Pricing lattices fit discount
+    /// factors through state prices instead of relying on these samples.
     pub fn calibrate_theta(&mut self, initial_curve: &YieldCurve, times: &[f64]) {
         let mut grid = times
             .iter()

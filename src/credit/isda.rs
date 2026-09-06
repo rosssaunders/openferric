@@ -583,7 +583,7 @@ fn quantlib_flat_default_accrual(
     // Match QuantLib's `IsdaCdsEngine::Taylor` branch. It avoids cancellation
     // for very short intervals and is also the documented standard-engine
     // numerical fix used by the external fixture.
-    if combined_hat < 1.0e-4 {
+    if combined_hat.abs() < 1.0e-4 {
         let combined2 = combined_hat * combined_hat;
         hhat * p0q0
             * ((t0 - accrual_origin)
@@ -738,22 +738,27 @@ fn exact_flat_interval_terms(t1: f64, t2: f64, r: f64, h: f64, accrual_offset: f
         return (0.0, 0.0);
     }
 
-    let k = (r + h).max(1.0e-14);
-    let exp1 = (-k * t1).exp();
-    let exp2 = (-k * t2).exp();
-
-    // Protection integral: ∫_t1^t2 DF(t) h S(t) dt.
-    let protection = (h / k) * (exp1 - exp2);
-
-    // Accrual-on-default integral with accrual measured from the period accrual
-    // start t0 = t1 - accrual_offset (accrued owed from period start on default):
-    // ∫_t1^t2 (t - t0) DF(t) h S(t) dt
-    //   = ∫_t1^t2 (t - t1) DF(t) h S(t) dt + (t1 - t0) ∫_t1^t2 DF(t) h S(t) dt.
-    let dt = t2 - t1;
-    let accrual =
-        h * ((exp1 - exp2) / (k * k) - dt * exp2 / k) + accrual_offset.max(0.0) * protection;
-
-    (accrual.max(0.0), protection.max(0.0))
+    let combined_rate = r + h;
+    let interval = t2 - t1;
+    let exponent = combined_rate * interval;
+    let (zeroth_moment, first_moment) = if exponent.abs() < 1.0e-4 {
+        let squared = exponent * exponent;
+        (
+            1.0 - exponent / 2.0 + squared / 6.0 - squared * exponent / 24.0,
+            0.5 - exponent / 3.0 + squared / 8.0 - squared * exponent / 30.0,
+        )
+    } else {
+        let decay = (-exponent).exp();
+        (
+            -(-exponent).exp_m1() / exponent,
+            (-(-exponent).exp_m1() - exponent * decay) / (exponent * exponent),
+        )
+    };
+    let density_at_start = h * (-combined_rate * t1).exp();
+    let protection = density_at_start * interval * zeroth_moment;
+    let accrual = density_at_start * interval * interval * first_moment
+        + accrual_offset.max(0.0) * protection;
+    (accrual, protection)
 }
 
 fn advance_business_days(date: NaiveDate, days: usize, calendar: &Calendar) -> NaiveDate {
@@ -828,6 +833,49 @@ fn is_leap_year(year: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn flat_default_integrals_support_zero_and_negative_combined_rates() {
+        for rate in [-0.5, -0.02, -0.02 + 1.0e-12, -0.02 - 1.0e-12] {
+            let hazard = 0.02;
+            let start = 0.25;
+            let end = 1.0;
+            let offset = 0.1;
+            let intervals = 10_000;
+            let step = (end - start) / intervals as f64;
+            let mut expected_protection = 0.0;
+            let mut expected_accrual = 0.0;
+            for index in 0..=intervals {
+                let time = start + index as f64 * step;
+                let weight = if index == 0 || index == intervals {
+                    1.0
+                } else if index % 2 == 0 {
+                    2.0
+                } else {
+                    4.0
+                };
+                let density = hazard * (-(rate + hazard) * time).exp();
+                expected_protection += weight * density * step / 3.0;
+                expected_accrual += weight * (time - start + offset) * density * step / 3.0;
+            }
+            let (accrual, protection) =
+                super::exact_flat_interval_terms(start, end, rate, hazard, offset);
+            assert!(
+                (protection - expected_protection).abs() <= 1.0e-14,
+                "rate={rate} protection={protection} expected={expected_protection}"
+            );
+            assert!(
+                (accrual - expected_accrual).abs() <= 1.0e-14,
+                "rate={rate} accrual={accrual} expected={expected_accrual}"
+            );
+            let standard =
+                super::quantlib_flat_default_accrual(start, end, start - offset, rate, hazard);
+            assert!(
+                (standard - expected_accrual).abs() <= 1.0e-14,
+                "rate={rate} standard={standard} expected={expected_accrual}"
+            );
+        }
+    }
+
     use approx::assert_relative_eq;
 
     use super::*;

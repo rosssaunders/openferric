@@ -62,7 +62,8 @@ pub struct VarianceSwap {
     pub strike_vol: f64,
     /// Maturity in years.
     pub expiry: f64,
-    /// Optional realized variance (annualized) used for mark-to-market.
+    /// Optional full-contract realized variance (annualized), replacing the forecast.
+    /// This is not a partially accrued observation; seasoned-swap blending is not modeled.
     pub observed_realized_var: Option<f64>,
     /// OTM strip quotes used for fair variance strike replication.
     pub option_quotes: Vec<VarianceOptionQuote>,
@@ -143,7 +144,8 @@ pub struct VolatilitySwap {
     pub strike_vol: f64,
     /// Maturity in years.
     pub expiry: f64,
-    /// Optional realized variance (annualized) used for mark-to-market.
+    /// Optional full-contract realized variance (annualized), replacing the forecast.
+    /// This is not a partially accrued observation; seasoned-swap blending is not modeled.
     pub observed_realized_var: Option<f64>,
     /// Replication quotes used to infer fair variance before convexity adjustment.
     pub option_quotes: Vec<VarianceOptionQuote>,

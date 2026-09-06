@@ -60,27 +60,15 @@ fn bs_price_with_dividend(
     vol: f64,
     expiry: f64,
 ) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 {
-        return vanilla_payoff(option_type, spot, strike);
-    }
-
-    let sqrt_t = expiry.sqrt();
-    let sig_sqrt_t = vol * sqrt_t;
-    let d1 = ((spot / strike).ln() + (0.5 * vol).mul_add(vol, rate - dividend_yield) * expiry)
-        / sig_sqrt_t;
-    let d2 = d1 - sig_sqrt_t;
-
-    let df_r = (-rate * expiry).exp();
-    let df_q = (-dividend_yield * expiry).exp();
-
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let call = spot.mul_add(df_q * nd1, -(strike * df_r * nd2));
-    match option_type {
-        OptionType::Call => call,
-        OptionType::Put => call - spot * df_q + strike * df_r,
-    }
+    crate::engines::analytic::black_scholes::bs_price(
+        option_type,
+        spot,
+        strike,
+        rate,
+        dividend_yield,
+        vol,
+        expiry,
+    )
 }
 
 #[inline]
@@ -107,6 +95,12 @@ fn double_knock_out_zero_rebate(
     expiry: f64,
     series_terms: usize,
 ) -> f64 {
+    if (option_type == OptionType::Call && strike >= upper)
+        || (option_type == OptionType::Put && strike <= lower)
+    {
+        return 0.0;
+    }
+    let integration_strike = strike.clamp(lower, upper);
     let vol_sq = vol * vol;
     let std = vol * expiry.sqrt();
     let b = rate - dividend_yield;
@@ -135,9 +129,10 @@ fn double_knock_out_zero_rebate(
 
         match option_type {
             OptionType::Call => {
-                let d1 = ((spot * u_over_l_2n / strike).ln()) / std + bsigma;
+                let d1 = ((spot * u_over_l_2n / integration_strike).ln()) / std + bsigma;
                 let d2 = ((spot * u_over_l_2n / upper).ln()) / std + bsigma;
-                let d3 = ((lower * lower * l_over_u_2n / (strike * spot)).ln()) / std + bsigma;
+                let d3 = ((lower * lower * l_over_u_2n / (integration_strike * spot)).ln()) / std
+                    + bsigma;
                 let d4 = ((lower * lower * l_over_u_2n / (upper * spot)).ln()) / std + bsigma;
 
                 acc1 +=
@@ -147,9 +142,10 @@ fn double_knock_out_zero_rebate(
             }
             OptionType::Put => {
                 let y1 = ((spot * u_over_l_2n / lower).ln()) / std + bsigma;
-                let y2 = ((spot * u_over_l_2n / strike).ln()) / std + bsigma;
+                let y2 = ((spot * u_over_l_2n / integration_strike).ln()) / std + bsigma;
                 let y3 = ((lower * lower * l_over_u_2n / (lower * spot)).ln()) / std + bsigma;
-                let y4 = ((lower * lower * l_over_u_2n / (strike * spot)).ln()) / std + bsigma;
+                let y4 = ((lower * lower * l_over_u_2n / (integration_strike * spot)).ln()) / std
+                    + bsigma;
 
                 acc1 += m2 * (normal_cdf(y1 - std) - normal_cdf(y2 - std))
                     - m4 * (normal_cdf(y3 - std) - normal_cdf(y4 - std));
@@ -363,6 +359,7 @@ impl PricingEngine<DoubleBarrierOption> for DoubleBarrierAnalyticEngine {
     ) -> Result<PricingResult, PricingError> {
         market.validate()?;
         instrument.validate()?;
+        market.require_continuous_dividends(instrument.expiry)?;
 
         if self.series_terms == 0 {
             return Err(PricingError::InvalidInput(

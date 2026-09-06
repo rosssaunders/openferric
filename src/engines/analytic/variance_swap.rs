@@ -70,6 +70,14 @@ pub fn fair_variance_strike_from_quotes(
         quote.validate()?;
     }
     sorted_quotes.sort_by(quote_sort_cmp);
+    if sorted_quotes
+        .windows(2)
+        .any(|pair| pair[1].strike <= pair[0].strike)
+    {
+        return Err(PricingError::InvalidInput(
+            "variance replication strikes must be strictly increasing".to_string(),
+        ));
+    }
 
     let forward = spot * ((rate - dividend_yield) * expiry).exp();
     let mut replicated_sum = 0.0;

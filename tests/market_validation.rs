@@ -158,8 +158,15 @@ fn analytic_and_aad_greeks_agree_when_cash_dividends_exhaust_prepaid_spot() {
     assert_eq!(aad.price, analytic.price);
     assert_eq!(aad.greeks, analytic.greeks);
 
+    let mut bumped_market = market.clone();
+    bumped_market.spot += 1.0;
+    assert_eq!(
+        engine.price(&option, &bumped_market).unwrap().price,
+        analytic.price
+    );
+
     let greeks = analytic.greeks.unwrap();
-    assert_eq!(greeks.delta, -1.0);
+    assert_eq!(greeks.delta, 0.0);
     assert_eq!(greeks.gamma, 0.0);
     assert_eq!(greeks.vega, 0.0);
     assert_eq!(greeks.theta, 0.0);

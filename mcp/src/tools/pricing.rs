@@ -560,6 +560,7 @@ fn price_range_accrual_tool(args: &Value) -> ToolCallResult {
     let instrument = RangeAccrual {
         notional: 1.0,
         coupon_rate: coupon,
+        accrual_factor: time,
         lower_bound: lower,
         upper_bound: upper,
         fixing_times,

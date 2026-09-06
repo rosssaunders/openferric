@@ -20,6 +20,8 @@ pub struct RangeAccrual {
     pub notional: f64,
     /// Full coupon rate (annualised) paid if rate is always in range.
     pub coupon_rate: f64,
+    /// Coupon period year fraction, independent of the payment lag.
+    pub accrual_factor: f64,
     /// Lower bound of the accrual range.
     pub lower_bound: f64,
     /// Upper bound of the accrual range.
@@ -37,6 +39,8 @@ pub struct DualRangeAccrual {
     pub notional: f64,
     /// Full coupon rate (annualised).
     pub coupon_rate: f64,
+    /// Coupon period year fraction, independent of the payment lag.
+    pub accrual_factor: f64,
     /// Lower bound of the spread range.
     pub lower_bound: f64,
     /// Upper bound of the spread range.
@@ -75,6 +79,9 @@ impl RangeAccrual {
         if !self.coupon_rate.is_finite() || self.coupon_rate <= 0.0 {
             return Err("coupon_rate must be finite and > 0".to_string());
         }
+        if !self.accrual_factor.is_finite() || self.accrual_factor <= 0.0 {
+            return Err("accrual_factor must be finite and > 0".to_string());
+        }
         if !self.lower_bound.is_finite() || !self.upper_bound.is_finite() {
             return Err("bounds must be finite".to_string());
         }
@@ -92,6 +99,9 @@ impl DualRangeAccrual {
         }
         if !self.coupon_rate.is_finite() || self.coupon_rate <= 0.0 {
             return Err("coupon_rate must be finite and > 0".to_string());
+        }
+        if !self.accrual_factor.is_finite() || self.accrual_factor <= 0.0 {
+            return Err("accrual_factor must be finite and > 0".to_string());
         }
         if !self.lower_bound.is_finite() || !self.upper_bound.is_finite() {
             return Err("bounds must be finite".to_string());
@@ -111,6 +121,7 @@ mod tests {
         RangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.02,
             upper_bound: 0.06,
             fixing_times: vec![0.25, 0.5, 0.75, 1.0],
@@ -122,6 +133,7 @@ mod tests {
         DualRangeAccrual {
             notional: 1_000_000.0,
             coupon_rate: 0.05,
+            accrual_factor: 1.0,
             lower_bound: 0.0,
             upper_bound: 0.02,
             fixing_times: vec![0.25, 0.5, 0.75, 1.0],

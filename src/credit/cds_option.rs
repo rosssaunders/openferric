@@ -10,7 +10,8 @@
 //!
 //! When to use: use these routines for CDS/tranche and survival-curve workflows; consider structural credit models when capital-structure dynamics are required explicitly.
 
-use crate::math::normal_cdf;
+use crate::core::OptionType;
+use crate::engines::analytic::black_scholes::bs_price;
 
 /// A CDS option giving the right to enter a CDS at a given spread (strike).
 #[derive(Debug, Clone, PartialEq)]
@@ -30,40 +31,46 @@ impl CdsOption {
     /// * `vol` - implied volatility of the CDS spread
     /// * `risky_annuity` - spot RPV01 (present-value) of the underlying CDS,
     ///   i.e. already discounted to today
+    ///
+    /// At expiry this pays intrinsic value. Invalid lognormal inputs return
+    /// `NaN`; negative expiry denotes an already expired option.
     pub fn black_price(&self, forward_spread: f64, vol: f64, risky_annuity: f64) -> f64 {
-        if self.option_expiry <= 0.0 || vol < 0.0 || risky_annuity <= 0.0 {
+        if !self.notional.is_finite()
+            || self.notional < 0.0
+            || !self.option_expiry.is_finite()
+            || !forward_spread.is_finite()
+            || forward_spread < 0.0
+            || !self.strike_spread.is_finite()
+            || self.strike_spread < 0.0
+            || !vol.is_finite()
+            || vol < 0.0
+            || !risky_annuity.is_finite()
+            || risky_annuity < 0.0
+        {
+            return f64::NAN;
+        }
+        if self.option_expiry < 0.0
+            || self.notional == 0.0
+            || risky_annuity == 0.0
+            || (forward_spread == 0.0 && self.strike_spread == 0.0)
+        {
             return 0.0;
         }
 
-        let f = forward_spread;
-        let k = self.strike_spread;
-
-        // Zero vol case: intrinsic value
-        if vol <= 1e-14 {
-            let intrinsic = if self.is_payer {
-                (f - k).max(0.0)
-            } else {
-                (k - f).max(0.0)
-            };
-            return self.notional * risky_annuity * intrinsic;
-        }
-
-        if f <= 0.0 || k <= 0.0 {
-            return 0.0;
-        }
-
-        let t = self.option_expiry;
-        let sqrt_t = t.sqrt();
-        let vol_sqrt_t = vol * sqrt_t;
-        let d1 = ((f / k).ln() + 0.5 * vol * vol * t) / vol_sqrt_t;
-        let d2 = d1 - vol_sqrt_t;
-
-        let undiscounted = if self.is_payer {
-            f * normal_cdf(d1) - k * normal_cdf(d2)
+        let option_type = if self.is_payer {
+            OptionType::Call
         } else {
-            k * normal_cdf(-d2) - f * normal_cdf(-d1)
+            OptionType::Put
         };
-
+        let undiscounted = bs_price(
+            option_type,
+            forward_spread,
+            self.strike_spread,
+            0.0,
+            0.0,
+            vol,
+            self.option_expiry,
+        );
         self.notional * risky_annuity * undiscounted
     }
 }
@@ -79,6 +86,8 @@ impl CdsOption {
 /// * `hazard_rate` - flat hazard rate (continuous)
 /// * `risk_free_rate` - flat continuously-compounded risk-free rate
 /// * `_recovery` - recovery rate (not used in RPV01 but kept for API consistency)
+///
+/// A non-integral tenor includes a final short accrual period at maturity.
 pub fn risky_annuity(
     payment_freq: u32,
     cds_tenor: f64,
@@ -90,13 +99,14 @@ pub fn risky_annuity(
         return 0.0;
     }
     let dt = 1.0 / payment_freq as f64;
-    let n = (cds_tenor * payment_freq as f64).round() as u32;
+    let n = (cds_tenor * payment_freq as f64).ceil() as u32;
     let mut rpv01 = 0.0;
-    for i in 1..=n {
-        let t = i as f64 * dt;
-        let df = (-risk_free_rate * t).exp();
-        let q = (-hazard_rate * t).exp();
-        rpv01 += dt * df * q;
+    for period in 1..=n {
+        let end = (period as f64 * dt).min(cds_tenor);
+        let start = (period - 1) as f64 * dt;
+        let df = (-risk_free_rate * end).exp();
+        let survival = (-hazard_rate * end).exp();
+        rpv01 += (end - start) * df * survival;
     }
     rpv01
 }
@@ -117,24 +127,24 @@ pub fn fair_spread_from_hazard(
         return 0.0;
     }
     let dt = 1.0 / payment_freq as f64;
-    let n = (cds_tenor * payment_freq as f64).round() as u32;
+    let n = (cds_tenor * payment_freq as f64).ceil() as u32;
 
     // Protection leg PV (assuming default at midpoint of each period)
     let mut prot_pv = 0.0;
     let mut premium_pv = 0.0;
 
-    for i in 1..=n {
-        let t = i as f64 * dt;
-        let t_prev = (i - 1) as f64 * dt;
-        let q_prev = (-hazard_rate * t_prev).exp();
-        let q = (-hazard_rate * t).exp();
-        let default_prob = q_prev - q;
-        let t_mid = (t_prev + t) / 2.0;
-        let df_mid = (-risk_free_rate * t_mid).exp();
-        let df = (-risk_free_rate * t).exp();
+    for period in 1..=n {
+        let end = (period as f64 * dt).min(cds_tenor);
+        let start = (period - 1) as f64 * dt;
+        let survival_start = (-hazard_rate * start).exp();
+        let survival_end = (-hazard_rate * end).exp();
+        let default_prob = survival_start - survival_end;
+        let midpoint = (start + end) / 2.0;
+        let df_mid = (-risk_free_rate * midpoint).exp();
+        let df = (-risk_free_rate * end).exp();
 
         prot_pv += (1.0 - recovery) * default_prob * df_mid;
-        premium_pv += dt * df * q;
+        premium_pv += (end - start) * df * survival_end;
     }
 
     if premium_pv <= 0.0 {

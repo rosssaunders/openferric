@@ -610,14 +610,10 @@ fn bs_price_scalar_reference(
         );
     }
     let (d1, d2) = stable_d1_d2(spot, strike, rate, dividend_yield, vol, expiry);
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let call = spot.mul_add(df_q * nd1, -(strike * df_r * nd2));
     if is_call {
-        call
+        spot.mul_add(df_q * normal_cdf(d1), -(strike * df_r * normal_cdf(d2)))
     } else {
-        call - spot * df_q + strike * df_r
+        strike.mul_add(df_r * normal_cdf(-d2), -(spot * df_q * normal_cdf(-d1)))
     }
 }
 
@@ -737,14 +733,10 @@ unsafe fn bs_price_asm_impl(
         (midpoint + half_width, midpoint - half_width)
     };
 
-    // Compute call, derive put via put-call parity to halve CDF evaluations.
-    let nd1 = normal_cdf(d1);
-    let nd2 = normal_cdf(d2);
-    let call = spot.mul_add(df_q * nd1, -(strike * df_r * nd2));
     if is_call {
-        call
+        spot.mul_add(df_q * normal_cdf(d1), -(strike * df_r * normal_cdf(d2)))
     } else {
-        call - spot * df_q + strike * df_r
+        strike.mul_add(df_r * normal_cdf(-d2), -(spot * df_q * normal_cdf(-d1)))
     }
 }
 

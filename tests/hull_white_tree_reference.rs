@@ -391,7 +391,7 @@ fn rolling_tenor_multi_exercise_tree_matches_gaussian_dynamic_program() {
         &exercise_dates,
         &curve,
     );
-    let fine = BermudanSwaptionEngine::new(HullWhite::new(a, sigma), 1200).price(
+    let fine = BermudanSwaptionEngine::new(HullWhite::new(a, sigma), 2400).price(
         &swaption,
         &exercise_dates,
         &curve,
@@ -401,21 +401,20 @@ fn rolling_tenor_multi_exercise_tree_matches_gaussian_dynamic_program() {
 
     // The reference budget is its measured 1200 -> 2400 interval refinement.
     // The tree budget is stated in currency units and is paired with an explicit
-    // 300 -> 1200 step convergence requirement rather than a price interval.
+    // 300 -> 2400 step convergence requirement rather than a price interval.
     assert!(
         reference_refinement <= 0.6,
         "Gaussian DP failed to converge: grid1200={reference_1200:.12}, grid2400={reference_2400:.12}, refinement={reference_refinement:.6}"
     );
-    // The 1200-step production tree gives 53_896.115330319735, a 1.268234
-    // residual to the fine independent grid.  Keep its rounded 1.5-unit tree
-    // budget separate from the oracle's measured refinement.
+    // Preserve the 1.5-unit tree budget after introducing exact curve fitting;
+    // refine the lattice rather than widen the independent oracle budget.
     let tree_discretization_budget = 1.5 + reference_refinement;
     assert!(
         fine_error <= tree_discretization_budget,
-        "Gaussian DP={reference_2400:.12}, tree(1200)={fine:.12}, error={fine_error:.6}, budget={tree_discretization_budget:.6}"
+        "Gaussian DP={reference_2400:.12}, tree(2400)={fine:.12}, error={fine_error:.6}, budget={tree_discretization_budget:.6}"
     );
     assert!(
         fine_error < coarse_error,
-        "rolling tree failed to converge: error(300)={coarse_error:.6}, error(1200)={fine_error:.6}"
+        "rolling tree failed to converge: error(300)={coarse_error:.6}, error(2400)={fine_error:.6}"
     );
 }
