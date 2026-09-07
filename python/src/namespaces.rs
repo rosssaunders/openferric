@@ -78,6 +78,7 @@ pub(crate) fn register(root: &Bound<'_, PyModule>) -> PyResult<()> {
         &models,
         &[
             "Vasicek",
+            "HullWhitePath",
             "VarianceGamma",
             "Cgmy",
             "Nig",

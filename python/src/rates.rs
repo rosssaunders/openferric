@@ -1638,6 +1638,23 @@ impl ForwardRateAgreement {
         self.to_core().npv(&curve.inner)
     }
 
+    fn npv_with_fixing(
+        &self,
+        curve: &YieldCurve,
+        fixing: Option<f64>,
+        settle_in_advance: bool,
+        include_settlement_date: bool,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .npv_with_fixing(
+                &curve.inner,
+                fixing,
+                settle_in_advance,
+                include_settlement_date,
+            )
+            .map_err(PyValueError::new_err)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ForwardRateAgreement(notional={}, fixed_rate={}, start_date='{}', end_date='{}', valuation_date='{}')",
@@ -2895,6 +2912,16 @@ impl Swaption {
 
     fn price(&self, curve: &YieldCurve, vol: f64) -> f64 {
         self.to_core().price(&curve.inner, vol)
+    }
+
+    fn price_hull_white(
+        &self,
+        curve: &YieldCurve,
+        model: &crate::models::HullWhite,
+    ) -> PyResult<f64> {
+        self.to_core()
+            .price_hull_white(&curve.inner, &model.to_core())
+            .map_err(PyValueError::new_err)
     }
 
     fn implied_vol(&self, market_price: f64, curve: &YieldCurve) -> f64 {

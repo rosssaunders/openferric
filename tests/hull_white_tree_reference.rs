@@ -271,6 +271,83 @@ fn calibrated_flat_curve_theta_matches_hull_white_closed_form() {
 }
 
 #[test]
+fn coterminal_bermudan_matches_independent_gaussian_dynamic_program() {
+    let exercise_dates = [1.0, 2.0, 3.0];
+    let swap_end = 6.0;
+    let reversion = 0.05;
+    let volatility = 0.01;
+    let notional = 1_000_000.0;
+    let strike = 0.04;
+    let reference = |intervals: usize| {
+        let grid: Vec<f64> = (0..=intervals)
+            .map(|index| -0.12 + 0.24 * index as f64 / intervals as f64)
+            .collect();
+        let mut values = vec![0.0; grid.len()];
+        for exercise_index in (0..exercise_dates.len()).rev() {
+            let time = exercise_dates[exercise_index];
+            let mut earlier = Vec::with_capacity(grid.len());
+            for &state in &grid {
+                let exercise = rolling_payer_exercise_value(
+                    reversion,
+                    volatility,
+                    time,
+                    state,
+                    (swap_end - time) as usize,
+                    strike,
+                    notional,
+                );
+                let continuation = if exercise_index + 1 < exercise_dates.len() {
+                    hw_discounted_grid_transition(
+                        reversion,
+                        volatility,
+                        time,
+                        exercise_dates[exercise_index + 1],
+                        state,
+                        &grid,
+                        &values,
+                    )
+                } else {
+                    0.0
+                };
+                earlier.push(exercise.max(continuation));
+            }
+            values = earlier;
+        }
+        hw_discounted_grid_transition(
+            reversion,
+            volatility,
+            0.0,
+            exercise_dates[0],
+            0.0,
+            &grid,
+            &values,
+        )
+    };
+    let coarse_reference = reference(1200);
+    let fine_reference = reference(2400);
+    let refinement = (fine_reference - coarse_reference).abs();
+    let swaption = Swaption {
+        notional,
+        strike,
+        option_expiry: 1.0,
+        swap_tenor: 5.0,
+        is_payer: true,
+    };
+    let engine = BermudanSwaptionEngine::new(HullWhite::new(reversion, volatility), 2400);
+    let actual = engine.price(&swaption, &exercise_dates, &flat_curve());
+    assert!(refinement < 0.6, "reference refinement={refinement}");
+    assert!(
+        (actual - fine_reference).abs() < 2.0 + refinement,
+        "tree={actual:.12}, reference={fine_reference:.12}"
+    );
+    assert!(
+        (actual - engine.price_rolling_tenor(&swaption, &exercise_dates, &flat_curve())).abs()
+            > 1_000.0
+    );
+    assert!(engine.price(&swaption, &[1.0, 1.5], &flat_curve()).is_nan());
+}
+
+#[test]
 fn single_exercise_tree_converges_to_jamshidian_price() {
     let a = 0.05;
     let sigma = 0.01;
@@ -386,12 +463,12 @@ fn rolling_tenor_multi_exercise_tree_matches_gaussian_dynamic_program() {
         swap_tenor: tenor_years as f64,
         is_payer: true,
     };
-    let coarse = BermudanSwaptionEngine::new(HullWhite::new(a, sigma), 300).price(
+    let coarse = BermudanSwaptionEngine::new(HullWhite::new(a, sigma), 300).price_rolling_tenor(
         &swaption,
         &exercise_dates,
         &curve,
     );
-    let fine = BermudanSwaptionEngine::new(HullWhite::new(a, sigma), 2400).price(
+    let fine = BermudanSwaptionEngine::new(HullWhite::new(a, sigma), 2400).price_rolling_tenor(
         &swaption,
         &exercise_dates,
         &curve,

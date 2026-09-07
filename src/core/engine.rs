@@ -135,6 +135,7 @@ pub enum DiagKey {
     MinExercises,
     Npv,
     NumPaths,
+    TrainingPaths,
     NumThreads,
     ObservationCount,
     NumSpaceSteps,
@@ -181,6 +182,7 @@ impl DiagKey {
             Self::MinExercises => "min_exercises",
             Self::Npv => "npv",
             Self::NumPaths => "num_paths",
+            Self::TrainingPaths => "training_paths",
             Self::NumThreads => "num_threads",
             Self::ObservationCount => "observation_count",
             Self::NumSpaceSteps => "num_space_steps",
@@ -230,6 +232,7 @@ impl std::str::FromStr for DiagKey {
             "min_exercises" => Ok(Self::MinExercises),
             "npv" => Ok(Self::Npv),
             "num_paths" => Ok(Self::NumPaths),
+            "training_paths" => Ok(Self::TrainingPaths),
             "num_threads" => Ok(Self::NumThreads),
             "observation_count" => Ok(Self::ObservationCount),
             "num_space_steps" => Ok(Self::NumSpaceSteps),
@@ -345,7 +348,8 @@ impl Diagnostics {
 pub struct PricingResult {
     /// Present value.
     pub price: f64,
-    /// Standard error (typically Monte Carlo only).
+    /// Sampling standard error (typically Monte Carlo only). Excludes model,
+    /// calibration, exercise-policy and time/state discretization errors.
     pub stderr: Option<f64>,
     /// Greeks when available from the engine.
     pub greeks: Option<Greeks>,

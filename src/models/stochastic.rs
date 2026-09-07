@@ -45,7 +45,10 @@ pub struct Heston {
 
 impl Heston {
     pub fn validate(&self) -> bool {
-        self.kappa > 0.0
+        [self.mu, self.kappa, self.theta, self.xi, self.rho, self.v0]
+            .iter()
+            .all(|value| value.is_finite())
+            && self.kappa > 0.0
             && self.theta >= 0.0
             && self.xi >= 0.0
             && self.v0 >= 0.0
@@ -53,6 +56,8 @@ impl Heston {
             && self.rho < 1.0
     }
 
+    /// Projected Euler step, flooring the returned variance at zero.
+    /// Repeated projection has more boundary bias than full truncation.
     pub fn step_euler(&self, s: f64, v: f64, dt: f64, z1: f64, z2: f64) -> (f64, f64) {
         let v_pos = v.max(0.0);
         let sqrt_dt = dt.sqrt();
@@ -68,6 +73,29 @@ impl Heston {
         let s_next = s * ((self.mu - 0.5 * v_pos) * dt + v_pos.sqrt() * sqrt_dt * zs).exp();
 
         (s_next, v_next)
+    }
+
+    /// Full-truncation log-Euler step. The second result is the auxiliary
+    /// variance, which may be negative and must be carried to the next step
+    /// without flooring. Only drift/diffusion coefficients use its positive part.
+    pub fn step_full_truncation(
+        &self,
+        spot: f64,
+        variance: f64,
+        dt: f64,
+        variance_normal: f64,
+        independent_normal: f64,
+    ) -> (f64, f64) {
+        let positive_variance = variance.max(0.0);
+        let diffusion = (positive_variance * dt).sqrt();
+        let spot_normal =
+            self.rho * variance_normal + (1.0 - self.rho * self.rho).sqrt() * independent_normal;
+        let next_variance = variance
+            + self.kappa * (self.theta - positive_variance) * dt
+            + self.xi * diffusion * variance_normal;
+        let next_spot =
+            spot * ((self.mu - 0.5 * positive_variance) * dt + diffusion * spot_normal).exp();
+        (next_spot, next_variance)
     }
 }
 
@@ -137,16 +165,40 @@ mod tests {
         };
         assert!(model.validate());
 
-        // Independent 80-digit Decimal evaluation of the stated full-
-        // truncation Euler step, including the correlated spot shock.
         let (s1, v1) = model.step_euler(100.0, 0.04, 0.25, 0.35, -0.8);
         assert_relative_eq!(s1, 92.081_143_785_680_46, epsilon = 3.0e-14);
         assert_relative_eq!(v1, 0.0645, epsilon = 2.0e-17);
 
-        // The extreme-shock fixture separately pins the full-truncation floor.
         let (clipped_s, clipped_v) = model.step_euler(100.0, 0.001, 1.0 / 252.0, -15.0, 1.2);
         assert_relative_eq!(clipped_s, 102.015_834_802_300_32, epsilon = 4.0e-14);
         assert_eq!(clipped_v, 0.0);
+    }
+
+    #[test]
+    fn full_truncation_carries_negative_auxiliary_variance_across_steps() {
+        let model = Heston {
+            mu: 0.03,
+            kappa: 2.0,
+            theta: 0.04,
+            xi: 0.7,
+            rho: -0.6,
+            v0: 0.001,
+        };
+        let (spot, auxiliary) = model.step_full_truncation(100.0, 0.001, 1.0 / 252.0, -15.0, 1.2);
+        assert!(auxiliary < 0.0);
+        let (next_spot, next_auxiliary) =
+            model.step_full_truncation(spot, auxiliary, 1.0 / 252.0, 99.0, -99.0);
+        assert_relative_eq!(
+            next_auxiliary,
+            auxiliary + 2.0 * 0.04 / 252.0,
+            epsilon = 1.0e-16
+        );
+        assert_relative_eq!(
+            next_spot,
+            spot * (0.03_f64 / 252.0).exp(),
+            epsilon = 1.0e-13
+        );
+        assert!(next_auxiliary < 0.0);
     }
 
     #[test]

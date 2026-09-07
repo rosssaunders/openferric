@@ -182,10 +182,10 @@ external engine exists:
   errors are combined explicitly.
 - The Hull-White tree's non-zero-volatility single-exercise swaption converges
   to Jamshidian's closed form and a QuantLib-Python 1.43 value. The library's
-  rolling-tenor multi-exercise contract is not the conventional fixed-underlying
-  package payoff, so it is checked against an independent continuous-state
-  Gaussian dynamic program using the exact joint law of the short-rate factor
-  and stochastic discount integral.
+  default multi-exercise contract is co-terminal with annual reset dates.
+  The separately named rolling-tenor contract and the co-terminal contract are
+  checked against independent continuous-state Gaussian dynamic programs using
+  the exact joint law of the short-rate factor and stochastic discount integral.
 - Non-flat stochastic-local-volatility calibration is checked across strikes
   against the exact sampled/interpolated market Black-Scholes surface, with
   separate particle, calibration and pricing uncertainty. Non-zero-eta rough
@@ -213,12 +213,15 @@ external engine exists:
   cases. The callable-note recurrence is independently written at the lattice
   and event-order layer but deliberately reuses the model's calibrated-theta
   and bond-price primitives, which the separate Jamshidian/QuantLib tests cover;
-  exercise/order/no-arbitrage properties remain supplemental. A dated
-  QuantLib-Python bridge matched deterministic bond cashflows within 1.5e-14
-  and reconciled clean/dirty call semantics, but the 1,200-step non-zero-vol
-  OpenFerric tree remained 3.36e-5 from the analytic Hull-White bond-option
-  value. The external callable-note lock is therefore deferred rather than
-  presented with a false closed-form tolerance.
+  exercise/order/no-arbitrage properties remain supplemental.
+  `pricing_correctness_gaps` adds a committed QuantLib 1.43 callable-note
+  bond-option price with an explicit lattice error budget and refinement test,
+  plus daily range coupons checked against payment-measure Gaussian marginals.
+  Rates TARN/snowball prices use independent SciPy Sobol cashflow references;
+  stochastic MBS valuation has a separate payment-measure quadrature reference.
+  Hull-White calibration reprices QuantLib-derived normal-vol quotes through
+  actual Jamshidian prices rather than fitting the approximation that generated
+  its own targets. See [pricing conventions](PRICING_CORRECTNESS.md).
 - GPU Monte Carlo integration tests request a real WebGPU adapter. If none is
   available they print an explicit skip and return; CPU reduction, request
   validation, WGSL parsing and shader validation still run in every build.

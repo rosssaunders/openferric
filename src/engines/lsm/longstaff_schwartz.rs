@@ -9,7 +9,7 @@
 //! Numerical considerations: estimator variance, path count, and random-seed strategy drive confidence intervals; monitor bias from discretization and variance reduction choices.
 //!
 //! When to use: use Monte Carlo for path dependence and higher-dimensional factors; prefer analytic or tree methods when low-dimensional closed-form or lattice solutions exist.
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Matrix4, Vector3, Vector4};
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -69,6 +69,9 @@ pub struct BermudanLsmOutput {
 }
 
 /// Longstaff-Schwartz least-squares Monte Carlo engine.
+/// A separate sample of `num_paths` trains the stopping policy; the returned
+/// price and stderr use independent paths. Stderr is conditional on this
+/// fitted policy and excludes discretization and suboptimal-policy bias.
 #[derive(Debug, Clone)]
 pub struct LongstaffSchwartzEngine {
     /// Number of Monte Carlo paths.
@@ -274,6 +277,94 @@ fn solve_quadratic_regression(sums: QuadraticRegressionSums) -> Result<Vector3<f
     Ok(beta)
 }
 
+#[derive(Clone, Copy)]
+struct ContinuationPolicy {
+    center: f64,
+    scale: f64,
+    coefficients: Vector4<f64>,
+}
+
+impl ContinuationPolicy {
+    fn quadratic(coefficients: Vector3<f64>) -> Self {
+        Self {
+            center: 0.0,
+            scale: 1.0,
+            coefficients: Vector4::new(coefficients[0], coefficients[1], coefficients[2], 0.0),
+        }
+    }
+
+    #[inline(always)]
+    fn value(self, normalized_spot: f64) -> f64 {
+        let state = (normalized_spot - self.center) / self.scale;
+        ((self.coefficients[3] * state + self.coefficients[2]) * state + self.coefficients[1])
+            * state
+            + self.coefficients[0]
+    }
+}
+
+fn cubic_continuation_policy(
+    spots: &[f64],
+    values: &[f64],
+    option_type: OptionType,
+    exercise_strike: f64,
+    strike: f64,
+) -> Result<Option<ContinuationPolicy>, PricingError> {
+    let sums = regression_sums(spots, values, option_type, exercise_strike, strike);
+    if sums.count < 4 {
+        return Ok(None);
+    }
+    let center = sums.s / sums.s1;
+    let variance = spots
+        .iter()
+        .filter(|&&spot| intrinsic(option_type, spot, exercise_strike) > 0.0)
+        .map(|&spot| (spot / strike - center).powi(2))
+        .sum::<f64>()
+        / sums.s1;
+    if variance <= 1.0e-24 {
+        return Ok(Some(ContinuationPolicy {
+            center,
+            scale: 1.0,
+            coefficients: Vector4::new(sums.y / sums.s1, 0.0, 0.0, 0.0),
+        }));
+    }
+    let scale = variance.sqrt();
+    let mut moments = [0.0; 7];
+    let mut targets = Vector4::zeros();
+    for (&spot, &value) in spots.iter().zip(values) {
+        if intrinsic(option_type, spot, exercise_strike) <= 0.0 {
+            continue;
+        }
+        let state = (spot / strike - center) / scale;
+        let mut power = 1.0;
+        for (degree, moment) in moments.iter_mut().enumerate() {
+            *moment += power;
+            if degree < 4 {
+                targets[degree] += power * value / strike;
+            }
+            power *= state;
+        }
+    }
+    let matrix = Matrix4::from_fn(|row, column| moments[row + column]);
+    let coefficients = matrix.lu().solve(&targets).ok_or_else(|| {
+        PricingError::NumericalError(
+            "Longstaff-Schwartz continuation regression is singular".into(),
+        )
+    })?;
+    if coefficients
+        .iter()
+        .any(|coefficient| !coefficient.is_finite())
+    {
+        return Err(PricingError::NumericalError(
+            "Longstaff-Schwartz continuation regression produced non-finite coefficients".into(),
+        ));
+    }
+    Ok(Some(ContinuationPolicy {
+        center,
+        scale,
+        coefficients,
+    }))
+}
+
 #[inline]
 fn boundary_from_exercised(option_type: OptionType, exercised_spots: &[f64]) -> Option<f64> {
     if exercised_spots.is_empty() {
@@ -390,9 +481,9 @@ impl LongstaffSchwartzEngine {
                     for ti in 1..=self.num_steps {
                         let z1 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
                         let z2 = beasley_springer_moro_inv_cdf(uniform_open01(rng.next_f64()));
-                        let (s_next, v_next) = heston.step_euler(s, v, dt, z1, z2);
+                        let (s_next, v_next) = heston.step_full_truncation(s, v, dt, z1, z2);
                         s = s_next.max(1.0e-12);
-                        v = v_next.max(0.0);
+                        v = v_next;
                         paths[base + ti] = s;
                     }
                 }
@@ -441,9 +532,15 @@ impl LongstaffSchwartzEngine {
         let dt = instrument.expiry / self.num_steps as f64;
         let disc = (-market.rate * dt).exp();
         let mut step_schedule = vec![None::<(f64, f64)>; self.num_steps + 1];
+        let mut policy = vec![None; self.num_steps + 1];
         for &(t, k) in &schedule {
             let idx = (((t / instrument.expiry) * self.num_steps as f64).round() as usize)
                 .clamp(1, self.num_steps);
+            if step_schedule[idx].is_some() || (t / dt).round() == 0.0 {
+                return Err(PricingError::InvalidInput(
+                    "exercise dates collide on the LSM grid; increase num_steps".into(),
+                ));
+            }
             step_schedule[idx] = Some((t, k));
         }
 
@@ -500,15 +597,15 @@ impl LongstaffSchwartzEngine {
                 continue;
             }
 
-            let beta = regression_beta(&itm, &paths, stride, ti, &values, strike)?;
+            let beta = ContinuationPolicy::quadratic(regression_beta(
+                &itm, &paths, stride, ti, &values, strike,
+            )?);
+            policy[ti] = Some((strike, ex_strike, ex_scale, beta));
             let mut exercised_spots = Vec::with_capacity(itm.len());
             for idx in itm.iter().copied() {
                 let s = paths[idx * stride + ti];
                 let normalized_spot = s / strike;
-                let continuation = strike
-                    * (beta[0]
-                        + beta[1] * normalized_spot
-                        + beta[2] * normalized_spot * normalized_spot);
+                let continuation = strike * beta.value(normalized_spot);
                 let exercise = intrinsic(instrument.option_type, s, ex_strike) * ex_scale;
                 if exercise > continuation {
                     values[idx] = exercise;
@@ -526,10 +623,25 @@ impl LongstaffSchwartzEngine {
             });
         }
 
-        let (price, stderr) = scaled_mean_and_stderr(&values, disc);
+        let evaluation_engine = Self {
+            seed: self.seed ^ 0xA076_1D64_78BD_642F,
+            ..self.clone()
+        };
+        let (evaluation_paths, evaluation_stride) =
+            evaluation_engine.simulate_bermudan_paths(instrument, market, terminal_strike)?;
+        let (price, stderr) = evaluate_frozen_policy(
+            instrument.option_type,
+            terminal_strike,
+            self.num_paths,
+            self.num_steps,
+            disc,
+            &policy,
+            |path, step| evaluation_paths[path * evaluation_stride + step],
+        );
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert_key(crate::core::DiagKey::NumPaths, self.num_paths as f64);
+        diagnostics.insert_key(crate::core::DiagKey::TrainingPaths, self.num_paths as f64);
         diagnostics.insert_key(crate::core::DiagKey::NumSteps, self.num_steps as f64);
         diagnostics.insert_key(crate::core::DiagKey::ExerciseDates, schedule.len() as f64);
 
@@ -620,6 +732,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             .collect();
 
         let mut can_exercise = vec![false; self.num_steps + 1];
+        let mut policy = vec![None; self.num_steps + 1];
         match &instrument.exercise {
             ExerciseStyle::European => {
                 can_exercise[self.num_steps] = true;
@@ -633,6 +746,11 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             ExerciseStyle::Bermudan { dates } => {
                 for &date in dates {
                     let idx = ((date / instrument.expiry) * self.num_steps as f64).round() as usize;
+                    if can_exercise[idx.min(self.num_steps)] || (date > 0.0 && idx == 0) {
+                        return Err(PricingError::InvalidInput(
+                            "exercise dates collide on the LSM grid; increase num_steps".into(),
+                        ));
+                    }
                     can_exercise[idx.min(self.num_steps)] = true;
                 }
                 can_exercise[self.num_steps] = true;
@@ -654,18 +772,17 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 .map_or((instrument.strike, 1.0), |adj| adj[ti]);
 
             let spots = &paths.levels[ti];
-            let sums = regression_sums(
+            let Some(beta) = cubic_continuation_policy(
                 spots,
                 &values,
                 instrument.option_type,
                 ex_strike,
                 instrument.strike,
-            );
-            if sums.count < 3 {
+            )?
+            else {
                 continue;
-            }
-
-            let beta = solve_quadratic_regression(sums)?;
+            };
+            policy[ti] = Some((instrument.strike, ex_strike, ex_scale, beta));
 
             #[cfg(feature = "parallel")]
             if values.len() >= 8_192 && rayon::current_num_threads() > 1 {
@@ -677,10 +794,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                             intrinsic(instrument.option_type, spot, ex_strike) * ex_scale;
                         if exercise > 0.0 {
                             let normalized_spot = spot / instrument.strike;
-                            let continuation = instrument.strike
-                                * (beta[0]
-                                    + beta[1] * normalized_spot
-                                    + beta[2] * normalized_spot * normalized_spot);
+                            let continuation = instrument.strike * beta.value(normalized_spot);
                             if exercise > continuation {
                                 *value = exercise;
                             }
@@ -693,10 +807,7 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
                 let exercise = intrinsic(instrument.option_type, spot, ex_strike) * ex_scale;
                 if exercise > 0.0 {
                     let normalized_spot = spot / instrument.strike;
-                    let continuation = instrument.strike
-                        * (beta[0]
-                            + beta[1] * normalized_spot
-                            + beta[2] * normalized_spot * normalized_spot);
+                    let continuation = instrument.strike * beta.value(normalized_spot);
                     if exercise > continuation {
                         *value = exercise;
                     }
@@ -704,10 +815,50 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             }
         }
 
-        let (price, stderr) = scaled_mean_and_stderr(&values, disc);
+        let early_exercise = can_exercise[..self.num_steps]
+            .iter()
+            .any(|allowed| *allowed);
+        let (price, stderr) = if early_exercise {
+            let immediate = intrinsic(instrument.option_type, market.spot, instrument.strike);
+            let exercise_at_zero =
+                matches!(instrument.exercise, ExerciseStyle::American) || can_exercise[0];
+            if exercise_at_zero && immediate > scaled_mean_and_stderr(&values, disc).0 {
+                (immediate, 0.0)
+            } else {
+                let evaluation_paths = simulate_gbm_paths_soa(
+                    spot0,
+                    market.rate,
+                    market.dividend_yield,
+                    vol,
+                    instrument.expiry,
+                    self.num_paths,
+                    self.num_steps,
+                    self.seed ^ 0xA076_1D64_78BD_642F,
+                );
+                evaluate_frozen_policy(
+                    instrument.option_type,
+                    instrument.strike,
+                    self.num_paths,
+                    self.num_steps,
+                    disc,
+                    &policy,
+                    |path, step| evaluation_paths.levels[step][path],
+                )
+            }
+        } else {
+            scaled_mean_and_stderr(&values, disc)
+        };
 
         let mut diagnostics = crate::core::Diagnostics::new();
         diagnostics.insert("num_paths", self.num_paths as f64);
+        diagnostics.insert_key(
+            crate::core::DiagKey::TrainingPaths,
+            if early_exercise {
+                self.num_paths as f64
+            } else {
+                0.0
+            },
+        );
         diagnostics.insert("num_steps", self.num_steps as f64);
         diagnostics.insert("vol", vol);
 
@@ -718,6 +869,41 @@ impl PricingEngine<VanillaOption> for LongstaffSchwartzEngine {
             diagnostics,
         })
     }
+}
+
+fn evaluate_frozen_policy(
+    option_type: OptionType,
+    terminal_strike: f64,
+    num_paths: usize,
+    num_steps: usize,
+    discount_step: f64,
+    policy: &[Option<(f64, f64, f64, ContinuationPolicy)>],
+    spot_at: impl Fn(usize, usize) -> f64,
+) -> (f64, f64) {
+    let mut moments = RunningMoments::default();
+    for path in 0..num_paths {
+        let mut payoff = intrinsic(option_type, spot_at(path, num_steps), terminal_strike);
+        let mut exercise_step = num_steps;
+        for (step, decision) in policy.iter().enumerate().take(num_steps).skip(1) {
+            let Some((strike, adjusted_strike, scale, beta)) = decision else {
+                continue;
+            };
+            let spot = spot_at(path, step);
+            let normalized = spot / strike;
+            let continuation = strike * beta.value(normalized);
+            let exercise = intrinsic(option_type, spot, *adjusted_strike) * scale;
+            if exercise > 0.0 && exercise > continuation {
+                payoff = exercise;
+                exercise_step = step;
+                break;
+            }
+        }
+        moments.record(payoff * discount_step.powf(exercise_step as f64));
+    }
+    (
+        moments.mean(),
+        (moments.sample_variance() / num_paths as f64).sqrt(),
+    )
 }
 
 impl PricingEngine<BermudanOption> for LongstaffSchwartzEngine {
@@ -876,6 +1062,83 @@ mod tests {
     use crate::core::PricingEngine;
     use crate::instruments::VanillaOption;
     use crate::market::Market;
+
+    #[test]
+    fn centered_cubic_regression_recovers_continuation_on_narrow_spot_ranges() {
+        let spots: Vec<f64> = (0..40).map(|index| 90.0 + 0.01 * index as f64).collect();
+        let continuation = |spot: f64| {
+            let state = spot - 90.0;
+            5.0 + 2.0 * state - state.powi(2) + 0.7 * state.powi(3)
+        };
+        let values: Vec<f64> = spots.iter().map(|&spot| continuation(spot)).collect();
+        let policy = super::cubic_continuation_policy(
+            &spots,
+            &values,
+            crate::core::OptionType::Put,
+            100.0,
+            100.0,
+        )
+        .unwrap()
+        .unwrap();
+        for spot in [90.025, 90.145, 90.365] {
+            assert!((100.0 * policy.value(spot / 100.0) - continuation(spot)).abs() < 1.0e-12);
+        }
+        let constant = super::cubic_continuation_policy(
+            &[90.0; 8],
+            &[5.0; 8],
+            crate::core::OptionType::Put,
+            100.0,
+            100.0,
+        )
+        .unwrap()
+        .unwrap();
+        assert!((100.0 * constant.value(0.9) - 5.0).abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn frozen_policy_stops_at_first_exercise_without_future_lookahead() {
+        let paths = [[100.0, 90.0, 70.0, 1.0], [100.0, 98.0, 80.0, 50.0]];
+        let decision = Some((
+            100.0,
+            100.0,
+            1.0,
+            super::ContinuationPolicy::quadratic(nalgebra::Vector3::new(0.04, 0.0, 0.0)),
+        ));
+        let (price, stderr) = super::evaluate_frozen_policy(
+            crate::core::OptionType::Put,
+            100.0,
+            2,
+            3,
+            0.99,
+            &[None, decision, decision, None],
+            |path, step| paths[path][step],
+        );
+        assert!((price - (9.9 + 19.602) / 2.0).abs() < 1.0e-14);
+        assert!((stderr - (19.602 - 9.9) / 2.0).abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn distinct_exercise_rights_cannot_silently_collapse_on_one_step() {
+        let market = Market::builder()
+            .spot(100.0)
+            .rate(0.03)
+            .flat_vol(0.2)
+            .build()
+            .unwrap();
+        let instrument = crate::instruments::BermudanOption::new(
+            crate::core::OptionType::Put,
+            1.0,
+            vec![0.2, 0.21, 1.0],
+            vec![100.0, 110.0, 100.0],
+        );
+        assert!(
+            LongstaffSchwartzEngine::new(100, 5, 7)
+                .price(&instrument, &market)
+                .unwrap_err()
+                .to_string()
+                .contains("collide")
+        );
+    }
 
     #[test]
     fn constant_values_do_not_produce_nan_stderr_from_roundoff() {

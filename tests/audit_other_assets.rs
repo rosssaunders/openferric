@@ -48,14 +48,14 @@ fn mbs_spread_uses_every_discount_curve_point() {
         let market_price =
             50.0 / (1.0 + (0.01 + spread) / 12.0) + 50.0 / (1.0 + (0.06 + spread) / 12.0).powi(2);
         assert_relative_eq!(
-            mortgage.oas(market_price, &[0.01, 0.06]),
+            mortgage.z_spread(market_price, &[0.01, 0.06]),
             spread,
             epsilon = 3.0e-12
         );
     }
-    assert!(mortgage.oas(-1.0, &[0.01]).is_nan());
-    assert!(mortgage.oas(f64::NAN, &[0.01]).is_nan());
-    assert!(mortgage.oas(100.0, &[0.01, 0.02, 0.03]).is_nan());
+    assert!(mortgage.z_spread(-1.0, &[0.01]).is_nan());
+    assert!(mortgage.z_spread(f64::NAN, &[0.01]).is_nan());
+    assert!(mortgage.z_spread(100.0, &[0.01, 0.02, 0.03]).is_nan());
 }
 
 #[test]

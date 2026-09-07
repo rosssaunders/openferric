@@ -274,6 +274,15 @@ fn fra_zero_period_returns_zero() {
 
     assert_eq!(fra.forward_rate(&curve), 0.0);
     assert_eq!(fra.npv(&curve), 0.0);
+    for advance in [false, true] {
+        for include_today in [false, true] {
+            assert_eq!(
+                fra.npv_with_fixing(&curve, None, advance, include_today)
+                    .unwrap(),
+                0.0
+            );
+        }
+    }
 }
 
 /// FRA on multiple day count conventions — consistency check.

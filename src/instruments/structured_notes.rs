@@ -20,8 +20,14 @@
 //! includes intervening coupons and discounts redemption to the call date.
 //! Notice periods on rate-dependent coupons are not supported by this tree.
 //!
-//! Non-callable path-dependent notes (TARN and snowball) are exposed as
-//! deterministic pricers against projected rate paths.
+//! Range accrual observes the short rate daily on an ACT/365F time grid,
+//! weighting the last stub by its actual length. Earned daily amounts survive
+//! later calls and are paid on the original coupon payment date. A same-time
+//! call precedes that day's observation. Calendar/business-day observation
+//! conventions are not inferred from year fractions.
+//! Positive-time range indicators use cell-average smoothing on the rate
+//! lattice to remove first-order barrier placement bias. Numerical timestep
+//! convergence is still required; observation frequency is contractual.
 
 use crate::models::HullWhite;
 use crate::rates::{Frequency, YieldCurve};
@@ -29,7 +35,7 @@ use crate::rates::{Frequency, YieldCurve};
 /// Structured coupon formula used by coupon schedules.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StructuredCoupon {
-    /// Coupon accrues only when the observed short rate is inside the range.
+    /// Daily ACT/365F short-rate observations, with inclusive range bounds.
     RangeAccrual {
         /// Annualized coupon rate when in range.
         in_range_coupon_rate: f64,
@@ -287,6 +293,119 @@ pub struct CallableRateNote {
 }
 
 impl CallableRateNote {
+    /// Values an outstanding seasoned note. Historical underlying fixings
+    /// determine earned coupons; past payments are excluded. Range fixings are
+    /// short rates at daily observations; floating/CMS coupons use their own
+    /// index fixings. The supplied curve is anchored at `history.valuation_time`.
+    /// A previously delivered call notice must be settled separately.
+    pub fn price_hull_white_tree_with_history(
+        &self,
+        hw_model: &HullWhite,
+        curve: &YieldCurve,
+        steps: usize,
+        history: &super::RateNoteHistory,
+    ) -> Result<f64, String> {
+        self.validate()?;
+        let valuation = history.valuation_time;
+        if !valuation.is_finite()
+            || valuation < 0.0
+            || steps == 0
+            || !hw_model.a.is_finite()
+            || hw_model.a < 0.0
+            || !hw_model.sigma.is_finite()
+            || hw_model.sigma < 0.0
+            || history
+                .fixings
+                .iter()
+                .any(|&(time, rate)| !time.is_finite() || time > valuation || !rate.is_finite())
+            || history.fixings.iter().enumerate().any(|(index, fixing)| {
+                history.fixings[..index]
+                    .iter()
+                    .any(|earlier| earlier.0 == fixing.0)
+            })
+        {
+            return Err("invalid seasoned-note model, grid or history".into());
+        }
+        if valuation >= self.maturity {
+            return Ok(0.0);
+        }
+        if self.exercise_schedule.notice_period > 0.0
+            && self.exercise_schedule.bermudan_dates.iter().any(|&time| {
+                time > valuation && time - self.exercise_schedule.notice_period < valuation
+            })
+        {
+            return Err("valuation within a call notice period requires the issuer's recorded notice decision".into());
+        }
+        let mut earned_value = 0.0;
+        let mut remaining = self.clone();
+        remaining.maturity -= valuation;
+        remaining.coupon_schedule.clear();
+        for mut period in expand_range_observations(&self.coupon_schedule) {
+            if period.payment_time <= valuation {
+                continue;
+            }
+            let known = history
+                .fixings
+                .iter()
+                .find(|fixing| fixing.0 == period.start_time);
+            if !matches!(period.coupon, CouponType::Fixed { .. })
+                && (period.start_time < valuation || known.is_some())
+            {
+                let fixing = known
+                    .ok_or_else(|| format!("missing historical fixing at {}", period.start_time))?
+                    .1;
+                let rate = coupon_rate_deterministic(&period.coupon, fixing, fixing)?;
+                earned_value += self.notional
+                    * period.accrual()
+                    * rate
+                    * curve.discount_factor(period.payment_time - valuation);
+            } else {
+                period.start_time -= valuation;
+                period.end_time -= valuation;
+                period.payment_time -= valuation;
+                remaining.coupon_schedule.push(period);
+            }
+        }
+        remaining.exercise_schedule.bermudan_dates = self
+            .exercise_schedule
+            .bermudan_dates
+            .iter()
+            .copied()
+            .filter(|time| time - self.exercise_schedule.notice_period >= valuation)
+            .map(|time| time - valuation)
+            .collect();
+        if remaining.exercise_schedule.bermudan_dates.is_empty() {
+            remaining.exercise_schedule = ExerciseSchedule::new(vec![remaining.maturity], 0.0)?;
+            remaining.call_price = f64::MAX;
+        }
+        if remaining.exercise_schedule.notice_period > 0.0
+            && remaining
+                .coupon_schedule
+                .iter()
+                .any(|period| !matches!(period.coupon, CouponType::Fixed { .. }))
+        {
+            return Err(
+                "notice periods on rate-dependent coupons require an augmented-state engine".into(),
+            );
+        }
+        let value = if hw_model.sigma == 0.0 {
+            remaining.price_deterministic(curve)?
+        } else {
+            price_callable_note_tree(
+                remaining.notional,
+                remaining.redemption,
+                remaining.call_price,
+                remaining.maturity,
+                &remaining.coupon_schedule,
+                &remaining.exercise_schedule,
+                hw_model,
+                curve,
+                steps,
+            )?
+        };
+        Ok(earned_value + value)
+    }
+
     /// Validates the callable note definition.
     pub fn validate(&self) -> Result<(), String> {
         if !self.notional.is_finite() || self.notional <= 0.0 {
@@ -368,7 +487,9 @@ impl CallableRateNote {
             );
         }
         if hw_model.sigma == 0.0 {
-            return self.price_deterministic(curve);
+            let mut daily_note = self.clone();
+            daily_note.coupon_schedule = expand_range_observations(&self.coupon_schedule);
+            return daily_note.price_deterministic(curve);
         }
 
         price_callable_note_tree(
@@ -376,7 +497,7 @@ impl CallableRateNote {
             self.redemption,
             self.call_price,
             self.maturity,
-            &self.coupon_schedule,
+            &expand_range_observations(&self.coupon_schedule),
             &self.exercise_schedule,
             hw_model,
             curve,
@@ -585,7 +706,8 @@ impl TargetRedemptionNote {
         Ok(())
     }
 
-    /// Prices a rates TARN from projected floating rates.
+    /// Deterministic scenario PV, not a risk-neutral optionality price.
+    /// Use `price_hull_white_mc` for stochastic coupon and redemption effects.
     pub fn price(
         &self,
         projected_floating_rates: &[f64],
@@ -687,7 +809,8 @@ impl SnowballNote {
         Ok(())
     }
 
-    /// Prices snowball note from projected floating rates.
+    /// Deterministic scenario PV, not a risk-neutral optionality price.
+    /// Use `price_hull_white_mc` for stochastic recursive-coupon effects.
     pub fn price(
         &self,
         projected_floating_rates: &[f64],
@@ -920,6 +1043,33 @@ fn validate_coupon_schedule(schedule: &[CouponPeriod]) -> Result<(), String> {
     Ok(())
 }
 
+fn expand_range_observations(schedule: &[CouponPeriod]) -> Vec<CouponPeriod> {
+    let mut expanded = Vec::new();
+    for period in schedule {
+        if matches!(
+            period.coupon,
+            CouponType::Structured(StructuredCoupon::RangeAccrual { .. })
+        ) {
+            let count = (period.accrual() * 365.0).ceil() as usize;
+            for index in 0..count {
+                let start = period.start_time + index as f64 / 365.0;
+                let end = (period.start_time + (index + 1) as f64 / 365.0).min(period.end_time);
+                if end > start {
+                    expanded.push(CouponPeriod {
+                        start_time: start,
+                        end_time: end,
+                        payment_time: period.payment_time,
+                        coupon: period.coupon.clone(),
+                    });
+                }
+            }
+        } else {
+            expanded.push(period.clone());
+        }
+    }
+    expanded
+}
+
 fn validate_coupon_type(coupon: &CouponType) -> Result<(), String> {
     match coupon {
         CouponType::Fixed { rate } => {
@@ -1085,6 +1235,14 @@ fn price_callable_note_tree(
 ) -> Result<f64, String> {
     let dt = maturity / steps as f64;
     let model = hw_model;
+    let cell_width = model.sigma
+        * (3.0
+            * if model.a == 0.0 {
+                dt
+            } else {
+                -(-2.0 * model.a * dt).exp_m1() / (2.0 * model.a)
+            })
+        .sqrt();
     let lattice = crate::engines::tree::hull_white_lattice::HullWhiteLattice::new(
         model, curve, maturity, steps,
     )?;
@@ -1142,7 +1300,7 @@ fn price_callable_note_tree(
         let mut node_value = redemption;
         for period_idx in &coupon_map[steps] {
             let p = &coupon_schedule[*period_idx];
-            node_value += coupon_cashflow_tree(notional, p, maturity, r, model, curve)?;
+            node_value += coupon_cashflow_tree(notional, p, maturity, r, model, curve, cell_width)?;
         }
 
         if exercise_flags[steps] {
@@ -1162,7 +1320,15 @@ fn price_callable_note_tree(
 
             for period_idx in &coupon_map[i] {
                 let p = &coupon_schedule[*period_idx];
-                node_value += coupon_cashflow_tree(notional, p, t, r, model, curve)?;
+                node_value += coupon_cashflow_tree(
+                    notional,
+                    p,
+                    t,
+                    r,
+                    model,
+                    curve,
+                    if i == 0 { 0.0 } else { cell_width },
+                )?;
             }
 
             if exercise_flags[i] {
@@ -1233,6 +1399,7 @@ fn coupon_cashflow_tree(
     short_rate: f64,
     model: &HullWhite,
     curve: &YieldCurve,
+    cell_width: f64,
 ) -> Result<f64, String> {
     let accrual = period.accrual();
     if accrual <= 0.0 {
@@ -1259,7 +1426,13 @@ fn coupon_cashflow_tree(
             lower_bound,
             upper_bound,
         }) => {
-            if short_rate >= *lower_bound && short_rate <= *upper_bound {
+            if cell_width > 0.0 {
+                let overlap = (short_rate + 0.5 * cell_width).min(*upper_bound)
+                    - (short_rate - 0.5 * cell_width).max(*lower_bound);
+                *out_of_range_coupon_rate
+                    + (*in_range_coupon_rate - *out_of_range_coupon_rate)
+                        * (overlap / cell_width).clamp(0.0, 1.0)
+            } else if short_rate >= *lower_bound && short_rate <= *upper_bound {
                 *in_range_coupon_rate
             } else {
                 *out_of_range_coupon_rate
@@ -1404,6 +1577,32 @@ mod tests {
         curve: &YieldCurve,
         steps: usize,
     ) -> f64 {
+        let mut note = note.clone();
+        let mut observations = Vec::new();
+        for period in &note.coupon_schedule {
+            if matches!(
+                period.coupon,
+                CouponType::Structured(StructuredCoupon::RangeAccrual { .. })
+            ) {
+                let mut day = 0;
+                loop {
+                    let start = period.start_time + day as f64 / 365.0;
+                    if start >= period.end_time {
+                        break;
+                    }
+                    let end = (period.start_time + (day + 1) as f64 / 365.0).min(period.end_time);
+                    observations.push(CouponPeriod {
+                        start_time: start,
+                        end_time: end,
+                        ..period.clone()
+                    });
+                    day += 1;
+                }
+            } else {
+                observations.push(period.clone());
+            }
+        }
+        note.coupon_schedule = observations;
         let dt = note.maturity / steps as f64;
         let calibrated = hw;
         let persistence = (-hw.a * dt).exp();
@@ -1501,7 +1700,13 @@ mod tests {
                                 lower_bound,
                                 upper_bound,
                             }) => {
-                                let earned_rate = if (*lower_bound..=*upper_bound).contains(&rate) {
+                                let earned_rate = if level > 0 {
+                                    let left = (rate - spacing / 2.0).max(*lower_bound);
+                                    let right = (rate + spacing / 2.0).min(*upper_bound);
+                                    *out_of_range_coupon_rate
+                                        + (*in_range_coupon_rate - *out_of_range_coupon_rate)
+                                            * ((right - left) / spacing).clamp(0.0, 1.0)
+                                } else if (*lower_bound..=*upper_bound).contains(&rate) {
                                     *in_range_coupon_rate
                                 } else {
                                     *out_of_range_coupon_rate
@@ -1718,8 +1923,6 @@ mod tests {
              independent={reference:.17e}, binary64 budget={roundoff_budget:.3e}"
         );
 
-        // The coupon indicator is discontinuous at each range boundary; this
-        // refinement moves the one-million-notional value by 806.03 (8.07 bp).
         const GRID_240_TO_480_BUDGET: f64 = 8.07e2;
         let refined = callable_ra.price_hull_white_tree(&hw, &curve, 480).unwrap();
         assert!(

@@ -162,6 +162,23 @@ copies, not mutable views into Rust objects.
 
 ## Coverage contract
 
+### Pricing conventions and audit additions
+
+See [pricing correctness and lifecycle conventions](../docs/PRICING_CORRECTNESS.md).
+`HullWhiteCalibrator(curve)` now requires the discount curve and fits physical
+swaption prices in the absolute normal-volatility quote convention.
+`BermudanSwaptionEngine.price` is co-terminal; use `price_rolling_tenor` only for
+that explicitly different contract. MBS deterministic spread is `z_spread`;
+`oas_hull_white` uses stochastic refinancing and discounting.
+
+`RateNoteHistory(valuation_time=..., fixings=[(reset_time, rate), ...])` supplies
+historical resets for rates TARNs, snowballs and callable notes. Model paths,
+new stochastic pricing methods and historical FRA/barrier valuation are exposed
+as typed Python APIs. JSON-backed records preserve binary64 values through
+round trips; tests check prices and Greeks as well as API/serialization presence.
+
+### API inventory
+
 [`api_manifest.json`](api_manifest.json) maps the reviewed public Rust symbols,
 inherent methods, fields, and enum variants to concrete Python entry points.
 Tests verify the installed extension against this manifest and round-trip every

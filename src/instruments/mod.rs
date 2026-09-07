@@ -29,9 +29,11 @@ pub mod mbs;
 pub mod power;
 pub mod rainbow;
 pub mod range_accrual;
+pub mod rate_note_mc;
 pub mod real_option;
 pub mod spread;
 pub mod structured_notes;
+pub use rate_note_mc::RateNoteHistory;
 pub mod swing;
 pub mod tarf;
 pub mod vanilla;
@@ -57,7 +59,8 @@ pub use exotic::{
 pub use funding_rate_swap::FundingRateSwap;
 pub use fx::FxOption;
 pub use mbs::{
-    ConstantCpr, MbsCashflow, MbsPassThrough, PrepaymentModel, PsaModel, RateIncentivePrepayment,
+    ConstantCpr, MbsCashflow, MbsHullWhiteConfig, MbsPassThrough, PrepaymentModel, PsaModel,
+    RateIncentivePrepayment,
 };
 pub use power::PowerOption;
 pub use rainbow::{BestOfTwoCallOption, TwoAssetCorrelationOption, WorstOfTwoCallOption};

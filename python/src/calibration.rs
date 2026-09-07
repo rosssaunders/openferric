@@ -765,10 +765,22 @@ pub struct HullWhiteCalibrator {
 #[pymethods]
 impl HullWhiteCalibrator {
     #[new]
-    fn new() -> Self {
+    fn new(curve: &crate::rates::YieldCurve) -> Self {
         Self {
-            inner: CoreHullWhiteCalibrator::default(),
+            inner: CoreHullWhiteCalibrator::new(curve.inner.clone()),
         }
+    }
+
+    #[getter]
+    fn curve(&self) -> crate::rates::YieldCurve {
+        crate::rates::YieldCurve {
+            inner: self.inner.curve.clone(),
+        }
+    }
+
+    #[setter]
+    fn set_curve(&mut self, curve: &crate::rates::YieldCurve) {
+        self.inner.curve = curve.inner.clone();
     }
 
     #[getter]

@@ -790,3 +790,26 @@ fn instrument_and_portfolio_roundtrip() {
 
     assert_roundtrip(&portfolio);
 }
+#[test]
+fn json_roundtrips_preserve_pricing_inputs_bit_for_bit() {
+    let mut bits = 0xA076_1D64_78BD_642F_u64;
+    let mut values = vec![
+        0.0,
+        -0.0,
+        0.996_107_595_123_131_9,
+        0.976_285_709_757_909_3,
+        0.949_993_629_689_531_5,
+    ];
+    for _ in 0..2000 {
+        bits = bits.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let value = f64::from_bits(bits);
+        if value.is_finite() {
+            values.push(value);
+        }
+    }
+    for value in values {
+        let text = serde_json::to_string(&value).unwrap();
+        let decoded: f64 = serde_json::from_str(&text).unwrap();
+        assert_eq!(decoded.to_bits(), value.to_bits(), "JSON changed {text}");
+    }
+}

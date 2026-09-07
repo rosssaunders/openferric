@@ -1,6 +1,9 @@
 //! Module `models::hw_calibration`.
 //!
 //! Implements hw calibration workflows with concrete routines such as `hw_atm_swaption_vol_approx`, `calibrate_hull_white_params`.
+//! These curve-free frozen-weight approximations are initial-guess helpers,
+//! not price-level calibration. Use [`crate::calibration::HullWhiteCalibrator`]
+//! with an explicit curve to reprice physical swaptions.
 //!
 //! Volatility convention: every swaption volatility in this module is an ATM
 //! **normal (Bachelier)** volatility of the forward swap rate, in absolute

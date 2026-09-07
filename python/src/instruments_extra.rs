@@ -9,6 +9,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+crate::data::data_type!(RateNoteHistory, native::RateNoteHistory, {});
+
 fn error(value: impl ToString) -> PyErr {
     PyValueError::new_err(value.to_string())
 }
@@ -330,6 +332,10 @@ note!(CallableRateNote, {
     call_price: f64 => std::convert::identity, maturity: f64 => std::convert::identity,
     exercise_schedule: ExerciseSchedule => |value: ExerciseSchedule| value.to_core()
 }, {
+    fn price_hull_white_tree_with_history(&self, py: Python<'_>, hw_model: &HullWhite, curve: &YieldCurve, steps: usize, history: &RateNoteHistory) -> PyResult<f64> {
+        let model = hw_model.to_core();
+        py.detach(|| self.inner.price_hull_white_tree_with_history(&model, &curve.inner, steps, &history.inner)).map_err(error)
+    }
     fn price_hull_white_tree(&self, py: Python<'_>, hw_model: &HullWhite, curve: &YieldCurve, steps: usize) -> PyResult<f64> {
         let model = hw_model.to_core(); let curve = curve.to_core();
         py.detach(|| catch_unwind_py(|| self.inner.price_hull_white_tree(&model, &curve, steps))?.map_err(error))
@@ -421,6 +427,10 @@ note!(TargetRedemptionNote, {
     target_coupon: f64 => std::convert::identity, spread: f64 => std::convert::identity,
     floor: Option<f64> => std::convert::identity, cap: Option<f64> => std::convert::identity
 }, {
+    fn price_hull_white_mc(&self, py: Python<'_>, model: &HullWhite, curve: &YieldCurve, history: &RateNoteHistory, num_paths: usize, seed: u64) -> PyResult<crate::core::PricingResult> {
+        let model = model.to_core();
+        py.detach(|| self.inner.price_hull_white_mc(&model, &curve.inner, &history.inner, num_paths, seed)).map(Into::into).map_err(error)
+    }
     fn price(&self, py: Python<'_>, projected_floating_rates: Vec<f64>, curve: &YieldCurve) -> PyResult<TarnPricingResult> {
         let curve = curve.to_core();
         let result = py.detach(|| self.inner.price(&projected_floating_rates, &curve)).map_err(error)?;
@@ -433,6 +443,10 @@ note!(SnowballNote, {
     initial_coupon: f64 => std::convert::identity, spread: f64 => std::convert::identity,
     floor: Option<f64> => std::convert::identity, cap: Option<f64> => std::convert::identity
 }, {
+    fn price_hull_white_mc(&self, py: Python<'_>, model: &HullWhite, curve: &YieldCurve, history: &RateNoteHistory, num_paths: usize, seed: u64) -> PyResult<crate::core::PricingResult> {
+        let model = model.to_core();
+        py.detach(|| self.inner.price_hull_white_mc(&model, &curve.inner, &history.inner, num_paths, seed)).map(Into::into).map_err(error)
+    }
     fn price(&self, py: Python<'_>, projected_floating_rates: Vec<f64>, curve: &YieldCurve) -> PyResult<SnowballPricingResult> {
         let curve = curve.to_core();
         let result = py.detach(|| self.inner.price(&projected_floating_rates, &curve)).map_err(error)?;
@@ -705,6 +719,7 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<CallableRangeAccrualNote>()?;
     module.add_class::<TargetRedemptionNote>()?;
     module.add_class::<TarnPricingResult>()?;
+    module.add_class::<RateNoteHistory>()?;
     module.add_class::<SnowballNote>()?;
     module.add_class::<SnowballPricingResult>()?;
     module.add_class::<InverseFloaterNote>()?;

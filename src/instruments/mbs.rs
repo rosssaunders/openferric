@@ -232,6 +232,169 @@ pub struct MbsCashflow {
     pub total_cashflow: f64,
 }
 
+/// Simulation and refinancing proxy for stochastic option-adjusted valuation.
+/// The refinancing rate is the model's nominal-monthly zero yield over the
+/// specified tenor plus a mortgage spread, bounded by an explicit rate floor.
+/// This is a rate-sensitive prepayment model, not a calibrated borrower model.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MbsHullWhiteConfig {
+    pub num_paths: usize,
+    pub seed: u64,
+    pub refinancing_tenor: f64,
+    pub refinancing_spread: f64,
+    pub refinancing_floor: f64,
+}
+
+impl MbsPassThrough {
+    fn discounted_hull_white_cashflows(
+        &self,
+        prepayment: &RateIncentivePrepayment,
+        model: &crate::models::HullWhite,
+        curve: &crate::rates::YieldCurve,
+        config: &MbsHullWhiteConfig,
+    ) -> Result<Vec<Vec<f64>>, String> {
+        self.validate()?;
+        prepayment.validate()?;
+        if config.num_paths < 2
+            || !config.refinancing_tenor.is_finite()
+            || config.refinancing_tenor <= 0.0
+            || !config.refinancing_spread.is_finite()
+            || !config.refinancing_floor.is_finite()
+            || config.refinancing_floor <= 0.0
+        {
+            return Err("invalid MBS Hull-White configuration".into());
+        }
+        let months = self.original_term.saturating_sub(self.age) as usize;
+        let times: Vec<f64> = (0..=months).map(|month| month as f64 / 12.0).collect();
+        let generator =
+            crate::models::hull_white_paths::HullWhitePathGenerator::new(model, curve, &times)?;
+        let mut rng = crate::math::fast_rng::Xoshiro256PlusPlus::seed_from_u64(config.seed);
+        let mut paths = Vec::with_capacity(config.num_paths);
+        for _ in 0..config.num_paths {
+            let path = generator.sample(&mut rng)?;
+            let rates: Vec<f64> = (0..months)
+                .map(|index| {
+                    let time = times[index];
+                    let discount = model.bond_price(
+                        time,
+                        time + config.refinancing_tenor,
+                        path.short_rates[index],
+                        curve,
+                    );
+                    let refinancing = 12.0
+                        * (-discount.ln() / (12.0 * config.refinancing_tenor)).exp_m1()
+                        + config.refinancing_spread;
+                    if !discount.is_finite() || discount <= 0.0 || !refinancing.is_finite() {
+                        return Err("invalid conditional refinancing curve".to_string());
+                    }
+                    Ok(refinancing.max(config.refinancing_floor))
+                })
+                .collect::<Result<_, String>>()?;
+            let cashflows = self.cashflows_with_refinancing_rates(prepayment, &rates)?;
+            let discounted: Vec<f64> = cashflows
+                .iter()
+                .map(|cashflow| {
+                    cashflow.total_cashflow * path.discount_factors[cashflow.month as usize]
+                })
+                .collect();
+            if discounted.iter().any(|value| !value.is_finite()) {
+                return Err("non-finite MBS path value".into());
+            }
+            paths.push(discounted);
+        }
+        Ok(paths)
+    }
+
+    /// Risk-neutral value with monthly rate-dependent prepayment and exact
+    /// Hull-White money-market discounting. The OAS is continuously compounded
+    /// and affects discounting only, not borrowers' refinancing decisions.
+    pub fn price_hull_white_mc(
+        &self,
+        prepayment: &RateIncentivePrepayment,
+        model: &crate::models::HullWhite,
+        curve: &crate::rates::YieldCurve,
+        config: &MbsHullWhiteConfig,
+        spread: f64,
+    ) -> Result<crate::core::PricingResult, String> {
+        if !spread.is_finite() {
+            return Err("spread must be finite".into());
+        }
+        let paths = self.discounted_hull_white_cashflows(prepayment, model, curve, config)?;
+        let mut moments = crate::engines::monte_carlo::mc_engine::RunningMoments::default();
+        for path in paths {
+            let value = path
+                .iter()
+                .enumerate()
+                .map(|(index, cashflow)| cashflow * (-spread * (index + 1) as f64 / 12.0).exp())
+                .sum::<f64>();
+            if !value.is_finite() {
+                return Err("non-finite spread-adjusted MBS value".into());
+            }
+            moments.record(value);
+        }
+        let mut diagnostics = crate::core::Diagnostics::new();
+        diagnostics.insert_key(crate::core::DiagKey::NumPaths, config.num_paths as f64);
+        Ok(crate::core::PricingResult {
+            price: moments.mean(),
+            stderr: Some((moments.sample_variance() / config.num_paths as f64).sqrt()),
+            greeks: None,
+            diagnostics,
+        })
+    }
+
+    /// Stochastic OAS using common paths throughout the monotone spread solve.
+    pub fn oas_hull_white(
+        &self,
+        market_price: f64,
+        prepayment: &RateIncentivePrepayment,
+        model: &crate::models::HullWhite,
+        curve: &crate::rates::YieldCurve,
+        config: &MbsHullWhiteConfig,
+    ) -> Result<f64, String> {
+        if !market_price.is_finite() || market_price <= 0.0 {
+            return Err("market price must be positive and finite".into());
+        }
+        let paths = self.discounted_hull_white_cashflows(prepayment, model, curve, config)?;
+        let mut means = vec![0.0; self.original_term.saturating_sub(self.age) as usize];
+        if means.is_empty() {
+            return Err("a settled pool has no OAS".into());
+        }
+        for path in paths {
+            for (mean, value) in means.iter_mut().zip(path) {
+                *mean += value / config.num_paths as f64;
+            }
+        }
+        let price = |spread: f64| {
+            means
+                .iter()
+                .enumerate()
+                .map(|(index, amount)| amount * (-spread * (index + 1) as f64 / 12.0).exp())
+                .sum::<f64>()
+        };
+        let mut lower = -0.01;
+        let mut upper = 0.01;
+        for _ in 0..64 {
+            if price(lower) >= market_price && price(upper) <= market_price {
+                break;
+            }
+            lower *= 2.0;
+            upper *= 2.0;
+        }
+        if price(lower) < market_price || price(upper) > market_price {
+            return Err("unable to bracket OAS".into());
+        }
+        for _ in 0..100 {
+            let middle = 0.5 * (lower + upper);
+            if price(middle) > market_price {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
+        }
+        Ok(0.5 * (lower + upper))
+    }
+}
+
 impl MbsPassThrough {
     /// Validates instrument fields.
     pub fn validate(&self) -> Result<(), String> {
@@ -504,7 +667,7 @@ impl MbsPassThrough {
     /// deterministic spread solve, not a stochastic option-adjusted valuation.
     ///
     /// Returns `NaN` for invalid instrument definitions.
-    pub fn oas(&self, market_price: f64, base_yields: &[f64]) -> f64 {
+    pub fn z_spread(&self, market_price: f64, base_yields: &[f64]) -> f64 {
         if self.validate().is_err() || !market_price.is_finite() || market_price <= 0.0 {
             return f64::NAN;
         }
@@ -1131,7 +1294,7 @@ mod tests {
         assert!(mbs.price(0.05).is_nan());
         assert!(mbs.wal().is_nan());
         assert!(mbs.effective_duration(0.05).is_nan());
-        assert!(mbs.oas(100.0, &[0.05]).is_nan());
+        assert!(mbs.z_spread(100.0, &[0.05]).is_nan());
         assert!(mbs.cashflows().is_empty());
     }
 
@@ -1179,7 +1342,7 @@ mod tests {
         let base_rate = 0.05;
         let true_spread = 0.01;
         let market_price = mbs.price(base_rate + true_spread);
-        let computed_oas = mbs.oas(market_price, &[base_rate]);
+        let computed_oas = mbs.z_spread(market_price, &[base_rate]);
         assert_relative_eq!(computed_oas, true_spread, epsilon = 2.0e-9);
     }
 }

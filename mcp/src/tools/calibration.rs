@@ -39,7 +39,7 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "calibrate_hull_white",
-            description: "Calibrate Hull-White (a, sigma) to swaption vol quotes.",
+            description: "Calibrate Hull-White to absolute normal ATM volatility quotes for annual-pay physical swaptions using the supplied curve.",
             input_schema: json!({
                 "type":"object",
                 "properties": {
@@ -165,7 +165,7 @@ fn calibrate_sabr(args: &Value) -> ToolCallResult {
 }
 
 fn calibrate_hull_white(args: &Value) -> ToolCallResult {
-    let _curve = curve_from_value(req_value(args, "yield_curve")?)?;
+    let curve = curve_from_value(req_value(args, "yield_curve")?)?;
 
     let quotes_val = req_value(args, "swaption_vols")?
         .as_array()
@@ -191,7 +191,7 @@ fn calibrate_hull_white(args: &Value) -> ToolCallResult {
         quotes.push(SwaptionVolQuote::new(format!("swp{i}"), expiry, tenor, vol));
     }
 
-    let calibrator = openferric::calibration::HullWhiteCalibrator::default();
+    let calibrator = openferric::calibration::HullWhiteCalibrator::new(curve);
     let result = calibrator.calibrate(&quotes).map_err(|e| e.to_string())?;
 
     Ok(json!({
