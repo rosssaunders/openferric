@@ -24,6 +24,111 @@ pub struct Swaption {
 }
 
 impl Swaption {
+    /// Jamshidian price with annual fixed payments, a final stub, physical
+    /// settlement and a single curve, including negative rates and strikes.
+    pub fn price_hull_white(
+        &self,
+        curve: &YieldCurve,
+        model: &crate::models::HullWhite,
+    ) -> Result<f64, String> {
+        if !self.notional.is_finite()
+            || self.notional < 0.0
+            || !self.strike.is_finite()
+            || !self.option_expiry.is_finite()
+            || self.option_expiry < 0.0
+            || !self.swap_tenor.is_finite()
+            || self.swap_tenor <= 0.0
+            || !model.a.is_finite()
+            || model.a < 0.0
+            || !model.sigma.is_finite()
+            || model.sigma < 0.0
+        {
+            return Err("Hull-White pricing requires finite inputs, non-negative model parameters and valid swap dates".into());
+        }
+        let expiry_discount = curve.discount_factor(self.option_expiry);
+        let end = self.option_expiry + self.swap_tenor;
+        let response = |time: f64| {
+            if model.a == 0.0 {
+                time
+            } else {
+                -(-model.a * time).exp_m1() / model.a
+            }
+        };
+        let rate_stddev = model.sigma
+            * if model.a == 0.0 {
+                self.option_expiry
+            } else {
+                -(-2.0 * model.a * self.option_expiry).exp_m1() / (2.0 * model.a)
+            }
+            .sqrt();
+        let mut coupons = Vec::new();
+        let mut previous = self.option_expiry;
+        while previous < end {
+            let payment = (previous + 1.0).min(end);
+            if payment <= previous {
+                return Err("swap schedule cannot advance".into());
+            }
+            let amount = self.strike * (payment - previous) + f64::from(payment == end);
+            let discount = curve.discount_factor(payment);
+            if !discount.is_finite()
+                || discount <= 0.0
+                || !expiry_discount.is_finite()
+                || expiry_discount <= 0.0
+            {
+                return Err("invalid discount curve".into());
+            }
+            coupons.push((
+                amount * discount,
+                rate_stddev * response(payment - self.option_expiry),
+            ));
+            previous = payment;
+        }
+        if rate_stddev == 0.0 || coupons.iter().all(|coupon| coupon.0 <= 0.0) {
+            let swap_pv = expiry_discount - coupons.iter().map(|coupon| coupon.0).sum::<f64>();
+            return Ok(self.notional * if self.is_payer { swap_pv } else { -swap_pv }.max(0.0));
+        }
+        let bond = |normal: f64| {
+            coupons
+                .iter()
+                .map(|&(present_value, loading)| {
+                    present_value / expiry_discount
+                        * (-0.5 * loading * loading - loading * normal).exp()
+                })
+                .sum::<f64>()
+        };
+        let mut lower = -1.0;
+        let mut upper = 1.0;
+        for _ in 0..64 {
+            if bond(lower) >= 1.0 && bond(upper) <= 1.0 {
+                break;
+            }
+            lower *= 2.0;
+            upper *= 2.0;
+        }
+        if bond(lower) < 1.0 || bond(upper) > 1.0 {
+            return Err("unable to bracket Jamshidian exercise boundary".into());
+        }
+        for _ in 0..120 {
+            let middle = 0.5 * (lower + upper);
+            if bond(middle) > 1.0 {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
+        }
+        let boundary = 0.5 * (lower + upper);
+        let signed = if self.is_payer { 1.0 } else { -1.0 };
+        let price = signed
+            * (expiry_discount * crate::math::normal_cdf(-signed * boundary)
+                - coupons
+                    .iter()
+                    .map(|&(present_value, loading)| {
+                        present_value * crate::math::normal_cdf(-signed * (boundary + loading))
+                    })
+                    .sum::<f64>());
+        Ok(self.notional * price.max(0.0))
+    }
+
     /// Swap annuity factor `A = sum(DF_i * delta_i)` for annual fixed payments.
     pub fn annuity_factor(&self, curve: &YieldCurve) -> f64 {
         if !self.option_expiry.is_finite()

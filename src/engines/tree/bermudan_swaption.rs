@@ -15,7 +15,10 @@ use crate::rates::{Swaption, YieldCurve};
 
 /// Trinomial-tree Bermudan swaption engine under one-factor Hull-White.
 ///
-/// Each exercise starts a new swap of `swap_tenor`, not a co-terminal swap.
+/// The default contract is co-terminal: an annual fixed-leg schedule starts at
+/// `option_expiry` and ends at `option_expiry + swap_tenor`. Exercise is allowed
+/// only at remaining reset dates. Rolling-tenor options use the explicitly
+/// named `price_rolling_tenor` method instead.
 /// The centered-OU lattice fits the input discount curve at every grid date.
 #[derive(Debug, Clone)]
 pub struct BermudanSwaptionEngine {
@@ -31,12 +34,34 @@ impl BermudanSwaptionEngine {
         Self { hw_model, steps }
     }
 
-    /// Prices a Bermudan swaption with the supplied exercise dates.
+    /// Prices a co-terminal Bermudan. Reset dates must lie exactly on the
+    /// chosen lattice grid; returns NaN rather than silently moving the swap.
     pub fn price(&self, swaption: &Swaption, exercise_dates: &[f64], curve: &YieldCurve) -> f64 {
+        self.price_impl(swaption, exercise_dates, curve, false)
+    }
+
+    /// Prices a distinct contract entering a fresh fixed-tenor swap at each exercise.
+    pub fn price_rolling_tenor(
+        &self,
+        swaption: &Swaption,
+        exercise_dates: &[f64],
+        curve: &YieldCurve,
+    ) -> f64 {
+        self.price_impl(swaption, exercise_dates, curve, true)
+    }
+
+    fn price_impl(
+        &self,
+        swaption: &Swaption,
+        exercise_dates: &[f64],
+        curve: &YieldCurve,
+        rolling: bool,
+    ) -> f64 {
         if self.steps == 0
             || swaption.notional <= 0.0
-            || swaption.strike < 0.0
             || swaption.swap_tenor <= 0.0
+            || !swaption.option_expiry.is_finite()
+            || swaption.option_expiry < 0.0
             || exercise_dates.is_empty()
             || !self.hw_model.a.is_finite()
             || self.hw_model.a < 0.0
@@ -51,6 +76,24 @@ impl BermudanSwaptionEngine {
         {
             return f64::NAN;
         }
+        if !rolling
+            && exercise_dates.iter().any(|&time| {
+                let offset = time - swaption.option_expiry;
+                offset < -1.0e-12
+                    || offset >= swaption.swap_tenor
+                    || (offset - offset.round()).abs() > 1.0e-10
+            })
+        {
+            return f64::NAN;
+        }
+        let contract_at = |exercise_time: f64| Swaption {
+            swap_tenor: if rolling {
+                swaption.swap_tenor
+            } else {
+                swaption.option_expiry + swaption.swap_tenor - exercise_time
+            },
+            ..*swaption
+        };
 
         let horizon = exercise_dates
             .iter()
@@ -62,11 +105,18 @@ impl BermudanSwaptionEngine {
             return f64::NAN;
         }
         if horizon == 0.0 {
-            let cache = SliceBondCache::new(swaption, &self.hw_model, curve, 0.0);
+            let cache = SliceBondCache::new(&contract_at(0.0), &self.hw_model, curve, 0.0);
             return cache.exercise_value(swaption, HullWhite::instantaneous_forward(curve, 0.0));
         }
 
         let dt = horizon / self.steps as f64;
+        if !rolling
+            && exercise_dates
+                .iter()
+                .any(|time| (time / dt - (time / dt).round()).abs() > 1.0e-9)
+        {
+            return f64::NAN;
+        }
         let model = &self.hw_model;
         let Ok(lattice) = HullWhiteLattice::new(model, curve, horizon, self.steps) else {
             return f64::NAN;
@@ -81,7 +131,7 @@ impl BermudanSwaptionEngine {
         let mut scratch = vec![0.0_f64; max_width];
 
         if exercise_flags[self.steps] {
-            let cache = SliceBondCache::new(swaption, model, curve, horizon);
+            let cache = SliceBondCache::new(&contract_at(horizon), model, curve, horizon);
             for j in -(self.steps as isize)..=(self.steps as isize) {
                 let idx = (j + self.steps as isize) as usize;
                 let rate = lattice.short_rate(self.steps, j);
@@ -92,7 +142,7 @@ impl BermudanSwaptionEngine {
         for i in (0..self.steps).rev() {
             let t = i as f64 * dt;
             let slice_cache = if exercise_flags[i] {
-                Some(SliceBondCache::new(swaption, model, curve, t))
+                Some(SliceBondCache::new(&contract_at(t), model, curve, t))
             } else {
                 None
             };
@@ -226,10 +276,10 @@ mod tests {
             swap_tenor: 5.0,
             is_payer: true,
         };
-        let exercise_dates = (1..=20).map(|i| i as f64 * 0.25).collect::<Vec<_>>();
+        let exercise_dates = vec![5.0, 6.0, 7.0, 8.0, 9.0];
 
         let hw_model = HullWhite::new(0.05, 0.01);
-        let engine = BermudanSwaptionEngine::new(hw_model, 300);
+        let engine = BermudanSwaptionEngine::new(hw_model, 360);
 
         let bermudan = engine.price(&swaption, &exercise_dates, &curve);
         let european_black = swaption.price(&curve, 0.01);
@@ -269,7 +319,7 @@ mod tests {
         let swaption = Swaption {
             notional: 1_000_000.0,
             strike: 0.04,
-            option_expiry: 3.0,
+            option_expiry: 1.0,
             swap_tenor: 5.0,
             is_payer: true,
         };

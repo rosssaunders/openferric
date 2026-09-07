@@ -1,4 +1,9 @@
 use openferric_core::core::OptionType as CoreOptionType;
+crate::data::data_type!(
+    MbsHullWhiteConfig,
+    openferric_core::instruments::mbs::MbsHullWhiteConfig,
+    {}
+);
 use openferric_core::instruments::{
     AsianOption as CoreAsianOption, AssetOrNothingOption as CoreAssetOrNothingOption,
     Autocallable as CoreAutocallable, BarrierOption as CoreBarrierOption,
@@ -386,6 +391,17 @@ impl BarrierOption {
         };
         out.validate()?;
         Ok(out)
+    }
+
+    fn price_with_history(
+        &self,
+        market: &crate::market::Market,
+        previously_hit: bool,
+    ) -> PyResult<crate::core::PricingResult> {
+        self.to_core()?
+            .price_with_history(&market.to_core()?, previously_hit)
+            .map(Into::into)
+            .map_err(map_err_string)
     }
 
     #[staticmethod]
@@ -2176,8 +2192,51 @@ impl MbsPassThrough {
             .map_err(map_err_string)
     }
 
-    fn oas(&self, market_price: f64, base_yields: Vec<f64>) -> f64 {
-        self.to_core().oas(market_price, &base_yields)
+    fn z_spread(&self, market_price: f64, base_yields: Vec<f64>) -> f64 {
+        self.to_core().z_spread(market_price, &base_yields)
+    }
+
+    fn price_hull_white_mc(
+        &self,
+        py: Python<'_>,
+        prepayment: &RateIncentivePrepayment,
+        model: &crate::models::HullWhite,
+        curve: &crate::rates::YieldCurve,
+        config: &MbsHullWhiteConfig,
+        spread: f64,
+    ) -> PyResult<crate::core::PricingResult> {
+        let instrument = self.to_core();
+        let prepayment = prepayment.to_core();
+        let model = model.to_core();
+        py.detach(|| {
+            instrument.price_hull_white_mc(&prepayment, &model, &curve.inner, &config.inner, spread)
+        })
+        .map(Into::into)
+        .map_err(map_err_string)
+    }
+
+    fn oas_hull_white(
+        &self,
+        py: Python<'_>,
+        market_price: f64,
+        prepayment: &RateIncentivePrepayment,
+        model: &crate::models::HullWhite,
+        curve: &crate::rates::YieldCurve,
+        config: &MbsHullWhiteConfig,
+    ) -> PyResult<f64> {
+        let instrument = self.to_core();
+        let prepayment = prepayment.to_core();
+        let model = model.to_core();
+        py.detach(|| {
+            instrument.oas_hull_white(
+                market_price,
+                &prepayment,
+                &model,
+                &curve.inner,
+                &config.inner,
+            )
+        })
+        .map_err(map_err_string)
     }
 
     fn effective_duration(&self, yield_rate: f64) -> f64 {
@@ -3574,6 +3633,7 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PrepaymentModel>()?;
     module.add_class::<MbsCashflow>()?;
     module.add_class::<MbsPassThrough>()?;
+    module.add_class::<MbsHullWhiteConfig>()?;
     module.add_class::<IoStrip>()?;
     module.add_class::<PoStrip>()?;
     module.add_class::<Autocallable>()?;

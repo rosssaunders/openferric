@@ -169,6 +169,21 @@ pub struct BermudanSwaptionEngine {
 }
 #[pymethods]
 impl BermudanSwaptionEngine {
+    fn price_rolling_tenor(
+        &self,
+        py: Python<'_>,
+        swaption: &crate::rates::Swaption,
+        exercise_dates: Vec<f64>,
+        curve: &crate::rates::YieldCurve,
+    ) -> PyResult<f64> {
+        let swaption = swaption.to_core();
+        py.detach(|| {
+            catch_unwind_py(|| {
+                self.inner
+                    .price_rolling_tenor(&swaption, &exercise_dates, &curve.inner)
+            })
+        })
+    }
     #[getter]
     fn hw_model(&self) -> crate::models::HullWhite {
         crate::models::HullWhite::from_core(self.inner.hw_model.clone())

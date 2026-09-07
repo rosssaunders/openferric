@@ -11,6 +11,6 @@
 //! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 
 pub use crate::instruments::mbs::{
-    ConstantCpr, IoStrip, MbsCashflow, MbsPassThrough, PoStrip, PrepaymentModel, PsaModel,
-    RateIncentivePrepayment,
+    ConstantCpr, IoStrip, MbsCashflow, MbsHullWhiteConfig, MbsPassThrough, PoStrip,
+    PrepaymentModel, PsaModel, RateIncentivePrepayment,
 };

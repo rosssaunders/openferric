@@ -10,10 +10,6 @@
 //!
 //! When to use: use these direct pricing helpers for quick valuation tasks; prefer trait-based instruments plus engines composition for larger systems and extensibility.
 use crate::pricing::OptionType;
-use nalgebra::{DMatrix, DVector};
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
 
 /// Prices an American option on a CRR binomial tree.
 ///
@@ -118,75 +114,21 @@ pub fn longstaff_schwartz_american_put(
             .fold(0.0, f64::max);
     }
 
-    let dt = t / steps as f64;
-    let drift = (r - 0.5 * sigma * sigma) * dt;
-    let vol = sigma * dt.sqrt();
-    let disc = (-r * dt).exp();
-
-    let mut rng = StdRng::seed_from_u64(seed);
-    let mut sim_paths = vec![vec![0.0_f64; steps + 1]; paths];
-
-    for path in &mut sim_paths {
-        path[0] = s0;
-        for ti in 1..=steps {
-            let z: f64 = StandardNormal.sample(&mut rng);
-            path[ti] = path[ti - 1] * (drift + vol * z).exp();
-        }
-    }
-
-    let mut values: Vec<f64> = sim_paths.iter().map(|p| (k - p[steps]).max(0.0)).collect();
-
-    for ti in (1..steps).rev() {
-        for v in &mut values {
-            *v *= disc;
-        }
-
-        let itm: Vec<usize> = sim_paths
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                if (k - p[ti]).max(0.0) > 0.0 {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if itm.len() >= 3 {
-            let mut x = DMatrix::<f64>::zeros(itm.len(), 3);
-            let mut y = DVector::<f64>::zeros(itm.len());
-
-            for (row, &idx) in itm.iter().enumerate() {
-                let s = sim_paths[idx][ti];
-                x[(row, 0)] = 1.0;
-                x[(row, 1)] = s;
-                x[(row, 2)] = s * s;
-                y[row] = values[idx];
-            }
-
-            let xtx = x.transpose() * &x;
-            let xty = x.transpose() * &y;
-            let beta = xtx
-                .lu()
-                .solve(&xty)
-                .unwrap_or_else(|| DVector::<f64>::zeros(3));
-
-            for &idx in &itm {
-                let s = sim_paths[idx][ti];
-                let continuation = beta[0] + beta[1] * s + beta[2] * s * s;
-                let exercise = (k - s).max(0.0);
-                if exercise > continuation {
-                    values[idx] = exercise;
-                }
-            }
-        }
-    }
-
-    let continuation = values.iter().map(|v| v * disc).sum::<f64>() / paths as f64;
-    // American exercise includes t=0.  The regression rollback starts at the
-    // first positive time index, so enforce the root exercise decision here.
-    continuation.max((k - s0).max(0.0))
+    use crate::core::PricingEngine;
+    let Ok(market) = crate::market::Market::builder()
+        .spot(s0)
+        .rate(r)
+        .flat_vol(sigma)
+        .build()
+    else {
+        return f64::NAN;
+    };
+    crate::engines::lsm::LongstaffSchwartzEngine::new(paths, steps, seed)
+        .price(
+            &crate::instruments::VanillaOption::american_put(k, t),
+            &market,
+        )
+        .map_or(f64::NAN, |result| result.price)
 }
 
 #[cfg(test)]

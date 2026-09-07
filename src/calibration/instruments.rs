@@ -74,6 +74,7 @@ pub struct SwaptionVolQuote {
     pub id: String,
     pub expiry: f64,
     pub tenor: f64,
+    /// Absolute normal (Bachelier) ATM volatility, annual-pay physical swaption.
     pub market_vol: f64,
     pub bid_vol: Option<f64>,
     pub ask_vol: Option<f64>,

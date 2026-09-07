@@ -236,6 +236,18 @@ impl Heston {
         }
     }
 
+    fn step_full_truncation(
+        &self,
+        spot: f64,
+        variance: f64,
+        dt: f64,
+        variance_normal: f64,
+        independent_normal: f64,
+    ) -> (f64, f64) {
+        self.to_core()
+            .step_full_truncation(spot, variance, dt, variance_normal, independent_normal)
+    }
+
     fn validate(&self) -> bool {
         self.to_core().validate()
     }
@@ -342,6 +354,8 @@ impl CIR {
     }
 }
 
+crate::data::data_type!(HullWhitePath, openferric_core::models::HullWhitePath, {});
+
 #[pyclass(module = "openferric", from_py_object)]
 #[derive(Clone)]
 pub struct HullWhite {
@@ -386,6 +400,18 @@ impl HullWhite {
         let mut model = self.to_core();
         model.calibrate_theta(&build_yield_curve(initial_curve), &times);
         self.theta = model.theta;
+    }
+
+    fn simulate_path(
+        &self,
+        curve: &crate::rates::YieldCurve,
+        times: Vec<f64>,
+        seed: u64,
+    ) -> PyResult<HullWhitePath> {
+        self.to_core()
+            .simulate_path(&curve.inner, &times, seed)
+            .map(|inner| HullWhitePath { inner })
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     fn theta_at(&self, t: f64) -> f64 {
@@ -1733,6 +1759,7 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Sabr>()?;
     module.add_class::<CIR>()?;
     module.add_class::<HullWhite>()?;
+    module.add_class::<HullWhitePath>()?;
     module.add_class::<AtmSwaptionVolQuote>()?;
     module.add_class::<LmmParams>()?;
     module.add_class::<LmmModel>()?;

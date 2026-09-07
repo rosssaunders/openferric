@@ -211,9 +211,9 @@ impl PathGenerator for HestonPathGenerator {
             .enumerate()
             .take(self.steps)
         {
-            let (s_next, v_next) = self.model.step_euler(s, v, dt, z1, z2);
+            let (s_next, v_next) = self.model.step_full_truncation(s, v, dt, z1, z2);
             s = s_next.max(1e-12);
-            v = v_next.max(0.0);
+            v = v_next;
             out[j + 1] = s;
         }
     }

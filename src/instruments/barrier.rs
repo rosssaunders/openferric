@@ -27,6 +27,37 @@ pub struct BarrierOption {
 }
 
 impl BarrierOption {
+    /// Black-Scholes valuation with explicit historical barrier state. An
+    /// earlier knock-in remains vanilla even after spot returns inside; an
+    /// earlier knock-out has zero remaining value (its hit-time rebate settled).
+    pub fn price_with_history(
+        &self,
+        market: &crate::market::Market,
+        previously_hit: bool,
+    ) -> Result<crate::core::PricingResult, PricingError> {
+        use crate::core::PricingEngine;
+        self.validate()?;
+        market.validate()?;
+        if !previously_hit {
+            return crate::engines::analytic::BarrierAnalyticEngine.price(self, market);
+        }
+        if self.barrier.style == BarrierStyle::Out {
+            return Ok(crate::core::PricingResult {
+                price: 0.0,
+                stderr: None,
+                greeks: None,
+                diagnostics: crate::core::Diagnostics::new(),
+            });
+        }
+        let vanilla = super::VanillaOption {
+            option_type: self.option_type,
+            strike: self.strike,
+            expiry: self.expiry,
+            exercise: crate::core::ExerciseStyle::European,
+        };
+        crate::engines::analytic::BlackScholesEngine.price(&vanilla, market)
+    }
+
     /// Starts a barrier option builder.
     pub fn builder() -> BarrierOptionBuilder {
         BarrierOptionBuilder::default()
